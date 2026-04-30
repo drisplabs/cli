@@ -554,6 +554,12 @@ export function useFeed(
 						) {
 							dequeuePermission(fe.cause.hook_request_id);
 						}
+						if (fe.kind === 'agent.message' && fe.data.scope === 'root') {
+							channelRegistryRef.current?.notify(fe.data.message, {
+								source: fe.data.source,
+								...(fe.data.model ? {model: fe.data.model} : {}),
+							});
+						}
 					}
 
 					feedStoreRef.current!.pushEvents(newFeedEvents);

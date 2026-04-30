@@ -210,6 +210,63 @@ describe('ChannelRegistry', () => {
 		registry.dispose();
 	});
 
+	it('notify is a no-op when no hosts are attached', () => {
+		const runtime = makeRuntime();
+		const relay = new PermissionRelay({runtime});
+		const registry = new ChannelRegistry({relay, runtime, channels: []});
+		expect(() => registry.notify('hello')).not.toThrow();
+		registry.dispose();
+		relay.dispose();
+	});
+
+	it('notify drops empty/whitespace content', () => {
+		const runtime = makeRuntime();
+		const relay = new PermissionRelay({runtime});
+		const fakeHost = {
+			name: 'fake',
+			send: vi.fn(),
+			start: vi.fn(),
+			dispose: vi.fn(),
+		};
+		const registry = new ChannelRegistry({relay, runtime, channels: []});
+		(registry as unknown as {hosts: unknown[]}).hosts.push(fakeHost);
+
+		registry.notify('   ');
+		registry.notify('');
+		expect(fakeHost.send).not.toHaveBeenCalled();
+
+		registry.notify('hello');
+		expect(fakeHost.send).toHaveBeenCalledWith({
+			method: 'notification',
+			params: {content: 'hello', meta: {}},
+		});
+		registry.dispose();
+		relay.dispose();
+	});
+
+	it('notify truncates content longer than the channel cap', () => {
+		const runtime = makeRuntime();
+		const relay = new PermissionRelay({runtime});
+		const fakeHost = {
+			name: 'fake',
+			send: vi.fn(),
+			start: vi.fn(),
+			dispose: vi.fn(),
+		};
+		const registry = new ChannelRegistry({relay, runtime, channels: []});
+		(registry as unknown as {hosts: unknown[]}).hosts.push(fakeHost);
+
+		const huge = 'x'.repeat(5000);
+		registry.notify(huge);
+		const call = fakeHost.send.mock.calls[0]![0] as {
+			params: {content: string};
+		};
+		expect(call.params.content.length).toBe(4000);
+		expect(call.params.content.endsWith('…')).toBe(true);
+		registry.dispose();
+		relay.dispose();
+	});
+
 	it('local question claim prevents late channel answer', () => {
 		const runtime = makeRuntime();
 		const relay = new PermissionRelay({runtime});

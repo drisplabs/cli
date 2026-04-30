@@ -1,13 +1,21 @@
 /**
- * Parser for verdict-shaped Telegram replies.
+ * Parsers for Telegram channel replies.
  *
+ * Text replies (legacy / power-user path):
  *   "yes abcde" / "y abcde" → allow
  *   "no abcde"  / "n abcde" → deny
+ *   "answer abcde ..."      → question answer
  *
- * Case-insensitive (phone autocorrect frequently capitalizes the first
- * letter). The 5-letter ID alphabet matches the Athena/Claude Code
- * channel-request-id alphabet: lowercase a-z minus 'l'.
+ * Inline-keyboard callback_data (preferred path):
+ *   "v:abcde:a" / "v:abcde:d"   → permission verdict
+ *   "q:abcde:<optIdx>"          → question option pick (single-question only)
+ *
+ * Case-insensitive for text (phone autocorrect frequently capitalizes the
+ * first letter). The 5-letter ID alphabet matches the Athena/Claude Code
+ * channel-request-id alphabet, sourced from `../ids`.
  */
+
+import {CHANNEL_REQUEST_ID_REGEX, isValidChannelRequestId} from '../ids';
 
 export type ParsedVerdict = {
 	channelRequestId: string;
@@ -19,9 +27,33 @@ export type ParsedQuestionAnswer = {
 	answers: Record<string, string>;
 };
 
-const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i;
-const ANSWER_RE = /^\s*(a|answer)\s+([a-km-z]{5})\s+([\s\S]+?)\s*$/i;
-const ANSWER_ID_RE = /^\s*(a|answer)\s+([a-km-z]{5})\s+/i;
+export type ParsedPermissionCallback = {
+	kind: 'permission';
+	channelRequestId: string;
+	behavior: 'allow' | 'deny';
+};
+
+export type ParsedQuestionCallback = {
+	kind: 'question';
+	channelRequestId: string;
+	optionIndex: number;
+};
+
+export type ParsedCallback = ParsedPermissionCallback | ParsedQuestionCallback;
+
+const CB_PERMISSION = 'v';
+const CB_QUESTION = 'q';
+const CB_ALLOW = 'a';
+const CB_DENY = 'd';
+
+const ID_PATTERN = CHANNEL_REQUEST_ID_REGEX.source.replace(/^\^|\$$/g, '');
+const VERDICT_RE = new RegExp(`^\\s*(y|yes|n|no)\\s+(${ID_PATTERN})\\s*$`, 'i');
+const ANSWER_RE = new RegExp(
+	`^\\s*(a|answer)\\s+(${ID_PATTERN})\\s+([\\s\\S]+?)\\s*$`,
+	'i',
+);
+const ANSWER_ID_RE = new RegExp(`^\\s*(a|answer)\\s+(${ID_PATTERN})\\s+`, 'i');
+const NON_NEG_INT_RE = /^\d+$/;
 
 export function parseVerdict(text: string): ParsedVerdict | null {
 	const m = VERDICT_RE.exec(text);
@@ -90,4 +122,42 @@ export function buildPlainTextQuestionAnswer(
 		channelRequestId,
 		answers: {[firstKey]: answer},
 	};
+}
+
+export function parseCallbackData(data: string): ParsedCallback | null {
+	const parts = data.split(':');
+	const kind = parts[0];
+	const id = parts[1];
+	if (!id || !isValidChannelRequestId(id)) return null;
+
+	if (kind === CB_PERMISSION && parts.length === 3) {
+		const verb = parts[2]!;
+		if (verb !== CB_ALLOW && verb !== CB_DENY) return null;
+		return {
+			kind: 'permission',
+			channelRequestId: id,
+			behavior: verb === CB_ALLOW ? 'allow' : 'deny',
+		};
+	}
+	if (kind === CB_QUESTION && parts.length === 3) {
+		const idxStr = parts[2]!;
+		if (!NON_NEG_INT_RE.test(idxStr)) return null;
+		const optionIndex = Number.parseInt(idxStr, 10);
+		return {kind: 'question', channelRequestId: id, optionIndex};
+	}
+	return null;
+}
+
+export function buildPermissionCallbackData(
+	channelRequestId: string,
+	behavior: 'allow' | 'deny',
+): string {
+	return `${CB_PERMISSION}:${channelRequestId}:${behavior === 'allow' ? CB_ALLOW : CB_DENY}`;
+}
+
+export function buildQuestionCallbackData(
+	channelRequestId: string,
+	optionIndex: number,
+): string {
+	return `${CB_QUESTION}:${channelRequestId}:${optionIndex}`;
 }

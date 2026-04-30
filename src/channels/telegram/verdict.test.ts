@@ -1,6 +1,9 @@
 import {describe, expect, it} from 'vitest';
 import {
+	buildPermissionCallbackData,
 	buildPlainTextQuestionAnswer,
+	buildQuestionCallbackData,
+	parseCallbackData,
 	parseQuestionAnswer,
 	parseVerdict,
 } from './verdict';
@@ -87,5 +90,62 @@ describe('buildPlainTextQuestionAnswer', () => {
 			buildPlainTextQuestionAnswer('abcde', '   ', ['Question?']),
 		).toBeNull();
 		expect(buildPlainTextQuestionAnswer('abcde', 'yes', [])).toBeNull();
+	});
+});
+
+describe('parseCallbackData', () => {
+	it('parses permission allow', () => {
+		expect(parseCallbackData('v:abcde:a')).toEqual({
+			kind: 'permission',
+			channelRequestId: 'abcde',
+			behavior: 'allow',
+		});
+	});
+
+	it('parses permission deny', () => {
+		expect(parseCallbackData('v:abcde:d')).toEqual({
+			kind: 'permission',
+			channelRequestId: 'abcde',
+			behavior: 'deny',
+		});
+	});
+
+	it('parses question pick', () => {
+		expect(parseCallbackData('q:abcde:3')).toEqual({
+			kind: 'question',
+			channelRequestId: 'abcde',
+			optionIndex: 3,
+		});
+	});
+
+	it.each([
+		'',
+		'v:abcde',
+		'v:abcde:x',
+		'v:lloyd:a', // invalid id alphabet
+		'v:abcd:a', // wrong length
+		'q:abcde',
+		'q:abcde:-1',
+		'q:abcde:foo',
+		'q:abcde:5x', // trailing chars after digits
+		'q:abcde:0:0', // legacy 4-part form is no longer accepted
+		'random',
+	])('rejects %j', input => {
+		expect(parseCallbackData(input)).toBeNull();
+	});
+
+	it('round-trips with builders', () => {
+		expect(
+			parseCallbackData(buildPermissionCallbackData('abcde', 'allow')),
+		).toEqual({
+			kind: 'permission',
+			channelRequestId: 'abcde',
+			behavior: 'allow',
+		});
+		expect(parseCallbackData(buildQuestionCallbackData('abcde', 5))).toEqual({
+			kind: 'question',
+			channelRequestId: 'abcde',
+			optionIndex: 5,
+		});
 	});
 });

@@ -22,6 +22,9 @@ import type {
 	QuestionClaimSource,
 } from './types';
 
+/** Telegram caps messages at 4096 chars; leave room for an ellipsis. */
+const MAX_NOTIFICATION_LEN = 4000;
+
 export type ChannelRegistryOptions = {
 	relay: PermissionRelay;
 	questionRelay?: QuestionRelay;
@@ -203,6 +206,29 @@ export class ChannelRegistry {
 					channel_request_id: channelRequestId,
 					tool_name: toolName,
 				},
+			});
+		}
+	}
+
+	/**
+	 * Fan a one-shot text notification out to all attached channels. Used to
+	 * mirror agent assistant messages to remote channels (so the user can read
+	 * the conversation on their phone). No relay tracking, no cancellation —
+	 * fire-and-forget. Empty/whitespace input is dropped.
+	 */
+	notify(content: string, meta: Record<string, string> = {}): void {
+		if (this.disposed) return;
+		if (this.hosts.length === 0) return;
+		const trimmed = content.trim();
+		if (trimmed.length === 0) return;
+		const truncated =
+			trimmed.length > MAX_NOTIFICATION_LEN
+				? trimmed.slice(0, MAX_NOTIFICATION_LEN - 1) + '…'
+				: trimmed;
+		for (const host of this.hosts) {
+			host.send({
+				method: 'notification',
+				params: {content: truncated, meta},
 			});
 		}
 	}

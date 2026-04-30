@@ -1,8 +1,9 @@
 /**
  * Minimal Telegram Bot API client for the Athena channel.
  *
- * Long-polls `getUpdates` to receive messages and exposes `sendMessage`
- * + `editMessageText` for outgoing prompts. Only the surface needed by
+ * Long-polls `getUpdates` to receive messages and callback queries. Exposes
+ * `sendMessage`, `editMessageText`, `editMessageReplyMarkup`,
+ * `answerCallbackQuery`, and `setMyCommands` — only the surface needed by
  * the channel is implemented; no third-party Telegram SDK.
  */
 
@@ -27,15 +28,52 @@ export type TelegramMessage = {
 	text?: string;
 };
 
+export type TelegramCallbackQuery = {
+	id: string;
+	from: TelegramUser;
+	message?: TelegramMessage;
+	data?: string;
+};
+
 export type TelegramUpdate = {
 	update_id: number;
 	message?: TelegramMessage;
 	edited_message?: TelegramMessage;
+	callback_query?: TelegramCallbackQuery;
 };
 
 export type SendMessageResult = {
 	message_id: number;
 	chat: {id: number};
+};
+
+export type InlineKeyboardButton = {
+	text: string;
+	callback_data?: string;
+};
+
+export type InlineKeyboardMarkup = {
+	inline_keyboard: InlineKeyboardButton[][];
+};
+
+export type ForceReplyMarkup = {
+	force_reply: true;
+	input_field_placeholder?: string;
+	selective?: boolean;
+};
+
+export type ReplyMarkup = InlineKeyboardMarkup | ForceReplyMarkup;
+
+export type ParseMode = 'MarkdownV2' | 'HTML';
+
+export type SendMessageOptions = {
+	parse_mode?: ParseMode;
+	reply_markup?: ReplyMarkup;
+};
+
+export type BotCommand = {
+	command: string;
+	description: string;
 };
 
 export type BotOptions = {
@@ -120,12 +158,13 @@ export class TelegramBot {
 	async sendMessage(
 		chatId: number | string,
 		text: string,
+		options: SendMessageOptions = {},
 	): Promise<SendMessageResult | null> {
 		try {
-			const result = await this.call<SendMessageResult>('sendMessage', {
-				chat_id: chatId,
-				text,
-			});
+			const params: Record<string, unknown> = {chat_id: chatId, text};
+			if (options.parse_mode) params['parse_mode'] = options.parse_mode;
+			if (options.reply_markup) params['reply_markup'] = options.reply_markup;
+			const result = await this.call<SendMessageResult>('sendMessage', params);
 			return result;
 		} catch (err) {
 			this.log(
@@ -142,13 +181,17 @@ export class TelegramBot {
 		chatId: number | string,
 		messageId: number,
 		text: string,
+		options: SendMessageOptions = {},
 	): Promise<void> {
 		try {
-			await this.call('editMessageText', {
+			const params: Record<string, unknown> = {
 				chat_id: chatId,
 				message_id: messageId,
 				text,
-			});
+			};
+			if (options.parse_mode) params['parse_mode'] = options.parse_mode;
+			if (options.reply_markup) params['reply_markup'] = options.reply_markup;
+			await this.call('editMessageText', params);
 		} catch (err) {
 			this.log(
 				'debug',
@@ -159,11 +202,65 @@ export class TelegramBot {
 		}
 	}
 
+	async editMessageReplyMarkup(
+		chatId: number | string,
+		messageId: number,
+		replyMarkup: InlineKeyboardMarkup | null,
+	): Promise<void> {
+		try {
+			await this.call('editMessageReplyMarkup', {
+				chat_id: chatId,
+				message_id: messageId,
+				reply_markup: replyMarkup ?? {inline_keyboard: []},
+			});
+		} catch (err) {
+			this.log(
+				'debug',
+				`editMessageReplyMarkup failed: ${this.redact(
+					err instanceof Error ? err.message : String(err),
+				)}`,
+			);
+		}
+	}
+
+	async answerCallbackQuery(
+		callbackQueryId: string,
+		text?: string,
+	): Promise<void> {
+		try {
+			const params: Record<string, unknown> = {
+				callback_query_id: callbackQueryId,
+			};
+			if (text) params['text'] = text;
+			await this.call('answerCallbackQuery', params);
+		} catch (err) {
+			this.log(
+				'debug',
+				`answerCallbackQuery failed: ${this.redact(
+					err instanceof Error ? err.message : String(err),
+				)}`,
+			);
+		}
+	}
+
+	async setMyCommands(commands: BotCommand[]): Promise<void> {
+		try {
+			await this.call('setMyCommands', {commands});
+		} catch (err) {
+			this.log(
+				'debug',
+				`setMyCommands failed: ${this.redact(
+					err instanceof Error ? err.message : String(err),
+				)}`,
+			);
+		}
+	}
+
 	private async getUpdates(): Promise<TelegramUpdate[]> {
 		const result = await this.call<TelegramUpdate[]>('getUpdates', {
 			offset: this.offset,
 			timeout: this.pollTimeoutSec,
-			allowed_updates: ['message'],
+			allowed_updates: ['message', 'callback_query'],
 		});
 		return result;
 	}
