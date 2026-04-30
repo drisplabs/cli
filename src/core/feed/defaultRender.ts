@@ -18,7 +18,12 @@ export type DefaultRenderKind =
 	| 'stop.failure'
 	| 'permission.denied'
 	| 'elicitation.request'
-	| 'elicitation.result';
+	| 'elicitation.result'
+	| 'channel.permission.relayed'
+	| 'channel.permission.resolved'
+	| 'channel.question.relayed'
+	| 'channel.question.resolved'
+	| 'channel.chat.inbound';
 
 export const DEFAULT_RENDER: ReadonlySet<DefaultRenderKind> =
 	new Set<DefaultRenderKind>([
@@ -30,6 +35,11 @@ export const DEFAULT_RENDER: ReadonlySet<DefaultRenderKind> =
 		'permission.denied',
 		'elicitation.request',
 		'elicitation.result',
+		'channel.permission.relayed',
+		'channel.permission.resolved',
+		'channel.question.relayed',
+		'channel.question.resolved',
+		'channel.chat.inbound',
 	]);
 
 export function isDefaultRenderKind(k: FeedEventKind): k is DefaultRenderKind {

@@ -1034,6 +1034,11 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'file.changed':
 		case 'elicitation.request':
 		case 'elicitation.result':
+		case 'channel.permission.relayed':
+		case 'channel.permission.resolved':
+		case 'channel.question.relayed':
+		case 'channel.question.resolved':
+		case 'channel.chat.inbound':
 			return {toolColumn: '', segments: []};
 	}
 }
@@ -1121,6 +1126,11 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'file.changed':
 		case 'elicitation.request':
 		case 'elicitation.result':
+		case 'channel.permission.relayed':
+		case 'channel.permission.resolved':
+		case 'channel.question.relayed':
+		case 'channel.question.resolved':
+		case 'channel.chat.inbound':
 			return '';
 	}
 }

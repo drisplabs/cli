@@ -48,8 +48,48 @@ function extractQuestions(request: FeedEvent): Question[] {
 	if (request.kind !== 'tool.pre' && request.kind !== 'permission.request')
 		return [];
 	const toolInput = request.data.tool_input;
-	const questions = toolInput.questions as Question[] | undefined;
-	return Array.isArray(questions) ? questions : [];
+	const questions = toolInput.questions;
+	if (!Array.isArray(questions)) return [];
+	return questions
+		.map((raw): Question | null => {
+			if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+				return null;
+			}
+			const q = raw as Record<string, unknown>;
+			const question =
+				typeof q['question'] === 'string' ? q['question'] : 'Question';
+			const header = typeof q['header'] === 'string' ? q['header'] : 'Question';
+			const options = Array.isArray(q['options'])
+				? q['options']
+						.map((rawOption): QuestionOption | null => {
+							if (
+								typeof rawOption !== 'object' ||
+								rawOption === null ||
+								Array.isArray(rawOption)
+							) {
+								return null;
+							}
+							const option = rawOption as Record<string, unknown>;
+							return {
+								label:
+									typeof option['label'] === 'string' ? option['label'] : '',
+								description:
+									typeof option['description'] === 'string'
+										? option['description']
+										: '',
+							};
+						})
+						.filter((option): option is QuestionOption => option !== null)
+				: [];
+			return {
+				question,
+				header,
+				options,
+				multiSelect:
+					typeof q['multiSelect'] === 'boolean' ? q['multiSelect'] : false,
+			};
+		})
+		.filter((question): question is Question => question !== null);
 }
 
 function QuestionTabs({

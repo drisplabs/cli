@@ -16,6 +16,14 @@ export type ControllerCallbacks = {
 	getRules: () => HookRule[];
 	enqueuePermission: (event: RuntimeEvent) => void;
 	enqueueQuestion: (eventId: string) => void;
+	/**
+	 * Optional fan-out to remote channels (e.g. Telegram). Called only when a
+	 * permission request reaches the user-prompt branch — rule-matched
+	 * allow/deny short-circuit before this fires.
+	 */
+	relayPermission?: (event: RuntimeEvent) => void;
+	/** Optional fan-out for AskUserQuestion / user_input prompts. */
+	relayQuestion?: (event: RuntimeEvent) => void;
 	signal?: AbortSignal;
 };
 
@@ -38,6 +46,7 @@ export function handleEvent(
 
 	if (eventKind === 'permission.request' && toolName === 'user_input') {
 		cb.enqueueQuestion(event.id);
+		cb.relayQuestion?.(event);
 		return {handled: true};
 	}
 
@@ -74,12 +83,14 @@ export function handleEvent(
 		}
 
 		cb.enqueuePermission(event);
+		cb.relayPermission?.(event);
 		return {handled: true};
 	}
 
 	// ── AskUserQuestion hijack ──
 	if (eventKind === 'tool.pre' && toolName === 'AskUserQuestion') {
 		cb.enqueueQuestion(event.id);
+		cb.relayQuestion?.(event);
 		return {handled: true};
 	}
 

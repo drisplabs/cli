@@ -344,6 +344,11 @@ export function eventDetail(event: FeedEvent): string {
 		case 'file.changed':
 		case 'elicitation.request':
 		case 'elicitation.result':
+		case 'channel.permission.relayed':
+		case 'channel.permission.resolved':
+		case 'channel.question.relayed':
+		case 'channel.question.resolved':
+		case 'channel.chat.inbound':
 			return '\u2500'; // ─ em dash placeholder
 	}
 }
@@ -504,7 +509,12 @@ export function eventSummary(event: FeedEvent): SummaryResult {
 		case 'cwd.changed':
 		case 'file.changed':
 		case 'elicitation.request':
-		case 'elicitation.result': {
+		case 'elicitation.result':
+		case 'channel.permission.relayed':
+		case 'channel.permission.resolved':
+		case 'channel.question.relayed':
+		case 'channel.question.resolved':
+		case 'channel.chat.inbound': {
 			const text = eventSummaryText(event);
 			return {text, segments: [{text, role: 'target'}]};
 		}
@@ -697,6 +707,31 @@ function eventSummaryText(event: FeedEvent): string {
 				`${event.data.mcp_server} → ${event.data.action}`,
 				200,
 			);
+		case 'channel.permission.relayed':
+			return compactText(
+				`${event.data.channel_name}: ${event.data.tool_name} (${event.data.channel_request_id})`,
+				200,
+			);
+		case 'channel.permission.resolved':
+			return compactText(
+				`${event.data.channel_name} ${event.data.source} ${event.data.tool_name}`,
+				200,
+			);
+		case 'channel.question.relayed':
+			return compactText(
+				`${event.data.channel_name}: ${event.data.title} (${event.data.channel_request_id})`,
+				200,
+			);
+		case 'channel.question.resolved':
+			return compactText(
+				`${event.data.channel_name || event.data.source} ${event.data.source} ${event.data.title}`,
+				200,
+			);
+		case 'channel.chat.inbound':
+			return compactText(
+				`${event.data.channel_name}: ${event.data.content}`,
+				200,
+			);
 		case 'compact.post':
 			return compactText(`compacted (${event.data.trigger})`, 200);
 		case 'tool.pre':
@@ -806,6 +841,11 @@ export function expansionForEvent(event: FeedEvent): string {
 		case 'file.changed':
 		case 'elicitation.request':
 		case 'elicitation.result':
+		case 'channel.permission.relayed':
+		case 'channel.permission.resolved':
+		case 'channel.question.relayed':
+		case 'channel.question.resolved':
+		case 'channel.chat.inbound':
 			return JSON.stringify(event.raw ?? event.data, null, 2);
 	}
 }

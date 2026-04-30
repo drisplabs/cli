@@ -279,6 +279,45 @@ describe('QuestionDialog', () => {
 		expect(frame).toContain('No questions found');
 	});
 
+	it('renders free-form questions when options are omitted', () => {
+		const request: FeedEvent = {
+			event_id: 'test-q-freeform',
+			seq: 1,
+			ts: Date.now(),
+			session_id: 's1',
+			run_id: 's1:R1',
+			kind: 'tool.pre',
+			level: 'info',
+			actor_id: 'agent:root',
+			title: 'test',
+			data: {
+				tool_name: 'AskUserQuestion',
+				tool_input: {
+					questions: [
+						{
+							question: 'May I continue?',
+							header: 'Confirm',
+						},
+					],
+				},
+			},
+		} as FeedEvent;
+
+		const {lastFrame} = render(
+			<QuestionDialog
+				request={request}
+				queuedCount={0}
+				onAnswer={vi.fn()}
+				onSkip={vi.fn()}
+			/>,
+		);
+
+		const frame = lastFrame() ?? '';
+		expect(frame).toContain('[Confirm]');
+		expect(frame).toContain('May I continue?');
+		expect(frame).toContain('Other');
+	});
+
 	it('renders with themed horizontal rule separator instead of border', () => {
 		const request = makeRequest([
 			{

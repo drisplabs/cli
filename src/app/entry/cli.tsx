@@ -27,6 +27,7 @@ import {
 } from '../../infra/telemetry/index';
 import {writeGlobalConfig} from '../../infra/plugins/config';
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
+import {resolveChannels} from '../channels/setup';
 import {resolveTheme} from '../../ui/theme/index';
 import {shouldShowSetup} from '../../setup/shouldShowSetup';
 import {
@@ -40,6 +41,7 @@ import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
+import {runChannelCommand} from './channelCommand';
 import {runDoctorCommand} from './doctorCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
 import {
@@ -78,6 +80,7 @@ const KNOWN_COMMANDS = new Set([
 	'exec',
 	'workflow',
 	'marketplace',
+	'channel',
 	'telemetry',
 	'doctor',
 ]);
@@ -214,6 +217,7 @@ const cli = meow(
 			exec "<prompt>"       Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			marketplace <sub>     Manage marketplace sources (add, remove, list)
+			channel <sub>         Manage external channels
 			telemetry [action]    Manage anonymous telemetry (enable/disable/status)
 			doctor                Diagnose Claude headless setup (use with --harness=claude)
 
@@ -236,6 +240,10 @@ const cli = meow(
 			--on-question   Policy for AskUserQuestion: ${EXEC_QUESTION_POLICIES_HELP} (default: ${EXEC_DEFAULT_QUESTION_POLICY}, exec mode)
 			--timeout-ms    Hard timeout for exec run in milliseconds
 			--workflow      Override the active workflow for this run only (no config change)
+			--channel       Attach a channel for permission relay (interactive only, repeatable). Built-in: telegram
+			--bot-token     Telegram bot token (channel telegram configure)
+			--user-id       Telegram allowed user id (channel telegram configure)
+			--chat-id       Telegram destination chat id (defaults to --user-id)
 			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (exec mode)
 			--project       Scope workflow command to project config (workflow use)
 			--global        Scope workflow command to global config (workflow use, default)
@@ -326,6 +334,19 @@ const cli = meow(
 			workflow: {
 				type: 'string',
 			},
+			channel: {
+				type: 'string',
+				isMultiple: true,
+			},
+			botToken: {
+				type: 'string',
+			},
+			userId: {
+				type: 'string',
+			},
+			chatId: {
+				type: 'string',
+			},
 			dryRun: {
 				type: 'boolean',
 				default: false,
@@ -383,6 +404,16 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (command === 'exec' && (cli.flags.channel?.length ?? 0) > 0) {
+		const list = (cli.flags.channel ?? []).join(', ');
+		console.error(
+			`Error: --channel is not supported in exec mode (got: ${list}). ` +
+				'Use --on-permission to govern unattended permission handling.',
+		);
+		await exitWith(EXEC_EXIT_CODE.USAGE);
+		return;
+	}
+
 	if (command === 'workflow') {
 		const [subcommand = '', ...subcommandArgs] = commandArgs;
 		if (cli.flags.project) subcommandArgs.push('--project');
@@ -428,6 +459,25 @@ async function main(): Promise<void> {
 	if (command === 'marketplace') {
 		const [subcommand = '', ...subcommandArgs] = commandArgs;
 		await exitWith(runMarketplaceCommand({subcommand, subcommandArgs}));
+		return;
+	}
+
+	if (command === 'channel') {
+		await exitWith(
+			runChannelCommand({
+				subcommandArgs: commandArgs,
+				flags: {
+					botToken:
+						typeof cli.flags.botToken === 'string'
+							? cli.flags.botToken
+							: undefined,
+					userId:
+						typeof cli.flags.userId === 'string' ? cli.flags.userId : undefined,
+					chatId:
+						typeof cli.flags.chatId === 'string' ? cli.flags.chatId : undefined,
+				},
+			}),
+		);
 		return;
 	}
 
@@ -615,6 +665,19 @@ async function main(): Promise<void> {
 
 	const {athenaSessionId, initialSessionId} = interactiveSession;
 	const instanceId = process.pid;
+
+	// Resolve channel attachments: CLI flag wins; otherwise project, then global config.
+	const channelNames =
+		(cli.flags.channel?.length ?? 0) > 0
+			? (cli.flags.channel ?? [])
+			: (projectConfig.channels ?? globalConfig.channels ?? []);
+	const channelResolution = resolveChannels(channelNames);
+	for (const failure of channelResolution.failures) {
+		console.error(
+			`Warning: skipping channel "${failure.name}": ${failure.reason}`,
+		);
+	}
+
 	render(
 		<App
 			projectDir={projectDir}
@@ -637,6 +700,7 @@ async function main(): Promise<void> {
 			ascii={cli.flags.ascii}
 			showSetup={showSetup}
 			initialTelemetryDiagnosticsConsent={globalConfig.telemetryDiagnostics}
+			channels={channelResolution.definitions}
 		/>,
 		inkRenderOptions(),
 	);

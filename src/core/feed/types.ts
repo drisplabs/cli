@@ -54,7 +54,12 @@ export type FeedEventKind =
 	| 'stop.failure'
 	| 'permission.denied'
 	| 'elicitation.request'
-	| 'elicitation.result';
+	| 'elicitation.result'
+	| 'channel.permission.relayed'
+	| 'channel.permission.resolved'
+	| 'channel.question.relayed'
+	| 'channel.question.resolved'
+	| 'channel.chat.inbound';
 
 export type FeedEventLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -383,6 +388,43 @@ export type ElicitationResultData = {
 	content?: Record<string, unknown>;
 };
 
+export type ChannelPermissionRelayedData = {
+	channel_name: string;
+	channel_request_id: string;
+	tool_name: string;
+};
+
+export type ChannelPermissionResolvedData = {
+	/** Name of the resolving channel for `source: 'channel'`; empty otherwise. */
+	channel_name: string;
+	channel_request_id: string;
+	source: 'local' | 'channel' | 'rule' | 'timeout';
+	tool_name: string;
+	/** allow/deny when known; null for cases like timeout fall-through. */
+	behavior: 'allow' | 'deny' | null;
+};
+
+export type ChannelQuestionRelayedData = {
+	channel_name: string;
+	channel_request_id: string;
+	title: string;
+};
+
+export type ChannelQuestionResolvedData = {
+	/** Name of the resolving channel for `source: 'channel'`; empty otherwise. */
+	channel_name: string;
+	channel_request_id: string;
+	source: 'local' | 'channel' | 'timeout';
+	title: string;
+	answers: Record<string, string> | null;
+};
+
+export type ChannelChatInboundData = {
+	channel_name: string;
+	sender_id: string;
+	content: string;
+};
+
 // Phase 2 stubs
 export type TodoPriority = 'p0' | 'p1' | 'p2';
 export type TodoFeedStatus = 'open' | 'doing' | 'blocked' | 'done';
@@ -478,6 +520,26 @@ export type FeedEvent =
 	| (FeedEventBase & {
 			kind: 'elicitation.result';
 			data: ElicitationResultData;
+	  })
+	| (FeedEventBase & {
+			kind: 'channel.permission.relayed';
+			data: ChannelPermissionRelayedData;
+	  })
+	| (FeedEventBase & {
+			kind: 'channel.permission.resolved';
+			data: ChannelPermissionResolvedData;
+	  })
+	| (FeedEventBase & {
+			kind: 'channel.question.relayed';
+			data: ChannelQuestionRelayedData;
+	  })
+	| (FeedEventBase & {
+			kind: 'channel.question.resolved';
+			data: ChannelQuestionResolvedData;
+	  })
+	| (FeedEventBase & {
+			kind: 'channel.chat.inbound';
+			data: ChannelChatInboundData;
 	  });
 
 // ── Compile-time drift checks ────────────────────────────

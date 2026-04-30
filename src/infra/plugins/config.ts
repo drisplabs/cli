@@ -49,6 +49,13 @@ export type AthenaConfig = {
 	telemetryDiagnostics?: boolean;
 	/** Anonymous device identifier (UUIDv4, not tied to user identity) */
 	deviceId?: string;
+	/**
+	 * Names of channels to attach in interactive sessions (e.g. ['telegram']).
+	 * Each name resolves to a built-in channel entry script and an
+	 * `~/.config/athena/channels/<name>.json` sidecar config. Ignored in
+	 * exec mode.
+	 */
+	channels?: string[];
 };
 
 const EMPTY_CONFIG: AthenaConfig = {plugins: [], additionalDirectories: []};
@@ -161,6 +168,7 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetry?: boolean;
 		telemetryDiagnostics?: boolean;
 		deviceId?: string;
+		channels?: string[];
 	};
 
 	if ('workflowMarketplaceSource' in (raw as Record<string, unknown>)) {
@@ -187,6 +195,15 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 	) {
 		throw new Error(
 			`Invalid config: "${configPath}" field "harness" must be one of claude-code, openai-codex, opencode`,
+		);
+	}
+	if (
+		raw.channels !== undefined &&
+		(!Array.isArray(raw.channels) ||
+			!raw.channels.every((c): c is string => typeof c === 'string'))
+	) {
+		throw new Error(
+			`Invalid config: "${configPath}" field "channels" must be an array of strings`,
 		);
 	}
 
@@ -224,6 +241,7 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetry: raw.telemetry,
 		telemetryDiagnostics: raw.telemetryDiagnostics,
 		deviceId: raw.deviceId,
+		channels: raw.channels,
 	};
 }
 

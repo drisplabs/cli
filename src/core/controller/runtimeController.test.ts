@@ -167,6 +167,27 @@ describe('hookController handleEvent', () => {
 		expect(cb.enqueueQuestion).toHaveBeenCalledWith('req-1');
 	});
 
+	it('relays AskUserQuestion PreToolUse events to channels', () => {
+		const cb = {...makeCallbacks(), relayQuestion: vi.fn()};
+		const event = makeEvent('PreToolUse', {toolName: 'AskUserQuestion'});
+		handleEvent(event, cb);
+
+		expect(cb.relayQuestion).toHaveBeenCalledWith(event);
+	});
+
+	it('relays Codex user_input permission requests to channels', () => {
+		const cb = {...makeCallbacks(), relayQuestion: vi.fn()};
+		const event = makeEvent('item/tool/requestUserInput', {
+			kind: 'permission.request',
+			hookName: 'tool/requestUserInput',
+			toolName: 'user_input',
+			data: {tool_name: 'user_input', tool_input: {questions: []}},
+		});
+		handleEvent(event, cb);
+
+		expect(cb.relayQuestion).toHaveBeenCalledWith(event);
+	});
+
 	it('auto-allows PreToolUse when no rule matches (no permission prompt)', () => {
 		const cb = makeCallbacks();
 		const result = handleEvent(makeEvent('PreToolUse'), cb);

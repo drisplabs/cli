@@ -15,6 +15,7 @@ import DiagnosticsConsentDialog, {
 } from '../../ui/components/DiagnosticsConsentDialog';
 import ErrorBoundary from '../../ui/components/ErrorBoundary';
 import {HookProvider, useRuntime} from '../providers/RuntimeProvider';
+import type {ChannelDefinition} from '../../channels/types';
 import {useHarnessProcess} from '../process/useHarnessProcess';
 import {useHeaderMetrics} from '../../ui/hooks/useHeaderMetrics';
 import {useTerminalTitle} from '../../ui/hooks/useTerminalTitle';
@@ -150,6 +151,7 @@ type Props = {
 	showSetup?: boolean;
 	athenaSessionId: string;
 	initialTelemetryDiagnosticsConsent?: boolean;
+	channels?: ChannelDefinition[];
 };
 
 type AppPhase =
@@ -2064,6 +2066,7 @@ export default function App({
 	ascii,
 	athenaSessionId: initialAthenaSessionId,
 	initialTelemetryDiagnosticsConsent,
+	channels,
 }: Props) {
 	const [clearCount, setClearCount] = useState(0);
 	const perfEnabled = isPerfEnabled();
@@ -2310,6 +2313,7 @@ export default function App({
 					runtimeState.isolation?.allowedTools,
 				)}
 				athenaSessionId={athenaSessionId}
+				channels={channels}
 			>
 				<AppContent
 					key={clearCount}

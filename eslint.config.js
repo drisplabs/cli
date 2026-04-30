@@ -144,8 +144,10 @@ export default tseslint.config(
 							group: [
 								...relativeImportPatterns('app'),
 								...relativeImportPatterns('harnesses'),
+								...relativeImportPatterns('channels'),
 							],
-							message: 'Core must stay app-agnostic and harness-agnostic.',
+							message:
+								'Core must stay app-agnostic, harness-agnostic, and channel-agnostic.',
 						},
 					],
 				},
@@ -163,8 +165,32 @@ export default tseslint.config(
 							group: [
 								...relativeImportPatterns('app'),
 								...relativeImportPatterns('ui'),
+								...relativeImportPatterns('channels'),
 							],
-							message: 'Harness adapters must not depend on app or UI layers.',
+							message:
+								'Harness adapters must not depend on app, UI, or channel layers.',
+						},
+					],
+				},
+			],
+		},
+	},
+	{
+		files: ['src/channels/**/*.{ts,tsx}'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					patterns: [
+						{
+							group: [
+								...relativeImportPatterns('app'),
+								...relativeImportPatterns('harnesses'),
+								...relativeImportPatterns('ui'),
+								...relativeImportPatterns('infra'),
+							],
+							message:
+								'Channels must remain harness-independent. Import only from core and shared.',
 						},
 					],
 				},

@@ -134,6 +134,42 @@ function makeBashEvent(requestId: string): RuntimeEvent {
 	};
 }
 
+function makeAskUserQuestionEvent(requestId: string): RuntimeEvent {
+	return {
+		id: requestId,
+		timestamp: Date.now(),
+		kind: 'tool.pre',
+		data: {
+			tool_name: 'AskUserQuestion',
+			tool_input: {
+				questions: [
+					{
+						header: 'Confirm',
+						question: 'May I continue?',
+						options: [],
+						multiSelect: false,
+					},
+				],
+			},
+		},
+		hookName: 'PreToolUse',
+		sessionId: 'test-session',
+		toolName: 'AskUserQuestion',
+		context: {cwd: '/test', transcriptPath: '/test/transcript.jsonl'},
+		interaction: {expectsDecision: true},
+		payload: {
+			hook_event_name: 'PreToolUse',
+			session_id: 'test-session',
+			transcript_path: '/test/transcript.jsonl',
+			cwd: '/test',
+			tool_name: 'AskUserQuestion',
+			tool_input: {
+				questions: [{question: 'May I continue?'}],
+			},
+		},
+	};
+}
+
 describe('useFeed permission auto-dequeue', () => {
 	it('dequeues permission when decision event arrives via onDecision', () => {
 		const runtime = createMockRuntime();
@@ -157,6 +193,33 @@ describe('useFeed permission auto-dequeue', () => {
 
 		// Queue should be empty now
 		expect(result.current.permissionQueueCount).toBe(0);
+	});
+
+	it('dequeues question when question_answer decision arrives via onDecision', async () => {
+		const runtime = createMockRuntime();
+		const {result} = renderHook(() => useFeed(runtime));
+
+		act(() => {
+			runtime.emitEvent(makeAskUserQuestionEvent('question-1'));
+		});
+
+		await waitFor(() => {
+			expect(result.current.questionQueueCount).toBe(1);
+		});
+
+		act(() => {
+			runtime.emitDecision('question-1', {
+				type: 'json',
+				source: 'user',
+				intent: {
+					kind: 'question_answer',
+					answers: {'May I continue?': 'Yes allow it'},
+				},
+			});
+		});
+
+		expect(result.current.questionQueueCount).toBe(0);
+		expect(result.current.currentQuestionRequest).toBeNull();
 	});
 });
 

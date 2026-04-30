@@ -10,6 +10,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type {ResolvedWorkflowConfig} from '../types';
+import {
+	DEFAULT_BLOCKED_MARKER,
+	DEFAULT_COMPLETION_MARKER,
+} from '../loopManager';
+
+const DEFAULT_BLOCKED_CLOSED_MARKER = `${DEFAULT_BLOCKED_MARKER} -->`;
+const DEFAULT_BLOCKED_REASON_MARKER = `${DEFAULT_BLOCKED_MARKER}: reason -->`;
 
 const SYSTEM_PROMPT = `You are working on a long-horizon task managed by Athena. A tracker file is used to persist progress across sessions.
 
@@ -53,14 +60,14 @@ After completing meaningful work, update the tracker:
 
 When all steps are complete:
 1. Update the tracker with all steps checked off
-2. Add \`<!-- TASK_COMPLETE -->\` at the end of the tracker file
+2. Add \`${DEFAULT_COMPLETION_MARKER}\` at the end of the tracker file
 3. Provide a summary of what was accomplished
 
 ### Blocked
 
 If you are blocked and cannot make further progress:
 1. Document what is blocking you in the Notes section
-2. Add \`<!-- TASK_BLOCKED -->\` or \`<!-- TASK_BLOCKED: reason -->\` at the end of the tracker file
+2. Add \`${DEFAULT_BLOCKED_CLOSED_MARKER}\` or \`${DEFAULT_BLOCKED_REASON_MARKER}\` at the end of the tracker file
 3. Explain what needs to happen to unblock the task whenever possible
 `;
 
@@ -103,8 +110,8 @@ export function resolveBuiltinWorkflow(
 		promptTemplate: '{input}',
 		loop: {
 			enabled: true,
-			completionMarker: '<!-- TASK_COMPLETE -->',
-			blockedMarker: '<!-- TASK_BLOCKED',
+			completionMarker: DEFAULT_COMPLETION_MARKER,
+			blockedMarker: DEFAULT_BLOCKED_MARKER,
 			maxIterations: 20,
 		},
 		plugins: [],

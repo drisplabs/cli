@@ -173,5 +173,23 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return truncate(
 				`Elicitation ${event.data.action}: ${event.data.mcp_server}`,
 			);
+		case 'channel.permission.relayed':
+			return truncate(
+				`Channel ${event.data.channel_name} ← ${event.data.tool_name}`,
+			);
+		case 'channel.permission.resolved':
+			return truncate(
+				`Channel ${event.data.channel_name} → ${event.data.source}`,
+			);
+		case 'channel.question.relayed':
+			return truncate(`Channel ${event.data.channel_name} ← question`);
+		case 'channel.question.resolved':
+			return truncate(
+				`Channel ${event.data.channel_name || event.data.source} → question`,
+			);
+		case 'channel.chat.inbound':
+			return truncate(
+				`Channel ${event.data.channel_name}: ${event.data.content}`,
+			);
 	}
 }
