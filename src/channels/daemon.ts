@@ -14,6 +14,13 @@ import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import {fileURLToPath} from 'node:url';
+import {errorMessage} from '../shared/utils/errorMessage';
+import {
+	CHANNEL_SECRETS_ENV,
+	isAuthFrame,
+	loadOrCreateChannelAuthToken,
+	timingSafeEqualString,
+} from './auth';
 import {
 	encodeLine,
 	LineReader,
@@ -27,6 +34,21 @@ import {
 } from './types';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
+const UNKNOWN_SESSION_ID = 'unknown';
+const BOT_TOKEN_RE = /\/bot\d{6,}:[A-Za-z0-9_-]{20,}/g;
+
+function errorEvent(
+	sessionId: string,
+	message: string,
+	fatal?: boolean,
+): ChannelEventMessage {
+	return {
+		session_id: sessionId,
+		event: 'error',
+		params: fatal === undefined ? {message} : {message, fatal},
+	};
+}
+
 export {CHANNEL_BROADCAST_SESSION_ID};
 
 type Args = {
@@ -37,7 +59,21 @@ type Args = {
 	idleTimeoutMs: number;
 };
 
-type SessionSocket = net.Socket & {sessionId?: string};
+type SessionSocket = net.Socket & {sessionId?: string; authed?: boolean};
+
+function readSecretsFromEnv(): Record<string, unknown> {
+	const raw = process.env[CHANNEL_SECRETS_ENV];
+	if (!raw) return {};
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+	} catch {
+		// fall through
+	}
+	return {};
+}
 
 export function fanoutEventToSessions(
 	event: ChannelEventMessage,
@@ -101,8 +137,17 @@ class ChannelDaemon {
 	private childStderrReader = new LineReader();
 	private firstInit: ChannelMethodMessage | null = null;
 	private idleTimer: NodeJS.Timeout | null = null;
+	private server: net.Server | null = null;
+	private readonly authToken: string;
+	private readonly secrets: Record<string, unknown>;
 
-	constructor(private readonly args: Args) {}
+	constructor(private readonly args: Args) {
+		this.authToken = loadOrCreateChannelAuthToken(this.args.channel);
+		this.secrets = readSecretsFromEnv();
+		// Don't let secrets leak into the child's env (or anything else we
+		// spawn). They will be re-injected into init.params.options instead.
+		delete process.env[CHANNEL_SECRETS_ENV];
+	}
 
 	async start(): Promise<void> {
 		await this.prepareSocket();
@@ -113,11 +158,16 @@ class ChannelDaemon {
 			);
 			process.exit(1);
 		});
-		server.listen(this.args.socket);
+		await new Promise<void>(resolve => {
+			server.listen(this.args.socket, () => resolve());
+		});
+		fs.chmodSync(this.args.socket, 0o600);
+		this.server = server;
 	}
 
 	private accept(socket: SessionSocket): void {
 		this.clearIdleTimer();
+		socket.authed = false;
 		this.socketReaders.set(socket, new LineReader());
 		socket.on('data', chunk => this.handleSocketData(socket, chunk));
 		socket.on('close', () => this.detach(socket));
@@ -130,25 +180,49 @@ class ChannelDaemon {
 	): void {
 		const reader = this.socketReaders.get(socket);
 		if (!reader) return;
-		for (const line of reader.push(chunk)) {
+		const sid = () => socket.sessionId ?? UNKNOWN_SESSION_ID;
+		let lines: string[];
+		try {
+			lines = reader.push(chunk);
+		} catch (err) {
+			this.sendToSocket(
+				socket,
+				errorEvent(sid(), `protocol error: ${errorMessage(err)}`),
+			);
+			socket.destroy();
+			this.detach(socket);
+			return;
+		}
+		for (const line of lines) {
 			let parsed: unknown;
 			try {
 				parsed = JSON.parse(line);
 			} catch {
-				this.sendToSocket(socket, {
-					session_id: socket.sessionId ?? 'unknown',
-					event: 'error',
-					params: {message: 'invalid JSON line'},
-				});
+				this.sendToSocket(socket, errorEvent(sid(), 'invalid JSON line'));
 				continue;
+			}
+			if (!socket.authed) {
+				if (
+					isAuthFrame(parsed) &&
+					timingSafeEqualString(parsed.token, this.authToken)
+				) {
+					socket.authed = true;
+					continue;
+				}
+				this.sendToSocket(
+					socket,
+					errorEvent(sid(), 'authentication required', true),
+				);
+				socket.destroy();
+				this.detach(socket);
+				return;
 			}
 			const result = parseMethodMessage(parsed);
 			if (!result.ok) {
-				this.sendToSocket(socket, {
-					session_id: socket.sessionId ?? 'unknown',
-					event: 'error',
-					params: {message: `invalid method message: ${result.reason}`},
-				});
+				this.sendToSocket(
+					socket,
+					errorEvent(sid(), `invalid method message: ${result.reason}`),
+				);
 				continue;
 			}
 			this.handleMethod(socket, result.value);
@@ -170,14 +244,13 @@ class ChannelDaemon {
 			return;
 		}
 		if (!this.child) {
-			this.sendToSocket(socket, {
-				session_id: message.session_id,
-				event: 'error',
-				params: {message: 'channel subprocess is not initialized'},
-			});
+			this.sendToSocket(
+				socket,
+				errorEvent(message.session_id, 'channel subprocess unavailable'),
+			);
 			return;
 		}
-		this.writeToChild(message);
+		this.writeToChild(message, socket);
 	}
 
 	private attach(socket: SessionSocket, sessionId: string): void {
@@ -203,7 +276,8 @@ class ChannelDaemon {
 	}
 
 	private startChild(init: ChannelMethodMessage): void {
-		this.firstInit = init;
+		const initWithSecrets = this.injectSecrets(init);
+		this.firstInit = initWithSecrets;
 		this.child = spawn(
 			process.execPath,
 			this.args.childArgs.length > 0 ? this.args.childArgs : [this.args.entry],
@@ -213,64 +287,104 @@ class ChannelDaemon {
 			},
 		);
 		this.child.stdout?.on('data', chunk => {
-			for (const line of this.childReader.push(chunk as Buffer)) {
-				this.dispatchChildLine(line);
+			let lines: string[];
+			try {
+				lines = this.childReader.push(chunk as Buffer);
+			} catch (err) {
+				this.broadcast(
+					errorEvent(
+						init.session_id,
+						`child stdout protocol error: ${errorMessage(err)}`,
+						true,
+					),
+				);
+				this.child?.kill();
+				return;
 			}
+			for (const line of lines) this.dispatchChildLine(line);
 		});
 		this.child.stderr?.on('data', chunk => {
-			for (const line of this.childStderrReader.push(chunk as Buffer)) {
-				this.broadcast({
-					session_id: init.session_id,
-					event: 'error',
-					params: {message: line},
-				});
+			let lines: string[];
+			try {
+				lines = this.childStderrReader.push(chunk as Buffer);
+			} catch {
+				return;
+			}
+			for (const line of lines) {
+				this.broadcast(
+					errorEvent(
+						init.session_id,
+						line.replace(BOT_TOKEN_RE, '/bot[REDACTED]'),
+					),
+				);
 			}
 		});
 		this.child.on('exit', (code, signal) => {
 			this.child = null;
-			this.broadcast({
-				session_id: init.session_id,
-				event: 'error',
-				params: {
-					message: `channel subprocess exited (code=${code} signal=${signal})`,
-					fatal: true,
-				},
-			});
+			this.broadcast(
+				errorEvent(
+					init.session_id,
+					`channel subprocess exited (code=${code} signal=${signal})`,
+					true,
+				),
+			);
 		});
 		this.child.stdin?.on('error', err => {
-			this.broadcast({
-				session_id: init.session_id,
-				event: 'error',
-				params: {message: `channel stdin error: ${err.message}`},
-			});
+			this.broadcast(
+				errorEvent(init.session_id, `channel stdin error: ${err.message}`),
+			);
 		});
-		this.writeToChild(init);
+		this.writeToChild(initWithSecrets);
 	}
 
-	private writeToChild(message: ChannelMethodMessage): void {
-		if (!this.child?.stdin || this.child.stdin.destroyed) return;
-		this.child.stdin.write(encodeLine(message));
+	private injectSecrets(init: ChannelMethodMessage): ChannelMethodMessage {
+		if (init.method !== 'init') return init;
+		if (Object.keys(this.secrets).length === 0) return init;
+		const params = init.params as {options?: Record<string, unknown>};
+		const merged: Record<string, unknown> = {
+			...(params.options ?? {}),
+			...this.secrets,
+		};
+		return {
+			...init,
+			params: {...params, options: merged},
+		} as ChannelMethodMessage;
+	}
+
+	private writeToChild(
+		message: ChannelMethodMessage,
+		origin?: SessionSocket,
+	): void {
+		const report = (msg: string): void => {
+			const ev = errorEvent(message.session_id, msg);
+			if (origin) this.sendToSocket(origin, ev);
+			else this.broadcast(ev);
+		};
+		if (!this.child?.stdin || this.child.stdin.destroyed) {
+			report('channel subprocess unavailable');
+			return;
+		}
+		try {
+			this.child.stdin.write(encodeLine(message));
+		} catch (err) {
+			report(`channel stdin write failed: ${errorMessage(err)}`);
+		}
 	}
 
 	private dispatchChildLine(line: string): void {
+		const sid = this.firstInit?.session_id ?? UNKNOWN_SESSION_ID;
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
 		} catch {
-			this.broadcast({
-				session_id: this.firstInit?.session_id ?? 'unknown',
-				event: 'error',
-				params: {message: `invalid child JSON line: ${line.slice(0, 200)}`},
-			});
+			this.broadcast(
+				errorEvent(sid, `invalid child JSON line: ${line.slice(0, 200)}`),
+			);
 			return;
 		}
 		const result = parseEventMessage(parsed);
 		if (!result.ok) {
-			this.broadcast({
-				session_id: this.firstInit?.session_id ?? 'unknown',
-				event: 'error',
-				params: {message: `invalid child event: ${result.reason}`},
-			});
+			this.broadcast(errorEvent(sid, `invalid child event: ${result.reason}`));
 			return;
 		}
 		this.routeEvent(result.value);
@@ -278,27 +392,26 @@ class ChannelDaemon {
 
 	private routeEvent(event: ChannelEventMessage): void {
 		if (event.session_id === CHANNEL_BROADCAST_SESSION_ID) {
-			for (const expanded of expandBroadcastEvent(
-				event,
-				this.sessions.keys(),
-			)) {
-				const sockets = this.sessions.get(expanded.session_id);
-				if (!sockets) continue;
-				for (const socket of sockets) this.sendToSocket(socket, expanded);
-			}
+			this.broadcast(event);
 			return;
 		}
-		const sockets = this.sessions.get(event.session_id);
-		if (!sockets) return;
-		for (const socket of sockets) this.sendToSocket(socket, event);
+		this.deliverToSession(event.session_id, event);
 	}
 
 	private broadcast(event: ChannelEventMessage): void {
-		for (const expanded of fanoutEventToSessions(event, this.sessions.keys())) {
-			const sockets = this.sessions.get(expanded.session_id);
-			if (!sockets) continue;
-			for (const socket of sockets) this.sendToSocket(socket, expanded);
+		// Snapshot keys: sendToSocket → detach can mutate this.sessions.
+		for (const sessionId of [...this.sessions.keys()]) {
+			this.deliverToSession(sessionId, {...event, session_id: sessionId});
 		}
+	}
+
+	private deliverToSession(
+		sessionId: string,
+		event: ChannelEventMessage,
+	): void {
+		const sockets = this.sessions.get(sessionId);
+		if (!sockets) return;
+		for (const socket of [...sockets]) this.sendToSocket(socket, event);
 	}
 
 	private sendToSocket(socket: net.Socket, event: ChannelEventMessage): void {
@@ -308,6 +421,10 @@ class ChannelDaemon {
 	private scheduleIdleExit(): void {
 		this.clearIdleTimer();
 		this.idleTimer = setTimeout(() => {
+			// Stop accepting new connections first so any client racing the
+			// idle timer fails fast (ECONNREFUSED → attachWithRetry) rather
+			// than connecting to a daemon about to exit.
+			this.server?.close();
 			if (this.totalSockets() > 0) return;
 			if (this.child && this.firstInit) {
 				this.writeToChild({

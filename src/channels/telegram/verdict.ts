@@ -54,6 +54,7 @@ const ANSWER_RE = new RegExp(
 );
 const ANSWER_ID_RE = new RegExp(`^\\s*(a|answer)\\s+(${ID_PATTERN})\\s+`, 'i');
 const NON_NEG_INT_RE = /^\d+$/;
+const MAX_JSON_ANSWER_BYTES = 8 * 1024;
 
 export function parseVerdict(text: string): ParsedVerdict | null {
 	const m = VERDICT_RE.exec(text);
@@ -77,6 +78,7 @@ export function parseQuestionAnswer(
 	if (rawAnswer.length === 0) return null;
 
 	if (rawAnswer.startsWith('{')) {
+		if (rawAnswer.length > MAX_JSON_ANSWER_BYTES) return null;
 		try {
 			const parsed = JSON.parse(rawAnswer) as unknown;
 			if (

@@ -354,14 +354,36 @@ export function encodeLine(value: unknown): string {
 	return JSON.stringify(value) + '\n';
 }
 
+export const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
+
+export class LineReaderOverflowError extends Error {
+	constructor(limit: number) {
+		super(`NDJSON line exceeded ${limit} bytes`);
+		this.name = 'LineReaderOverflowError';
+	}
+}
+
 /**
  * Stateful line splitter. Feed chunks via `push`; consumer drains with
- * `drain()` after each push. Splits on \n and tolerates \r\n.
+ * `flush()` after EOF. Splits on \n and tolerates \r\n. Throws
+ * LineReaderOverflowError if a single line exceeds maxBytes (default 1 MB)
+ * to prevent unbounded memory growth from a misbehaving or malicious peer.
  */
 export class LineReader {
 	private buffer = '';
+	private readonly maxBytes: number;
+	constructor(maxBytes: number = DEFAULT_MAX_LINE_BYTES) {
+		this.maxBytes = maxBytes;
+	}
 	push(chunk: Buffer | string): string[] {
-		this.buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+		const incoming =
+			typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
+		// Reject before concat so a multi-GB single chunk can't allocate.
+		if (this.buffer.length + incoming.length > this.maxBytes) {
+			this.buffer = '';
+			throw new LineReaderOverflowError(this.maxBytes);
+		}
+		this.buffer += incoming;
 		const lines: string[] = [];
 		let idx = this.buffer.indexOf('\n');
 		while (idx !== -1) {

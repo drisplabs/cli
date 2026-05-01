@@ -134,8 +134,16 @@ function saveState(state: RuntimeState): void {
 	};
 	const tmp = `${state.statePath}.tmp`;
 	try {
-		fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
+		fs.writeFileSync(tmp, JSON.stringify(data), {
+			encoding: 'utf8',
+			mode: 0o600,
+		});
 		fs.renameSync(tmp, state.statePath);
+		try {
+			fs.chmodSync(state.statePath, 0o600);
+		} catch {
+			// best-effort
+		}
 	} catch {
 		// Non-fatal — worst case we recreate topics on next boot
 	}
@@ -175,9 +183,13 @@ function threadIdForSession(
 
 type SlashCommand = 'help' | 'status' | 'cancel' | 'newsession';
 
-/** Match `/cmd` or `/cmd@bot` (Telegram appends `@<bot_username>` in groups). */
+/**
+ * Match `/cmd` or `/cmd@bot` (Telegram appends `@<bot_username>` in groups).
+ * Trailing arguments are accepted and ignored — typing `/cancel foo` should
+ * cancel everything, not silently fall through to chat injection.
+ */
 function parseCommand(text: string): SlashCommand | null {
-	const m = /^\/([a-z]+)(?:@\S*)?$/i.exec(text);
+	const m = /^\/([a-z]+)(?:@\S*)?(?:\s+\S.*)?$/i.exec(text);
 	if (!m) return null;
 	const cmd = m[1]!.toLowerCase();
 	if (
@@ -206,26 +218,50 @@ const EMPTY_KEYBOARD: InlineKeyboardMarkup = {inline_keyboard: []};
 
 const TAP_BUTTON_BELOW = escapeMarkdownV2('Tap an option below.');
 
+// Telegram caps message text at 4096 chars; MarkdownV2 escaping inflates length
+// (every special char becomes \X). Hard-clamp the rendered output so we never
+// 400 the API and leave the user staring at a request that never appears.
+const TELEGRAM_MAX_TEXT = 4096;
+const TELEGRAM_TEXT_SAFE_MARGIN = 96; // headroom for trailer + ellipses
+
+function clampToTelegramLimit(text: string): string {
+	if (text.length <= TELEGRAM_MAX_TEXT) return text;
+	return text.slice(0, TELEGRAM_MAX_TEXT - 1) + '…';
+}
+
 function buildPromptMarkdown(
 	toolName: string,
 	description: string,
 	inputPreview: string,
 	channelRequestId: string,
 ): string {
-	const lines: string[] = [
-		`*${escapeMarkdownV2(toolName)}* — ${escapeMarkdownV2(description)}`,
-	];
 	const trimmedPreview = inputPreview.trim();
-	if (trimmedPreview.length > 0) {
-		lines.push('', '```', escapeMarkdownV2CodeBlock(trimmedPreview), '```');
-	}
-	lines.push('');
-	lines.push(
-		escapeMarkdownV2(
-			`Tap a button below, or reply "yes ${channelRequestId}" / "no ${channelRequestId}".`,
-		),
-	);
-	return lines.join('\n');
+	const render = (preview: string): string => {
+		const lines = [
+			`*${escapeMarkdownV2(toolName)}* — ${escapeMarkdownV2(description)}`,
+		];
+		if (preview.length > 0) {
+			lines.push('', '```', escapeMarkdownV2CodeBlock(preview), '```');
+		}
+		lines.push(
+			'',
+			escapeMarkdownV2(
+				`Tap a button below, or reply "yes ${channelRequestId}" / "no ${channelRequestId}".`,
+			),
+		);
+		return lines.join('\n');
+	};
+	const first = render(trimmedPreview);
+	const budget = TELEGRAM_MAX_TEXT - TELEGRAM_TEXT_SAFE_MARGIN;
+	if (first.length <= budget) return first;
+	// Preview is the only unbounded input — shrink it and re-render.
+	const overflow = first.length - budget;
+	const safePreview =
+		trimmedPreview.length > overflow
+			? trimmedPreview.slice(0, Math.max(0, trimmedPreview.length - overflow)) +
+				'…'
+			: '';
+	return clampToTelegramLimit(render(safePreview));
 }
 
 function buildPermissionKeyboard(
@@ -391,7 +427,7 @@ async function startBot(
 	if (state.forumMode) {
 		const stateDir = channelStateDir();
 		try {
-			fs.mkdirSync(stateDir, {recursive: true});
+			fs.mkdirSync(stateDir, {recursive: true, mode: 0o700});
 		} catch {
 			// Non-fatal
 		}
@@ -1228,7 +1264,9 @@ async function handleMethod(
 		case 'notification': {
 			if (!state.bot || state.defaultChatId === null) return;
 			const threadId = threadIdForSession(state, message.session_id);
-			const rendered = agentMarkdownToTelegramV2(message.params.content);
+			const rendered = clampToTelegramLimit(
+				agentMarkdownToTelegramV2(message.params.content),
+			);
 			const result = await state.bot.sendMessage(
 				state.defaultChatId,
 				rendered,
@@ -1237,7 +1275,7 @@ async function handleMethod(
 			if (!result) {
 				await state.bot.sendMessage(
 					state.defaultChatId,
-					message.params.content,
+					clampToTelegramLimit(message.params.content),
 					{message_thread_id: threadId},
 				);
 			}

@@ -61,17 +61,22 @@ describe('ChannelDaemonClient', () => {
 				}),
 				spawnDaemon: vi.fn(),
 				socketPath: vi.fn(() => '/tmp/channel-telegram.sock'),
+				loadAuthToken: () => 'test-token',
 			},
 		});
 
 		await client.start();
 
 		expect(JSON.parse(socket.writes[0]!)).toEqual({
+			type: 'auth',
+			token: 'test-token',
+		});
+		expect(JSON.parse(socket.writes[1]!)).toEqual({
 			session_id: 'session-a',
 			method: 'init',
 			params: {
 				allowed_user_ids: ['123'],
-				options: {bot_token: 'secret', default_chat_id: '123'},
+				options: {default_chat_id: '123'},
 			},
 		});
 	});
@@ -106,13 +111,14 @@ describe('ChannelDaemonClient', () => {
 				}),
 				spawnDaemon,
 				socketPath: vi.fn(() => '/tmp/channel-telegram.sock'),
+				loadAuthToken: () => 'test-token',
 			},
 		});
 
 		await client.start();
 
 		expect(spawnDaemon).toHaveBeenCalledTimes(1);
-		expect(second.writes).toHaveLength(1);
+		expect(second.writes).toHaveLength(2);
 	});
 
 	it('waits for a newly spawned daemon socket to start listening', async () => {
@@ -156,6 +162,7 @@ describe('ChannelDaemonClient', () => {
 				spawnDaemon,
 				socketPath: vi.fn(() => '/tmp/channel-telegram.sock'),
 				retryDelayMs: 0,
+				loadAuthToken: () => 'test-token',
 			},
 		});
 
@@ -163,7 +170,7 @@ describe('ChannelDaemonClient', () => {
 
 		expect(spawnDaemon).toHaveBeenCalledTimes(1);
 		expect(calls).toBe(3);
-		expect(third.writes).toHaveLength(1);
+		expect(third.writes).toHaveLength(2);
 	});
 
 	it('routes parsed daemon events to handlers', async () => {
@@ -184,6 +191,7 @@ describe('ChannelDaemonClient', () => {
 				}),
 				spawnDaemon: vi.fn(),
 				socketPath: vi.fn(() => '/tmp/channel-telegram.sock'),
+				loadAuthToken: () => 'test-token',
 			},
 		});
 		await client.start();
@@ -215,6 +223,7 @@ describe('ChannelDaemonClient', () => {
 				}),
 				spawnDaemon: vi.fn(),
 				socketPath: vi.fn(() => '/tmp/channel-telegram.sock'),
+				loadAuthToken: () => 'test-token',
 			},
 		});
 		await client.start();

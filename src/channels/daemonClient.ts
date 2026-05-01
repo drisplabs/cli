@@ -1,6 +1,13 @@
 import {spawn, type ChildProcess} from 'node:child_process';
 import net from 'node:net';
 import process from 'node:process';
+import {errorMessage} from '../shared/utils/errorMessage';
+import {
+	CHANNEL_SECRETS_ENV,
+	encodeAuthFrame,
+	loadOrCreateChannelAuthToken,
+	partitionSecretOptions,
+} from './auth';
 import {encodeLine, LineReader, parseEventMessage} from './protocol';
 import {channelDaemonSocketPath} from './daemonPaths';
 import type {
@@ -28,11 +35,21 @@ export type ChannelDaemonClientHandlers = {
 	onError: (message: string) => void;
 };
 
+export type SpawnDaemonOptions = {
+	/** Secrets to forward to the daemon out-of-band (not over UDS). */
+	secretOptions: Record<string, unknown>;
+};
+
 export type ChannelDaemonClientDeps = {
 	connect?: (socketPath: string, onConnect: () => void) => SocketLike;
-	spawnDaemon?: (definition: ChannelDefinition, socketPath: string) => void;
+	spawnDaemon?: (
+		definition: ChannelDefinition,
+		socketPath: string,
+		options: SpawnDaemonOptions,
+	) => void;
 	socketPath?: (channelName: string) => string;
 	retryDelayMs?: number;
+	loadAuthToken?: (channelName: string) => string;
 };
 
 export type ChannelDaemonClientOptions = {
@@ -62,10 +79,15 @@ function defaultConnect(socketPath: string, onConnect: () => void): SocketLike {
 function defaultSpawnDaemon(
 	definition: ChannelDefinition,
 	socketPath: string,
+	options: SpawnDaemonOptions,
 ): void {
 	const daemonEntryPath = definition.daemonEntryPath;
 	if (!daemonEntryPath) {
 		throw new Error(`channel daemon entry missing for ${definition.name}`);
+	}
+	const env: NodeJS.ProcessEnv = {...process.env};
+	if (Object.keys(options.secretOptions).length > 0) {
+		env[CHANNEL_SECRETS_ENV] = JSON.stringify(options.secretOptions);
 	}
 	const child: ChildProcess = spawn(
 		process.execPath,
@@ -82,14 +104,14 @@ function defaultSpawnDaemon(
 		{
 			stdio: 'ignore',
 			detached: true,
-			env: process.env,
+			env,
 		},
 	);
 	child.unref();
 }
 
 function truncate(s: string, n: number): string {
-	return s.length > n ? s.slice(0, n) + '...' : s;
+	return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 export class ChannelDaemonClient {
@@ -111,6 +133,7 @@ export class ChannelDaemonClient {
 			spawnDaemon: opts.deps?.spawnDaemon ?? defaultSpawnDaemon,
 			socketPath: opts.deps?.socketPath ?? channelDaemonSocketPath,
 			retryDelayMs: opts.deps?.retryDelayMs ?? ATTACH_RETRY_DELAY_MS,
+			loadAuthToken: opts.deps?.loadAuthToken ?? loadOrCreateChannelAuthToken,
 		};
 	}
 
@@ -121,23 +144,42 @@ export class ChannelDaemonClient {
 	async start(): Promise<void> {
 		if (this.started || this.disposed) return;
 		this.started = true;
-		const socketPath = this.deps.socketPath(this.definition.name);
-		try {
-			this.socket = await this.attach(socketPath);
-		} catch (err) {
-			if (!isAttachFailure(err)) throw err;
-			await this.ensureDaemonStarted(socketPath);
-			this.socket = await this.attachWithRetry(socketPath);
+		const socket = await this.connect();
+		// Disposal can race with the awaits in connect().
+		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+		if (this.disposed) {
+			socket.end();
+			return;
 		}
-		this.installSocketHandlers(this.socket);
+		this.socket = socket;
+		this.installSocketHandlers(socket);
+		const token = this.deps.loadAuthToken(this.definition.name);
+		try {
+			socket.write(encodeAuthFrame(token));
+		} catch (err) {
+			this.handlers.onError(`daemon auth write failed: ${errorMessage(err)}`);
+			return;
+		}
+		const {publicOptions} = partitionSecretOptions(this.definition.options);
 		this.send({
 			session_id: this.sessionId,
 			method: 'init',
 			params: {
 				allowed_user_ids: this.definition.allowedUserIds,
-				options: this.definition.options ?? {},
+				options: publicOptions,
 			},
 		});
+	}
+
+	private async connect(): Promise<SocketLike> {
+		const socketPath = this.deps.socketPath(this.definition.name);
+		try {
+			return await this.attach(socketPath);
+		} catch (err) {
+			if (!isAttachFailure(err)) throw err;
+		}
+		await this.ensureDaemonStarted(socketPath);
+		return this.attachWithRetry(socketPath);
 	}
 
 	send(message: ChannelMethodMessage): void {
@@ -145,9 +187,7 @@ export class ChannelDaemonClient {
 		try {
 			this.socket.write(encodeLine(message));
 		} catch (err) {
-			this.handlers.onError(
-				`daemon write failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
+			this.handlers.onError(`daemon write failed: ${errorMessage(err)}`);
 		}
 	}
 
@@ -181,8 +221,9 @@ export class ChannelDaemonClient {
 	private async ensureDaemonStarted(socketPath: string): Promise<void> {
 		let start = daemonStarts.get(this.definition.name);
 		if (!start) {
+			const {secretOptions} = partitionSecretOptions(this.definition.options);
 			start = Promise.resolve().then(() => {
-				this.deps.spawnDaemon(this.definition, socketPath);
+				this.deps.spawnDaemon(this.definition, socketPath, {secretOptions});
 			});
 			daemonStarts.set(this.definition.name, start);
 		}
@@ -207,14 +248,18 @@ export class ChannelDaemonClient {
 
 	private installSocketHandlers(socket: SocketLike): void {
 		socket.on('data', chunk => {
-			for (const line of this.reader.push(String(chunk))) {
-				this.dispatchLine(line);
+			let lines: string[];
+			try {
+				lines = this.reader.push(String(chunk));
+			} catch (err) {
+				this.handlers.onError(`daemon protocol error: ${errorMessage(err)}`);
+				socket.destroy();
+				return;
 			}
+			for (const line of lines) this.dispatchLine(line);
 		});
 		socket.on('error', err => {
-			this.handlers.onError(
-				`daemon socket error: ${err instanceof Error ? err.message : String(err)}`,
-			);
+			this.handlers.onError(`daemon socket error: ${errorMessage(err)}`);
 		});
 		socket.on('close', () => {
 			if (!this.disposed) this.handlers.onExit(null, null);

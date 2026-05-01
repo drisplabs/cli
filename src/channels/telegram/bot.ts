@@ -7,6 +7,19 @@
  * the channel is implemented; no third-party Telegram SDK.
  */
 
+import {errorMessage} from '../../shared/utils/errorMessage';
+
+export class TelegramApiError extends Error {
+	constructor(
+		readonly status: number,
+		message: string,
+		readonly retryAfterMs?: number,
+	) {
+		super(message);
+		this.name = 'TelegramApiError';
+	}
+}
+
 export type TelegramUser = {
 	id: number;
 	is_bot?: boolean;
@@ -133,9 +146,10 @@ export class TelegramBot {
 					yield update;
 				}
 			} catch (err) {
-				const raw = err instanceof Error ? err.message : String(err);
-				const message = this.redact(raw);
-				const status = (err as {status?: number} | undefined)?.status;
+				const message = this.redact(errorMessage(err));
+				const apiErr = err instanceof TelegramApiError ? err : undefined;
+				const status = apiErr?.status;
+				const retryAfterMs = apiErr?.retryAfterMs;
 				if (status === 401 || status === 409) {
 					this.consecutiveAuthFailures++;
 					this.log(
@@ -150,6 +164,13 @@ export class TelegramBot {
 							`telegram channel: persistent HTTP ${status} from getUpdates after 3 attempts`,
 						);
 					}
+				} else if (status === 429 && retryAfterMs) {
+					this.log(
+						'warn',
+						`getUpdates rate-limited; sleeping ${retryAfterMs}ms`,
+					);
+					await sleep(retryAfterMs);
+					continue;
 				} else {
 					this.log('warn', `getUpdates failed: ${message}`);
 				}
@@ -172,12 +193,7 @@ export class TelegramBot {
 			const result = await this.call<SendMessageResult>('sendMessage', params);
 			return result;
 		} catch (err) {
-			this.log(
-				'warn',
-				`sendMessage failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
-			);
+			this.log('warn', `sendMessage failed: ${this.redact(errorMessage(err))}`);
 			return null;
 		}
 	}
@@ -194,9 +210,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'warn',
-				`createForumTopic failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`createForumTopic failed: ${this.redact(errorMessage(err))}`,
 			);
 			return null;
 		}
@@ -216,9 +230,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`editForumTopic failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`editForumTopic failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -235,9 +247,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`closeForumTopic failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`closeForumTopic failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -260,9 +270,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`editMessageText failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`editMessageText failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -281,9 +289,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`editMessageReplyMarkup failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`editMessageReplyMarkup failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -301,9 +307,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`answerCallbackQuery failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`answerCallbackQuery failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -314,9 +318,7 @@ export class TelegramBot {
 		} catch (err) {
 			this.log(
 				'debug',
-				`setMyCommands failed: ${this.redact(
-					err instanceof Error ? err.message : String(err),
-				)}`,
+				`setMyCommands failed: ${this.redact(errorMessage(err))}`,
 			);
 		}
 	}
@@ -332,15 +334,38 @@ export class TelegramBot {
 
 	private async call<T>(method: string, params: unknown): Promise<T> {
 		const url = `${this.apiBase}/bot${this.token}/${method}`;
-		const res = await fetch(url, {
-			method: 'POST',
-			headers: {'Content-Type': 'application/json'},
-			body: JSON.stringify(params),
-		});
+		// Long-poll can hang indefinitely on broken connections; cap with
+		// AbortController. Allow 2× the poll timeout for non-poll calls too —
+		// way longer than any healthy round-trip.
+		const ctrl = new AbortController();
+		const timeoutMs = (this.pollTimeoutSec + 5) * 1000 * 2;
+		const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+		let res: Response;
+		try {
+			res = await fetch(url, {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify(params),
+				signal: ctrl.signal,
+			});
+		} finally {
+			clearTimeout(timer);
+		}
 		if (!res.ok) {
-			const err = new Error(`HTTP ${res.status}`) as Error & {status?: number};
-			err.status = res.status;
-			throw err;
+			let retryAfterSec: number | undefined;
+			try {
+				const body = (await res.json()) as {
+					parameters?: {retry_after?: number};
+				};
+				retryAfterSec = body.parameters?.retry_after;
+			} catch {
+				// non-JSON error body
+			}
+			throw new TelegramApiError(
+				res.status,
+				`HTTP ${res.status}`,
+				typeof retryAfterSec === 'number' ? retryAfterSec * 1000 : undefined,
+			);
 		}
 		const json = (await res.json()) as {
 			ok: boolean;

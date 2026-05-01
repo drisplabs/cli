@@ -7,6 +7,7 @@
  */
 
 import type {Runtime, RuntimeEvent} from '../core/runtime/types';
+import {isDev} from '../shared/utils/env';
 import type {PendingQuestionRelay, QuestionClaimSource} from './types';
 
 export type QuestionClaimContext = {
@@ -68,12 +69,17 @@ export class QuestionRelay {
 	}
 
 	setOnClaimed(handler: OnQuestionClaimedHandler): void {
-		if (this.onClaimed) {
-			console.warn(
-				'[athena:channels] QuestionRelay.setOnClaimed called twice; previous handler replaced.',
+		if (this.onClaimed && isDev()) {
+			throw new Error(
+				'QuestionRelay.setOnClaimed called twice — concurrent registration would silently lose the previous handler. ' +
+					'Call clearOnClaimed() on the prior owner first.',
 			);
 		}
 		this.onClaimed = handler;
+	}
+
+	clearOnClaimed(): void {
+		this.onClaimed = undefined;
 	}
 
 	register(

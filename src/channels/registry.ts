@@ -1,5 +1,5 @@
 /**
- * Composes a `PermissionRelay` with one or more `ChannelHost`s, fanning
+ * Composes a `PermissionRelay` with one or more `ChannelDaemonClient`s, fanning
  * permission requests out and routing verdicts back through the relay.
  */
 
@@ -8,6 +8,8 @@ import type {
 	RuntimeDecision,
 	RuntimeEvent,
 } from '../core/runtime/types';
+import {isDev} from '../shared/utils/env';
+import {errorMessage} from '../shared/utils/errorMessage';
 import {generateChannelRequestId} from './ids';
 import {ChannelDaemonClient} from './daemonClient';
 import type {PermissionRelay} from './permissionRelay';
@@ -24,6 +26,7 @@ import type {
 
 /** Telegram caps messages at 4096 chars; leave room for an ellipsis. */
 const MAX_NOTIFICATION_LEN = 4000;
+const INPUT_PREVIEW_MAX_CHARS = 200;
 
 export type InboundChatMessage = {
 	channel_name: string;
@@ -41,6 +44,13 @@ export type ChannelRegistryOptions = {
 	channels: ChannelDefinition[];
 	pushFeedEvent?: PushChannelFeedEvent;
 	logError?: (channelName: string, message: string) => void;
+	/**
+	 * Called when a channel client fails to start (daemon unreachable, spawn
+	 * error, etc.) or when it disconnects unexpectedly. Hosts should surface
+	 * this in the UI — without it, permission requests that the channel was
+	 * supposed to relay will silently hang to TTL.
+	 */
+	onChannelUnavailable?: (channelName: string, reason: string) => void;
 };
 
 function reasonForSource(source: ClaimSource): ChannelCancelReason {
@@ -80,6 +90,9 @@ export class ChannelRegistry {
 	private readonly logError:
 		| ((channelName: string, message: string) => void)
 		| undefined;
+	private readonly onChannelUnavailable:
+		| ((channelName: string, reason: string) => void)
+		| undefined;
 	private disposed = false;
 
 	constructor(opts: ChannelRegistryOptions) {
@@ -89,6 +102,7 @@ export class ChannelRegistry {
 		this.runtime = opts.runtime;
 		this.pushFeedEvent = opts.pushFeedEvent;
 		this.logError = opts.logError;
+		this.onChannelUnavailable = opts.onChannelUnavailable;
 
 		this.relay.setOnClaimed((entry, source, context) => {
 			if (this.clients.length === 0) return;
@@ -143,10 +157,9 @@ export class ChannelRegistry {
 				handlers: {
 					onEvent: ev => this.handleEvent(def.name, ev),
 					onExit: (code, signal) => {
-						this.logError?.(
-							def.name,
-							`channel exited (code=${code} signal=${signal})`,
-						);
+						const reason = `channel exited (code=${code} signal=${signal})`;
+						this.logError?.(def.name, reason);
+						this.onChannelUnavailable?.(def.name, reason);
 					},
 					onError: msg => this.logError?.(def.name, msg),
 				},
@@ -166,6 +179,11 @@ export class ChannelRegistry {
 	 * turn. Pass `undefined` to clear.
 	 */
 	setOnChatMessage(handler: InboundChatHandler | undefined): void {
+		if (handler && this.onChatMessage && isDev()) {
+			throw new Error(
+				'ChannelRegistry.setOnChatMessage called twice — pass undefined to clear before registering a new handler.',
+			);
+		}
 		this.onChatMessage = handler;
 	}
 
@@ -195,10 +213,9 @@ export class ChannelRegistry {
 	startAll(): void {
 		for (const client of this.clients) {
 			void client.start().catch(err => {
-				this.logError?.(
-					client.name,
-					`start failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
+				const reason = `start failed: ${errorMessage(err)}`;
+				this.logError?.(client.name, reason);
+				this.onChannelUnavailable?.(client.name, reason);
 			});
 		}
 	}
@@ -209,7 +226,7 @@ export class ChannelRegistry {
 		const channelRequestId = generateChannelRequestId();
 		// Always register on the relay so resolvePermission can distinguish
 		// "another path claimed first" from "no relay was active". The relay
-		// is authoritative regardless of host count.
+		// is authoritative regardless of client count.
 		this.relay.register(event, channelRequestId, toolName);
 		if (this.clients.length === 0) return;
 		const description = event.display?.title ?? toolName;
@@ -315,6 +332,9 @@ export class ChannelRegistry {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.relay.clearOnClaimed();
+		this.questionRelay?.clearOnClaimed();
+		this.onChatMessage = undefined;
 		for (const client of this.clients) client.dispose();
 		this.clients.length = 0;
 		this.relay.dispose();
@@ -323,7 +343,13 @@ export class ChannelRegistry {
 
 	private handleEvent(channelName: string, ev: ChannelEventMessage): void {
 		if (this.disposed) return;
-		if (ev.session_id !== this.sessionId) return;
+		if (ev.session_id !== this.sessionId) {
+			this.logError?.(
+				channelName,
+				`dropped event ${ev.event}: session_id ${ev.session_id} ≠ ${this.sessionId}`,
+			);
+			return;
+		}
 		switch (ev.event) {
 			case 'ready':
 				return;
@@ -415,7 +441,9 @@ function buildInputPreview(event: RuntimeEvent): string {
 	if (toolInput === undefined) return '';
 	try {
 		const json = JSON.stringify(toolInput);
-		return json.length > 200 ? json.slice(0, 200) + '…' : json;
+		return json.length > INPUT_PREVIEW_MAX_CHARS
+			? json.slice(0, INPUT_PREVIEW_MAX_CHARS) + '…'
+			: json;
 	} catch {
 		return '';
 	}

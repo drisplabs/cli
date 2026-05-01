@@ -8,6 +8,7 @@
  */
 
 import type {Runtime, RuntimeEvent} from '../core/runtime/types';
+import {isDev} from '../shared/utils/env';
 import type {ClaimBehavior, ClaimSource, PendingRelay} from './types';
 
 export type ClaimContext = {
@@ -69,13 +70,17 @@ export class PermissionRelay {
 	}
 
 	setOnClaimed(handler: OnClaimedHandler): void {
-		if (this.onClaimed) {
-			// Single-handler by design; warn loudly if a second consumer wires up.
-			console.warn(
-				'[athena:channels] PermissionRelay.setOnClaimed called twice; previous handler replaced.',
+		if (this.onClaimed && isDev()) {
+			throw new Error(
+				'PermissionRelay.setOnClaimed called twice — concurrent registration would silently lose the previous handler. ' +
+					'Call clearOnClaimed() on the prior owner first.',
 			);
 		}
 		this.onClaimed = handler;
+	}
+
+	clearOnClaimed(): void {
+		this.onClaimed = undefined;
 	}
 
 	register(
