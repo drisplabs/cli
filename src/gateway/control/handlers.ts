@@ -133,6 +133,18 @@ export function createDispatcher(deps: DispatcherDeps): RequestHandler {
 						pid: req.pid,
 					});
 					deps.registerRuntimeConnection?.(req.runtimeId, connection);
+					// Drain inbound parked while no runtime was registered. Order is
+					// FIFO, but the runtime's single-slot queue (AppShell) handles
+					// concurrency: extras are buffered.
+					try {
+						deps.dispatcher?.drainPending();
+					} catch (err) {
+						process.stderr.write(
+							`gateway: drainPending failed: ${
+								err instanceof Error ? err.message : String(err)
+							}\n`,
+						);
+					}
 					const payload: SessionRegisterResponsePayload = {
 						registeredAt: reg.registeredAt,
 						gatewayStartedAt: deps.startedAt,

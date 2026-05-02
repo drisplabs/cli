@@ -26,6 +26,8 @@ import {acquireLock, type LockHandle} from './lock';
 import {resolveGatewayPaths, type GatewayPaths} from './paths';
 import {RelayCoordinator} from './relay/coordinator';
 import {SessionRegistry} from './sessionRegistry';
+import {openGatewayState, type GatewayStateDb} from './state/db';
+import {InboundQueue} from './state/inboundQueue';
 
 export type DaemonOptions = {
 	/** When true the daemon stays in foreground (no detach). */
@@ -49,6 +51,7 @@ export type DaemonHandle = {
 	dispatcher: Dispatcher;
 	channelManager: ChannelManager;
 	relayCoordinator: RelayCoordinator;
+	inboundQueue: InboundQueue;
 	stop: () => Promise<void>;
 };
 
@@ -70,6 +73,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 
 	const lock: LockHandle = acquireLock(paths.lockPath);
 	const token = loadOrCreateToken(paths.tokenPath);
+
+	const stateDb: GatewayStateDb = openGatewayState(paths.statePath);
+	const inboundQueue = new InboundQueue(stateDb);
 
 	const registry = new SessionRegistry();
 	const channelManager = new ChannelManager();
@@ -98,6 +104,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		registry,
 		pushDispatch,
 		sendOutbound: (channelId, msg) => channelManager.send(channelId, msg),
+		inboundQueue,
+		log: (level, message) => {
+			if (opts.silent) return;
+			const stream =
+				level === 'error' || level === 'warn' ? 'stderr' : 'stdout';
+			process[stream].write(`athena-gateway: [${level}] ${message}\n`);
+		},
 	});
 	channelManager.setInboundSink(inbound => {
 		dispatcher.handleInbound(inbound);
@@ -192,6 +205,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			await channelManager.stop();
 			await server.close();
 		} finally {
+			try {
+				stateDb.close();
+			} catch {
+				// best-effort
+			}
 			lock.release();
 		}
 	};
@@ -213,6 +231,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		dispatcher,
 		channelManager,
 		relayCoordinator,
+		inboundQueue,
 		stop,
 	};
 }

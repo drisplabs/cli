@@ -5,6 +5,8 @@ import type {
 } from '../shared/gateway-protocol';
 import {Dispatcher} from './dispatcher';
 import {SessionRegistry} from './sessionRegistry';
+import {openGatewayState} from './state/db';
+import {InboundQueue} from './state/inboundQueue';
 
 function makeRegistry() {
 	let n = 0;
@@ -136,6 +138,93 @@ describe('Dispatcher', () => {
 			idempotencyKey: 'k',
 		});
 		expect(reply).toEqual({delivered: false});
+	});
+
+	it('parks inbound in the queue when no runtime is registered', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		const result = dispatcher.handleInbound(inbound);
+		expect(result).toMatchObject({kind: 'queued'});
+		expect(queue.size()).toBe(1);
+		db.close();
+	});
+
+	it('drainPending dispatches parked inbound in FIFO order on register', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const pushDispatch = vi.fn<(p: SessionDispatchTurnPushPayload) => void>();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+
+		// Park three messages while no runtime is registered.
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:1'});
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:2'});
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:3'});
+		expect(queue.size()).toBe(3);
+		expect(pushDispatch).not.toHaveBeenCalled();
+
+		// Now a runtime registers; drain should fire dispatches in FIFO order.
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const summary = dispatcher.drainPending();
+		expect(summary).toEqual({dispatched: 3, dropped: 0});
+		expect(queue.size()).toBe(0);
+		expect(pushDispatch).toHaveBeenCalledTimes(3);
+		expect(
+			pushDispatch.mock.calls.map(c => c[0].inbound.idempotencyKey),
+		).toEqual(['tg:1', 'tg:2', 'tg:3']);
+		db.close();
+	});
+
+	it('drainPending is a no-op without a registered runtime', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const pushDispatch = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		dispatcher.handleInbound(inbound);
+		expect(dispatcher.drainPending()).toEqual({dispatched: 0, dropped: 0});
+		expect(queue.size()).toBe(1);
+		expect(pushDispatch).not.toHaveBeenCalled();
+		db.close();
+	});
+
+	it('drops on queue_full when capacity is exceeded', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db, {maxEntries: 1});
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		expect(
+			dispatcher.handleInbound({...inbound, idempotencyKey: 'k1'}).kind,
+		).toBe('queued');
+		expect(
+			dispatcher.handleInbound({...inbound, idempotencyKey: 'k2'}),
+		).toEqual({
+			kind: 'dropped',
+			reason: 'queue_full',
+		});
+		db.close();
 	});
 
 	it('throws on runtimeId mismatch', async () => {

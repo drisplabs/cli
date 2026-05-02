@@ -19,6 +19,7 @@ export type GatewayPaths = {
 	socketPath: string;
 	lockPath: string;
 	tokenPath: string;
+	statePath: string;
 };
 
 export function resolveGatewayPaths(
@@ -34,6 +35,7 @@ export function resolveGatewayPaths(
 	const socketPath = path.join(runDir, 'gateway.sock');
 	const lockPath = path.join(runDir, 'gateway.lock');
 	const tokenPath = path.join(configDir, 'token');
+	const statePath = path.join(configDir, 'state.db');
 
 	if (Buffer.byteLength(socketPath, 'utf-8') > SUN_PATH_MAX) {
 		throw new Error(
@@ -42,5 +44,5 @@ export function resolveGatewayPaths(
 		);
 	}
 
-	return {runDir, configDir, socketPath, lockPath, tokenPath};
+	return {runDir, configDir, socketPath, lockPath, tokenPath, statePath};
 }

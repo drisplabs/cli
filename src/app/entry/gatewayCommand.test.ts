@@ -30,6 +30,7 @@ function tmpPaths(): GatewayPaths {
 		socketPath: path.join(runDir, 'gw.sock'),
 		lockPath: path.join(runDir, 'gw.lock'),
 		tokenPath: path.join(configDir, 'token'),
+		statePath: path.join(configDir, 'state.db'),
 	};
 }
 

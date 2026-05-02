@@ -97,6 +97,7 @@ function tmpPaths(): GatewayPaths {
 		socketPath: path.join(runDir, 'gw.sock'),
 		lockPath: path.join(runDir, 'gw.lock'),
 		tokenPath: path.join(configDir, 'token'),
+		statePath: path.join(configDir, 'state.db'),
 	};
 }
 
@@ -171,6 +172,42 @@ describe('SessionBridge integration', () => {
 		});
 		expect(reply).toMatchObject({delivered: true});
 		expect(adapter.sentMessages[0]?.text).toBe('hi back');
+	}, 15_000);
+
+	it('drains parked inbound on session.register', async () => {
+		daemon = await startDaemon({
+			foreground: true,
+			silent: true,
+			paths,
+			skipSignalHandlers: true,
+		});
+		const adapter = new FakeAdapter();
+		await daemon.channelManager.register(adapter);
+
+		// Emit two inbound messages while no runtime is registered. Both should
+		// be parked in the durable queue.
+		adapter.emitInbound({...inbound, idempotencyKey: 'fk:queue1'});
+		adapter.emitInbound({...inbound, idempotencyKey: 'fk:queue2'});
+		await waitUntil(() => daemon!.inboundQueue.size() === 2);
+
+		bridge = new SessionBridge({
+			runtimeId: 'q1',
+			defaultAgentId: 'main',
+			paths,
+		});
+
+		const dispatched: Array<{idempotencyKey: string}> = [];
+		bridge.onTurnDispatch(p => {
+			dispatched.push({idempotencyKey: p.inbound.idempotencyKey});
+		});
+		await bridge.start();
+
+		await waitUntil(() => dispatched.length === 2);
+		expect(dispatched.map(d => d.idempotencyKey)).toEqual([
+			'fk:queue1',
+			'fk:queue2',
+		]);
+		expect(daemon.inboundQueue.size()).toBe(0);
 	}, 15_000);
 
 	it('relayPermission broadcasts to the registered adapter and returns the verdict', async () => {
