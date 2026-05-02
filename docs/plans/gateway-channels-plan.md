@@ -3,19 +3,20 @@
 ## Status (as of 2026-05-02)
 
 Working branch: **`gateway-integration`** (pushed to `origin`).
-Test suite: **2850 passing**, full gates clean (`pnpm typecheck && pnpm lint && pnpm test && pnpm lint:dead && pnpm build`).
+Test suite: **2856 passing**, full gates clean (`pnpm typecheck && pnpm lint && pnpm test && pnpm lint:dead && pnpm build`).
 
 ### What is done
 
-| Milestone                                                                         | State      | Commit    | Notes                                                                                                                                                                                                                                                                                          |
-| --------------------------------------------------------------------------------- | ---------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **M1** Skeleton + types + ESLint block + tsup target                              | ✅ shipped | `8614765` | `src/shared/gateway-protocol/`, `src/gateway/{entry,daemon,paths,lock,auth}.ts`, `dist/athena-gateway.js` build target                                                                                                                                                                         |
-| **M2** Schema v6 (channel_messages, gateway_function_invocations, channel_outbox) | ✅ shipped | `8614765` | Migration from v5 to v6 in `src/infra/sessions/schema.ts`; partial unique indexes on idempotency keys                                                                                                                                                                                          |
-| **M3** UDS NDJSON control plane (ping/status)                                     | ✅ shipped | `8614765` | Full UDS server + client + connect-frame handshake + bearer token + filesystem ACL (0700/0600)                                                                                                                                                                                                 |
-| **M4** ChannelAdapter contract + Telegram chat-path port + ChannelManager         | ✅ shipped | `697113e` | Inbound long-poll, outbound `send`, in-memory dedup window, health sample sink. Permission/question relays explicitly _not_ in this milestone                                                                                                                                                  |
-| **M5a** SessionRegistry + SessionKey router + Dispatcher                          | ✅ shipped | `1b7e6f9` | One-runtime invariant; deterministic SessionKey ladder; dispatch-id correlation for turn-complete                                                                                                                                                                                              |
-| **M5b** UDS push channel + session/turn/send handlers + multiplexed client        | ✅ shipped | `8330d41` | `ConnectionContext.push()`, `onConnect`/`onDisconnect`; client refactored from FIFO line-matching to `Map<requestId, resolver>` so push frames can interleave; full inbound→`session.dispatch.turn`→`session.turn.complete`→adapter.send round-trip integration test against a real tmpdir UDS |
-| **M6 phase A** Legacy `src/channels/` demolition                                  | ✅ shipped | `7428ae9` | **Big swing**: −5911 LOC. Entire `src/channels/` deleted. Per-session subprocess channel model gone. `RuntimeProvider`/`useFeed`/`AppShell`/`cli.tsx` de-wired. Reusable leaf utilities relocated (see deviations below)                                                                       |
+| Milestone                                                                         | State      | Commit    | Notes                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------- | ---------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M1** Skeleton + types + ESLint block + tsup target                              | ✅ shipped | `8614765` | `src/shared/gateway-protocol/`, `src/gateway/{entry,daemon,paths,lock,auth}.ts`, `dist/athena-gateway.js` build target                                                                                                                                                                              |
+| **M2** Schema v6 (channel_messages, gateway_function_invocations, channel_outbox) | ✅ shipped | `8614765` | Migration from v5 to v6 in `src/infra/sessions/schema.ts`; partial unique indexes on idempotency keys                                                                                                                                                                                               |
+| **M3** UDS NDJSON control plane (ping/status)                                     | ✅ shipped | `8614765` | Full UDS server + client + connect-frame handshake + bearer token + filesystem ACL (0700/0600)                                                                                                                                                                                                      |
+| **M4** ChannelAdapter contract + Telegram chat-path port + ChannelManager         | ✅ shipped | `697113e` | Inbound long-poll, outbound `send`, in-memory dedup window, health sample sink. Permission/question relays explicitly _not_ in this milestone                                                                                                                                                       |
+| **M5a** SessionRegistry + SessionKey router + Dispatcher                          | ✅ shipped | `1b7e6f9` | One-runtime invariant; deterministic SessionKey ladder; dispatch-id correlation for turn-complete                                                                                                                                                                                                   |
+| **M5b** UDS push channel + session/turn/send handlers + multiplexed client        | ✅ shipped | `8330d41` | `ConnectionContext.push()`, `onConnect`/`onDisconnect`; client refactored from FIFO line-matching to `Map<requestId, resolver>` so push frames can interleave; full inbound→`session.dispatch.turn`→`session.turn.complete`→adapter.send round-trip integration test against a real tmpdir UDS      |
+| **M6 phase A** Legacy `src/channels/` demolition                                  | ✅ shipped | `7428ae9` | **Big swing**: −5911 LOC. Entire `src/channels/` deleted. Per-session subprocess channel model gone. `RuntimeProvider`/`useFeed`/`AppShell`/`cli.tsx` de-wired. Reusable leaf utilities relocated (see deviations below)                                                                            |
+| **M6 phase B** Two-way relays + sidecar channel registration                      | ✅ shipped | `b17f323` | RelayCoordinator (`src/gateway/relay/`), Telegram adapter relay impl, four new control kinds (`relay.{permission,question}.{request,cancel}`), sidecar config loader (`src/infra/config/channels.ts`) + adapter factory, app-side `SessionBridge` substrate. AppShell rewiring deferred (see below) |
 
 ### Deviations from the original plan (and why)
 
@@ -35,6 +36,12 @@ Test suite: **2850 passing**, full gates clean (`pnpm typecheck && pnpm lint && 
 
 8. **Channel feed-event types in `core/feed/types.ts` still exist but have no producers.** Render paths (`timeline`, `toolDisplay`, `titleGen`, `defaultRender`, `renderDetailLines`) were never broken — exhaustive switches handle the no-producer case naturally. Producers come back online when phase B's session bridge wires gateway client events to `feedStore.pushEvents`.
 
+9. **Phase B collapses `relay.*.timeout` pushes into the response payload.** The original plan listed `relay.permission.timeout` / `relay.question.timeout` as separate push kinds. The shipped design has the relay request RPC block until the coordinator settles and returns `{kind: 'cancelled', reason: 'timeout'}` directly. Keeps the client API uniform and removes a needless out-of-band channel; the bridge gets the same information through the response it's already awaiting.
+
+10. **Phase B's `SessionBridge` ships as a standalone module, not yet wired into `AppShell`.** The plan's intent — long-lived gateway client, runtime registration, push subscription, relay request fan-out — is fully implemented at `src/app/channels/sessionBridge.ts`. What's _not_ done is plumbing it into `AppShell`/`RuntimeProvider`/`useFeed` so that runtime permission/question events actually drive `bridge.relayPermission(...)`. That rewiring touches the de-wired paths from phase A and is its own follow-up commit; phase B is the substrate, not the integration. This was a scope call to keep the diff reviewable — gateway-side correctness is independently testable against the bridge's public surface.
+
+11. **`relay.*.cancel` kinds are RPCs that return `{cancelled: boolean}`, not pushes.** Same reasoning as deviation 9 — request/response is simpler than fire-and-forget plus an ack push, and the bridge already awaits the response anyway.
+
 ### Layout snapshot — where things actually live now
 
 ```
@@ -52,50 +59,54 @@ src/shared/telegram/
 
 src/gateway/
   entry.ts             tsup target → dist/athena-gateway.js
-  daemon.ts            startDaemon(opts) → DaemonHandle; wires registry/dispatcher/channelManager
+  daemon.ts            startDaemon(opts) → DaemonHandle; loads sidecar adapters; wires registry/dispatcher/channelManager/relayCoordinator
   paths.ts             resolveGatewayPaths(env): XDG_RUNTIME_DIR fallback, sun_path validation
   lock.ts              acquireLock(): O_CREAT|O_EXCL + pid + alive-probe
   auth.ts              loadOrCreateToken, timingSafeTokenEqual
   sessionRegistry.ts   one-runtime invariant + dispatch-id correlation
   dispatcher.ts        inbound → push session.dispatch.turn; turn-complete → channel.send
-  channelManager.ts    owns ChannelAdapter set; dedup window; health sink
+  channelManager.ts    owns ChannelAdapter set; dedup window; health sink; listAdapters() for relay coordinator
   router/sessionKey.ts deriveSessionKey(loc): peer:thread > peer > room:thread > room > default
+  relay/
+    coordinator.ts     RelayCoordinator: broadcasts permission/question relays; race+abort; TTL; cancel()
+    ids.ts             5-letter channel-request-id generator (promoted from telegram/)
   control/server.ts    UDS server with ConnectionContext.push(), onConnect/onDisconnect
-  control/client.ts    multiplexed client (Map<requestId, resolver> + onPush(kind, cb))
-  control/handlers.ts  request dispatcher: ping, status, session.{register,unregister,turn.complete}, channel.send
+  control/client.ts    multiplexed client + per-request timeoutMs override (long relay waits)
+  control/handlers.ts  request dispatcher: ping, status, session.*, channel.send, relay.{permission,question}.{request,cancel}
   control/lineReader.ts NDJSON splitter (duplicated from deleted channels/protocol.ts to avoid layer crossing)
   control/sessionFlow.test.ts end-to-end M5 integration test
+  adapters/factory.ts  instantiateAdapter(sidecar) — dispatches by sidecar.name (telegram → TelegramAdapter)
   adapters/telegram/
-    adapter.ts         TelegramAdapter implementing ChannelAdapter (chat path only)
-    verdict.ts         callback-data parsing for permission/question (relay path lands phase B)
-    ids.ts             5-letter channel-request-id generator (sole consumer = verdict.ts)
+    adapter.ts         TelegramAdapter: chat path + delegates relay methods to TelegramRelay
+    relay.ts           TelegramRelay: prompt rendering (MarkdownV2 + inline keyboards), pending-prompt registry, callback-query dispatch
+    verdict.ts         callback-data + text-reply parsing (now under gateway/adapters/telegram/, imports gateway/relay/ids.ts)
     index.ts           barrel
+
+src/app/channels/
+  sessionBridge.ts     long-lived gateway client per runtime; session.register/unregister; onTurnDispatch; relayPermission/relayQuestion; cancelRelay*
+
+src/infra/config/
+  channels.ts          loadChannelSidecars(): reads ~/.config/athena/channels/*.json (POSIX 0600 check, fail-soft per file)
+
+src/shared/gateway-protocol/
+  relay.ts             PermissionRelayRequest/Result, QuestionRelayRequest/Result, RelayQuestion, RelayCancelReason
 ```
 
-### What is NOT done (phase B onward)
+### What is NOT done (phase B integration + phase C onward)
 
-The roadmap below replaces the original M6–M9 with the post-demolition reality.
+Phase B shipped the gateway-side substrate. The remaining work splits into a small "phase B integration" commit (wiring the bridge into `AppShell`) and the original phase C/D/E roadmap.
 
-#### Phase B (formerly M6, now bigger): two-way relays + app↔gateway integration
+#### Phase B integration (next commit on this branch)
 
-The legacy permission/question relay machinery is gone. Two-way Telegram chat lands when this phase ships.
+1. **Wire `SessionBridge` into `AppShell` / `RuntimeProvider`.** Open one bridge per interactive runtime at startup, register on mount, unregister on stop. Subscribe `bridge.onTurnDispatch(...)` and translate each `SessionDispatchTurnPushPayload` into a "post user turn" call on the active `useSessionController`. On the harness's `turn.complete` event, call `bridge.completeTurn(...)` so the gateway can relay the assistant reply back to the originating channel.
 
-1. **Extend the `ChannelAdapter` contract** — add either two methods (`requestPermissionVerdict`, `requestQuestionAnswer`) or a generic `relay(): Promise<RelayResult>` channel that returns when the user clicks an inline-keyboard button or sends a free-text answer. Decision pending; lean toward the generic channel since Slack will need the same surface.
+2. **Thread relay calls through the harness permission/question handlers.** When the runtime emits a permission event, race `bridge.relayPermission(...)` against the local UI dialog: whichever path returns first wins, and the loser is cancelled via `bridge.cancelRelayPermission(channelRequestId, 'resolved_locally')`. Same shape for questions. The legacy `PermissionRelay`/`QuestionRelay` claim semantics now live entirely in the gateway's `RelayCoordinator`; the app side just races and cancels.
 
-2. **`RelayCoordinator` in `src/gateway/relay/`** — claim/cancel state machine, ported in _behavior_ from the deleted `src/channels/{permissionRelay,questionRelay,registry}.ts`. Lives gateway-side because relays span all registered channels (broadcast → first verdict wins → cancel on losers). Existing `verdict.ts` and `ids.ts` already in place under `gateway/adapters/telegram/`; promote `ids.ts` to `gateway/relay/ids.ts` once the coordinator owns it.
+3. **Re-emit `channel.*` feed events.** The kinds in `core/feed/types.ts` are still defined; phase A removed all producers. The bridge integration is the natural place to re-add producers: `channel.permission.relayed` when `relayPermission` resolves with a `verdict`, `channel.permission.resolved` when the local UI claims first, etc. Render paths are untouched.
 
-3. **New control plane kinds**:
-   - request: `relay.permission.request`, `relay.permission.cancel`, `relay.question.request`, `relay.question.cancel`
-   - response: verdict / answer / cancel-ack
-   - push: `relay.permission.timeout`, `relay.question.timeout` (TTL elapsed)
+4. **Decide where channel_messages/gateway_function_invocations/channel_outbox actually live.** Per-session DB (current) vs gateway-global DB (`${configDir}/gateway.db`). My instinct: gateway-global, with the FK to `adapter_sessions` dropped. Worth a 30-min RFC sketch before implementing. Still deferred from M6 phase A.
 
-4. **Telegram adapter relay impl** — port the inline-keyboard build + callback-query dispatch from the deleted `src/channels/telegram/index.ts`. Forum-mode topic routing was a feature of the legacy daemon; consciously deciding _not_ to port it in phase B (per-session topic mode adds complexity and the user has not asked for it). Reusable bits already in place: `bot.ts` HTTP client, `markdown.ts` for MarkdownV2 escaping, `verdict.ts` for callback-data parsing.
-
-5. **App-side `sessionBridge.ts` (`src/app/channels/sessionBridge.ts`)** — opens a long-lived gateway client at runtime start, registers the session via `session.register`, subscribes to `session.dispatch.turn` pushes and translates them into `spawnHarness` calls in `AppShell`, and calls `relay.permission.request` / `relay.question.request` whenever the harness emits a permission/question event. Replaces the deleted `RuntimeProvider` channel-registry wiring.
-
-6. **Channel registration from config** — gateway daemon loads `~/.config/athena/channels/*.json` (the same paths `athena channel telegram configure` writes) on startup and instantiates adapters before accepting client connections.
-
-7. **Decide where channel_messages/gateway_function_invocations/channel_outbox actually live.** Per-session DB (current) vs gateway-global DB (`${configDir}/gateway.db`). My instinct: gateway-global, with the FK to `adapter_sessions` dropped. Worth a 30-min RFC sketch before implementing.
+5. **Prune the inert `--channel` CLI flag and `athena channel telegram configure` command's now-redundant global-channels-list write.** The configure command's _file write_ is still useful (the gateway reads it on start); the meow flag and the `channels: ['telegram']` list in the global config are dead code now that adapter loading is sidecar-driven.
 
 #### Phase C (formerly M7): CloudFunctionInvoker + 3 callers
 
