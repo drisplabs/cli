@@ -55,6 +55,22 @@ export function initGatewayStateSchema(db: GatewayStateDb): void {
 		);
 		CREATE UNIQUE INDEX IF NOT EXISTS ix_inbound_queue_idem
 			ON inbound_queue(channel_id, account_id, idempotency_key);
+
+		-- Outbound messages whose adapter send() failed transiently. Drained
+		-- by a periodic retry loop with exponential backoff. Idempotency key
+		-- on the OutboundMessage prevents double-delivery if the adapter
+		-- partially succeeded before throwing.
+		CREATE TABLE IF NOT EXISTS channel_outbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			attempt INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at INTEGER NOT NULL,
+			last_error TEXT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS ix_channel_outbox_due
+			ON channel_outbox(next_attempt_at);
 	`);
 
 	const existing = db.prepare('SELECT version FROM schema_version').get() as

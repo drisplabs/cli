@@ -24,10 +24,12 @@ import {
 import {Dispatcher} from './dispatcher';
 import {acquireLock, type LockHandle} from './lock';
 import {resolveGatewayPaths, type GatewayPaths} from './paths';
+import {OutboundDispatcher} from './outboundDispatcher';
 import {RelayCoordinator} from './relay/coordinator';
 import {SessionRegistry} from './sessionRegistry';
 import {openGatewayState, type GatewayStateDb} from './state/db';
 import {InboundQueue} from './state/inboundQueue';
+import {Outbox} from './state/outbox';
 
 export type DaemonOptions = {
 	/** When true the daemon stays in foreground (no detach). */
@@ -52,6 +54,8 @@ export type DaemonHandle = {
 	channelManager: ChannelManager;
 	relayCoordinator: RelayCoordinator;
 	inboundQueue: InboundQueue;
+	outbox: Outbox;
+	outboundDispatcher: OutboundDispatcher;
 	stop: () => Promise<void>;
 };
 
@@ -76,6 +80,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 
 	const stateDb: GatewayStateDb = openGatewayState(paths.statePath);
 	const inboundQueue = new InboundQueue(stateDb);
+	const outbox = new Outbox(stateDb);
 
 	const registry = new SessionRegistry();
 	const channelManager = new ChannelManager();
@@ -100,17 +105,38 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			payload,
 		});
 	};
+	const log = (
+		level: 'debug' | 'info' | 'warn' | 'error',
+		message: string,
+	): void => {
+		if (opts.silent) return;
+		const stream = level === 'error' || level === 'warn' ? 'stderr' : 'stdout';
+		process[stream].write(`athena-gateway: [${level}] ${message}\n`);
+	};
+
+	const outboundDispatcher = new OutboundDispatcher({
+		outbox,
+		send: (channelId, msg) => channelManager.send(channelId, msg),
+		log,
+	});
+	outboundDispatcher.start();
+
 	const dispatcher = new Dispatcher({
 		registry,
 		pushDispatch,
-		sendOutbound: (channelId, msg) => channelManager.send(channelId, msg),
-		inboundQueue,
-		log: (level, message) => {
-			if (opts.silent) return;
-			const stream =
-				level === 'error' || level === 'warn' ? 'stderr' : 'stdout';
-			process[stream].write(`athena-gateway: [${level}] ${message}\n`);
+		sendOutbound: async (channelId, msg) => {
+			const result = await outboundDispatcher.dispatch(channelId, msg);
+			if (result.kind === 'sent') return result.result;
+			// Queued: return a synthetic SendResult so the caller knows the
+			// message has been accepted for eventual delivery. The real
+			// providerMessageId is unknown until a retry succeeds.
+			return {
+				providerMessageId: `outbox:${result.outboxId}`,
+				deliveredAt: Date.now(),
+			};
 		},
+		inboundQueue,
+		log,
 	});
 	channelManager.setInboundSink(inbound => {
 		dispatcher.handleInbound(inbound);
@@ -201,6 +227,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		if (stopping) return;
 		stopping = true;
 		try {
+			outboundDispatcher.stop();
 			relayCoordinator.disposeAll('auto_resolved');
 			await channelManager.stop();
 			await server.close();
@@ -232,6 +259,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		channelManager,
 		relayCoordinator,
 		inboundQueue,
+		outbox,
+		outboundDispatcher,
 		stop,
 	};
 }

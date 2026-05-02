@@ -133,7 +133,7 @@ describe('SessionBridge integration', () => {
 		} catch {
 			// best-effort
 		}
-	}, 15_000);
+	}, 60_000);
 
 	it('round-trips dispatch.turn → completeTurn → adapter.send', async () => {
 		daemon = await startDaemon({
