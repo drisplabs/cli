@@ -1,0 +1,307 @@
+/**
+ * In-daemon Telegram channel adapter.
+ *
+ * Conforms to `ChannelAdapter`. Long-polls Telegram via `TelegramBot` from
+ * `shared/telegram/bot`, normalizes inbound messages, and posts outbound text
+ * via `sendMessage`. Permission/question relay flows remain in the legacy
+ * channel daemon (`src/channels/telegram/index.ts`) until M6.
+ *
+ * Idempotency keys for inbound use the Telegram `update_id` (per-bot stable
+ * monotonic counter); outbound idempotency is the caller's responsibility —
+ * we forward `text` straight to `sendMessage` and surface the assigned
+ * `message_id` as `providerMessageId`.
+ */
+
+import {TelegramBot, type TelegramUpdate} from '../../../shared/telegram/bot';
+import type {
+	AdapterContext,
+	ChannelAdapter,
+	ChannelCapabilities,
+	HealthSample,
+	NormalizedInbound,
+	OutboundMessage,
+	PermissionRelayRequest,
+	PermissionRelayResult,
+	ProbeResult,
+	QuestionRelayRequest,
+	QuestionRelayResult,
+	SendResult,
+	StopReason,
+} from '../../../shared/gateway-protocol';
+import {TelegramRelay} from './relay';
+
+export type TelegramAdapterOptions = {
+	/** Bot token from BotFather. Required. */
+	token: string;
+	/** Sender allowlist (Telegram numeric user ids as strings). Empty = closed. */
+	allowedUserIds: ReadonlyArray<string>;
+	/**
+	 * Chat used for relay prompts (permission/question). Required for relay
+	 * support; if omitted the adapter still serves chat inbound but
+	 * `requestPermissionVerdict`/`requestQuestionAnswer` resolve `no_relay`.
+	 */
+	defaultChatId?: number | string;
+	/** Optional forum-topic id under `defaultChatId` for relay prompts. */
+	defaultThreadId?: number;
+	/** Override base URL for tests. */
+	apiBase?: string;
+	/** Long-poll timeout seconds. */
+	pollTimeoutSec?: number;
+	/** Override bot factory for tests. */
+	botFactory?: (opts: {
+		token: string;
+		apiBase?: string;
+		pollTimeoutSec?: number;
+		log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string) => void;
+	}) => TelegramBot;
+};
+
+const TELEGRAM_ID = 'telegram';
+
+export class TelegramAdapter implements ChannelAdapter {
+	readonly id = TELEGRAM_ID;
+	readonly capabilities: ChannelCapabilities = {
+		chat: true,
+		threads: true,
+		relayPermission: true,
+		relayQuestion: true,
+		// Telegram caps text at 4096 chars; we leave chunking to the manager.
+		maxMessageBytes: 4096,
+	};
+
+	private bot: TelegramBot | null = null;
+	private readonly opts: TelegramAdapterOptions;
+	private readonly relay: TelegramRelay;
+	private pollTask: Promise<void> | null = null;
+	private lastInboundAt: number | undefined;
+	private lastTransportOk = true;
+	private ctx: AdapterContext | null = null;
+
+	constructor(opts: TelegramAdapterOptions) {
+		this.opts = opts;
+		this.relay = new TelegramRelay({
+			resolveTarget: () => {
+				if (this.opts.defaultChatId === undefined) return null;
+				return {
+					chatId: this.opts.defaultChatId,
+					...(this.opts.defaultThreadId !== undefined
+						? {threadId: this.opts.defaultThreadId}
+						: {}),
+				};
+			},
+			log: (level, msg) => this.ctx?.log(level, msg),
+		});
+	}
+
+	requestPermissionVerdict(
+		req: PermissionRelayRequest,
+		signal: AbortSignal,
+	): Promise<PermissionRelayResult> {
+		return this.relay.requestPermission(req, signal);
+	}
+
+	requestQuestionAnswer(
+		req: QuestionRelayRequest,
+		signal: AbortSignal,
+	): Promise<QuestionRelayResult> {
+		return this.relay.requestQuestion(req, signal);
+	}
+
+	async start(ctx: AdapterContext): Promise<void> {
+		if (this.bot) {
+			throw new Error('telegram adapter already started');
+		}
+		this.ctx = ctx;
+		const factory =
+			this.opts.botFactory ??
+			((o): TelegramBot =>
+				new TelegramBot(
+					{
+						token: o.token,
+						apiBase: o.apiBase,
+						pollTimeoutSec: o.pollTimeoutSec,
+					},
+					o.log,
+				));
+		this.bot = factory({
+			token: this.opts.token,
+			apiBase: this.opts.apiBase,
+			pollTimeoutSec: this.opts.pollTimeoutSec,
+			log: ctx.log,
+		});
+		this.relay.bindBot(this.bot);
+		this.pollTask = this.runPollLoop();
+		ctx.signal.addEventListener('abort', () => {
+			this.bot?.stop();
+		});
+	}
+
+	async stop(_reason: StopReason): Promise<void> {
+		this.relay.disposeAll();
+		this.bot?.stop();
+		const task = this.pollTask;
+		this.pollTask = null;
+		if (task) {
+			try {
+				await task;
+			} catch {
+				// poll loop logs its own errors; nothing to add here
+			}
+		}
+		this.relay.bindBot(null);
+		this.bot = null;
+		this.ctx = null;
+	}
+
+	async send(msg: OutboundMessage): Promise<SendResult> {
+		const bot = this.bot;
+		if (!bot) {
+			throw new Error('telegram adapter: send called before start');
+		}
+		const chatId = msg.location.peer?.id ?? msg.location.room?.id;
+		if (!chatId) {
+			throw new Error(
+				'telegram adapter: outbound location has no peer or room',
+			);
+		}
+		const threadId = msg.location.thread?.id
+			? Number(msg.location.thread.id)
+			: undefined;
+		const result = await bot.sendMessage(chatId, msg.text, {
+			...(threadId !== undefined && Number.isFinite(threadId)
+				? {message_thread_id: threadId}
+				: {}),
+		});
+		if (!result) {
+			throw new Error('telegram adapter: sendMessage returned null');
+		}
+		return {
+			providerMessageId: String(result.message_id),
+			deliveredAt: Date.now(),
+		};
+	}
+
+	async probe(): Promise<ProbeResult> {
+		// `getMe` would be cleanest, but the bot client doesn't expose it; the
+		// long-poll loop's last error is the most accurate signal we have. A
+		// dedicated probe RPC arrives with the gateway probe surface in M3+.
+		return {
+			ok: this.lastTransportOk,
+			detail: this.lastTransportOk ? 'long-poll healthy' : 'long-poll erroring',
+			checkedAt: Date.now(),
+		};
+	}
+
+	private async runPollLoop(): Promise<void> {
+		const bot = this.bot;
+		const ctx = this.ctx;
+		if (!bot || !ctx) return;
+		const allow =
+			this.opts.allowedUserIds.length === 0
+				? null
+				: new Set(this.opts.allowedUserIds.map(String));
+		try {
+			for await (const update of bot.poll()) {
+				if (this.relay.handleUpdate(update)) {
+					this.markHealth(true);
+					continue;
+				}
+				const inbound = normalizeInbound(update, allow);
+				if (!inbound) continue;
+				this.lastInboundAt = inbound.receivedAt;
+				this.markHealth(true);
+				try {
+					ctx.emitInbound(inbound);
+				} catch (err) {
+					ctx.log(
+						'warn',
+						`telegram emitInbound threw: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}
+		} catch (err) {
+			this.markHealth(false, err instanceof Error ? err.message : String(err));
+			ctx.log(
+				'error',
+				`telegram poll loop terminated: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			throw err;
+		}
+	}
+
+	private markHealth(ok: boolean, note?: string): void {
+		this.lastTransportOk = ok;
+		const ctx = this.ctx;
+		if (!ctx) return;
+		const sample: HealthSample = {
+			at: Date.now(),
+			transportOk: ok,
+			...(this.lastInboundAt !== undefined
+				? {lastInboundAt: this.lastInboundAt}
+				: {}),
+			...(note !== undefined ? {note} : {}),
+		};
+		try {
+			ctx.emitHealth(sample);
+		} catch {
+			// upstream emitter errors must not break the poll loop
+		}
+	}
+}
+
+function normalizeInbound(
+	update: TelegramUpdate,
+	allow: Set<string> | null,
+): NormalizedInbound | null {
+	const message = update.message ?? update.edited_message;
+	if (!message) return null;
+	const text = message.text;
+	if (typeof text !== 'string' || text.length === 0) return null;
+	const sender = message.from;
+	if (!sender) return null;
+	const senderId = String(sender.id);
+	if (allow && !allow.has(senderId)) return null;
+
+	const accountId = String(sender.is_bot ? `bot:${sender.id}` : 'user');
+	const chatId = String(message.chat.id);
+	const isPrivate = message.chat.type === 'private';
+	const threadId =
+		typeof message.message_thread_id === 'number'
+			? String(message.message_thread_id)
+			: undefined;
+
+	return {
+		location: {
+			channelId: TELEGRAM_ID,
+			accountId,
+			...(isPrivate
+				? {peer: {id: chatId, kind: 'user' as const}}
+				: {
+						room: {
+							id: chatId,
+							kind:
+								message.chat.type === 'channel'
+									? ('channel' as const)
+									: ('group' as const),
+						},
+					}),
+			...(threadId !== undefined ? {thread: {id: threadId}} : {}),
+		},
+		sender: {
+			id: senderId,
+			...(sender.username !== undefined
+				? {displayName: sender.username}
+				: sender.first_name !== undefined
+					? {displayName: sender.first_name}
+					: {}),
+		},
+		text,
+		receivedAt: Date.now(),
+		idempotencyKey: `tg:${update.update_id}`,
+		providerMessageId: String(message.message_id),
+	};
+}

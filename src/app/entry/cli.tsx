@@ -27,7 +27,6 @@ import {
 } from '../../infra/telemetry/index';
 import {writeGlobalConfig} from '../../infra/plugins/config';
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
-import {resolveChannels} from '../channels/setup';
 import {resolveTheme} from '../../ui/theme/index';
 import {shouldShowSetup} from '../../setup/shouldShowSetup';
 import {
@@ -42,6 +41,7 @@ import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
 import {runChannelCommand} from './channelCommand';
+import {runGatewayCommand} from './gatewayCommand';
 import {runDoctorCommand} from './doctorCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
 import {
@@ -81,6 +81,7 @@ const KNOWN_COMMANDS = new Set([
 	'workflow',
 	'marketplace',
 	'channel',
+	'gateway',
 	'telemetry',
 	'doctor',
 ]);
@@ -200,7 +201,12 @@ function inkRenderOptions() {
 }
 
 // Set terminal tab title immediately so it appears before React renders.
-process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');
+// Only when stdout is a TTY — otherwise we'd be writing escape sequences
+// into a pipe (e.g. `athena gateway status --json | jq`) and corrupting
+// the consumer.
+if (process.stdout.isTTY) {
+	process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');
+}
 
 // Register cleanup handlers early to catch all exit scenarios
 processRegistry.registerCleanupHandlers();
@@ -244,6 +250,11 @@ const cli = meow(
 			--bot-token     Telegram bot token (channel telegram configure)
 			--user-id       Telegram allowed user id (channel telegram configure)
 			--chat-id       Telegram destination chat id (defaults to --user-id)
+			--token         Gateway link token (gateway link)
+			--tls-ca        Gateway custom CA path (gateway link)
+			--bind          Gateway listen address host:port (gateway start)
+			--insecure      Allow plain WS on non-loopback trusted tunnels (gateway start)
+			--grace-period-ms Gateway reconnect grace period in milliseconds (gateway start)
 			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (exec mode)
 			--project       Scope workflow command to project config (workflow use)
 			--global        Scope workflow command to global config (workflow use, default)
@@ -346,6 +357,22 @@ const cli = meow(
 			},
 			chatId: {
 				type: 'string',
+			},
+			token: {
+				type: 'string',
+			},
+			tlsCa: {
+				type: 'string',
+			},
+			bind: {
+				type: 'string',
+			},
+			insecure: {
+				type: 'boolean',
+				default: false,
+			},
+			gracePeriodMs: {
+				type: 'number',
 			},
 			dryRun: {
 				type: 'boolean',
@@ -478,6 +505,30 @@ async function main(): Promise<void> {
 				},
 			}),
 		);
+		return;
+	}
+
+	if (command === 'gateway') {
+		const [subcommand = '', ...subcommandArgs] = commandArgs;
+		// Top-level meow consumes --json into cli.flags before subcommand args
+		// are sliced off; forward it so `gateway probe/status` see it.
+		if (cli.flags.json) subcommandArgs.push('--json');
+		if (typeof cli.flags.token === 'string') {
+			subcommandArgs.push('--token', cli.flags.token);
+		}
+		if (typeof cli.flags.tlsCa === 'string') {
+			subcommandArgs.push('--tls-ca', cli.flags.tlsCa);
+		}
+		if (typeof cli.flags.bind === 'string') {
+			subcommandArgs.push('--bind', cli.flags.bind);
+		}
+		if (cli.flags.insecure) {
+			subcommandArgs.push('--insecure');
+		}
+		if (typeof cli.flags.gracePeriodMs === 'number') {
+			subcommandArgs.push('--grace-period-ms', String(cli.flags.gracePeriodMs));
+		}
+		await exitWith(await runGatewayCommand({subcommand, subcommandArgs}));
 		return;
 	}
 
@@ -666,17 +717,8 @@ async function main(): Promise<void> {
 	const {athenaSessionId, initialSessionId} = interactiveSession;
 	const instanceId = process.pid;
 
-	// Resolve channel attachments: CLI flag wins; otherwise project, then global config.
-	const channelNames =
-		(cli.flags.channel?.length ?? 0) > 0
-			? (cli.flags.channel ?? [])
-			: (projectConfig.channels ?? globalConfig.channels ?? []);
-	const channelResolution = resolveChannels(channelNames);
-	for (const failure of channelResolution.failures) {
-		console.error(
-			`Warning: skipping channel "${failure.name}": ${failure.reason}`,
-		);
-	}
+	// Channel attachments are deferred to the gateway in M6+; the legacy
+	// per-session channel-subprocess wiring has been removed.
 
 	render(
 		<App
@@ -700,7 +742,6 @@ async function main(): Promise<void> {
 			ascii={cli.flags.ascii}
 			showSetup={showSetup}
 			initialTelemetryDiagnosticsConsent={globalConfig.telemetryDiagnostics}
-			channels={channelResolution.definitions}
 		/>,
 		inkRenderOptions(),
 	);

@@ -13,15 +13,13 @@ import {type HookContextValue, type HookProviderProps} from './types';
 import {createRuntime} from '../runtime/createRuntime';
 import type {Runtime} from '../../core/runtime/types';
 import type {SessionStore} from '../../infra/sessions/store';
-import {PermissionRelay} from '../../channels/permissionRelay';
-import {QuestionRelay} from '../../channels/questionRelay';
-import {ChannelRegistry} from '../../channels/registry';
-import type {ChannelDefinition} from '../../channels/types';
-
+import {SessionBridge} from '../channels/sessionBridge';
+import type {RuntimeEvent, RuntimeDecision} from '../../core/runtime/types';
+import {writeGatewayTrace} from '../../gateway/transport/trace';
 const HookContext = createContext<HookContextValue | null>(null);
 const RuntimeRefContext = createContext<Runtime | null>(null);
 const SessionStoreContext = createContext<SessionStore | null>(null);
-const ChannelRegistryContext = createContext<ChannelRegistry | null>(null);
+const SessionBridgeContext = createContext<SessionBridge | null>(null);
 const EMPTY_MESSAGES: never[] = [];
 const MISSING_CONTEXT = Symbol('missing-hook-context');
 
@@ -29,21 +27,54 @@ function HookProviderContent({
 	runtime,
 	allowedTools,
 	sessionStore,
-	channelRegistry,
+	sessionBridge,
 	children,
 }: {
 	runtime: ReturnType<typeof createRuntime>;
 	allowedTools?: string[];
 	sessionStore: ReturnType<typeof createSessionStore>;
-	channelRegistry: ChannelRegistry | null;
+	sessionBridge: SessionBridge | null;
 	children: HookProviderProps['children'];
 }) {
+	const relayPermission = useMemo(() => {
+		if (!sessionBridge) return undefined;
+		return (event: RuntimeEvent) => {
+			writeGatewayTrace(
+				`RuntimeProvider relayPermission event=${event.id} tool=${resolveToolName(event)}`,
+			);
+			void sessionBridge
+				.relayPermission({
+					toolName: resolveToolName(event),
+					description:
+						event.display?.title ?? `${resolveToolName(event)} request`,
+					inputPreview: previewToolInput(event),
+					...(event.interaction.defaultTimeoutMs !== undefined
+						? {ttlMs: event.interaction.defaultTimeoutMs}
+						: {}),
+				})
+				.then(res => {
+					const decision = permissionRelayDecision(res.result);
+					if (!decision) return;
+					runtime.sendDecision(event.id, decision);
+				})
+				.catch(err => {
+					if (process.env['ATHENA_GATEWAY_TRACE'] === '1') {
+						console.error(
+							`[athena] gateway relayPermission failed: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+						);
+					}
+				});
+		};
+	}, [runtime, sessionBridge]);
+
 	const hookServer = useFeed(
 		runtime,
 		EMPTY_MESSAGES,
 		allowedTools,
 		sessionStore,
-		{autoStart: false, channelRegistry},
+		{autoStart: false, ...(relayPermission ? {relayPermission} : {})},
 	);
 
 	return (
@@ -60,7 +91,6 @@ export function HookProvider({
 	runtimeFactory = createRuntime,
 	allowedTools,
 	athenaSessionId,
-	channels,
 	children,
 }: HookProviderProps) {
 	// Runtime must be stable (memoized) — useFeed assumes it doesn't change
@@ -93,33 +123,10 @@ export function HookProvider({
 		[athenaSessionId, projectDir],
 	);
 
-	// Channel registry is constructed once per (runtime, channels) pair.
-	// Empty/missing channels list means no registry (no relay, no overhead).
-	const channelDefs: ChannelDefinition[] = useMemo(
-		() => channels ?? [],
-		[channels],
-	);
-	const channelRegistry = useMemo<ChannelRegistry | null>(() => {
-		if (channelDefs.length === 0) return null;
-		const relay = new PermissionRelay({runtime});
-		const questionRelay = new QuestionRelay({runtime});
-		return new ChannelRegistry({
-			sessionId: athenaSessionId,
-			relay,
-			questionRelay,
-			runtime,
-			channels: channelDefs,
-			logError: (channelName, message) => {
-				console.error(`[athena:channel:${channelName}] ${message}`);
-			},
-		});
-	}, [runtime, channelDefs, athenaSessionId]);
-
-	useEffect(() => {
-		return () => channelRegistry?.dispose();
-	}, [channelRegistry]);
-
 	const [readyRuntime, setReadyRuntime] = useState<Runtime | null>(null);
+	const [sessionBridge, setSessionBridge] = useState<SessionBridge | null>(
+		null,
+	);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -133,6 +140,46 @@ export function HookProvider({
 			cancelled = true;
 		};
 	}, [runtime]);
+
+	// Best-effort gateway connection. Falls through silently when the daemon
+	// isn't running so dev/test sessions still work without a gateway.
+	useEffect(() => {
+		let cancelled = false;
+		const bridge = new SessionBridge({
+			runtimeId: athenaSessionId,
+			defaultAgentId: 'main',
+		});
+		writeGatewayTrace(
+			`RuntimeProvider starting SessionBridge runtimeId=${athenaSessionId}`,
+		);
+		bridge
+			.start()
+			.then(() => {
+				if (cancelled) {
+					void bridge.stop();
+					return;
+				}
+				writeGatewayTrace(
+					`RuntimeProvider SessionBridge ready runtimeId=${athenaSessionId}`,
+				);
+				setSessionBridge(bridge);
+			})
+			.catch(err => {
+				writeGatewayTrace(
+					`RuntimeProvider SessionBridge failed runtimeId=${athenaSessionId} error=${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				// Daemon not running, unauthorized, or already-registered. The
+				// session continues without bridge; channel-driven turns and
+				// cross-channel relays are simply unavailable.
+			});
+		return () => {
+			cancelled = true;
+			void bridge.stop();
+			setSessionBridge(null);
+		};
+	}, [athenaSessionId]);
 
 	// Separate lifecycle effects: closing sessionStore must only happen when
 	// sessionStore itself is recreated (or on unmount), NOT when runtime changes.
@@ -157,16 +204,16 @@ export function HookProvider({
 	return (
 		<RuntimeRefContext.Provider value={runtime}>
 			<SessionStoreContext.Provider value={sessionStore}>
-				<ChannelRegistryContext.Provider value={channelRegistry}>
+				<SessionBridgeContext.Provider value={sessionBridge}>
 					<HookProviderContent
 						runtime={runtime}
 						allowedTools={allowedTools}
 						sessionStore={sessionStore}
-						channelRegistry={channelRegistry}
+						sessionBridge={sessionBridge}
 					>
 						{children}
 					</HookProviderContent>
-				</ChannelRegistryContext.Provider>
+				</SessionBridgeContext.Provider>
 			</SessionStoreContext.Provider>
 		</RuntimeRefContext.Provider>
 	);
@@ -213,6 +260,53 @@ export function useSessionStore(): SessionStore | null {
 	return useContext(SessionStoreContext);
 }
 
-export function useChannelRegistry(): ChannelRegistry | null {
-	return useContext(ChannelRegistryContext);
+/**
+ * Access the SessionBridge for the current session. Returns `null` when the
+ * gateway daemon is unreachable or while the bridge is still connecting. Code
+ * that depends on the bridge must handle the null case (channel-driven flows
+ * are inactive in that state).
+ */
+export function useSessionBridge(): SessionBridge | null {
+	return useContext(SessionBridgeContext);
+}
+
+function resolveToolName(event: RuntimeEvent): string {
+	const data = event.data as Record<string, unknown>;
+	return (
+		event.toolName ??
+		(typeof data['tool_name'] === 'string' ? data['tool_name'] : undefined) ??
+		'Tool'
+	);
+}
+
+function previewToolInput(event: RuntimeEvent): string {
+	const data = event.data as Record<string, unknown>;
+	const input = data['tool_input'] ?? event.payload;
+	if (typeof input === 'string') return input.slice(0, 4_000);
+	try {
+		return JSON.stringify(input, null, 2).slice(0, 4_000);
+	} catch {
+		return String(input).slice(0, 4_000);
+	}
+}
+
+function permissionRelayDecision(
+	result: Awaited<ReturnType<SessionBridge['relayPermission']>>['result'],
+): RuntimeDecision | null {
+	if (result.kind !== 'verdict') return null;
+	if (result.behavior === 'allow') {
+		return {
+			type: 'json',
+			source: 'user',
+			intent: {kind: 'permission_allow'},
+		};
+	}
+	return {
+		type: 'json',
+		source: 'user',
+		intent: {
+			kind: 'permission_deny',
+			reason: `Denied by ${result.channelId}`,
+		},
+	};
 }

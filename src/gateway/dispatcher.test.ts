@@ -1,0 +1,248 @@
+import {describe, expect, it, vi} from 'vitest';
+import type {
+	NormalizedInbound,
+	SessionDispatchTurnPushPayload,
+} from '../shared/gateway-protocol';
+import {Dispatcher} from './dispatcher';
+import {SessionRegistry} from './sessionRegistry';
+import {openGatewayState} from './state/db';
+import {InboundQueue} from './state/inboundQueue';
+
+function makeRegistry() {
+	let n = 0;
+	return new SessionRegistry({
+		idFactory: () => `disp-${++n}`,
+		now: () => 1000 + n,
+	});
+}
+
+const inbound: NormalizedInbound = {
+	location: {
+		channelId: 'telegram',
+		accountId: 'a',
+		peer: {id: '12345', kind: 'user'},
+	},
+	sender: {id: '99', displayName: 'alice'},
+	text: 'hello bot',
+	receivedAt: 100,
+	idempotencyKey: 'tg:1',
+	providerMessageId: '5',
+};
+
+describe('Dispatcher', () => {
+	it('drops inbound when no runtime is registered', () => {
+		const registry = makeRegistry();
+		const pushDispatch = vi.fn<(p: SessionDispatchTurnPushPayload) => void>();
+		const sendOutbound = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound,
+		});
+		const result = dispatcher.handleInbound(inbound);
+		expect(result).toEqual({kind: 'dropped', reason: 'no_runtime'});
+		expect(pushDispatch).not.toHaveBeenCalled();
+	});
+
+	it('dispatches inbound and pushes to runtime with default agent', () => {
+		const registry = makeRegistry();
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 100});
+		const pushDispatch = vi.fn<(p: SessionDispatchTurnPushPayload) => void>();
+		const sendOutbound = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound,
+		});
+		const result = dispatcher.handleInbound(inbound);
+		expect(result).toMatchObject({
+			kind: 'dispatched',
+			dispatchId: 'disp-1',
+			sessionKey: 'peer:telegram:a:12345',
+		});
+		expect(pushDispatch).toHaveBeenCalledOnce();
+		expect(pushDispatch.mock.calls[0]?.[0]).toMatchObject({
+			dispatchId: 'disp-1',
+			sessionKey: 'peer:telegram:a:12345',
+			agentId: 'main',
+			inbound,
+		});
+		expect(registry.pendingDispatchCount()).toBe(1);
+	});
+
+	it('honours custom agent resolver', () => {
+		const registry = makeRegistry();
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const pushDispatch = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound: vi.fn(),
+			resolveAgent: ({channelId}) =>
+				channelId === 'telegram' ? 'tg-agent' : 'main',
+		});
+		dispatcher.handleInbound(inbound);
+		expect(
+			(pushDispatch.mock.calls[0]?.[0] as SessionDispatchTurnPushPayload)
+				.agentId,
+		).toBe('tg-agent');
+	});
+
+	it('round-trips inbound → dispatch.turn → turn.complete → send()', async () => {
+		const registry = makeRegistry();
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const sendOutbound = vi
+			.fn()
+			.mockResolvedValue({providerMessageId: '101', deliveredAt: 1});
+		const pushDispatch = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound,
+		});
+
+		const dispatched = dispatcher.handleInbound(inbound);
+		expect(dispatched.kind).toBe('dispatched');
+		const dispatchId =
+			dispatched.kind === 'dispatched' ? dispatched.dispatchId : '';
+
+		const reply = await dispatcher.handleTurnComplete({
+			runtimeId: 'r1',
+			dispatchId,
+			location: inbound.location,
+			text: 'hi back',
+			idempotencyKey: 'reply:1',
+		});
+		expect(reply).toEqual({delivered: true, providerMessageId: '101'});
+		expect(sendOutbound).toHaveBeenCalledWith('telegram', {
+			location: inbound.location,
+			text: 'hi back',
+			idempotencyKey: 'reply:1',
+		});
+		expect(registry.pendingDispatchCount()).toBe(0);
+	});
+
+	it('returns delivered=false for unknown dispatchId', async () => {
+		const registry = makeRegistry();
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+		});
+		const reply = await dispatcher.handleTurnComplete({
+			runtimeId: 'r1',
+			dispatchId: 'missing',
+			location: inbound.location,
+			text: 'hi',
+			idempotencyKey: 'k',
+		});
+		expect(reply).toEqual({delivered: false});
+	});
+
+	it('parks inbound in the queue when no runtime is registered', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		const result = dispatcher.handleInbound(inbound);
+		expect(result).toMatchObject({kind: 'queued'});
+		expect(queue.size()).toBe(1);
+		db.close();
+	});
+
+	it('drainPending dispatches parked inbound in FIFO order on register', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const pushDispatch = vi.fn<(p: SessionDispatchTurnPushPayload) => void>();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+
+		// Park three messages while no runtime is registered.
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:1'});
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:2'});
+		dispatcher.handleInbound({...inbound, idempotencyKey: 'tg:3'});
+		expect(queue.size()).toBe(3);
+		expect(pushDispatch).not.toHaveBeenCalled();
+
+		// Now a runtime registers; drain should fire dispatches in FIFO order.
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const summary = dispatcher.drainPending();
+		expect(summary).toEqual({dispatched: 3, dropped: 0});
+		expect(queue.size()).toBe(0);
+		expect(pushDispatch).toHaveBeenCalledTimes(3);
+		expect(
+			pushDispatch.mock.calls.map(c => c[0].inbound.idempotencyKey),
+		).toEqual(['tg:1', 'tg:2', 'tg:3']);
+		db.close();
+	});
+
+	it('drainPending is a no-op without a registered runtime', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db);
+		const pushDispatch = vi.fn();
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch,
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		dispatcher.handleInbound(inbound);
+		expect(dispatcher.drainPending()).toEqual({dispatched: 0, dropped: 0});
+		expect(queue.size()).toBe(1);
+		expect(pushDispatch).not.toHaveBeenCalled();
+		db.close();
+	});
+
+	it('drops on queue_full when capacity is exceeded', () => {
+		const registry = makeRegistry();
+		const db = openGatewayState(':memory:');
+		const queue = new InboundQueue(db, {maxEntries: 1});
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+			inboundQueue: queue,
+		});
+		expect(
+			dispatcher.handleInbound({...inbound, idempotencyKey: 'k1'}).kind,
+		).toBe('queued');
+		expect(
+			dispatcher.handleInbound({...inbound, idempotencyKey: 'k2'}),
+		).toEqual({
+			kind: 'dropped',
+			reason: 'queue_full',
+		});
+		db.close();
+	});
+
+	it('throws on runtimeId mismatch', async () => {
+		const registry = makeRegistry();
+		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
+		const dispatcher = new Dispatcher({
+			registry,
+			pushDispatch: vi.fn(),
+			sendOutbound: vi.fn(),
+		});
+		await expect(
+			dispatcher.handleTurnComplete({
+				runtimeId: 'rZ',
+				dispatchId: 'd',
+				location: inbound.location,
+				text: 'hi',
+				idempotencyKey: 'k',
+			}),
+		).rejects.toThrow('runtime mismatch');
+	});
+});
