@@ -21,6 +21,7 @@ import type {
 	StatusResponsePayload,
 } from '../../shared/gateway-protocol';
 import {isSupportedGatewayUrl} from '../../shared/gateway-protocol';
+import {formatElapsed} from '../../shared/utils/formatElapsed';
 
 const USAGE = `Usage: athena-flow gateway <subcommand> [--json]
 
@@ -214,10 +215,7 @@ export async function runGatewayCommand(
 			if (json) {
 				logOut(JSON.stringify(res));
 			} else {
-				const runtimeSummary =
-					res.runtimes.length > 0
-						? ` runtime=${res.runtimes[0]!.runtimeId} binding=${res.runtimes[0]!.binding.state} pid=${res.runtimes[0]!.pid}`
-						: ' runtime=<none>';
+				const runtimeSummary = formatRuntimeSummary(res.runtimes[0]);
 				logOut(
 					`gateway: running pid=${res.daemonPid} uptime=${res.uptimeMs}ms version=${res.version}${runtimeSummary}`,
 				);
@@ -355,4 +353,17 @@ function reportProbeFailure(
 		logError(`gateway: ${message}`);
 	}
 	return 1;
+}
+
+function formatRuntimeSummary(
+	r: StatusResponsePayload['runtimes'][number] | undefined,
+): string {
+	if (!r) return ' runtime=<none>';
+	const lastRebindAt =
+		r.binding.state !== 'none' ? r.binding.lastRebindAt : undefined;
+	const rebind =
+		lastRebindAt !== undefined
+			? ` rebound=${formatElapsed(Date.now() - lastRebindAt)}`
+			: '';
+	return ` runtime=${r.runtimeId} binding=${r.binding.state} pid=${r.pid}${rebind}`;
 }

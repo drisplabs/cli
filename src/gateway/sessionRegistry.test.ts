@@ -124,4 +124,24 @@ describe('SessionRegistry', () => {
 		reg.unregister('r1');
 		expect(reg.pendingDispatchCount()).toBe(0);
 	});
+
+	it('records lastRebindAt when a stale binding is reactivated', () => {
+		const reg = makeRegistry();
+		reg.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 99});
+		reg.bindConnection('r1', 'c1');
+		expect(reg.getBinding()?.lastRebindAt).toBeUndefined();
+		reg.markConnectionStale('c1');
+		expect(reg.getBinding()?.state).toBe('stale');
+		reg.bindConnection('r1', 'c2');
+		expect(reg.getBinding()?.state).toBe('active');
+		expect(reg.getBinding()?.lastRebindAt).toBeDefined();
+	});
+
+	it('records lastRebindAt when an active binding is replaced by a new connection', () => {
+		const reg = makeRegistry();
+		reg.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 99});
+		reg.bindConnection('r1', 'c1');
+		reg.bindConnection('r1', 'c2');
+		expect(reg.getBinding()?.lastRebindAt).toBeDefined();
+	});
 });

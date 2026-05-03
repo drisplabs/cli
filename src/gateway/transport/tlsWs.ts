@@ -7,6 +7,10 @@ export type LoopbackWsServerTransportOptions = {
 	host: string;
 	port: number;
 	allowNonLoopback?: boolean;
+	/** Ping interval in ms (default 15000). Set <=0 to disable. */
+	pingIntervalMs?: number;
+	/** Terminate connections that have not ponged within this window (default 30000). */
+	pongTimeoutMs?: number;
 };
 
 export type WsEndpoint = {
@@ -70,11 +74,41 @@ export function createLoopbackWsServerTransport(
 							}),
 					});
 				});
+				const pingIntervalMs = opts.pingIntervalMs ?? 15_000;
+				const pongTimeoutMs = opts.pongTimeoutMs ?? 30_000;
 				wss.on('connection', ws => {
+					attachHeartbeat(ws, pingIntervalMs, pongTimeoutMs);
 					onConnection(createWsConnection(ws, `ws:${opts.host}`));
 				});
 			}),
 	};
+}
+
+function attachHeartbeat(
+	ws: WebSocket,
+	pingIntervalMs: number,
+	pongTimeoutMs: number,
+): void {
+	if (pingIntervalMs <= 0) return;
+	let lastPongAt = Date.now();
+	ws.on('pong', () => {
+		lastPongAt = Date.now();
+	});
+	const interval = setInterval(() => {
+		if (ws.readyState !== ws.OPEN) return;
+		if (Date.now() - lastPongAt > pongTimeoutMs) {
+			ws.terminate();
+			return;
+		}
+		try {
+			ws.ping();
+		} catch {
+			// best-effort; close handler will clean up
+		}
+	}, pingIntervalMs);
+	const stop = () => clearInterval(interval);
+	ws.on('close', stop);
+	ws.on('error', stop);
 }
 
 function createWsConnection(ws: WebSocket, peer: string): FramedConnection {

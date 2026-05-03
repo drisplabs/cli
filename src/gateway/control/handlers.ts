@@ -35,6 +35,7 @@ import type {Dispatcher} from '../dispatcher';
 import type {RelayCoordinator} from '../relay/coordinator';
 import {
 	AlreadyRegisteredError,
+	maybeLastRebindAt,
 	NotRegisteredError,
 	type SessionRegistry,
 } from '../sessionRegistry';
@@ -320,9 +321,17 @@ function runtimeStatusEntries(
 			registeredAt: runtime.registeredAt,
 			binding:
 				binding?.state === 'active'
-					? {state: 'active', boundAt: binding.boundAt}
+					? {
+							state: 'active',
+							boundAt: binding.boundAt,
+							...maybeLastRebindAt(binding.lastRebindAt),
+						}
 					: binding?.state === 'stale'
-						? {state: 'stale', staleSince: binding.staleSince}
+						? {
+								state: 'stale',
+								staleSince: binding.staleSince,
+								...maybeLastRebindAt(binding.lastRebindAt),
+							}
 						: {state: 'none'},
 			pendingDispatchCount: registry.pendingDispatchCount(),
 		},

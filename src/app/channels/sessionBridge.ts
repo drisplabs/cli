@@ -74,6 +74,8 @@ export type SessionBridgeOptions = {
 	loadEndpoint?: () => RuntimeEndpoint;
 	/** Pre-resolved client; bypasses the UDS connect step (test affordance). */
 	client?: ControlClient;
+	/** Test affordance: override the reconnect backoff schedule (ms per attempt). */
+	backoffMs?: readonly number[];
 };
 
 export type TurnDispatchHandler = (
@@ -102,36 +104,54 @@ export type SessionBridgeTurnComplete = {
 	idempotencyKey: string;
 };
 
+export type SessionBridgeConnectionState =
+	| 'idle'
+	| 'connected'
+	| 'reconnecting'
+	| 'stopped';
+
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
+
 export class SessionBridge {
 	private readonly opts: SessionBridgeOptions;
+	private readonly backoffSchedule: readonly number[];
+	private readonly turnDispatchHandlers = new Set<TurnDispatchHandler>();
 	private client: ControlClient | null = null;
 	private turnDispatchUnsubscribe: (() => void) | null = null;
 	private clientCloseUnsubscribe: (() => void) | null = null;
-	private readonly turnDispatchHandlers = new Set<TurnDispatchHandler>();
 	private started = false;
-	private disconnected = false;
+	private stopped = false;
 	private reconnecting: Promise<void> | null = null;
+	private reconnectAttempts = 0;
+	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private sleepResolver: (() => void) | null = null;
 
 	constructor(opts: SessionBridgeOptions) {
 		this.opts = opts;
+		this.backoffSchedule =
+			opts.backoffMs && opts.backoffMs.length > 0
+				? opts.backoffMs
+				: RECONNECT_BACKOFF_MS;
+	}
+
+	getConnectionState(): SessionBridgeConnectionState {
+		if (this.stopped) return 'stopped';
+		if (!this.started) return 'idle';
+		if (this.reconnecting) return 'reconnecting';
+		return 'connected';
 	}
 
 	async start(): Promise<SessionRegisterResponsePayload> {
 		if (this.started) {
 			throw new Error('session bridge already started');
 		}
-		const endpoint =
-			this.opts.endpoint ??
-			(this.opts.paths
-				? {mode: 'local' as const}
-				: (this.opts.loadEndpoint ?? readGatewayClientConfig)());
-		const paths = this.opts.paths ?? resolveGatewayPaths();
+		const target = this.resolveEndpointPaths();
 		writeGatewayTrace(
-			`sessionBridge start runtimeId=${this.opts.runtimeId} endpoint=${endpoint.mode}${
-				endpoint.mode === 'remote' ? ` url=${endpoint.url}` : ''
+			`sessionBridge start runtimeId=${this.opts.runtimeId} endpoint=${target.endpoint.mode}${
+				target.endpoint.mode === 'remote' ? ` url=${target.endpoint.url}` : ''
 			}`,
 		);
-		const res = await this.connectAndRegister({endpoint, paths});
+		const res = await this.connectAndRegister(target);
 		writeGatewayTrace(
 			`sessionBridge registered runtimeId=${this.opts.runtimeId}`,
 		);
@@ -139,9 +159,35 @@ export class SessionBridge {
 		return res;
 	}
 
+	private resolveEndpointPaths(): {
+		endpoint: RuntimeEndpoint;
+		paths: GatewayPaths;
+	} {
+		const endpoint =
+			this.opts.endpoint ??
+			(this.opts.paths
+				? {mode: 'local' as const}
+				: (this.opts.loadEndpoint ?? readGatewayClientConfig)());
+		const paths = this.opts.paths ?? resolveGatewayPaths();
+		return {endpoint, paths};
+	}
+
 	async stop(): Promise<void> {
+		this.stopped = true;
+		this.wakeSleep();
+		const pendingReconnect = this.reconnecting;
+		if (pendingReconnect) {
+			try {
+				await pendingReconnect;
+			} catch {
+				// reconnect failures during stop are expected
+			}
+		}
 		const client = this.client;
-		if (!client) return;
+		if (!client) {
+			this.started = false;
+			return;
+		}
 		try {
 			const req: SessionUnregisterRequestPayload = {
 				runtimeId: this.opts.runtimeId,
@@ -160,7 +206,6 @@ export class SessionBridge {
 		client.close();
 		this.client = null;
 		this.started = false;
-		this.disconnected = false;
 	}
 
 	onTurnDispatch(cb: TurnDispatchHandler): () => void {
@@ -275,35 +320,80 @@ export class SessionBridge {
 		if (!this.started) {
 			throw new Error('session bridge not started');
 		}
-		if (this.disconnected) {
-			await this.reconnect();
+		if (this.reconnecting) {
+			await this.reconnecting;
 		}
 		return this.requireClient();
 	}
 
-	private async reconnect(): Promise<void> {
-		if (this.reconnecting) {
-			await this.reconnecting;
-			return;
-		}
+	private kickReconnect(): Promise<void> {
+		if (this.stopped) return Promise.resolve();
+		if (this.reconnecting) return this.reconnecting;
+		this.reconnectAttempts = 0;
+		const target = this.resolveEndpointPaths();
 		this.reconnecting = (async () => {
-			const endpoint =
-				this.opts.endpoint ??
-				(this.opts.paths
-					? {mode: 'local' as const}
-					: (this.opts.loadEndpoint ?? readGatewayClientConfig)());
-			const paths = this.opts.paths ?? resolveGatewayPaths();
-			writeGatewayTrace(
-				`sessionBridge reconnect runtimeId=${this.opts.runtimeId}`,
-			);
-			await this.connectAndRegister({endpoint, paths});
-			writeGatewayTrace(
-				`sessionBridge reconnected runtimeId=${this.opts.runtimeId}`,
-			);
+			while (!this.stopped) {
+				const attempt = this.reconnectAttempts;
+				writeGatewayTrace(
+					`sessionBridge reconnect attempt=${attempt} runtimeId=${this.opts.runtimeId}`,
+				);
+				try {
+					await this.connectAndRegister(target);
+					this.reconnectAttempts = 0;
+					writeGatewayTrace(
+						`sessionBridge reconnected runtimeId=${this.opts.runtimeId}`,
+					);
+					return;
+				} catch (err) {
+					// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- mutated by stop() during await
+					if (this.stopped) return;
+					this.reconnectAttempts = attempt + 1;
+					const delay = this.delayForAttempt(attempt);
+					const msg = err instanceof Error ? err.message : String(err);
+					writeGatewayTrace(
+						`sessionBridge reconnect failed attempt=${attempt} delayMs=${delay} err=${msg}`,
+					);
+					await this.sleepCancelable(delay);
+				}
+			}
 		})().finally(() => {
 			this.reconnecting = null;
 		});
-		await this.reconnecting;
+		return this.reconnecting;
+	}
+
+	private delayForAttempt(attempt: number): number {
+		const base =
+			this.backoffSchedule[
+				Math.min(attempt, this.backoffSchedule.length - 1)
+			] ?? 30_000;
+		const jitter = Math.random() * base;
+		return Math.floor(base / 2 + jitter / 2);
+	}
+
+	private sleepCancelable(ms: number): Promise<void> {
+		return new Promise(resolve => {
+			if (this.stopped) {
+				resolve();
+				return;
+			}
+			this.sleepResolver = resolve;
+			this.reconnectTimer = setTimeout(() => {
+				this.reconnectTimer = null;
+				this.sleepResolver = null;
+				resolve();
+			}, ms);
+		});
+	}
+
+	private wakeSleep(): void {
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = null;
+		}
+		const resolver = this.sleepResolver;
+		this.sleepResolver = null;
+		if (resolver) resolver();
 	}
 
 	private async connectAndRegister(input: {
@@ -328,7 +418,6 @@ export class SessionBridge {
 			SessionRegisterRequestPayload,
 			SessionRegisterResponsePayload
 		>('session.register', req);
-		this.disconnected = false;
 		return res;
 	}
 
@@ -355,7 +444,11 @@ export class SessionBridge {
 			},
 		);
 		this.clientCloseUnsubscribe = client.onClose(() => {
-			this.disconnected = true;
+			if (this.client !== client || !this.started || this.stopped) return;
+			writeGatewayTrace(
+				`sessionBridge connection closed runtimeId=${this.opts.runtimeId}`,
+			);
+			this.kickReconnect().catch(() => {});
 		});
 	}
 }

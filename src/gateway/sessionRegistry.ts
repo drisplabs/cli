@@ -21,8 +21,18 @@ export type RegisteredRuntime = {
 };
 
 export type RuntimeConnectionBinding =
-	| {state: 'active'; connectionId: string; boundAt: number}
-	| {state: 'stale'; connectionId: string; staleSince: number};
+	| {
+			state: 'active';
+			connectionId: string;
+			boundAt: number;
+			lastRebindAt?: number;
+	  }
+	| {
+			state: 'stale';
+			connectionId: string;
+			staleSince: number;
+			lastRebindAt?: number;
+	  };
 
 export type DispatchEntry = {
 	dispatchId: string;
@@ -56,6 +66,12 @@ export class UnknownDispatchError extends Error {
 		super(`unknown dispatchId: ${id}`);
 		this.name = 'UnknownDispatchError';
 	}
+}
+
+export function maybeLastRebindAt(value: number | undefined): {
+	lastRebindAt?: number;
+} {
+	return value !== undefined ? {lastRebindAt: value} : {};
 }
 
 export type SessionRegistryOptions = {
@@ -100,10 +116,17 @@ export class SessionRegistry {
 		if (!this.current || this.current.runtimeId !== runtimeId) {
 			throw new NotRegisteredError();
 		}
+		const previous = this.binding;
+		const now = this.now();
+		const isRebind =
+			previous !== null &&
+			(previous.state === 'stale' || previous.connectionId !== connectionId);
+		const lastRebindAt = isRebind ? now : previous?.lastRebindAt;
 		this.binding = {
 			state: 'active',
 			connectionId,
-			boundAt: this.now(),
+			boundAt: now,
+			...maybeLastRebindAt(lastRebindAt),
 		};
 	}
 
@@ -120,6 +143,7 @@ export class SessionRegistry {
 			state: 'stale',
 			connectionId,
 			staleSince: this.now(),
+			...maybeLastRebindAt(this.binding.lastRebindAt),
 		};
 		return this.current.runtimeId;
 	}

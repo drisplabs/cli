@@ -264,10 +264,12 @@ describe('SessionBridge integration', () => {
 		const payload = seen.mock.calls[0][0] as {dispatchId: string};
 
 		(bridge as unknown as {client: {close: () => void}}).client.close();
-		await waitUntil(
-			() => daemon!.registry.getBinding()?.state === 'stale',
-			2_000,
-		);
+		// Background reconnect kicks in immediately — wait for the rebind to
+		// produce a fresh active binding (lastRebindAt is set on rebind).
+		await waitUntil(() => {
+			const b = daemon!.registry.getBinding();
+			return b?.state === 'active' && b.lastRebindAt !== undefined;
+		}, 3_000);
 
 		const reply = await bridge.completeTurn({
 			dispatchId: payload.dispatchId,
@@ -279,6 +281,49 @@ describe('SessionBridge integration', () => {
 		expect(reply).toMatchObject({delivered: true});
 		expect(adapter.sentMessages.at(-1)?.text).toBe('reconnected reply');
 		expect(daemon.registry.getBinding()?.state).toBe('active');
+	}, 15_000);
+
+	it('background reconnect re-registers without an RPC and drains parked inbound', async () => {
+		daemon = await startDaemon({
+			foreground: true,
+			silent: true,
+			paths,
+			skipSignalHandlers: true,
+			skipChannelLoad: true,
+			disconnectGracePeriodMs: 5_000,
+			listenSpec: {
+				kind: 'tcp',
+				host: '127.0.0.1',
+				port: 0,
+				insecure: false,
+			},
+		});
+		const adapter = new FakeAdapter();
+		await daemon.channelManager.register(adapter);
+		const token = fs.readFileSync(paths.tokenPath, 'utf-8').trim();
+
+		bridge = new SessionBridge({
+			runtimeId: 'bg-reconnect-1',
+			defaultAgentId: 'main',
+			endpoint: {mode: 'remote', url: daemon.listener.url!, token},
+			backoffMs: [50, 100],
+		});
+		const seen: string[] = [];
+		bridge.onTurnDispatch(p => seen.push(p.inbound.idempotencyKey));
+		await bridge.start();
+		expect(bridge.getConnectionState()).toBe('connected');
+
+		// Force a transport drop. No RPC issued from the test side.
+		(bridge as unknown as {client: {close: () => void}}).client.close();
+
+		// Park an inbound during the gap so we can confirm it drains after the
+		// background reconnect re-binds (without anyone calling an RPC).
+		adapter.emitInbound({...inbound, idempotencyKey: 'fk:bg-after-drop'});
+
+		await waitUntil(() => seen.includes('fk:bg-after-drop'), 3_000);
+		expect(daemon.registry.getBinding()?.state).toBe('active');
+		expect(daemon.registry.getBinding()?.lastRebindAt).toBeDefined();
+		expect(bridge.getConnectionState()).toBe('connected');
 	}, 15_000);
 
 	it('drains parked inbound on session.register', async () => {

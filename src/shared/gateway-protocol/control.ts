@@ -54,8 +54,8 @@ export type RuntimeStatusEntry = {
 	pid: number;
 	registeredAt: number;
 	binding:
-		| {state: 'active'; boundAt: number}
-		| {state: 'stale'; staleSince: number}
+		| {state: 'active'; boundAt: number; lastRebindAt?: number}
+		| {state: 'stale'; staleSince: number; lastRebindAt?: number}
 		| {state: 'none'};
 	pendingDispatchCount: number;
 };

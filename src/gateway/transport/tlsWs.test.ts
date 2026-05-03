@@ -1,0 +1,52 @@
+import {describe, expect, it} from 'vitest';
+import {WebSocket} from 'ws';
+import {createLoopbackWsServerTransport} from './tlsWs';
+
+describe('createLoopbackWsServerTransport heartbeat', () => {
+	it('terminates a connection that stops responding to pings', async () => {
+		const transport = createLoopbackWsServerTransport({
+			host: '127.0.0.1',
+			port: 0,
+			pingIntervalMs: 30,
+			pongTimeoutMs: 60,
+		});
+		const closed: Array<() => void> = [];
+		const server = await transport.listen(conn => {
+			conn.onClose(() => closed.push(() => {}));
+		});
+		const url = transport.endpoint().url;
+
+		// Open a raw WS but suppress pong responses so the heartbeat must trip.
+		const ws = new WebSocket(url, {autoPong: false});
+		await new Promise<void>(resolve => ws.once('open', () => resolve()));
+		// Intentionally do nothing on ping — gateway must terminate after pongTimeoutMs.
+		ws.on('ping', () => {});
+
+		const closeWaiter = new Promise<void>(resolve => ws.once('close', resolve));
+		await closeWaiter;
+		// Server-side close event fires on its own ws instance; give it a tick.
+		await new Promise(r => setTimeout(r, 50));
+		expect(closed.length).toBeGreaterThan(0);
+		await server.close();
+	}, 5_000);
+
+	it('keeps a healthy connection alive across multiple ping intervals', async () => {
+		const transport = createLoopbackWsServerTransport({
+			host: '127.0.0.1',
+			port: 0,
+			pingIntervalMs: 30,
+			pongTimeoutMs: 1_000,
+		});
+		const server = await transport.listen(() => {});
+		const url = transport.endpoint().url;
+
+		const ws = new WebSocket(url);
+		await new Promise<void>(resolve => ws.once('open', () => resolve()));
+
+		// Wait through several ping intervals; the ws lib auto-replies with pong.
+		await new Promise(r => setTimeout(r, 150));
+		expect(ws.readyState).toBe(ws.OPEN);
+		ws.close();
+		await server.close();
+	}, 5_000);
+});
