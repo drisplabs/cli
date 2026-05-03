@@ -23,7 +23,11 @@
  * follow-up commit. This module is the substrate; the wiring is downstream.
  */
 
-import {connect, type ControlClient} from '../../gateway/control/client';
+import {
+	connect,
+	GatewayProtocolError,
+	type ControlClient,
+} from '../../gateway/control/client';
 import {resolveGatewayPaths, type GatewayPaths} from '../../gateway/paths';
 import {writeGatewayTrace} from '../../gateway/transport/trace';
 import {createWsClientTransport} from '../../gateway/transport/wsClient';
@@ -347,6 +351,16 @@ export class SessionBridge {
 				} catch (err) {
 					// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- mutated by stop() during await
 					if (this.stopped) return;
+					if (
+						err instanceof GatewayProtocolError &&
+						err.code === 'already_registered'
+					) {
+						this.stopped = true;
+						writeGatewayTrace(
+							`sessionBridge reconnect terminal err=already_registered runtimeId=${this.opts.runtimeId}`,
+						);
+						return;
+					}
 					this.reconnectAttempts = attempt + 1;
 					const delay = this.delayForAttempt(attempt);
 					const msg = err instanceof Error ? err.message : String(err);
@@ -408,17 +422,27 @@ export class SessionBridge {
 						paths: input.paths,
 						loadToken: this.opts.loadToken ?? defaultLoadToken,
 					});
+		const previousClient = this.client;
 		this.replaceClient(client);
 		const req: SessionRegisterRequestPayload = {
 			runtimeId: this.opts.runtimeId,
 			defaultAgentId: this.opts.defaultAgentId,
 			pid: this.opts.pid ?? process.pid,
 		};
-		const res = await client.request<
-			SessionRegisterRequestPayload,
-			SessionRegisterResponsePayload
-		>('session.register', req);
-		return res;
+		try {
+			return await client.request<
+				SessionRegisterRequestPayload,
+				SessionRegisterResponsePayload
+			>('session.register', req);
+		} catch (err) {
+			this.turnDispatchUnsubscribe?.();
+			this.turnDispatchUnsubscribe = null;
+			this.clientCloseUnsubscribe?.();
+			this.clientCloseUnsubscribe = null;
+			client.close();
+			this.client = previousClient;
+			throw err;
+		}
 	}
 
 	private replaceClient(client: ControlClient): void {

@@ -90,23 +90,29 @@ function attachHeartbeat(
 	pongTimeoutMs: number,
 ): void {
 	if (pingIntervalMs <= 0) return;
-	let lastPongAt = Date.now();
-	ws.on('pong', () => {
-		lastPongAt = Date.now();
-	});
+	let pongTimer: ReturnType<typeof setTimeout> | null = null;
+	const clearPongTimer = () => {
+		if (pongTimer) {
+			clearTimeout(pongTimer);
+			pongTimer = null;
+		}
+	};
+	ws.on('pong', clearPongTimer);
 	const interval = setInterval(() => {
 		if (ws.readyState !== ws.OPEN) return;
-		if (Date.now() - lastPongAt > pongTimeoutMs) {
-			ws.terminate();
-			return;
-		}
 		try {
 			ws.ping();
 		} catch {
-			// best-effort; close handler will clean up
+			return;
+		}
+		if (!pongTimer) {
+			pongTimer = setTimeout(() => ws.terminate(), pongTimeoutMs);
 		}
 	}, pingIntervalMs);
-	const stop = () => clearInterval(interval);
+	const stop = () => {
+		clearInterval(interval);
+		clearPongTimer();
+	};
 	ws.on('close', stop);
 	ws.on('error', stop);
 }

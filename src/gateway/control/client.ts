@@ -42,9 +42,11 @@ export class GatewayUnauthorizedError extends Error {
 }
 
 export class GatewayProtocolError extends Error {
-	constructor(message: string) {
+	readonly code?: string;
+	constructor(message: string, code?: string) {
 		super(message);
 		this.name = 'GatewayProtocolError';
+		if (code !== undefined) this.code = code;
 	}
 }
 
@@ -191,7 +193,10 @@ export async function connect(
 			throw new GatewayProtocolError('response request_id mismatch');
 		}
 		if (!res.ok) {
-			throw new GatewayProtocolError(`${res.error.code}: ${res.error.message}`);
+			throw new GatewayProtocolError(
+				`${res.error.code}: ${res.error.message}`,
+				res.error.code,
+			);
 		}
 		return res.payload as TResponse;
 	};
