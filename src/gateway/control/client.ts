@@ -92,16 +92,18 @@ export async function connect(
 		throw err;
 	}
 
-	const helloWaiters: Array<(frame: unknown) => void> = [];
 	const pending = new Map<string, PendingResolver>();
 	const pushSubs = new Map<string, Set<(env: ControlPushEnvelope) => void>>();
 	const closeSubs = new Set<() => void>();
 	let helloAcked = false;
+	let preHelloAbort: ((err: Error) => void) | null = null;
+	let preHelloResolve: ((frame: unknown) => void) | null = null;
 
 	const handleFrame = (parsed: unknown): void => {
 		if (!helloAcked) {
-			const w = helloWaiters.shift();
-			if (w) w(parsed);
+			const r = preHelloResolve;
+			preHelloResolve = null;
+			r?.(parsed);
 			return;
 		}
 		if (!isStringRecord(parsed)) return;
@@ -131,6 +133,11 @@ export async function connect(
 	connection.onFrame(handleFrame);
 
 	connection.onClose(() => {
+		preHelloAbort?.(
+			new GatewayUnreachableError(
+				'gateway connection closed before hello frame',
+			),
+		);
 		for (const [, p] of pending) {
 			clearTimeout(p.timer);
 			p.reject(
@@ -147,9 +154,33 @@ export async function connect(
 		}
 	});
 
-	const helloFramePromise = new Promise<unknown>(resolve =>
-		helloWaiters.push(resolve),
-	);
+	connection.onError(err => {
+		preHelloAbort?.(
+			new GatewayUnreachableError(`gateway transport error: ${err.message}`),
+		);
+	});
+
+	const helloFramePromise = new Promise<unknown>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			preHelloAbort?.(
+				new GatewayUnreachableError(
+					`gateway hello not received within ${timeoutMs}ms`,
+				),
+			);
+		}, timeoutMs);
+		preHelloResolve = frame => {
+			clearTimeout(timer);
+			preHelloAbort = null;
+			resolve(frame);
+		};
+		preHelloAbort = err => {
+			clearTimeout(timer);
+			preHelloAbort = null;
+			preHelloResolve = null;
+			connection.close();
+			reject(err);
+		};
+	});
 	connection.send({kind: 'connect', token: opts.token});
 	const hello = await helloFramePromise;
 	if (!isStringRecord(hello) || hello['ok'] !== true) {

@@ -197,12 +197,20 @@ describe('runGatewayCommand', () => {
 		expect(cap.out.join('\n')).toContain('local');
 	});
 
-	// Smoke-only: with a nonexistent daemon binary, spawn fails or exits non-zero.
 	it('start returns non-zero if the daemon binary is missing', async () => {
 		const cap = captureLogs();
+		// Stub the spawn so the test does not actually exec Node against
+		// a non-existent script and inherit its stderr into the test output.
+		const spawned = vi.fn((_entry: string, _args: string[]) => {
+			const child = new EventEmitter() as EventEmitter & {
+				once: EventEmitter['once'];
+			};
+			setTimeout(() => child.emit('exit', 1), 0);
+			return child as never;
+		});
 		const code = await runGatewayCommand(
 			{subcommand: 'start', subcommandArgs: []},
-			cap.baseDeps,
+			{...cap.baseDeps, spawnDaemon: spawned},
 		);
 		expect(code).not.toBe(0);
 	});
