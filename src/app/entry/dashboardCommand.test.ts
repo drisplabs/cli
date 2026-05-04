@@ -458,6 +458,140 @@ describe('runDashboardCommand: status', () => {
 	});
 });
 
+describe('runDashboardCommand: connect', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'old-refresh',
+		fingerprint: 'fp-stored',
+		pairedAt: 1,
+	};
+
+	function makeFakeSocket() {
+		const calls = {
+			connect: 0,
+			closed: [] as string[],
+		};
+		let lastOpts: {
+			dashboardUrl: string;
+			instanceId: string;
+			accessToken: string;
+		} | null = null;
+		const factory = (o: {
+			dashboardUrl: string;
+			instanceId: string;
+			accessToken: string;
+		}) => {
+			lastOpts = o;
+			return {
+				connect: async () => {
+					calls.connect += 1;
+				},
+				close: (reason?: string) => {
+					calls.closed.push(reason ?? '');
+				},
+				onFrame: () => {},
+				onClose: () => {},
+			};
+		};
+		return {
+			factory,
+			calls,
+			lastOpts: () => lastOpts,
+		};
+	}
+
+	it('errors when not paired', async () => {
+		const {deps, cap} = makeDeps({});
+		const code = await runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			deps,
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('not paired');
+	});
+
+	it('refreshes an access token before opening the socket', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				accessToken: 'fresh-access',
+				refreshToken: 'rotated-refresh',
+				expiresInSec: 900,
+			}),
+		);
+		const fakeSocket = makeFakeSocket();
+		const {deps, cap, writes} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				makeInstanceSocketClient: fakeSocket.factory,
+				waitForShutdown: async () => 'SIGINT',
+			},
+		);
+
+		expect(code).toBe(0);
+		expect(fakeSocket.calls.connect).toBe(1);
+		expect(fakeSocket.lastOpts()).toEqual({
+			dashboardUrl: 'https://example.com',
+			instanceId: 'inst_1',
+			accessToken: 'fresh-access',
+			log: expect.any(Function),
+		});
+		expect(writes[0]?.refreshToken).toBe('rotated-refresh');
+		expect(cap.out.join('\n')).toContain('connected instance inst_1');
+		expect(cap.out.join('\n')).toContain('disconnected (SIGINT)');
+	});
+
+	it('exits 1 when refresh fails and never opens socket', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(jsonResponse(401, {error: 'expired'}));
+		const fakeSocket = makeFakeSocket();
+		const {deps} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				makeInstanceSocketClient: fakeSocket.factory,
+				waitForShutdown: async () => 'SIGINT',
+			},
+		);
+		expect(code).toBe(1);
+		expect(fakeSocket.calls.connect).toBe(0);
+	});
+
+	it('reports socket connect failure and exits 1', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				accessToken: 'fresh-access',
+				refreshToken: 'rotated-refresh',
+				expiresInSec: 900,
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				makeInstanceSocketClient: () => ({
+					connect: async () => {
+						throw new Error('refused');
+					},
+					close: () => {},
+					onFrame: () => {},
+					onClose: () => {},
+				}),
+				waitForShutdown: async () => 'SIGINT',
+			},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('refused');
+	});
+});
+
 describe('runDashboardCommand: unpair', () => {
 	it('removes config and is idempotent', async () => {
 		const stored: DashboardClientConfig = {
