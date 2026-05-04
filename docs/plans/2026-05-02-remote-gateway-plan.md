@@ -167,6 +167,23 @@ Carryover for the future multi-tenancy plan:
 
 Next milestone: R8 — telemetry + status polishing.
 
+## R8 status (2026-05-04)
+
+R8 is complete.
+
+- **Telemetry events** added in `src/infra/telemetry/events.ts` and wired:
+  - `gateway.transport.connect` / `gateway.transport.disconnect` — emitted from the daemon's `onConnect` / `onDisconnect` hooks; carry `transport`, `tls`, `loopback`, and (on disconnect) `durationMs`.
+  - `gateway.transport.reconnect` — emitted from `SessionBridge` per failed reconnect attempt; carries `transport`, `attempt`, `backoffMs`.
+  - `gateway.runtime.rebind` — emitted in the daemon's `registerRuntimeConnection` callback when the previous binding was stale; carries `gapMs` and the new binding `epoch`.
+  - `gateway.runtime.expired` — emitted from the grace-window timer when full unregister finally fires; carries `gapMs`.
+  - `capture()` is a safe no-op when telemetry has not been initialized — server-side events on a daemon that never ran `initTelemetry` simply drop, the wrappers stay non-throwing.
+- **Status polishing**: `StatusResponsePayload.listener` now reports the effective listener (`{kind:'uds',socketPath}` or `{kind:'tcp',host,port,url,tls,insecure,loopback}`), and `RuntimeStatusEntry.binding` carries the connection `epoch`. The CLI `gateway status` human output prefixes `listener=...` ahead of the runtime summary; `gateway status --json` returns the new fields directly.
+- Snapshot tests covering both the UDS and the loopback-WS listener shapes live in `src/gateway/control/control.test.ts`; the human-format and remote-endpoint cases in `src/app/entry/gatewayCommand.test.ts` were updated to include the new shape.
+
+Carryover:
+
+- The daemon does not currently call `initTelemetry`; events fire as no-ops when the daemon runs as a separate process from the CLI. A future slice can wire daemon-side telemetry via the existing global config — orthogonal to R8.
+
 ## Status (original plan, 2026-05-02)
 
 Working branch: TBD (suggest `remote-gateway`, branched from `gateway-integration`).
