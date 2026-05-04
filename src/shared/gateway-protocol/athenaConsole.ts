@@ -18,8 +18,10 @@ export type AthenaConsoleFrameKind =
 	| 'console.message.out'
 	| 'console.permission.request'
 	| 'console.permission.response'
+	| 'console.permission.cancel'
 	| 'console.question.request'
 	| 'console.question.response'
+	| 'console.question.cancel'
 	| 'console.ack'
 	| 'console.error';
 
@@ -44,6 +46,13 @@ export type AthenaConsoleHelloFrame = AthenaConsoleFrameBase & {
 	protocolVersion: number;
 	clientName: string;
 	clientVersion: string;
+	/**
+	 * Runner identity claimed by the adapter. The broker MUST verify this
+	 * against the credentials presented on the WSS upgrade and reject the
+	 * connection if they don't match. The adapter MUST cross-check the
+	 * `runnerId` echoed back in `console.ready.address`.
+	 */
+	address: AthenaConsoleAddress;
 };
 
 export type AthenaConsoleReadyFrame = AthenaConsoleFrameBase & {
@@ -87,6 +96,13 @@ export type AthenaConsolePermissionResponseFrame = AthenaConsoleFrameBase & {
 	decision: 'allow' | 'deny';
 };
 
+export type AthenaConsolePermissionCancelFrame = AthenaConsoleFrameBase & {
+	kind: 'console.permission.cancel';
+	channelRequestId: string;
+	/** Free-form short reason (e.g. 'resolved_locally', 'shutdown'). */
+	reason?: string;
+};
+
 export type AthenaConsoleQuestionRequestFrame = AthenaConsoleFrameBase & {
 	kind: 'console.question.request';
 	address: AthenaConsoleAddress;
@@ -108,6 +124,12 @@ export type AthenaConsoleQuestionResponseFrame = AthenaConsoleFrameBase & {
 	answers: Record<string, string>;
 };
 
+export type AthenaConsoleQuestionCancelFrame = AthenaConsoleFrameBase & {
+	kind: 'console.question.cancel';
+	channelRequestId: string;
+	reason?: string;
+};
+
 export type AthenaConsoleAckFrame = AthenaConsoleFrameBase & {
 	kind: 'console.ack';
 	refFrameId: string;
@@ -127,8 +149,10 @@ export type AthenaConsoleFrame =
 	| AthenaConsoleOutboundMessageFrame
 	| AthenaConsolePermissionRequestFrame
 	| AthenaConsolePermissionResponseFrame
+	| AthenaConsolePermissionCancelFrame
 	| AthenaConsoleQuestionRequestFrame
 	| AthenaConsoleQuestionResponseFrame
+	| AthenaConsoleQuestionCancelFrame
 	| AthenaConsoleAckFrame
 	| AthenaConsoleErrorFrame;
 
