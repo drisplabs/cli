@@ -22,6 +22,7 @@
 	"bin": {
 		"athena": "dist/cli.js",
 		"athena-flow": "dist/cli.js",
+		"drisp": "dist/cli.js",
 		"athena-hook-forwarder": "dist/hook-forwarder.js"
 	},
 	"type": "module",
