@@ -11,9 +11,13 @@
  */
 
 import type {AdapterModule} from '../../shared/gateway-protocol';
+import {consoleModule} from './console/module';
 import {telegramModule} from './telegram/module';
 
-export const BUILTIN_MODULES: ReadonlyArray<AdapterModule> = [telegramModule];
+export const BUILTIN_MODULES: ReadonlyArray<AdapterModule> = [
+	telegramModule,
+	consoleModule,
+];
 
 export function findAdapterModule(name: string): AdapterModule | undefined {
 	return BUILTIN_MODULES.find(m => m.name === name);
