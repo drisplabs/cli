@@ -33,7 +33,7 @@ vi.mock('../../../harnesses/registry', () => ({
 					{
 						label: 'Hook forwarder',
 						status: 'pass',
-						message: '/usr/local/bin/athena-hook-forwarder',
+						message: '/usr/local/bin/drisp-hook-forwarder',
 					},
 				],
 			}),
@@ -95,7 +95,7 @@ describe('HarnessStep', () => {
 			);
 			expect(frame).toContain('Smoke prompt: Claude replied: ATHENA_SETUP_OK');
 			expect(frame).toContain(
-				'Hook forwarder: /usr/local/bin/athena-hook-forwarder',
+				'Hook forwarder: /usr/local/bin/drisp-hook-forwarder',
 			);
 		});
 	});

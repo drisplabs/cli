@@ -324,7 +324,7 @@ export function verifyClaudeHarness(
 			status: resolvedForwarder ? 'pass' : 'fail',
 			message:
 				resolvedForwarder ??
-				'`athena-hook-forwarder` is not available in PATH. Reinstall Athena.',
+				'`drisp-hook-forwarder` is not available in PATH. Reinstall Drisp.',
 		});
 	}
 

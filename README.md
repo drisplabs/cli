@@ -1,9 +1,9 @@
-# Athenaflow CLI
+# Drisp CLI
 
-[![npm version](https://img.shields.io/npm/v/@athenaflow/cli)](https://www.npmjs.com/package/@athenaflow/cli)
-[![license](https://img.shields.io/npm/l/@athenaflow/cli)](https://github.com/lespaceman/athena-flow-cli/blob/main/LICENSE)
-[![CI](https://github.com/lespaceman/athena-flow-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/lespaceman/athena-flow-cli/actions/workflows/ci.yml)
-[![node](https://img.shields.io/node/v/@athenaflow/cli)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/@drisp/cli)](https://www.npmjs.com/package/@drisp/cli)
+[![license](https://img.shields.io/npm/l/@drisp/cli)](https://github.com/drisplabs/cli/blob/main/LICENSE)
+[![CI](https://github.com/drisplabs/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/drisplabs/cli/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@drisp/cli)](https://nodejs.org)
 
 **Deterministic orchestration for non-deterministic agents.**
 
@@ -12,11 +12,11 @@ AI coding agents are getting better at reasoning -- but long-horizon tasks still
 Athenaflow is a **workflow runtime** for [Claude Code](https://claude.com/product/claude-code) and [OpenAI Codex](https://chatgpt.com/codex). It adds structured workflows, real-time observability, session persistence, and a plugin system -- so agent-driven tasks produce consistent results across runs, teams, and models.
 
 ```
-npm install -g @athenaflow/cli && athena
+npm install -g @drisp/cli && drisp
 ```
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Athenaflow terminal UI" width="960" />
+  <img src="assets/demo.gif" alt="Drisp terminal UI" width="960" />
 </p>
 
 > **[Read the docs](https://athenaflow.in/docs)** -- guides, workflow authoring, plugin API, and more.
@@ -50,7 +50,7 @@ and model preferences. The runtime handles the rest.
 
 **Harness-agnostic** -- same workflows, same UI, same session model across Claude Code and Codex.
 
-**CI-native** -- `athena exec` runs headlessly with safe defaults, JSONL output, and structured exit codes.
+**CI-native** -- `drisp exec` runs headlessly with safe defaults, JSONL output, and structured exit codes.
 
 <br>
 
@@ -59,21 +59,21 @@ and model preferences. The runtime handles the rest.
 **1. Install** -- requires Node.js 20+ and at least one harness (`claude` or `codex`) on your PATH.
 
 ```bash
-npm install -g @athenaflow/cli
+npm install -g @drisp/cli
 ```
 
 **2. Run** -- the setup wizard handles theme, harness verification, and your first workflow.
 
 ```bash
-athena
+drisp
 ```
 
 **3. Explore**
 
 ```bash
-athena resume                              # Pick up where you left off
-athena sessions                            # Browse past sessions
-athena workflow install e2e-test-builder   # Install a workflow from the marketplace
+drisp resume                              # Pick up where you left off
+drisp sessions                            # Browse past sessions
+drisp workflow install e2e-test-builder   # Install a workflow from the marketplace
 ```
 
 > **[Full walkthrough](https://athenaflow.in/docs)**
@@ -95,27 +95,27 @@ athena workflow install e2e-test-builder   # Install a workflow from the marketp
 Workflows package prompt templates, loop strategies, plugin dependencies, isolation policies, and model config into a single portable unit. Anyone can author and share them.
 
 ```bash
-athena workflow list                        # See what's installed
-athena workflow search                      # Browse available workflows
-athena workflow install e2e-test-builder    # Install from the marketplace
-athena workflow use e2e-test-builder        # Set as the active workflow
-athena workflow upgrade                     # Re-sync all from source
+drisp workflow list                        # See what's installed
+drisp workflow search                      # Browse available workflows
+drisp workflow install e2e-test-builder    # Install from the marketplace
+drisp workflow use e2e-test-builder        # Set as the active workflow
+drisp workflow upgrade                     # Re-sync all from source
 ```
 
 Manage marketplace sources:
 
 ```bash
-athena marketplace add owner/repo           # Add a marketplace source
-athena marketplace add ./local/path         # Add a local marketplace
-athena marketplace list                     # List configured sources
-athena marketplace remove owner/repo        # Remove a source
+drisp marketplace add owner/repo           # Add a marketplace source
+drisp marketplace add ./local/path         # Add a local marketplace
+drisp marketplace list                     # List configured sources
+drisp marketplace remove owner/repo        # Remove a source
 ```
 
 Install from a local file or a specific marketplace ref:
 
 ```bash
-athena workflow install ./path/to/workflow.json
-athena workflow install e2e-test-builder@lespaceman/athena-workflow-marketplace
+drisp workflow install ./path/to/workflow.json
+drisp workflow install e2e-test-builder@lespaceman/athena-workflow-marketplace
 ```
 
 > **[Author your own workflows](https://athenaflow.in/docs)**
@@ -124,22 +124,22 @@ athena workflow install e2e-test-builder@lespaceman/athena-workflow-marketplace
 
 ## CI / Automation
 
-`athena exec` is built for pipelines. Safe by default -- permission and question hooks fail unless you opt in.
+`drisp exec` is built for pipelines. Safe by default -- permission and question hooks fail unless you opt in.
 
 ```bash
-athena exec "summarize risk in this PR"                                        # plain text
-athena exec "run checks" --json --on-permission=deny --on-question=empty       # JSONL
-athena exec "write release notes" --output-last-message release-notes.md       # artifact
+drisp exec "summarize risk in this PR"                                        # plain text
+drisp exec "run checks" --json --on-permission=deny --on-question=empty       # JSONL
+drisp exec "write release notes" --output-last-message release-notes.md       # artifact
 ```
 
 <details>
 <summary>GitHub Actions</summary>
 
 ```yaml
-name: athena-exec
+name: drisp-exec
 on: [pull_request]
 jobs:
-  athena:
+  drisp:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -147,13 +147,13 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
-      - run: npx @athenaflow/cli exec "summarize risk in this PR" \
+      - run: npx @drisp/cli exec "summarize risk in this PR" \
           --json --on-permission=deny --on-question=empty \
-          --output-last-message athena-summary.md
+          --output-last-message drisp-summary.md
       - uses: actions/upload-artifact@v4
         with:
-          name: athena-summary
-          path: athena-summary.md
+          name: drisp-summary
+          path: drisp-summary.md
 ```
 
 </details>
@@ -162,16 +162,16 @@ jobs:
 <summary>GitLab CI</summary>
 
 ```yaml
-athena_exec:
+drisp_exec:
   image: node:20
   script:
     - npm ci
-    - npx @athenaflow/cli exec "summarize pipeline status" \
+    - npx @drisp/cli exec "summarize pipeline status" \
       --json --on-permission=deny --on-question=empty \
-      --output-last-message athena-summary.md
+      --output-last-message drisp-summary.md
   artifacts:
     paths:
-      - athena-summary.md
+      - drisp-summary.md
 ```
 
 </details>

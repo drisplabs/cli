@@ -389,7 +389,7 @@ The `WorkflowPlan` is consumed by both harnesses, but each extracts different th
 Athena implements a hook forwarding system for Claude plugins:
 
 ```
-Claude Code ──hook event──→ athena-hook-forwarder ──UDS──→ Athena Hook Server
+Claude Code ──hook event──→ drisp-hook-forwarder ──UDS──→ Athena Hook Server
                                                             │
                                                             ├─ PreToolUse
                                                             ├─ PostToolUse
@@ -397,7 +397,7 @@ Claude Code ──hook event──→ athena-hook-forwarder ──UDS──→ A
                                                             ├─ SessionStart
                                                             └─ SessionEnd
                                                             │
-Claude Code ←─decision────← athena-hook-forwarder ←─UDS──← (allow/block/ask)
+Claude Code ←─decision────← drisp-hook-forwarder ←─UDS──← (allow/block/ask)
 ```
 
 **Key files:**

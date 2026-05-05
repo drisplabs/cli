@@ -20,8 +20,8 @@ function runVerify(options: Partial<VerifyClaudeHarnessOptions> = {}) {
 			message: 'Claude replied: ATHENA_SETUP_OK',
 		}),
 		resolveHookForwarderCommandFn: () => ({
-			command: 'athena-hook-forwarder',
-			executable: 'athena-hook-forwarder',
+			command: 'drisp-hook-forwarder',
+			executable: 'drisp-hook-forwarder',
 			args: [],
 			source: 'path',
 		}),
@@ -132,7 +132,7 @@ describe('verifyClaudeHarness', () => {
 			{
 				label: 'Hook forwarder',
 				status: 'pass',
-				message: '/usr/local/bin/athena-hook-forwarder',
+				message: '/usr/local/bin/drisp-hook-forwarder',
 			},
 			{
 				label: 'jq',

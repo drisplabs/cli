@@ -71,7 +71,7 @@ describe('spawnClaude', () => {
 	beforeEach(() => {
 		tempHookForwarderPath = path.join(
 			os.tmpdir(),
-			`athena-hook-forwarder-${Date.now()}.js`,
+			`drisp-hook-forwarder-${Date.now()}.js`,
 		);
 		fs.writeFileSync(tempHookForwarderPath, 'console.log("ok");');
 		mockChildProcess = createMockChildProcess();
@@ -224,8 +224,8 @@ describe('spawnClaude', () => {
 
 	it('throws a preflight error when hook forwarder cannot be resolved', () => {
 		mockResolveHookForwarderCommand.mockReturnValue({
-			command: 'athena-hook-forwarder',
-			executable: 'athena-hook-forwarder',
+			command: 'drisp-hook-forwarder',
+			executable: 'drisp-hook-forwarder',
 			args: [],
 			source: 'path',
 		});
@@ -239,7 +239,7 @@ describe('spawnClaude', () => {
 					projectDir: '/test/project',
 					instanceId: 12345,
 				}),
-			).toThrow(/athena-hook-forwarder/);
+			).toThrow(/drisp-hook-forwarder/);
 		} finally {
 			process.env['PATH'] = originalPath;
 		}

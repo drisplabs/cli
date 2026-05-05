@@ -40,8 +40,8 @@ describe('collectEnvironment', () => {
 			detectClaudeVersionFn: () => null,
 			runClaudeAuthStatusFn: () => ({ok: false, message: 'not installed'}),
 			resolveHookForwarderCommandFn: () => ({
-				command: 'athena-hook-forwarder',
-				executable: 'athena-hook-forwarder',
+				command: 'drisp-hook-forwarder',
+				executable: 'drisp-hook-forwarder',
 				args: [],
 				source: 'path' as const,
 			}),

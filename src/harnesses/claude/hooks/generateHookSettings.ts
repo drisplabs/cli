@@ -2,7 +2,7 @@
  * Hook Settings Generator
  *
  * Generates a temporary Claude Code settings file that configures
- * athena-hook-forwarder as the hook handler for all hook events.
+ * drisp-hook-forwarder as the hook handler for all hook events.
  */
 
 import * as fs from 'node:fs';
@@ -144,7 +144,7 @@ function resolveHookForwarderPath(entryUrl: string): string | null {
 }
 
 /**
- * Finds the athena-hook-forwarder executable path.
+ * Finds the drisp-hook-forwarder executable path.
  */
 export function resolveHookForwarderCommand(): HookForwarderResolution {
 	const resolvedPath = resolveHookForwarderPath(import.meta.url);
@@ -160,8 +160,8 @@ export function resolveHookForwarderCommand(): HookForwarderResolution {
 
 	// Fallback to global bin name (when installed via npm -g)
 	return {
-		command: 'athena-hook-forwarder',
-		executable: 'athena-hook-forwarder',
+		command: 'drisp-hook-forwarder',
+		executable: 'drisp-hook-forwarder',
 		args: [],
 		source: 'path',
 	};

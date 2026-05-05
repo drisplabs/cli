@@ -85,7 +85,7 @@ function runSpawnPreflight(hookSocketPath: string): void {
 	) {
 		throw makePreflightError(
 			'hook_forwarder_missing',
-			'`athena-hook-forwarder` is not available in PATH. Reinstall Athena and verify the global bin is present.',
+			'`drisp-hook-forwarder` is not available in PATH. Reinstall Drisp and verify the global bin is present.',
 		);
 	}
 

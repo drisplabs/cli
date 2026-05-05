@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this?
 
-Athena (`@athenaflow/cli`) is a workflow runtime for Claude Code that adds structured workflows, real-time terminal observability, session persistence, and a plugin system. It intercepts Claude Code hooks via a UDS (Unix Domain Socket) protocol, normalizes events through a feed pipeline, and renders them in a React/Ink terminal UI.
+Drisp (`@drisp/cli`) is a workflow runtime for Claude Code that adds structured workflows, real-time terminal observability, session persistence, and a plugin system. It intercepts Claude Code hooks via a UDS (Unix Domain Socket) protocol, normalizes events through a feed pipeline, and renders them in a React/Ink terminal UI.
 
 ## Commands
 
@@ -58,8 +58,8 @@ app     ← can import from all layers
 
 ### Entry Points (tsup)
 
-- `src/app/entry/cli.tsx` → `dist/cli.js` (main CLI: `athena` / `athena-flow`)
-- `src/harnesses/claude/hook-forwarder.ts` → `dist/hook-forwarder.js` (hook interceptor: `athena-hook-forwarder`)
+- `src/app/entry/cli.tsx` → `dist/cli.js` (main CLI: `drisp`)
+- `src/harnesses/claude/hook-forwarder.ts` → `dist/hook-forwarder.js` (hook interceptor: `drisp-hook-forwarder`)
 
 ## Tech Stack
 
