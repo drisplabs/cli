@@ -45,6 +45,7 @@ function makeDeps(overrides: {
 	return {
 		cap,
 		writes,
+		consoleWrites,
 		stored,
 		removed,
 		deps: {
@@ -296,6 +297,75 @@ describe('runDashboardCommand: pair', () => {
 		});
 		// JSON pair output must not contain the refresh token.
 		expect(cap.out.join('\n')).not.toContain('refresh_1');
+	});
+
+	it('writes console sidecar config when pairing response includes a runner', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+				runners: [{runnerId: 'runner_1'}],
+			}),
+		);
+		const reloadGatewayChannels = vi.fn(async () => ({
+			ok: true,
+			message: 'reloaded',
+		}));
+		const {deps, consoleWrites, cap} = makeDeps({
+			fetchMock,
+			reloadGatewayChannels,
+		});
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'https://app.drisp.dev'},
+			},
+			deps,
+		);
+
+		expect(code).toBe(0);
+		expect(consoleWrites).toEqual([
+			{
+				broker_url: 'wss://app.drisp.dev/api/runners/runner_1/console/adapter',
+				runner_id: 'runner_1',
+				dashboard_config: true,
+			},
+		]);
+		expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain(
+			'console linked runner runner_1 to https://app.drisp.dev',
+		);
+	});
+
+	it('keeps pair --json output parseable when pairing response includes a runner', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+				runners: [{runnerId: 'runner_1'}],
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock});
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'https://app.drisp.dev', json: true},
+			},
+			deps,
+		);
+
+		expect(code).toBe(0);
+		const parsed = JSON.parse(cap.out.join('\n'));
+		expect(parsed).toMatchObject({
+			ok: true,
+			instanceId: 'inst_1',
+			dashboardUrl: 'https://app.drisp.dev',
+			runners: [{runnerId: 'runner_1'}],
+		});
 	});
 });
 

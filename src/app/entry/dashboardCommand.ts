@@ -143,6 +143,7 @@ type PairResponse = {
 	jti?: string;
 	accessToken?: string;
 	expiresInSec?: number;
+	runners?: Array<{runnerId: string}>;
 };
 
 type DiagnosticPlane =
@@ -592,6 +593,41 @@ export async function runDashboardCommand(
 			pairedAt: now(),
 		};
 		writeConfig(config);
+		const pairedRunner = parsed.runners?.[0];
+		let reloadResult:
+			| {
+					ok: boolean;
+					message: string;
+			  }
+			| undefined;
+		if (pairedRunner) {
+			const consoleConfig: ConsoleChannelConfig = {
+				broker_url: consoleBrokerUrl(origin, pairedRunner.runnerId),
+				runner_id: pairedRunner.runnerId,
+				dashboard_config: true,
+			};
+			writeConsoleConfig(consoleConfig);
+			if (!flags.json) {
+				logOut(
+					`dashboard: console linked runner ${pairedRunner.runnerId} to ${origin}`,
+				);
+			}
+			reloadResult = await reloadGatewayChannels();
+			if (reloadResult.ok) {
+				if (!flags.json) {
+					logOut(
+						`dashboard: gateway channels reloaded (${reloadResult.message})`,
+					);
+				}
+			} else {
+				logError(`dashboard: gateway reload skipped: ${reloadResult.message}`);
+				if (!flags.json) {
+					logOut(
+						'dashboard: start or reload the gateway before using the Console tab.',
+					);
+				}
+			}
+		}
 
 		if (flags.json) {
 			logOut(
@@ -600,6 +636,15 @@ export async function runDashboardCommand(
 					instanceId: parsed.instanceId,
 					dashboardUrl: origin,
 					configPath: configPath(),
+					...(parsed.runners ? {runners: parsed.runners} : {}),
+					...(reloadResult
+						? {
+								gatewayReload: {
+									ok: reloadResult.ok,
+									message: reloadResult.message,
+								},
+							}
+						: {}),
 				}),
 			);
 		} else {
@@ -932,6 +977,19 @@ function parsePairResponse(raw: unknown): PairResponse {
 	return {
 		instanceId,
 		refreshToken,
+		...(Array.isArray(obj['runners'])
+			? {
+					runners: obj['runners']
+						.map((entry: unknown) => {
+							if (typeof entry !== 'object' || entry === null) return null;
+							const runnerId = (entry as Record<string, unknown>)['runnerId'];
+							return typeof runnerId === 'string' && runnerId.length > 0
+								? {runnerId}
+								: null;
+						})
+						.filter((entry): entry is {runnerId: string} => entry !== null),
+				}
+			: {}),
 		...(typeof obj['jti'] === 'string' ? {jti: obj['jti'] as string} : {}),
 		...(typeof obj['accessToken'] === 'string'
 			? {accessToken: obj['accessToken'] as string}
