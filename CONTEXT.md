@@ -38,8 +38,8 @@ _Avoid_: run state, session manager.
 Owns the `tool_use_id → feed event_id` index, streamed-output accumulators, and truncation state. Knows how a `tool.pre` enables a later `tool.post`/`tool.failure`/`tool.delta`, and how to handle a missing pre.
 
 **DecisionCorrelation**:
-Owns the `request_id → event_id` indexes that let `mapDecision` find the originating event. Has explicit invariants about restore behavior (fresh runs clear indexes; old request*ids never recur).
-\_Avoid*: request index, decision router.
+Owns the `request_id → event_id` indexes that let `mapDecision` find the originating event. Has explicit invariants about restore behavior (fresh runs clear indexes; old `request_id`s never recur).
+_Avoid_: request index, decision router.
 
 **AgentMessageStream**:
 Owns pending message buffers, dedup state per actor scope, and reasoning summary accumulation. Decides when an in-flight message is emittable.
