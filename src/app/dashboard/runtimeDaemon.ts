@@ -20,13 +20,45 @@ type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
 ) => Promise<void>;
 
+export type RuntimeDaemonRunRecord = {
+	runId: string;
+	startedAt: number;
+	endedAt?: number;
+	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
+	error?: string;
+};
+
+export type RuntimeDaemonSnapshot = {
+	startedAt: number;
+	socketConnected: boolean;
+	lastFrameAt?: number;
+	activeRuns: number;
+	completedRuns: number;
+	instanceId?: string;
+	dashboardUrl?: string;
+	/**
+	 * Token-refresh health. `cooldownUntilMs` is set when the circuit breaker
+	 * trips (refresh failures saturate the window). Surfaces in `dashboard
+	 * status` so the user understands why the socket is offline.
+	 */
+	refreshState?: {
+		recentFailures: number;
+		cooldownUntilMs?: number;
+	};
+};
+
 export type RuntimeDaemonHandle = {
+	snapshot(): RuntimeDaemonSnapshot;
+	listRuns(options?: {
+		active?: boolean;
+		limit?: number;
+	}): RuntimeDaemonRunRecord[];
 	stop(reason?: string): Promise<void>;
 };
 
 export type RunDashboardRuntimeDaemonOptions = {
 	readConfig?: () => DashboardClientConfig | null;
-	refreshAccessToken?: (label: 'daemon') => Promise<DashboardAccessToken>;
+	refreshAccessToken?: () => Promise<DashboardAccessToken>;
 	makeInstanceSocketClient?: (opts: {
 		dashboardUrl: string;
 		instanceId: string;
@@ -37,9 +69,42 @@ export type RunDashboardRuntimeDaemonOptions = {
 	projectDir?: string;
 	log?: InstanceSocketLogger;
 	reconnectDelaysMs?: number[];
+	/**
+	 * Cap on parallel exec sessions. The dashboard already queues offline
+	 * assignments; the cap protects against the local box being overwhelmed
+	 * when a runner has high parallelism configured. Default 1.
+	 */
+	maxConcurrentRuns?: number;
+	/**
+	 * Lead time before access-token expiry to schedule a proactive refresh,
+	 * in seconds. A fresh token replaces the cached value so the next
+	 * reconnect doesn't race the expiry. Default 60s.
+	 */
+	refreshLeadSec?: number;
+	/**
+	 * Refresh circuit-breaker. After `refreshFailureLimit` failures within
+	 * `refreshFailureWindowMs`, the daemon sleeps `refreshCooldownMs` before
+	 * retrying. Refresh tokens are single-use; a tight retry loop will burn
+	 * the rotation history and force the user to re-pair. Defaults: 5
+	 * failures within 5 minutes triggers a 5-minute cooldown.
+	 */
+	refreshFailureLimit?: number;
+	refreshFailureWindowMs?: number;
+	refreshCooldownMs?: number;
+	now?: () => number;
+	/**
+	 * Cap on the `runs` ring buffer. Default 100.
+	 */
+	runHistoryLimit?: number;
 };
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const DEFAULT_MAX_CONCURRENT_RUNS = 1;
+const DEFAULT_REFRESH_LEAD_SEC = 60;
+const DEFAULT_REFRESH_FAILURE_LIMIT = 5;
+const DEFAULT_REFRESH_FAILURE_WINDOW_MS = 5 * 60_000;
+const DEFAULT_REFRESH_COOLDOWN_MS = 5 * 60_000;
+const DEFAULT_RUN_HISTORY_LIMIT = 100;
 
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => {
@@ -68,14 +133,46 @@ export async function runDashboardRuntimeDaemon(
 	const log = options.log ?? (() => {});
 	const reconnectDelays =
 		options.reconnectDelaysMs ?? DEFAULT_RECONNECT_DELAYS_MS;
+	const maxConcurrentRuns =
+		options.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+	const refreshLeadSec = options.refreshLeadSec ?? DEFAULT_REFRESH_LEAD_SEC;
+	const refreshFailureLimit =
+		options.refreshFailureLimit ?? DEFAULT_REFRESH_FAILURE_LIMIT;
+	const refreshFailureWindowMs =
+		options.refreshFailureWindowMs ?? DEFAULT_REFRESH_FAILURE_WINDOW_MS;
+	const refreshCooldownMs =
+		options.refreshCooldownMs ?? DEFAULT_REFRESH_COOLDOWN_MS;
+	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
+	const now = options.now ?? (() => Date.now());
 
+	const startedAt = now();
 	let stopped = false;
 	let reconnectAttempt = 0;
 	let client: InstanceSocketClient | null = null;
+	let currentInstanceId: string | undefined;
+	let currentDashboardUrl: string | undefined;
+	let lastFrameAt: number | undefined;
+	let completedRuns = 0;
+	let refreshTimer: NodeJS.Timeout | null = null;
+	const refreshFailures: number[] = [];
+	let cooldownUntil = 0;
+
 	const active = new Map<
 		string,
-		{controller: AbortController; promise: Promise<void>}
+		{
+			controller: AbortController;
+			promise: Promise<void>;
+			record: RuntimeDaemonRunRecord;
+		}
 	>();
+	const runHistory: RuntimeDaemonRunRecord[] = [];
+
+	function recordRun(record: RuntimeDaemonRunRecord): void {
+		runHistory.push(record);
+		while (runHistory.length > runHistoryLimit) {
+			runHistory.shift();
+		}
+	}
 
 	function nextReconnectDelay(): number {
 		if (reconnectDelays.length === 0) return 0;
@@ -86,6 +183,99 @@ export async function runDashboardRuntimeDaemon(
 		return delayMs;
 	}
 
+	function clearRefreshTimer(): void {
+		if (refreshTimer) {
+			clearTimeout(refreshTimer);
+			refreshTimer = null;
+		}
+	}
+
+	function scheduleRefresh(expiresInSec: number): void {
+		clearRefreshTimer();
+		if (!Number.isFinite(expiresInSec) || expiresInSec <= refreshLeadSec) {
+			return;
+		}
+		const ms = (expiresInSec - refreshLeadSec) * 1_000;
+		const timer = setTimeout(() => {
+			void proactiveRefresh();
+		}, ms);
+		timer.unref?.();
+		refreshTimer = timer;
+	}
+
+	async function proactiveRefresh(): Promise<void> {
+		if (stopped) return;
+		try {
+			const token = await refreshAccessTokenFn();
+			refreshFailures.length = 0;
+			scheduleRefresh(token.expiresInSec);
+			log('debug', `runtime daemon refreshed token (proactive)`);
+		} catch (err) {
+			noteRefreshFailure();
+			log(
+				'warn',
+				`runtime daemon proactive refresh failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+	}
+
+	function noteRefreshFailure(): void {
+		const ts = now();
+		refreshFailures.push(ts);
+		while (
+			refreshFailures.length > 0 &&
+			ts - (refreshFailures[0] ?? 0) > refreshFailureWindowMs
+		) {
+			refreshFailures.shift();
+		}
+		if (refreshFailures.length >= refreshFailureLimit) {
+			cooldownUntil = ts + refreshCooldownMs;
+			refreshFailures.length = 0;
+			log(
+				'warn',
+				`runtime daemon refresh circuit-broken; cooling down for ${Math.round(
+					refreshCooldownMs / 1_000,
+				)}s`,
+			);
+		}
+	}
+
+	function rejectAssignment(
+		client_: InstanceSocketClient,
+		runId: string,
+		reason: string,
+	): void {
+		try {
+			client_.sendRunEvent({
+				runId,
+				seq: 0,
+				ts: now(),
+				kind: 'rejected',
+				payload: {reason},
+			});
+		} catch (err) {
+			// The dashboard will time the lease out anyway, but a silent failure
+			// makes debugging "why is my run still showing as running?" much
+			// harder. Log so an operator can correlate.
+			log(
+				'warn',
+				`runtime daemon: failed to send rejected for ${runId}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+		recordRun({
+			runId,
+			startedAt: now(),
+			endedAt: now(),
+			status: 'rejected',
+			error: reason,
+		});
+		log('warn', `run ${runId} rejected: ${reason}`);
+	}
+
 	async function connectOnce(): Promise<void> {
 		const config = readConfig();
 		if (!config) {
@@ -93,7 +283,29 @@ export async function runDashboardRuntimeDaemon(
 				'dashboard runtime daemon: not paired. Run "drisp dashboard pair" first.',
 			);
 		}
-		const token = await refreshAccessTokenFn('daemon');
+		// If the circuit breaker has tripped, sleep until the cooldown expires
+		// rather than throwing immediately. Throwing inside reconnectLoop with a
+		// 0ms backoff turns into a tight microtask spin; sleeping yields to
+		// other timers and lets `stop()` interrupt cleanly.
+		if (cooldownUntil > now()) {
+			const remainingMs = Math.max(0, cooldownUntil - now());
+			log(
+				'warn',
+				`runtime daemon: refresh cooldown active, sleeping ${Math.ceil(
+					remainingMs / 1_000,
+				)}s`,
+			);
+			await delay(remainingMs);
+			if (stopped) return;
+		}
+		let token: DashboardAccessToken;
+		try {
+			token = await refreshAccessTokenFn();
+			refreshFailures.length = 0;
+		} catch (err) {
+			noteRefreshFailure();
+			throw err;
+		}
 		const next = makeClient({
 			dashboardUrl: config.dashboardUrl,
 			instanceId: token.instanceId,
@@ -101,13 +313,32 @@ export async function runDashboardRuntimeDaemon(
 			log,
 		});
 		next.onFrame(frame => {
+			lastFrameAt = now();
 			if (frame.type === 'cancel') {
-				active.get(frame.runId)?.controller.abort();
+				const entry = active.get(frame.runId);
+				if (entry) {
+					entry.record.status = 'cancelled';
+					entry.controller.abort();
+				}
 				return;
 			}
 			if (frame.type !== 'job_assignment') return;
 			if (active.has(frame.runId)) return;
+			if (active.size >= maxConcurrentRuns) {
+				rejectAssignment(
+					next,
+					frame.runId,
+					`runtime daemon at concurrency cap (${maxConcurrentRuns})`,
+				);
+				return;
+			}
 			const controller = new AbortController();
+			const record: RuntimeDaemonRunRecord = {
+				runId: frame.runId,
+				startedAt: now(),
+				status: 'running',
+			};
+			recordRun(record);
 			const promise = executor({
 				frame,
 				client: next,
@@ -115,7 +346,14 @@ export async function runDashboardRuntimeDaemon(
 				log,
 				abortSignal: controller.signal,
 			})
+				.then(() => {
+					if (record.status === 'running') record.status = 'completed';
+				})
 				.catch(err => {
+					if (record.status === 'running') {
+						record.status = 'failed';
+					}
+					record.error = err instanceof Error ? err.message : String(err);
 					log(
 						'error',
 						`run ${frame.runId} failed: ${
@@ -124,19 +362,26 @@ export async function runDashboardRuntimeDaemon(
 					);
 				})
 				.finally(() => {
+					record.endedAt = now();
+					completedRuns += 1;
 					active.delete(frame.runId);
 				});
-			active.set(frame.runId, {controller, promise});
+			active.set(frame.runId, {controller, promise, record});
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;
 			log('warn', `instance socket closed: ${reason}`);
 			client = null;
+			currentInstanceId = undefined;
+			clearRefreshTimer();
 			void reconnectLoop();
 		});
 		await next.connect();
 		client = next;
+		currentInstanceId = token.instanceId;
+		currentDashboardUrl = config.dashboardUrl;
 		reconnectAttempt = 0;
+		scheduleRefresh(token.expiresInSec);
 		log('info', `dashboard runtime daemon connected as ${token.instanceId}`);
 	}
 
@@ -162,8 +407,44 @@ export async function runDashboardRuntimeDaemon(
 	await connectOnce();
 
 	return {
+		snapshot(): RuntimeDaemonSnapshot {
+			const refreshState =
+				refreshFailures.length > 0 || cooldownUntil > now()
+					? {
+							recentFailures: refreshFailures.length,
+							...(cooldownUntil > now()
+								? {cooldownUntilMs: cooldownUntil}
+								: {}),
+						}
+					: undefined;
+			return {
+				startedAt,
+				socketConnected: client !== null,
+				...(lastFrameAt !== undefined ? {lastFrameAt} : {}),
+				activeRuns: active.size,
+				completedRuns,
+				...(currentInstanceId ? {instanceId: currentInstanceId} : {}),
+				...(currentDashboardUrl ? {dashboardUrl: currentDashboardUrl} : {}),
+				...(refreshState ? {refreshState} : {}),
+			};
+		},
+		listRuns(opts = {}): RuntimeDaemonRunRecord[] {
+			// Limit applies to the most recent N runs; the active filter then
+			// narrows that window. This matches the user's intuition for
+			// `dashboard runs --active --limit 5`: "show running runs from the
+			// last 5", not "last 5 from the entire history of running runs".
+			let out = runHistory.slice();
+			if (typeof opts.limit === 'number' && opts.limit > 0) {
+				out = out.slice(-opts.limit);
+			}
+			if (opts.active) {
+				out = out.filter(r => r.status === 'running');
+			}
+			return out;
+		},
 		async stop(reason = 'stopped') {
 			stopped = true;
+			clearRefreshTimer();
 			for (const run of active.values()) {
 				run.controller.abort();
 			}

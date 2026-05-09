@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {
-	createInstanceSocketClient,
 	type InstanceSocketClient,
 	type InstanceSocketLogger,
 } from '../dashboard/instanceSocketClient';
@@ -25,39 +25,64 @@ import {
 	removeDashboardClientConfig,
 	writeDashboardClientConfig,
 } from '../../infra/config/dashboardClient';
+import {
+	daemonStatePaths,
+	type DaemonStatePaths,
+} from '../../infra/daemon/stateDir';
+import {readPidLock} from '../../infra/daemon/pidLock';
+import {
+	installServiceUnit,
+	type ServiceInstallResult,
+} from '../../infra/daemon/serviceUnit';
+import {
+	sendUdsRequest,
+	type UdsRequest,
+	type UdsResponse,
+} from '../../infra/daemon/udsIpc';
 
 const USAGE = `Usage: athena dashboard <subcommand> [options]
 
 Subcommands:
   pair <token> --url <dashboard-origin> [--name <machine-name>]
-            Pair this machine with the dashboard. The pairing token is
-            single-use and short-lived. Stores the long-lived refresh
-            token in ~/.config/athena/dashboard.json (mode 0600).
-  status    Show paired instance id and dashboard origin.
-  refresh   Mint a short-lived access token. Rotates the stored
-            refresh token. Use --json to capture the access token.
-  connect   Open the dashboard instance socket and run until interrupted.
-            Refreshes an access token before connecting. Incoming
-            job_assignment frames are dispatched to the remote run
-            executor and run events are streamed back over the socket.
+            Pair this machine with the dashboard, install the runtime
+            daemon, and verify it reaches the dashboard socket.
+  status    Show pairing, runner binding, daemon process state, socket
+            health, and token freshness. Non-zero on any unhealthy axis.
+  logs [--tail N] [--follow]
+            Tail the daemon log file at
+            ~/.local/state/drisp/dashboard-daemon.log.
+  runs [--active] [--limit N]
+            List runs the daemon has handled (in-memory ring, last 100).
+  refresh   Mint a short-lived access token (rotates the refresh token).
   daemon foreground
-            Run the dashboard remote runtime daemon in the foreground.
-            Intended for process supervisors and debugging.
-  doctor    Verify pairing health (reads config, refreshes a token).
-            With --runner <id>, also confirms the runner is bound to
-            this instance (executionTarget=remote, remoteInstanceId
-            matches).
+            Run the daemon in the foreground (process supervisors,
+            debugging).
+  daemon start|stop|restart|reload
+            Local IPC against the daemon UDS.
+  daemon install
+            Generate a launchd plist (macOS) or systemd user unit (linux)
+            so the daemon starts automatically on login.
+  doctor    Verify pairing health. With --runner <id>, also confirms the
+            runner is bound to this instance.
+  console enable <runnerId>
+            Configure the console channel for a runner (opinionated;
+            writes the sidecar and reloads the gateway).
   console link <runnerId>
-            Write ~/.config/athena/channels/console.json for the given
-            runner so the gateway picks up the console adapter on
-            reload. Derives broker_url from the paired dashboard URL.
-  unpair    Forget the local refresh token and instance id.
+            Primitive: write ~/.config/athena/channels/console.json for
+            the given runner. Prefer "console enable".
+  connect   Deprecated alias for "daemon foreground".
+  unpair    Stop the daemon, revoke the refresh token, and remove the
+            local config.
 
 Options:
   --url <origin>      Dashboard origin (required for pair)
-  --runner <id>       Runner id (required for "console link", optional
-                      for "doctor")
+  --runner <id>       Runner id (required for "console enable"/"console
+                      link", optional for "doctor")
   --name <name>       Friendly machine name (optional, defaults to hostname)
+  --tail N            Number of trailing log lines (default 20)
+  --follow            Stream new log lines until interrupted
+  --active            Show only active runs
+  --limit N           Cap the number of runs returned
   --json              Emit machine-readable JSON output
 `;
 
@@ -90,6 +115,10 @@ export type DashboardCommandFlags = {
 	name?: string;
 	runner?: string;
 	json?: boolean;
+	tail?: number;
+	follow?: boolean;
+	active?: boolean;
+	limit?: number;
 };
 
 export type DashboardCommandInput = {
@@ -120,7 +149,16 @@ export type DashboardCommandDeps = {
 	channelDir?: () => string;
 	reloadGatewayChannels?: () => Promise<{ok: boolean; message: string}>;
 	waitForShutdown?: () => Promise<string>;
-	startRuntimeDaemon?: () => Promise<RuntimeDaemonStartResult>;
+	startRuntimeDaemon?: (opts: {
+		log: (msg: string) => void;
+	}) => Promise<RuntimeDaemonStartResult>;
+	stopRuntimeDaemon?: (opts: {
+		timeoutMs?: number;
+	}) => Promise<RuntimeDaemonStopResult>;
+	queryRuntimeDaemon?: (req: UdsRequest) => Promise<UdsResponse>;
+	daemonStatePaths?: () => DaemonStatePaths;
+	tailDaemonLog?: (opts: {tail: number; follow: boolean}) => Promise<number>;
+	installServiceUnit?: () => ServiceInstallResult;
 	/**
 	 * Override the shared refresh helper. Production uses the lock-and-rotate
 	 * implementation in `dashboardAuth.ts`; tests inject a fake.
@@ -134,6 +172,13 @@ type RuntimeDaemonStartResult = {
 	ok: boolean;
 	alreadyRunning?: boolean;
 	connected?: boolean;
+	pid?: number;
+	message?: string;
+};
+
+type RuntimeDaemonStopResult = {
+	ok: boolean;
+	wasRunning: boolean;
 	message?: string;
 };
 
@@ -144,6 +189,12 @@ type PairedRunner = {
 	remoteInstanceId?: string;
 };
 
+type CapabilityAck = {
+	runtimeDaemon?: boolean;
+	consoleAdapter?: boolean;
+	instanceSocket?: boolean;
+};
+
 type PairResponse = {
 	instanceId: string;
 	refreshToken: string;
@@ -151,6 +202,8 @@ type PairResponse = {
 	accessToken?: string;
 	expiresInSec?: number;
 	runners?: PairedRunner[];
+	requiredCliVersion?: string;
+	capabilityAck?: CapabilityAck;
 };
 
 function defaultFingerprint(): string {
@@ -233,6 +286,9 @@ export async function runDashboardCommand(
 				instanceSocket: true,
 				consoleAdapter: true,
 				runtimeDaemon: true,
+				cliVersion: packageVersion,
+				// Legacy field — older dashboards read `version`. Drop in a
+				// follow-up release once the dashboard accepts only `cliVersion`.
 				version: packageVersion,
 			},
 		};
@@ -274,6 +330,24 @@ export async function runDashboardCommand(
 			return 1;
 		}
 
+		// Refuse to install the daemon if the dashboard signals our CLI is too
+		// old. The pairing succeeded server-side already, so the user can still
+		// re-run pair after upgrading and the persisted config is the source of
+		// truth — we just don't spawn a daemon that the dashboard would refuse
+		// to handshake with.
+		if (
+			parsed.requiredCliVersion &&
+			compareSemver(packageVersion, parsed.requiredCliVersion) < 0
+		) {
+			logError(
+				`dashboard pair: cli version ${packageVersion} is older than the dashboard's required >=${parsed.requiredCliVersion}.`,
+			);
+			logError(
+				'dashboard pair: upgrade with `npm i -g @athenaflow/cli` then re-run pair.',
+			);
+			return 1;
+		}
+
 		const config: DashboardClientConfig = {
 			dashboardUrl: origin,
 			instanceId: parsed.instanceId,
@@ -285,7 +359,9 @@ export async function runDashboardCommand(
 
 		const daemonStart = await (
 			deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
-		)();
+		)({
+			log: msg => logOut(msg),
+		});
 
 		if (flags.json) {
 			logOut(
@@ -296,6 +372,12 @@ export async function runDashboardCommand(
 					configPath: configPath(),
 					daemon: daemonStart,
 					...(parsed.runners ? {runners: parsed.runners} : {}),
+					...(parsed.capabilityAck
+						? {capabilityAck: parsed.capabilityAck}
+						: {}),
+					...(parsed.requiredCliVersion
+						? {requiredCliVersion: parsed.requiredCliVersion}
+						: {}),
 				}),
 			);
 		} else {
@@ -306,28 +388,44 @@ export async function runDashboardCommand(
 						`dashboard: bound runner ${runner.name ?? runner.runnerId} (${runner.runnerId})`,
 					);
 				}
+			} else {
+				logOut('dashboard: no runner bound to this pairing token.');
+				logOut(
+					'dashboard: bind a runner from runner settings, then this machine will receive its runs.',
+				);
+			}
+			if (parsed.capabilityAck === undefined) {
+				logOut(
+					'dashboard: dashboard did not echo capabilityAck (older server). Continuing.',
+				);
 			}
 			if (daemonStart.ok) {
 				const status = daemonStart.alreadyRunning
-					? 'runtime daemon already running'
+					? 'runtime daemon already running, restarted with new token'
 					: daemonStart.connected
-						? 'runtime daemon connected'
-						: 'runtime daemon started';
-				logOut(
-					`dashboard: ${status}${
-						daemonStart.message ? ` (${daemonStart.message})` : ''
-					}`,
-				);
+						? 'runtime daemon connected (verified socket open)'
+						: 'runtime daemon started but did not reach the socket within 10s';
+				logOut(`dashboard: ${status}`);
+				if (!daemonStart.connected && !daemonStart.alreadyRunning) {
+					logOut(
+						'dashboard pair: pairing succeeded; tail logs with `drisp dashboard logs --follow`.',
+					);
+				}
 			} else {
 				logError(
 					`dashboard: runtime daemon did not start${
 						daemonStart.message ? ` — ${daemonStart.message}` : ''
 					}`,
 				);
+				logOut(
+					'dashboard pair: pairing succeeded; start the daemon with `drisp dashboard daemon start`.',
+				);
 			}
 			logOut('dashboard: ready. Click Run in the dashboard.');
 		}
-		return daemonStart.ok ? 0 : 1;
+		// Pairing on disk is the source of truth. A daemon spawn failure is a
+		// warning, not a pair failure — the user can retry `daemon start` later.
+		return 0;
 	}
 
 	if (subcommand === 'status') {
@@ -344,10 +442,57 @@ export async function runDashboardCommand(
 			}
 			return 1;
 		}
+		const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+		let daemonReply: UdsResponse | null = null;
+		try {
+			daemonReply = await queryDaemon({cmd: 'status'});
+		} catch (err) {
+			daemonReply = {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+
+		// Optional runner check: if --runner is supplied, do the same dashboard
+		// GET that doctor does. Saves the user from running two commands when
+		// they want a full health check.
+		type RunnerHealth = {
+			id: string;
+			matches: boolean;
+			error?: string;
+			executionTarget?: string;
+			remoteInstanceId?: string;
+		};
+		let runnerHealth: RunnerHealth | undefined;
+		if (flags.runner) {
+			const refreshResult = await tryRefresh('refresh');
+			if (refreshResult.ok) {
+				runnerHealth = await fetchRunnerHealth(
+					fetchImpl,
+					config.dashboardUrl,
+					flags.runner,
+					refreshResult.token,
+				);
+			} else {
+				runnerHealth = {
+					id: flags.runner,
+					matches: false,
+					error: 'could not refresh access token',
+				};
+			}
+		}
+
+		const daemonRunning = daemonReply.ok && daemonReply.cmd === 'status';
+		const socketHealthy =
+			daemonRunning &&
+			(daemonReply as {socketConnected: boolean}).socketConnected;
+		const runnerOk = !runnerHealth || runnerHealth.matches;
+		const ok = daemonRunning && socketHealthy && runnerOk;
+
 		if (flags.json) {
 			logOut(
 				JSON.stringify({
-					ok: true,
+					ok,
 					paired: true,
 					instanceId: config.instanceId,
 					dashboardUrl: config.dashboardUrl,
@@ -356,11 +501,164 @@ export async function runDashboardCommand(
 						? {lastRefreshAt: config.lastRefreshAt}
 						: {}),
 					configPath: configPath(),
+					daemon:
+						daemonReply.ok && daemonReply.cmd === 'status'
+							? {
+									running: true,
+									pid: daemonReply.pid,
+									startedAt: daemonReply.startedAt,
+									socketConnected: daemonReply.socketConnected,
+									...(daemonReply.lastFrameAt !== undefined
+										? {lastFrameAt: daemonReply.lastFrameAt}
+										: {}),
+									activeRuns: daemonReply.activeRuns,
+									completedRuns: daemonReply.completedRuns,
+									...(daemonReply.refreshState
+										? {refreshState: daemonReply.refreshState}
+										: {}),
+								}
+							: {
+									running: false,
+									...(!daemonReply.ok ? {error: daemonReply.error} : {}),
+								},
+					...(runnerHealth ? {runner: runnerHealth} : {}),
 				}),
 			);
 		} else {
 			logOut(
 				`dashboard: paired to ${config.dashboardUrl} as ${config.instanceId}`,
+			);
+			if (runnerHealth) {
+				if (runnerHealth.matches) {
+					logOut(
+						`runner:    ${runnerHealth.id} bound to this instance (executionTarget=remote)`,
+					);
+				} else {
+					logError(
+						`runner:    ${runnerHealth.id} ${runnerHealth.error ?? 'not bound'}`,
+					);
+				}
+			}
+			if (daemonRunning) {
+				const r = daemonReply as Extract<UdsResponse, {cmd: 'status'}>;
+				const uptimeSec = Math.max(
+					0,
+					Math.floor((now() - r.startedAt) / 1_000),
+				);
+				logOut(
+					`daemon:    running (pid ${r.pid}, uptime ${formatDuration(uptimeSec)}, ${r.completedRuns} runs completed, ${r.activeRuns} active)`,
+				);
+				logOut(
+					`socket:    ${r.socketConnected ? 'connected' : 'disconnected'}${
+						r.lastFrameAt !== undefined
+							? ` (last frame ${formatDuration(
+									Math.max(0, Math.floor((now() - r.lastFrameAt) / 1_000)),
+								)} ago)`
+							: ''
+					}`,
+				);
+				if (r.refreshState) {
+					if (
+						r.refreshState.cooldownUntilMs !== undefined &&
+						r.refreshState.cooldownUntilMs > now()
+					) {
+						const remainingSec = Math.ceil(
+							(r.refreshState.cooldownUntilMs - now()) / 1_000,
+						);
+						logError(
+							`refresh:   circuit-broken — sleeping for ${formatDuration(
+								remainingSec,
+							)} before retry. Re-pair if this persists.`,
+						);
+					} else {
+						logOut(
+							`refresh:   ${r.refreshState.recentFailures} recent failure(s); next reconnect will retry`,
+						);
+					}
+				}
+			} else {
+				logOut(
+					'daemon:    NOT running. Start it with `drisp dashboard daemon start`.',
+				);
+			}
+			if (config.lastRefreshAt !== undefined) {
+				logOut(
+					`token:     last refreshed ${formatDuration(
+						Math.max(0, Math.floor((now() - config.lastRefreshAt) / 1_000)),
+					)} ago`,
+				);
+			}
+		}
+		return ok ? 0 : 1;
+	}
+
+	if (subcommand === 'logs') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard logs: unexpected argument ${subcommandArgs[0]}`);
+			return 2;
+		}
+		const tail = flags.tail ?? 20;
+		const follow = flags.follow ?? false;
+		try {
+			const tailFn = deps.tailDaemonLog ?? defaultTailDaemonLog;
+			return await tailFn({tail, follow});
+		} catch (err) {
+			logError(
+				`dashboard logs: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return 1;
+		}
+	}
+
+	if (subcommand === 'runs') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard runs: unexpected argument ${subcommandArgs[0]}`);
+			return 2;
+		}
+		const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+		let reply: UdsResponse;
+		try {
+			reply = await queryDaemon({
+				cmd: 'runs',
+				...(flags.active === true ? {active: true} : {}),
+				...(flags.limit !== undefined ? {limit: flags.limit} : {}),
+			});
+		} catch (err) {
+			logError(
+				`dashboard runs: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return 1;
+		}
+		if (!reply.ok || reply.cmd !== 'runs') {
+			logError(
+				`dashboard runs: ${reply.ok ? 'unexpected reply' : reply.error}`,
+			);
+			return 1;
+		}
+		if (flags.json) {
+			logOut(JSON.stringify({ok: true, runs: reply.runs}));
+			return 0;
+		}
+		if (reply.runs.length === 0) {
+			logOut('dashboard: no runs recorded');
+			return 0;
+		}
+		logOut(['runId', 'started', 'duration', 'status'].join('\t'));
+		for (const run of reply.runs) {
+			const duration = run.endedAt
+				? formatDuration(
+						Math.max(0, Math.floor((run.endedAt - run.startedAt) / 1_000)),
+					)
+				: '—';
+			logOut(
+				[
+					run.runId,
+					formatDuration(
+						Math.max(0, Math.floor((now() - run.startedAt) / 1_000)),
+					) + ' ago',
+					duration,
+					run.status,
+				].join('\t'),
 			);
 		}
 		return 0;
@@ -425,46 +723,201 @@ export async function runDashboardCommand(
 
 	if (subcommand === 'daemon') {
 		const mode = subcommandArgs[0];
-		if (mode !== 'foreground') {
-			logError(
-				`dashboard daemon: unknown subcommand ${
-					mode ? mode : '(missing)'
-				}. Expected "foreground".`,
-			);
-			return 2;
+		if (mode === 'foreground') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon foreground: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const config = readConfig();
+			if (!config) {
+				logError(
+					'dashboard daemon foreground: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			let daemon;
+			try {
+				daemon = await runDashboardRuntimeDaemon({
+					readConfig,
+					refreshAccessToken: async () => performRefreshImpl('connect'),
+					makeInstanceSocketClient: deps.makeInstanceSocketClient,
+					executeRemoteAssignment: deps.executeRemoteAssignment,
+					log: (level, message) => {
+						if (level === 'error' || level === 'warn') {
+							logError(`dashboard daemon: ${message}`);
+						} else {
+							logOut(`dashboard daemon: ${message}`);
+						}
+					},
+				});
+			} catch (err) {
+				logError(
+					`dashboard daemon foreground: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			logOut(`dashboard daemon: foreground runtime connected`);
+			const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
+			const reason = await wait();
+			await daemon.stop(reason);
+			logOut(`dashboard daemon: stopped (${reason})`);
+			return 0;
 		}
-		if (subcommandArgs.length > 1) {
-			logError(
-				`dashboard daemon foreground: unexpected argument ${subcommandArgs[1]}`,
-			);
-			return 2;
+
+		if (mode === 'start') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon start: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			if (!readConfig()) {
+				logError(
+					'dashboard daemon start: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			const result = await (
+				deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
+			)({log: msg => logOut(msg)});
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (result.ok) {
+				logOut(
+					result.connected
+						? 'dashboard: daemon started and connected'
+						: 'dashboard: daemon started; socket not yet verified (tail logs)',
+				);
+			} else {
+				logError(
+					`dashboard daemon start: ${result.message ?? 'unknown failure'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
 		}
-		const config = readConfig();
-		if (!config) {
-			logError(
-				'dashboard daemon foreground: not paired. Run "drisp dashboard pair" first.',
+
+		if (mode === 'stop') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon stop: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const result = await (deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon)(
+				{},
 			);
-			return 1;
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (!result.wasRunning) {
+				logOut('dashboard: daemon not running');
+			} else if (result.ok) {
+				logOut('dashboard: daemon stopped');
+			} else {
+				logError(
+					`dashboard daemon stop: ${result.message ?? 'unknown failure'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
 		}
-		const daemon = await runDashboardRuntimeDaemon({
-			readConfig,
-			refreshAccessToken: async () => performRefreshImpl('connect'),
-			makeInstanceSocketClient: deps.makeInstanceSocketClient,
-			executeRemoteAssignment: deps.executeRemoteAssignment,
-			log: (level, message) => {
-				if (level === 'error' || level === 'warn') {
-					logError(`dashboard daemon: ${message}`);
-				} else {
-					logOut(`dashboard daemon: ${message}`);
+
+		if (mode === 'restart') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon restart: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const stopResult = await (
+				deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon
+			)({});
+			if (stopResult.wasRunning && !stopResult.ok) {
+				logError(
+					`dashboard daemon restart: stop failed: ${stopResult.message ?? 'unknown'}`,
+				);
+				return 1;
+			}
+			const startResult = await (
+				deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
+			)({log: msg => logOut(msg)});
+			if (flags.json) {
+				logOut(JSON.stringify({restart: true, ...startResult}));
+			} else if (startResult.ok) {
+				logOut(
+					startResult.connected
+						? 'dashboard: daemon restarted and connected'
+						: 'dashboard: daemon restarted; socket not yet verified',
+				);
+			} else {
+				logError(
+					`dashboard daemon restart: ${startResult.message ?? 'unknown'}`,
+				);
+			}
+			return startResult.ok ? 0 : 1;
+		}
+
+		if (mode === 'install') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon install: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const installer = deps.installServiceUnit ?? defaultInstallServiceUnit;
+			const result = installer();
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (result.ok) {
+				logOut(`dashboard: wrote service unit at ${result.path}`);
+				logOut(`dashboard: load with: ${result.loadCommand}`);
+				logOut(`dashboard: start with: ${result.startCommand}`);
+			} else {
+				logError(
+					`dashboard daemon install: ${result.message ?? 'unsupported platform'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
+		}
+
+		if (mode === 'reload') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon reload: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+			try {
+				const reply = await queryDaemon({cmd: 'reload'});
+				if (!reply.ok) {
+					logError(`dashboard daemon reload: ${reply.error}`);
+					return 1;
 				}
-			},
-		});
-		logOut(`dashboard daemon: foreground runtime connected`);
-		const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
-		const reason = await wait();
-		await daemon.stop(reason);
-		logOut(`dashboard daemon: stopped (${reason})`);
-		return 0;
+			} catch (err) {
+				logError(
+					`dashboard daemon reload: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			if (flags.json) {
+				logOut(JSON.stringify({ok: true}));
+			} else {
+				logOut('dashboard: daemon reloaded');
+			}
+			return 0;
+		}
+
+		logError(
+			`dashboard daemon: unknown subcommand ${
+				mode ? mode : '(missing)'
+			}. Expected "foreground|start|stop|restart|reload|install".`,
+		);
+		return 2;
 	}
 
 	if (subcommand === 'connect') {
@@ -472,111 +925,17 @@ export async function runDashboardCommand(
 			logError(`dashboard connect: unexpected argument ${subcommandArgs[0]}`);
 			return 2;
 		}
-		const config = readConfig();
-		if (!config) {
-			logError(
-				'dashboard connect: not paired. Run "athena dashboard pair" first.',
-			);
-			return 1;
-		}
-		const result = await tryRefresh('connect');
-		if (!result.ok) return result.code;
-		const {token} = result;
-
-		const makeSocket =
-			deps.makeInstanceSocketClient ??
-			(o =>
-				createInstanceSocketClient({
-					dashboardUrl: o.dashboardUrl,
-					instanceId: o.instanceId,
-					accessToken: o.accessToken,
-					log: o.log,
-				}));
-		const client = makeSocket({
-			dashboardUrl: config.dashboardUrl,
-			instanceId: token.instanceId,
-			accessToken: token.accessToken,
-			log: (level, message) => {
-				if (level === 'error' || level === 'warn') {
-					logError(`dashboard: ${message}`);
-				}
-			},
-		});
-
-		const executor = deps.executeRemoteAssignment ?? executeRemoteAssignment;
-		const inFlight = new Map<string, Promise<void>>();
-		client.onFrame(frame => {
-			if (frame.type !== 'job_assignment') return;
-			if (inFlight.has(frame.runId)) return;
-			const work = executor({
-				frame,
-				client,
-				projectDir: process.cwd(),
-				log: (level, message) => {
-					if (level === 'error' || level === 'warn') {
-						logError(`dashboard run ${frame.runId}: ${message}`);
-					}
-				},
-			})
-				.catch(err => {
-					logError(
-						`dashboard run ${frame.runId}: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				})
-				.finally(() => {
-					inFlight.delete(frame.runId);
-				});
-			inFlight.set(frame.runId, work);
-		});
-
-		try {
-			await client.connect();
-		} catch (err) {
-			logError(
-				`dashboard connect: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-			return 1;
-		}
-
-		logOut(`dashboard: connected instance ${token.instanceId}`);
-
-		// Race the user-driven shutdown signal against an unsolicited socket
-		// close. If the socket drops first (server hangup, network, expired
-		// token) we exit non-zero so callers/process supervisors can react —
-		// reconnect-with-refresh is a follow-up.
-		const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
-		const closePromise = new Promise<{kind: 'closed'; reason: string}>(
-			resolve => {
-				client.onClose(reason => resolve({kind: 'closed', reason}));
-			},
+		logError(
+			'dashboard connect: deprecated; use `dashboard daemon foreground` (or `daemon start` to background).',
 		);
-		const shutdownPromise = wait().then(reason => ({
-			kind: 'shutdown' as const,
-			reason,
-		}));
-		const exitTrigger = await Promise.race([closePromise, shutdownPromise]);
-
-		if (inFlight.size > 0) {
-			logOut(
-				`dashboard: draining ${inFlight.size} in-flight run${
-					inFlight.size === 1 ? '' : 's'
-				} before disconnect`,
-			);
-			await Promise.allSettled(inFlight.values());
-		}
-
-		if (exitTrigger.kind === 'closed') {
-			logError(`dashboard: socket closed unexpectedly (${exitTrigger.reason})`);
-			client.close('socket closed');
-			return 1;
-		}
-		client.close(exitTrigger.reason);
-		logOut(`dashboard: disconnected (${exitTrigger.reason})`);
-		return 0;
+		return await runDashboardCommand(
+			{
+				subcommand: 'daemon',
+				subcommandArgs: ['foreground'],
+				flags: input.flags,
+			},
+			deps,
+		);
 	}
 
 	if (subcommand === 'doctor') {
@@ -773,6 +1132,52 @@ export async function runDashboardCommand(
 
 	if (subcommand === 'console') {
 		const sub = subcommandArgs[0];
+		if (sub === 'enable') {
+			const runnerId = subcommandArgs[1];
+			if (!runnerId) {
+				logError('dashboard console enable: missing <runnerId>');
+				return 2;
+			}
+			if (subcommandArgs.length > 2) {
+				logError(
+					`dashboard console enable: unexpected argument ${subcommandArgs[2]}`,
+				);
+				return 2;
+			}
+			// Opinionated wrapper around `console link`: extra preflight that
+			// the runner is bound to *this* instance, then delegate to link.
+			const config = readConfig();
+			if (!config) {
+				logError(
+					'dashboard console enable: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			const refreshResult = await tryRefresh('refresh');
+			if (!refreshResult.ok) return refreshResult.code;
+			const health = await fetchRunnerHealth(
+				fetchImpl,
+				config.dashboardUrl,
+				runnerId,
+				refreshResult.token,
+			);
+			if (!health.matches) {
+				logError(
+					`dashboard console enable: runner ${runnerId} is not bound to this instance${
+						health.error ? ` (${health.error})` : ''
+					}`,
+				);
+				return 1;
+			}
+			return await runDashboardCommand(
+				{
+					subcommand: 'console',
+					subcommandArgs: ['link', runnerId],
+					flags: input.flags,
+				},
+				deps,
+			);
+		}
 		if (sub === 'link') {
 			const runnerId = subcommandArgs[1];
 			if (!runnerId) {
@@ -884,7 +1289,7 @@ export async function runDashboardCommand(
 		logError(
 			`dashboard console: unknown subcommand ${
 				sub ? sub : '(missing)'
-			}. Expected "link <runnerId>".`,
+			}. Expected "enable <runnerId>" or "link <runnerId>".`,
 		);
 		return 2;
 	}
@@ -894,11 +1299,107 @@ export async function runDashboardCommand(
 			logError(`dashboard unpair: unexpected argument ${subcommandArgs[0]}`);
 			return 2;
 		}
+		const config = readConfig();
+		if (!config) {
+			if (flags.json) {
+				logOut(JSON.stringify({ok: true, paired: false}));
+			} else {
+				logOut('dashboard unpair: not paired (nothing to do)');
+			}
+			return 0;
+		}
+
+		// 1. Stop the daemon first so it stops processing assignments before we
+		//    invalidate its credentials.
+		const stopResult = await (
+			deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon
+		)({});
+		if (!flags.json) {
+			if (stopResult.wasRunning) {
+				if (stopResult.ok) {
+					logOut('dashboard: runtime daemon stopped');
+				} else {
+					logError(
+						`dashboard: runtime daemon stop failed: ${
+							stopResult.message ?? 'unknown'
+						}`,
+					);
+				}
+			} else {
+				logOut('dashboard: runtime daemon not running (skipping stop)');
+			}
+		}
+
+		// 2. Best-effort revoke. If the dashboard endpoint is unavailable or the
+		//    network is down, surface a warning but proceed with local removal —
+		//    leaving a paired-on-disk-but-unreachable config is worse UX than a
+		//    server-side token that's still valid for a few minutes.
+		let revokeOk = false;
+		let revokeMessage: string | undefined;
+		try {
+			const refreshResult = await tryRefresh('refresh');
+			if (refreshResult.ok) {
+				const url = new URL(
+					`/api/instances/${encodeURIComponent(config.instanceId)}/revoke`,
+					config.dashboardUrl,
+				).toString();
+				const response = await fetchImpl(url, {
+					method: 'POST',
+					headers: {
+						authorization: `Bearer ${refreshResult.token.accessToken}`,
+						'content-type': 'application/json',
+					},
+					body: JSON.stringify({}),
+				});
+				if (response.ok || response.status === 404) {
+					revokeOk = true;
+				} else {
+					const detail = await safeReadError(response);
+					revokeMessage = `dashboard returned ${response.status}${
+						detail ? ` — ${detail}` : ''
+					}`;
+				}
+			} else {
+				revokeMessage = 'could not refresh access token';
+			}
+		} catch (err) {
+			revokeMessage = err instanceof Error ? err.message : String(err);
+		}
+
+		if (!flags.json) {
+			if (revokeOk) {
+				logOut(`dashboard: revoking refresh token at ${config.dashboardUrl}`);
+				logOut('dashboard: refresh token revoked');
+			} else {
+				logError(
+					`dashboard: revoke failed${revokeMessage ? `: ${revokeMessage}` : ''}`,
+				);
+				logOut(
+					'dashboard: WARNING — refresh token may still be valid until you revoke it from the dashboard UI.',
+				);
+			}
+		}
+
+		// 3. Remove local credentials.
 		removeConfig();
+
 		if (flags.json) {
-			logOut(JSON.stringify({ok: true}));
+			logOut(
+				JSON.stringify({
+					ok: true,
+					daemon: stopResult,
+					revoke: {
+						ok: revokeOk,
+						...(revokeMessage ? {message: revokeMessage} : {}),
+					},
+				}),
+			);
 		} else {
-			logOut('dashboard: unpaired');
+			logOut(
+				`dashboard: unpaired (credentials removed${
+					stopResult.wasRunning ? ', daemon stopped' : ''
+				})`,
+			);
 		}
 		return 0;
 	}
@@ -941,25 +1442,114 @@ async function defaultReloadGatewayChannels(): Promise<{
 	};
 }
 
-async function defaultStartRuntimeDaemon(): Promise<RuntimeDaemonStartResult> {
-	const entry = process.argv[1];
+function resolveDaemonEntry(): string | null {
+	// `import.meta.url` resolves to the bundled chunk under `dist/`. The
+	// daemon entry is bundled as a sibling `dashboard-daemon.js`. Walking up
+	// to the chunk's directory is robust whether the chunk lives at
+	// `dist/cli.js` or at a hashed split chunk like `dist/chunk-X.js`.
+	let here: string;
+	try {
+		here = fileURLToPath(import.meta.url);
+	} catch {
+		return null;
+	}
+	const candidates = [
+		path.join(path.dirname(here), 'dashboard-daemon.js'),
+		// When invoked via `npm run start`, `here` may be the unbundled source
+		// path. Walk up until we hit a `dist/` sibling.
+		path.join(
+			path.dirname(here),
+			'..',
+			'..',
+			'..',
+			'dist',
+			'dashboard-daemon.js',
+		),
+	];
+	for (const candidate of candidates) {
+		try {
+			fs.accessSync(candidate, fs.constants.R_OK);
+			return candidate;
+		} catch {
+			// next candidate
+		}
+	}
+	return null;
+}
+
+// NODE_OPTIONS is intentionally excluded — it can carry --require/--inspect
+// which would let a parent shell inject arbitrary code into the daemon. The
+// daemon should boot from a clean environment.
+const DAEMON_ENV_ALLOWLIST = [
+	'HOME',
+	'PATH',
+	'LANG',
+	'LC_ALL',
+	'ATHENA_DASHBOARD_ORIGIN',
+];
+
+function buildDaemonEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = {};
+	for (const key of DAEMON_ENV_ALLOWLIST) {
+		if (env[key] !== undefined) out[key] = env[key];
+	}
+	for (const [key, value] of Object.entries(env)) {
+		if (key.startsWith('XDG_') && value !== undefined) {
+			out[key] = value;
+		}
+	}
+	return out;
+}
+
+const SOCKET_PROBE_TIMEOUT_MS = 10_000;
+const SOCKET_PROBE_INTERVAL_MS = 200;
+
+async function defaultStartRuntimeDaemon(opts: {
+	log: (msg: string) => void;
+}): Promise<RuntimeDaemonStartResult> {
+	const paths = daemonStatePaths();
+
+	// If a daemon is already alive, send a stop+start cycle so it picks up the
+	// rotated refresh token from the just-completed pair. Falling through into
+	// the spawn path covers the case where the lock is stale.
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state === 'held') {
+		try {
+			await sendUdsRequest(paths.socketPath, {
+				cmd: 'stop',
+				reason: 'pair-restart',
+			});
+		} catch (err) {
+			opts.log(
+				`daemon: pair-restart stop request failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+		// Wait for the previous daemon to release the lock.
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			const after = readPidLock(paths.pidPath);
+			if (after.state !== 'held') break;
+			await new Promise(r => setTimeout(r, 100));
+		}
+	}
+
+	const entry = resolveDaemonEntry();
 	if (!entry) {
 		return {
 			ok: false,
-			message: 'cannot determine CLI entrypoint',
+			message: 'cannot resolve dashboard-daemon.js entry path',
 		};
 	}
+
 	let child: ReturnType<typeof spawn>;
 	try {
-		child = spawn(
-			process.execPath,
-			[entry, 'dashboard', 'daemon', 'foreground'],
-			{
-				detached: true,
-				stdio: 'ignore',
-				env: process.env,
-			},
-		);
+		child = spawn(process.execPath, [entry], {
+			detached: true,
+			stdio: 'ignore',
+			env: buildDaemonEnv(process.env),
+		});
 	} catch (err) {
 		return {
 			ok: false,
@@ -967,11 +1557,387 @@ async function defaultStartRuntimeDaemon(): Promise<RuntimeDaemonStartResult> {
 		};
 	}
 	child.unref();
+
+	// Track child lifecycle so we can fail fast when the daemon dies before
+	// the probe deadline rather than waiting the full 10s. Without this the
+	// user sees a generic "socket not verified within 10s" for any startup
+	// crash (binary mismatch, missing module, lock contention, etc.).
+	let earlyExit: string | undefined;
+	let spawnError: string | undefined;
+	const onError = (err: Error): void => {
+		spawnError = err.message;
+	};
+	const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+		earlyExit = `daemon exited early (code=${code ?? 'null'}, signal=${
+			signal ?? 'null'
+		})`;
+	};
+	child.once('error', onError);
+	child.once('exit', onExit);
+
+	// Verify-then-return: poll the daemon UDS until status reports the socket
+	// is connected, max 10s. Pairing succeeded on disk regardless — this is
+	// purely about reporting an honest "connected" status to the user.
+	const probeDeadline = Date.now() + SOCKET_PROBE_TIMEOUT_MS;
+	let lastError: string | undefined;
+	let connected = false;
+	let everReached = false;
+	let pid: number | undefined;
+	while (Date.now() < probeDeadline) {
+		if (spawnError) break;
+		if (earlyExit) break;
+		try {
+			const reply = await sendUdsRequest(
+				paths.socketPath,
+				{cmd: 'status'},
+				{timeoutMs: 1_500},
+			);
+			everReached = true;
+			if (reply.ok && reply.cmd === 'status') {
+				pid = reply.pid;
+				if (reply.socketConnected) {
+					connected = true;
+					break;
+				}
+			} else if (!reply.ok) {
+				lastError = reply.error;
+			}
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : String(err);
+		}
+		await new Promise(r => setTimeout(r, SOCKET_PROBE_INTERVAL_MS));
+	}
+
+	child.off('error', onError);
+	child.off('exit', onExit);
+
+	// "ok" iff we have evidence the daemon is alive: either the socket is fully
+	// connected, or we got at least one UDS reply. If the child crashed early
+	// or we never reached the daemon, that's a real start failure — the caller
+	// should treat it as such instead of optimistically "started in background".
+	const reachable = connected || everReached;
+	if (spawnError) {
+		return {
+			ok: false,
+			message: `daemon failed to start: ${spawnError}`,
+		};
+	}
+	if (earlyExit && !connected) {
+		return {
+			ok: false,
+			message: earlyExit,
+		};
+	}
+	if (!reachable) {
+		return {
+			ok: false,
+			message: `daemon did not respond on UDS within ${SOCKET_PROBE_TIMEOUT_MS}ms${
+				lastError ? ` (${lastError})` : ''
+			}`,
+		};
+	}
+
+	opts.log(
+		connected
+			? `daemon: socket verified${pid !== undefined ? ` (pid ${pid})` : ''}`
+			: `daemon: started but socket not yet connected${
+					lastError ? ` (${lastError})` : ''
+				}`,
+	);
+
 	return {
 		ok: true,
-		connected: false,
-		message: 'started in background',
+		connected,
+		...(pid !== undefined ? {pid} : {}),
+		message: connected
+			? 'started, socket verified'
+			: 'started, socket not yet verified',
 	};
+}
+
+async function defaultStopRuntimeDaemon(
+	opts: {timeoutMs?: number} = {},
+): Promise<RuntimeDaemonStopResult> {
+	const paths = daemonStatePaths();
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state !== 'held') {
+		return {ok: true, wasRunning: false, message: 'daemon not running'};
+	}
+	try {
+		const reply = await sendUdsRequest(
+			paths.socketPath,
+			{cmd: 'stop', reason: 'cli-stop'},
+			{timeoutMs: opts.timeoutMs ?? 5_000},
+		);
+		if (!reply.ok) {
+			return {ok: false, wasRunning: true, message: reply.error};
+		}
+	} catch (err) {
+		return {
+			ok: false,
+			wasRunning: true,
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	// Wait for the lock to be released so callers know the previous daemon is
+	// fully gone before they restart.
+	const deadline = Date.now() + (opts.timeoutMs ?? 5_000);
+	while (Date.now() < deadline) {
+		const after = readPidLock(paths.pidPath);
+		if (after.state !== 'held') {
+			return {ok: true, wasRunning: true};
+		}
+		await new Promise(r => setTimeout(r, 100));
+	}
+	return {ok: false, wasRunning: true, message: 'daemon did not exit in time'};
+}
+
+async function defaultQueryRuntimeDaemon(
+	req: UdsRequest,
+): Promise<UdsResponse> {
+	const paths = daemonStatePaths();
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state !== 'held') {
+		return {ok: false, error: 'daemon not running'};
+	}
+	return await sendUdsRequest(paths.socketPath, req);
+}
+
+async function defaultTailDaemonLog(opts: {
+	tail: number;
+	follow: boolean;
+}): Promise<number> {
+	const paths = daemonStatePaths();
+	let stream: fs.ReadStream | null = null;
+	let watcher: fs.FSWatcher | null = null;
+	try {
+		const stat = fs.statSync(paths.logPath);
+		const size = stat.size;
+		const buf = Buffer.alloc(Math.min(size, opts.tail * 1024));
+		const fd = fs.openSync(paths.logPath, 'r');
+		try {
+			fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+		} finally {
+			fs.closeSync(fd);
+		}
+		const lines = buf
+			.toString('utf-8')
+			.split('\n')
+			.filter(l => l.length > 0);
+		const tail = lines.slice(-opts.tail);
+		for (const line of tail) {
+			process.stdout.write(line + '\n');
+		}
+		if (!opts.follow) return 0;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			process.stderr.write(
+				`dashboard logs: log file ${paths.logPath} does not exist yet\n`,
+			);
+			return opts.follow ? 0 : 1;
+		}
+		throw err;
+	}
+
+	let position = fs.statSync(paths.logPath).size;
+	return await new Promise<number>(resolve => {
+		let pollTimer: NodeJS.Timeout | null = null;
+		const drain = (): void => {
+			try {
+				const stat = fs.statSync(paths.logPath);
+				if (stat.size < position) {
+					// rotated — start from the new file's beginning
+					position = 0;
+				}
+				if (stat.size > position) {
+					const fd = fs.openSync(paths.logPath, 'r');
+					const buf = Buffer.alloc(stat.size - position);
+					try {
+						fs.readSync(fd, buf, 0, buf.length, position);
+					} finally {
+						fs.closeSync(fd);
+					}
+					position = stat.size;
+					process.stdout.write(buf);
+				}
+			} catch (err) {
+				// ENOENT during rotation is expected; surface anything else.
+				if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+					process.stderr.write(
+						`dashboard logs: tail error: ${
+							err instanceof Error ? err.message : String(err)
+						}\n`,
+					);
+				}
+			}
+		};
+		try {
+			watcher = fs.watch(paths.logPath, {persistent: true}, () => {
+				drain();
+			});
+		} catch {
+			// fs.watch may fail on certain filesystems; fall back to polling
+			pollTimer = setInterval(drain, 500);
+			pollTimer.unref?.();
+		}
+		const onSignal = (): void => {
+			if (watcher) {
+				watcher.close();
+				watcher = null;
+			}
+			if (pollTimer) {
+				clearInterval(pollTimer);
+				pollTimer = null;
+			}
+			if (stream) {
+				stream.close();
+				stream = null;
+			}
+			resolve(0);
+		};
+		process.once('SIGINT', onSignal);
+		process.once('SIGTERM', onSignal);
+	});
+}
+
+function formatDuration(seconds: number): string {
+	if (!Number.isFinite(seconds) || seconds < 0) return '?';
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3_600) {
+		const m = Math.floor(seconds / 60);
+		const s = seconds % 60;
+		return s > 0 ? `${m}m${s}s` : `${m}m`;
+	}
+	if (seconds < 86_400) {
+		const h = Math.floor(seconds / 3_600);
+		const m = Math.floor((seconds % 3_600) / 60);
+		return m > 0 ? `${h}h${m}m` : `${h}h`;
+	}
+	const d = Math.floor(seconds / 86_400);
+	const h = Math.floor((seconds % 86_400) / 3_600);
+	return h > 0 ? `${d}d${h}h` : `${d}d`;
+}
+
+type FetchedRunnerHealth = {
+	id: string;
+	matches: boolean;
+	executionTarget?: string;
+	remoteInstanceId?: string;
+	error?: string;
+};
+
+async function fetchRunnerHealth(
+	fetchImpl: typeof fetch,
+	dashboardUrl: string,
+	runnerId: string,
+	token: DashboardAccessToken,
+): Promise<FetchedRunnerHealth> {
+	const url = new URL(
+		`/api/runners/${encodeURIComponent(runnerId)}`,
+		dashboardUrl,
+	).toString();
+	let response: Response;
+	try {
+		response = await fetchImpl(url, {
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${token.accessToken}`,
+				accept: 'application/json',
+			},
+		});
+	} catch (err) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `request failed: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		};
+	}
+	if (!response.ok) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `dashboard returned ${response.status}`,
+		};
+	}
+	let body: unknown;
+	try {
+		body = await response.json();
+	} catch (err) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `invalid response body: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		};
+	}
+	const obj =
+		typeof body === 'object' && body !== null
+			? (body as Record<string, unknown>)
+			: {};
+	const executionTarget =
+		typeof obj['executionTarget'] === 'string'
+			? (obj['executionTarget'] as string)
+			: undefined;
+	const remoteInstanceId =
+		typeof obj['remoteInstanceId'] === 'string'
+			? (obj['remoteInstanceId'] as string)
+			: undefined;
+	const matches =
+		executionTarget === 'remote' && remoteInstanceId === token.instanceId;
+	const reasons: string[] = [];
+	if (executionTarget !== 'remote') {
+		reasons.push(
+			`executionTarget=${executionTarget ?? 'unset'} (expected "remote")`,
+		);
+	}
+	if (remoteInstanceId !== token.instanceId) {
+		reasons.push(
+			`remoteInstanceId=${remoteInstanceId ?? 'unset'} (expected "${token.instanceId}")`,
+		);
+	}
+	return {
+		id: runnerId,
+		matches,
+		...(executionTarget !== undefined ? {executionTarget} : {}),
+		...(remoteInstanceId !== undefined ? {remoteInstanceId} : {}),
+		...(reasons.length > 0 ? {error: reasons.join('; ')} : {}),
+	};
+}
+
+function defaultInstallServiceUnit(): ServiceInstallResult {
+	const entry = resolveDaemonEntry();
+	if (!entry) {
+		return {
+			ok: false,
+			platform: 'unsupported',
+			message: 'cannot resolve dashboard-daemon.js entry path',
+		};
+	}
+	return installServiceUnit({
+		daemonEntry: entry,
+		nodeBinary: process.execPath,
+	});
+}
+
+function compareSemver(a: string, b: string): number {
+	const parseN = (s: string): [number, number, number] => {
+		const parts = s.replace(/^v/, '').split('-')[0]!.split('.');
+		return [
+			Number.parseInt(parts[0] ?? '0', 10) || 0,
+			Number.parseInt(parts[1] ?? '0', 10) || 0,
+			Number.parseInt(parts[2] ?? '0', 10) || 0,
+		];
+	};
+	const av = parseN(a);
+	const bv = parseN(b);
+	for (let i = 0; i < 3; i += 1) {
+		if (av[i]! < bv[i]!) return -1;
+		if (av[i]! > bv[i]!) return 1;
+	}
+	return 0;
 }
 
 function consoleBrokerUrl(dashboardUrl: string, runnerId: string): string {
@@ -1037,7 +2003,30 @@ function parsePairResponse(raw: unknown): PairResponse {
 						.filter((runner): runner is PairedRunner => runner !== null),
 				}
 			: {}),
+		...(typeof obj['requiredCliVersion'] === 'string'
+			? {requiredCliVersion: obj['requiredCliVersion'] as string}
+			: {}),
+		...(typeof obj['capabilityAck'] === 'object' &&
+		obj['capabilityAck'] !== null
+			? {capabilityAck: parseCapabilityAck(obj['capabilityAck'])}
+			: {}),
 	};
+}
+
+function parseCapabilityAck(raw: unknown): CapabilityAck {
+	if (typeof raw !== 'object' || raw === null) return {};
+	const obj = raw as Record<string, unknown>;
+	const ack: CapabilityAck = {};
+	if (typeof obj['runtimeDaemon'] === 'boolean') {
+		ack.runtimeDaemon = obj['runtimeDaemon'] as boolean;
+	}
+	if (typeof obj['consoleAdapter'] === 'boolean') {
+		ack.consoleAdapter = obj['consoleAdapter'] as boolean;
+	}
+	if (typeof obj['instanceSocket'] === 'boolean') {
+		ack.instanceSocket = obj['instanceSocket'] as boolean;
+	}
+	return ack;
 }
 
 function parsePairedRunner(raw: unknown): PairedRunner | null {

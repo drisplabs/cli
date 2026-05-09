@@ -23,7 +23,8 @@
 		"athena": "dist/cli.js",
 		"athena-flow": "dist/cli.js",
 		"drisp": "dist/cli.js",
-		"athena-hook-forwarder": "dist/hook-forwarder.js"
+		"athena-hook-forwarder": "dist/hook-forwarder.js",
+		"drisp-dashboard-daemon": "dist/dashboard-daemon.js"
 	},
 	"type": "module",
 	"engines": {
