@@ -19,6 +19,7 @@ export default defineConfig({
 		cli: 'src/app/entry/cli.tsx',
 		'hook-forwarder': 'src/harnesses/claude/hook-forwarder.ts',
 		'athena-gateway': 'src/gateway/entry.ts',
+		'dashboard-daemon': 'src/app/entry/dashboardDaemon.ts',
 	},
 	format: ['esm'],
 	target: 'node18',

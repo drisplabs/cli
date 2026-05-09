@@ -360,6 +360,20 @@ const cli = meow(
 			runner: {
 				type: 'string',
 			},
+			tail: {
+				type: 'number',
+			},
+			follow: {
+				type: 'boolean',
+				default: false,
+			},
+			active: {
+				type: 'boolean',
+				default: false,
+			},
+			limit: {
+				type: 'number',
+			},
 			tlsCa: {
 				type: 'string',
 			},
@@ -545,6 +559,12 @@ async function main(): Promise<void> {
 					runner:
 						typeof cli.flags.runner === 'string' ? cli.flags.runner : undefined,
 					json: Boolean(cli.flags.json),
+					...(typeof cli.flags.tail === 'number' ? {tail: cli.flags.tail} : {}),
+					...(cli.flags.follow ? {follow: true} : {}),
+					...(cli.flags.active ? {active: true} : {}),
+					...(typeof cli.flags.limit === 'number'
+						? {limit: cli.flags.limit}
+						: {}),
 				},
 			}),
 		);

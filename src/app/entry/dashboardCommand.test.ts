@@ -322,6 +322,132 @@ describe('runDashboardCommand: pair', () => {
 		// JSON pair output must not contain the refresh token.
 		expect(cap.out.join('\n')).not.toContain('refresh_1');
 	});
+
+	it('exits 0 with a warning when daemon spawn fails', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+			}),
+		);
+		const {deps, cap, writes} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: false,
+			message: 'spawn ENOENT',
+		}));
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			{...deps, startRuntimeDaemon},
+		);
+
+		// Daemon failure is a warning, not a pair failure — pairing on disk is
+		// the source of truth.
+		expect(code).toBe(0);
+		expect(writes).toHaveLength(1);
+		expect(cap.err.join('\n')).toContain('runtime daemon did not start');
+		expect(cap.out.join('\n')).toContain('pairing succeeded; start the daemon');
+	});
+
+	it('exits 1 when the dashboard requires a newer cli', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+				requiredCliVersion: '99.0.0',
+			}),
+		);
+		const {deps, cap, writes} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn();
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			{...deps, startRuntimeDaemon},
+		);
+
+		expect(code).toBe(1);
+		// Refusing the pair before writing config or starting the daemon avoids
+		// leaving the user with a half-broken setup.
+		expect(writes).toHaveLength(0);
+		expect(startRuntimeDaemon).not.toHaveBeenCalled();
+		expect(cap.err.join('\n')).toContain("older than the dashboard's required");
+	});
+
+	it('reports verified socket from defaultStartRuntimeDaemon probe result', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn(
+			async (opts: {log: (msg: string) => void}) => {
+				opts.log('daemon: socket verified (pid 4123)');
+				return {
+					ok: true,
+					connected: true,
+					pid: 4123,
+					message: 'started, socket verified',
+				};
+			},
+		);
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			{...deps, startRuntimeDaemon},
+		);
+
+		expect(code).toBe(0);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain(
+			'runtime daemon connected (verified socket open)',
+		);
+		expect(cap.out.join('\n')).toContain('socket verified (pid 4123)');
+	});
+
+	it('sends both cliVersion and legacy version capability fields', async () => {
+		let capturedBody: unknown = null;
+		const fetchMock = vi.fn(async (_url: string, init?: {body?: string}) => {
+			if (init?.body) capturedBody = JSON.parse(init.body);
+			return jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+			});
+		});
+		const {deps} = makeDeps({
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
+		});
+
+		await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			deps,
+		);
+
+		expect(capturedBody).toMatchObject({
+			capabilities: {
+				cliVersion: '9.9.9-test',
+				version: '9.9.9-test',
+				runtimeDaemon: true,
+			},
+		});
+	});
 });
 
 describe('runDashboardCommand: refresh', () => {
@@ -452,7 +578,7 @@ describe('runDashboardCommand: status', () => {
 		expect(cap.out.join('\n')).toContain('not paired');
 	});
 
-	it('prints instance id and origin without tokens', async () => {
+	it('prints pairing, daemon-down, and exits non-zero', async () => {
 		const stored: DashboardClientConfig = {
 			dashboardUrl: 'https://example.com',
 			instanceId: 'inst_1',
@@ -464,13 +590,53 @@ describe('runDashboardCommand: status', () => {
 
 		const code = await runDashboardCommand(
 			{subcommand: 'status', subcommandArgs: [], flags: {}},
-			deps,
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: false,
+					error: 'daemon not running',
+				}),
+			},
 		);
-		expect(code).toBe(0);
+		// Paired but daemon down → unhealthy axis → exit 1.
+		expect(code).toBe(1);
 		expect(cap.out.join('\n')).toContain(
 			'paired to https://example.com as inst_1',
 		);
+		expect(cap.out.join('\n')).toContain('NOT running');
 		expect(cap.out.join('\n')).not.toContain('do-not-print');
+	});
+
+	it('reports a healthy daemon and exits 0', async () => {
+		const stored: DashboardClientConfig = {
+			dashboardUrl: 'https://example.com',
+			instanceId: 'inst_1',
+			refreshToken: 'do-not-print',
+			fingerprint: 'fp-stored',
+			pairedAt: 1,
+		};
+		const {deps, cap} = makeDeps({stored});
+
+		const code = await runDashboardCommand(
+			{subcommand: 'status', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'status',
+					pid: 4123,
+					startedAt: Date.now() - 2_000,
+					socketConnected: true,
+					activeRuns: 0,
+					completedRuns: 2,
+					instanceId: 'inst_1',
+					dashboardUrl: 'https://example.com',
+				}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toMatch(/daemon:\s+running \(pid 4123/);
+		expect(cap.out.join('\n')).toContain('socket:    connected');
 	});
 
 	it('emits JSON without tokens', async () => {
@@ -486,7 +652,18 @@ describe('runDashboardCommand: status', () => {
 
 		await runDashboardCommand(
 			{subcommand: 'status', subcommandArgs: [], flags: {json: true}},
-			deps,
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'status',
+					pid: 1,
+					startedAt: 0,
+					socketConnected: true,
+					activeRuns: 0,
+					completedRuns: 0,
+				}),
+			},
 		);
 		const parsed = JSON.parse(cap.out.join('\n'));
 		expect(parsed).toMatchObject({
@@ -495,6 +672,7 @@ describe('runDashboardCommand: status', () => {
 			instanceId: 'inst_1',
 			dashboardUrl: 'https://example.com',
 			lastRefreshAt: 2,
+			daemon: {running: true, pid: 1, socketConnected: true},
 		});
 		expect(cap.out.join('\n')).not.toContain('do-not-print');
 	});
@@ -555,7 +733,7 @@ function makeFakeSocket(connectFn?: () => Promise<void>) {
 	};
 }
 
-describe('runDashboardCommand: connect', () => {
+describe('runDashboardCommand: connect (deprecation alias)', () => {
 	const stored: DashboardClientConfig = {
 		dashboardUrl: 'https://example.com',
 		instanceId: 'inst_1',
@@ -580,7 +758,7 @@ describe('runDashboardCommand: connect', () => {
 		expect(cap.err.join('\n')).toContain('not paired');
 	});
 
-	it('refreshes an access token before opening the socket', async () => {
+	it('prints a deprecation warning and routes to daemon foreground', async () => {
 		const fakeSocket = makeFakeSocket();
 		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
@@ -601,8 +779,11 @@ describe('runDashboardCommand: connect', () => {
 			accessToken: 'fresh-access',
 			log: expect.any(Function),
 		});
-		expect(cap.out.join('\n')).toContain('connected instance inst_1');
-		expect(cap.out.join('\n')).toContain('disconnected (SIGINT)');
+		expect(cap.err.join('\n')).toContain(
+			'connect: deprecated; use `dashboard daemon foreground`',
+		);
+		expect(cap.out.join('\n')).toContain('foreground runtime connected');
+		expect(cap.out.join('\n')).toContain('stopped (SIGINT)');
 	});
 
 	it('exits 1 when refresh fails and never opens socket', async () => {
@@ -621,30 +802,6 @@ describe('runDashboardCommand: connect', () => {
 		);
 		expect(code).toBe(1);
 		expect(fakeSocket.calls.connect).toBe(0);
-	});
-
-	it('exits 1 when the socket closes before the shutdown signal', async () => {
-		const fakeSocket = makeFakeSocket();
-		const {deps, cap} = makeDeps({stored});
-
-		const pending = runDashboardCommand(
-			{subcommand: 'connect', subcommandArgs: [], flags: {}},
-			{
-				...deps,
-				performRefresh: happyRefresh,
-				makeInstanceSocketClient: fakeSocket.factory,
-				waitForShutdown: () => new Promise<string>(() => {}),
-			},
-		);
-		// Yield until runDashboardCommand has subscribed to onClose.
-		await new Promise(r => setTimeout(r, 0));
-		await new Promise(r => setTimeout(r, 0));
-		fakeSocket.emitClose('server gone');
-
-		const code = await pending;
-		expect(code).toBe(1);
-		expect(cap.err.join('\n')).toContain('socket closed unexpectedly');
-		expect(cap.err.join('\n')).toContain('server gone');
 	});
 
 	it('reports socket connect failure and exits 1', async () => {
@@ -717,21 +874,22 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 		expect(executor.mock.calls[0]![0]).toMatchObject({frame});
 	});
 
-	it('drains in-flight assignments before disconnecting', async () => {
+	it('aborts in-flight assignments on stop', async () => {
 		const fake = makeFakeSocket();
-		let resolveExecutor: () => void = () => {};
 		let signalStarted: () => void = () => {};
 		const startedPromise = new Promise<void>(r => {
 			signalStarted = r;
 		});
-		const executor = vi.fn(async () => {
+		let seenSignal: AbortSignal | undefined;
+		const executor = vi.fn(async (input: {abortSignal?: AbortSignal}) => {
+			seenSignal = input.abortSignal;
 			signalStarted();
-			await new Promise<void>(r => {
-				resolveExecutor = r;
+			await new Promise<void>(resolve => {
+				input.abortSignal?.addEventListener('abort', () => resolve());
 			});
 		});
 
-		const {deps, cap} = makeDeps({stored});
+		const {deps} = makeDeps({stored});
 		const pending = runDashboardCommand(
 			{subcommand: 'connect', subcommandArgs: [], flags: {}},
 			{
@@ -740,11 +898,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 				makeInstanceSocketClient: fake.factory,
 				executeRemoteAssignment:
 					executor as unknown as typeof executeRemoteAssignment,
-				waitForShutdown: () =>
-					startedPromise.then(() => {
-						setTimeout(() => resolveExecutor(), 5);
-						return 'SIGINT';
-					}),
+				waitForShutdown: () => startedPromise.then(() => 'SIGINT'),
 			},
 		);
 
@@ -758,7 +912,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 		const code = await pending;
 		expect(code).toBe(0);
 		expect(executor).toHaveBeenCalledTimes(1);
-		expect(cap.out.join('\n')).toContain('draining 1 in-flight run');
+		expect(seenSignal?.aborted).toBe(true);
 		expect(fake.calls.closed.length).toBe(1);
 	});
 
@@ -1032,22 +1186,220 @@ describe('runDashboardCommand: console link', () => {
 });
 
 describe('runDashboardCommand: unpair', () => {
-	it('removes config and is idempotent', async () => {
-		const stored: DashboardClientConfig = {
-			dashboardUrl: 'https://example.com',
-			instanceId: 'inst_1',
-			refreshToken: 'tok',
-			fingerprint: 'fp',
-			pairedAt: 1,
-		};
-		const {deps, cap, removed} = makeDeps({stored});
+	const storedConfig: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'tok',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
 
+	it('reports nothing-to-do when not paired', async () => {
+		const {deps, cap, removed} = makeDeps({});
 		const code = await runDashboardCommand(
 			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
 			deps,
 		);
 		expect(code).toBe(0);
+		expect(removed.count).toBe(0);
+		expect(cap.out.join('\n')).toContain('not paired');
+	});
+
+	it('stops the daemon, revokes server-side, and removes config', async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({}),
+			text: async () => '',
+		});
+		const {deps, cap, removed} = makeDeps({
+			stored: storedConfig,
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
+		});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: true,
+		}));
+		const performRefresh = vi.fn(async () => ({
+			instanceId: 'inst_1',
+			accessToken: 'tok-access',
+			expiresInSec: 900,
+		}));
+
+		const code = await runDashboardCommand(
+			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
+			{...deps, stopRuntimeDaemon, performRefresh},
+		);
+		expect(code).toBe(0);
+		expect(stopRuntimeDaemon).toHaveBeenCalledTimes(1);
 		expect(removed.count).toBe(1);
-		expect(cap.out.join('\n')).toContain('unpaired');
+		// Revoke endpoint hit with the correct instance id.
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining('/api/instances/inst_1/revoke'),
+			expect.objectContaining({method: 'POST'}),
+		);
+		expect(cap.out.join('\n')).toContain('runtime daemon stopped');
+		expect(cap.out.join('\n')).toContain('refresh token revoked');
+		expect(cap.out.join('\n')).toContain('credentials removed');
+	});
+
+	it('warns and still removes config when revoke fails', async () => {
+		const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+		const {deps, cap, removed} = makeDeps({
+			stored: storedConfig,
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
+		});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: false,
+		}));
+		const performRefresh = vi.fn(async () => ({
+			instanceId: 'inst_1',
+			accessToken: 'tok-access',
+			expiresInSec: 900,
+		}));
+
+		const code = await runDashboardCommand(
+			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
+			{...deps, stopRuntimeDaemon, performRefresh},
+		);
+		// Local removal still succeeds — leaving paired-on-disk-but-unreachable
+		// is worse UX than a brief server-side residue.
+		expect(code).toBe(0);
+		expect(removed.count).toBe(1);
+		expect(cap.err.join('\n')).toContain('revoke failed');
+		expect(cap.out.join('\n')).toContain('credentials removed');
+	});
+});
+
+describe('runDashboardCommand: runs', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'r',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
+
+	it('lists runs returned by the daemon UDS', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'runs', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'runs',
+					runs: [
+						{
+							runId: 'run_1',
+							startedAt: Date.now() - 30_000,
+							endedAt: Date.now() - 10_000,
+							status: 'completed',
+						},
+						{
+							runId: 'run_2',
+							startedAt: Date.now() - 5_000,
+							status: 'running',
+						},
+					],
+				}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toContain('run_1');
+		expect(cap.out.join('\n')).toContain('run_2');
+		expect(cap.out.join('\n')).toContain('running');
+		expect(cap.out.join('\n')).toContain('completed');
+	});
+
+	it('exits 1 when the daemon is not running', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'runs', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: false,
+					error: 'daemon not running',
+				}),
+			},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('daemon not running');
+	});
+});
+
+describe('runDashboardCommand: daemon start/stop/restart/reload', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'r',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
+
+	it('start spawns the daemon and reports verified connection', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			connected: true,
+			pid: 4123,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['start'], flags: {}},
+			{...deps, startRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain('daemon started and connected');
+	});
+
+	it('stop reports daemon-not-running when not held', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: false,
+			message: 'daemon not running',
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['stop'], flags: {}},
+			{...deps, stopRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toContain('daemon not running');
+	});
+
+	it('restart calls stop then start', async () => {
+		const {deps} = makeDeps({stored});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: true,
+		}));
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			connected: true,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['restart'], flags: {}},
+			{...deps, stopRuntimeDaemon, startRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(stopRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+	});
+
+	it('reload routes a reload UDS command to the daemon', async () => {
+		const {deps} = makeDeps({stored});
+		const queryRuntimeDaemon = vi.fn(async () => ({
+			ok: true as const,
+			cmd: 'reload' as const,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['reload'], flags: {}},
+			{...deps, queryRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(queryRuntimeDaemon).toHaveBeenCalledWith({cmd: 'reload'});
 	});
 });
