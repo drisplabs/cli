@@ -214,7 +214,11 @@ export function createAgentMessageStream(
 			lastAgentMessageByActorScope.clear();
 		},
 		resetForNewRun() {
-			pendingMessages.clear();
+			// Note: pendingMessages is intentionally NOT cleared here. The original
+			// ensureRunArray only reset dedup + reasoning state on run rollover; the
+			// orchestrator clears pendingMessages explicitly in session.start /
+			// session.end / turn.start. Clearing here would drop in-flight Codex
+			// message.delta buffers when a rollover fires mid-stream.
 			lastAgentMessageByActorScope.clear();
 			reasoningSummaryByKey.clear();
 		},

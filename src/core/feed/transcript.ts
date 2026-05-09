@@ -48,9 +48,23 @@ export function createTranscriptReader(): TranscriptReader {
 		try {
 			const buf = Buffer.alloc(fileSize - offset);
 			const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset);
-			offsets.set(transcriptPath, offset + bytesRead);
 
-			const chunk = buf.toString('utf8', 0, bytesRead);
+			// Find the byte offset of the last complete line (last '\n').
+			// Bytes past it are an incomplete tail mid-flush — leave them for the
+			// next read, otherwise the line is split and JSON.parse drops it
+			// silently.
+			let lastNewline = -1;
+			for (let i = bytesRead - 1; i >= 0; i--) {
+				if (buf[i] === 0x0a) {
+					lastNewline = i;
+					break;
+				}
+			}
+			if (lastNewline === -1) return [];
+
+			offsets.set(transcriptPath, offset + lastNewline + 1);
+
+			const chunk = buf.toString('utf8', 0, lastNewline + 1);
 			const lines = chunk.split('\n').filter(l => l.trim().length > 0);
 
 			const messages: TranscriptMessage[] = [];

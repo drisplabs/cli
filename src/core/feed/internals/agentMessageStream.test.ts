@@ -278,7 +278,7 @@ describe('agentMessageStream', () => {
 	});
 
 	describe('resetForNewRun', () => {
-		it('clears pending, dedup, and reasoning state', () => {
+		it('clears dedup and reasoning, but preserves in-flight pending deltas', () => {
 			const ams = createAgentMessageStream(buildEvent(), fakeTranscript());
 			ams.appendPendingDelta('item-1', 'pending', 'agent:root', 'root');
 			ams.emit({
@@ -292,16 +292,16 @@ describe('agentMessageStream', () => {
 
 			ams.resetForNewRun();
 
-			// Pending dropped.
-			expect(
-				ams.emitCompleted({
-					itemId: 'item-1',
-					messageText: undefined,
-					fallbackActorId: 'agent:root',
-					fallbackScope: 'root',
-					runtimeEvent: makeRuntimeEvent(),
-				}),
-			).toBeNull();
+			// Pending survives — a Codex message.delta in flight when a run rolls
+			// over still flushes correctly on its eventual message.complete.
+			const ev = ams.emitCompleted({
+				itemId: 'item-1',
+				messageText: undefined,
+				fallbackActorId: 'agent:root',
+				fallbackScope: 'root',
+				runtimeEvent: makeRuntimeEvent(),
+			});
+			expect((ev?.data as {message: string}).message).toBe('pending');
 			// Dedup cleared — same message can emit again.
 			expect(
 				ams.emit({
