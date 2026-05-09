@@ -21,7 +21,8 @@
 	"license": "MIT",
 	"bin": {
 		"drisp": "dist/cli.js",
-		"drisp-hook-forwarder": "dist/hook-forwarder.js"
+		"drisp-hook-forwarder": "dist/hook-forwarder.js",
+		"drisp-dashboard-daemon": "dist/dashboard-daemon.js"
 	},
 	"type": "module",
 	"engines": {

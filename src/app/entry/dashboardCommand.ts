@@ -1,23 +1,22 @@
 import crypto from 'node:crypto';
+import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {
-	createInstanceSocketClient,
 	type InstanceSocketClient,
 	type InstanceSocketLogger,
 } from '../dashboard/instanceSocketClient';
+import {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
+import {runDashboardRuntimeDaemon} from '../dashboard/runtimeDaemon';
 import {runGatewayCommand} from './gatewayCommand';
-import {
-	executeRemoteAssignment,
-	type ExecuteRemoteAssignmentInput,
-} from '../dashboard/remoteRunExecutor';
-import type {StatusResponsePayload} from '../../shared/gateway-protocol';
 import {
 	refreshDashboardAccessToken,
 	type DashboardAccessToken,
 } from '../../infra/config/dashboardAuth';
+import {channelSidecarDir} from '../../infra/config/channels';
 import {
 	type DashboardClientConfig,
 	dashboardClientConfigPath,
@@ -26,30 +25,64 @@ import {
 	removeDashboardClientConfig,
 	writeDashboardClientConfig,
 } from '../../infra/config/dashboardClient';
+import {
+	daemonStatePaths,
+	type DaemonStatePaths,
+} from '../../infra/daemon/stateDir';
+import {readPidLock} from '../../infra/daemon/pidLock';
+import {
+	installServiceUnit,
+	type ServiceInstallResult,
+} from '../../infra/daemon/serviceUnit';
+import {
+	sendUdsRequest,
+	type UdsRequest,
+	type UdsResponse,
+} from '../../infra/daemon/udsIpc';
 
 const USAGE = `Usage: athena dashboard <subcommand> [options]
 
 Subcommands:
   pair <token> --url <dashboard-origin> [--name <machine-name>]
-            Pair this machine with the dashboard. The pairing token is
-            single-use and short-lived. Stores the long-lived refresh
-            token in ~/.config/athena/dashboard.json (mode 0600).
-  status    Show paired instance id and dashboard origin.
-  doctor [--runner <runner-id>]
-            Diagnose pairing, gateway, console sidecar, adapter, and runtime
-            health without printing secrets.
-  refresh   Mint a short-lived access token. Rotates the stored
-            refresh token. Use --json to capture the access token.
-  connect   Open the dashboard instance socket and run until interrupted.
-            Refreshes an access token before connecting.
-  console link <runner-id>
-            Configure the local gateway console adapter for a dashboard
-            runner and reload gateway channels when the gateway is reachable.
-  unpair    Forget the local refresh token and instance id.
+            Pair this machine with the dashboard, install the runtime
+            daemon, and verify it reaches the dashboard socket.
+  status    Show pairing, runner binding, daemon process state, socket
+            health, and token freshness. Non-zero on any unhealthy axis.
+  logs [--tail N] [--follow]
+            Tail the daemon log file at
+            ~/.local/state/drisp/dashboard-daemon.log.
+  runs [--active] [--limit N]
+            List runs the daemon has handled (in-memory ring, last 100).
+  refresh   Mint a short-lived access token (rotates the refresh token).
+  daemon foreground
+            Run the daemon in the foreground (process supervisors,
+            debugging).
+  daemon start|stop|restart|reload
+            Local IPC against the daemon UDS.
+  daemon install
+            Generate a launchd plist (macOS) or systemd user unit (linux)
+            so the daemon starts automatically on login.
+  doctor    Verify pairing health. With --runner <id>, also confirms the
+            runner is bound to this instance.
+  console enable <runnerId>
+            Configure the console channel for a runner (opinionated;
+            writes the sidecar and reloads the gateway).
+  console link <runnerId>
+            Primitive: write ~/.config/athena/channels/console.json for
+            the given runner. Prefer "console enable".
+  connect   Deprecated alias for "daemon foreground".
+  unpair    Stop the daemon, revoke the refresh token, and remove the
+            local config.
 
 Options:
   --url <origin>      Dashboard origin (required for pair)
+  --runner <id>       Runner id (required for "console enable"/"console
+                      link", optional for "doctor")
   --name <name>       Friendly machine name (optional, defaults to hostname)
+  --tail N            Number of trailing log lines (default 20)
+  --follow            Stream new log lines until interrupted
+  --active            Show only active runs
+  --limit N           Cap the number of runs returned
   --json              Emit machine-readable JSON output
 `;
 
@@ -80,7 +113,12 @@ function readPackageVersion(): string {
 export type DashboardCommandFlags = {
 	url?: string;
 	name?: string;
+	runner?: string;
 	json?: boolean;
+	tail?: number;
+	follow?: boolean;
+	active?: boolean;
+	limit?: number;
 };
 
 export type DashboardCommandInput = {
@@ -98,17 +136,6 @@ export type DashboardCommandDeps = {
 	readConfig?: () => DashboardClientConfig | null;
 	writeConfig?: (config: DashboardClientConfig) => void;
 	removeConfig?: () => void;
-	writeConsoleChannelConfig?: (config: ConsoleChannelConfig) => void;
-	readConsoleChannelConfig?: () => ConsoleChannelConfig | null;
-	reloadGatewayChannels?: () => Promise<{
-		ok: boolean;
-		message: string;
-	}>;
-	getGatewayStatus?: () => Promise<{
-		ok: boolean;
-		status?: StatusResponsePayload;
-		message?: string;
-	}>;
 	configPath?: () => string;
 	logOut?: (message: string) => void;
 	logError?: (message: string) => void;
@@ -118,7 +145,20 @@ export type DashboardCommandDeps = {
 		accessToken: string;
 		log: InstanceSocketLogger;
 	}) => InstanceSocketClient;
+	executeRemoteAssignment?: typeof executeRemoteAssignment;
+	channelDir?: () => string;
+	reloadGatewayChannels?: () => Promise<{ok: boolean; message: string}>;
 	waitForShutdown?: () => Promise<string>;
+	startRuntimeDaemon?: (opts: {
+		log: (msg: string) => void;
+	}) => Promise<RuntimeDaemonStartResult>;
+	stopRuntimeDaemon?: (opts: {
+		timeoutMs?: number;
+	}) => Promise<RuntimeDaemonStopResult>;
+	queryRuntimeDaemon?: (req: UdsRequest) => Promise<UdsResponse>;
+	daemonStatePaths?: () => DaemonStatePaths;
+	tailDaemonLog?: (opts: {tail: number; follow: boolean}) => Promise<number>;
+	installServiceUnit?: () => ServiceInstallResult;
 	/**
 	 * Override the shared refresh helper. Production uses the lock-and-rotate
 	 * implementation in `dashboardAuth.ts`; tests inject a fake.
@@ -126,15 +166,33 @@ export type DashboardCommandDeps = {
 	performRefresh?: (
 		label: 'refresh' | 'connect',
 	) => Promise<DashboardAccessToken>;
-	executeRemoteAssignment?: (
-		input: ExecuteRemoteAssignmentInput,
-	) => Promise<void>;
 };
 
-export type ConsoleChannelConfig = {
-	broker_url: string;
-	runner_id: string;
-	dashboard_config: true;
+type RuntimeDaemonStartResult = {
+	ok: boolean;
+	alreadyRunning?: boolean;
+	connected?: boolean;
+	pid?: number;
+	message?: string;
+};
+
+type RuntimeDaemonStopResult = {
+	ok: boolean;
+	wasRunning: boolean;
+	message?: string;
+};
+
+type PairedRunner = {
+	runnerId: string;
+	name?: string;
+	executionTarget?: string;
+	remoteInstanceId?: string;
+};
+
+type CapabilityAck = {
+	runtimeDaemon?: boolean;
+	consoleAdapter?: boolean;
+	instanceSocket?: boolean;
 };
 
 type PairResponse = {
@@ -143,22 +201,9 @@ type PairResponse = {
 	jti?: string;
 	accessToken?: string;
 	expiresInSec?: number;
-	runners?: Array<{runnerId: string}>;
-};
-
-type DiagnosticPlane =
-	| 'pairing'
-	| 'instance-socket'
-	| 'console-sidecar'
-	| 'gateway'
-	| 'console-adapter'
-	| 'runtime';
-
-type DiagnosticResult = {
-	plane: DiagnosticPlane;
-	ok: boolean;
-	status: 'ok' | 'fail' | 'warn' | 'unknown';
-	note: string;
+	runners?: PairedRunner[];
+	requiredCliVersion?: string;
+	capabilityAck?: CapabilityAck;
 };
 
 function defaultFingerprint(): string {
@@ -181,303 +226,6 @@ function defaultHostInfo(name?: string): Record<string, unknown> {
 	};
 }
 
-export function consoleBrokerUrl(
-	dashboardUrl: string,
-	runnerId: string,
-): string {
-	const url = new URL(dashboardUrl);
-	url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-	url.pathname = `/api/runners/${encodeURIComponent(runnerId)}/console/adapter`;
-	url.search = '';
-	url.hash = '';
-	return url.toString();
-}
-
-export function writeConsoleChannelConfig(config: ConsoleChannelConfig): void {
-	const dir = path.join(os.homedir(), '.config', 'athena', 'channels');
-	const configPath = path.join(dir, 'console.json');
-	fs.mkdirSync(dir, {recursive: true, mode: 0o700});
-	fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', {
-		encoding: 'utf-8',
-		mode: 0o600,
-	});
-	if (process.platform !== 'win32') {
-		fs.chmodSync(dir, 0o700);
-		fs.chmodSync(configPath, 0o600);
-	}
-}
-
-function readConsoleChannelConfig(): ConsoleChannelConfig | null {
-	const configPath = path.join(
-		os.homedir(),
-		'.config',
-		'athena',
-		'channels',
-		'console.json',
-	);
-	try {
-		const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
-		if (typeof parsed !== 'object' || parsed === null) return null;
-		const obj = parsed as Record<string, unknown>;
-		if (
-			typeof obj['broker_url'] !== 'string' ||
-			typeof obj['runner_id'] !== 'string' ||
-			obj['dashboard_config'] !== true
-		) {
-			return null;
-		}
-		return {
-			broker_url: obj['broker_url'],
-			runner_id: obj['runner_id'],
-			dashboard_config: true,
-		};
-	} catch {
-		return null;
-	}
-}
-
-async function defaultReloadGatewayChannels(): Promise<{
-	ok: boolean;
-	message: string;
-}> {
-	const out: string[] = [];
-	const err: string[] = [];
-	const code = await runGatewayCommand(
-		{subcommand: 'reload-channels', subcommandArgs: []},
-		{
-			logOut: message => out.push(message),
-			logError: message => err.push(message),
-		},
-	);
-	return {
-		ok: code === 0,
-		message:
-			(code === 0 ? out.join('\n') : err.join('\n')) ||
-			(code === 0 ? 'gateway channels reloaded' : 'gateway not reachable'),
-	};
-}
-
-async function defaultGetGatewayStatus(): Promise<{
-	ok: boolean;
-	status?: StatusResponsePayload;
-	message?: string;
-}> {
-	const out: string[] = [];
-	const err: string[] = [];
-	const code = await runGatewayCommand(
-		{subcommand: 'status', subcommandArgs: ['--json']},
-		{
-			logOut: message => out.push(message),
-			logError: message => err.push(message),
-		},
-	);
-	if (code !== 0) {
-		return {
-			ok: false,
-			message: err.join('\n') || out.join('\n') || 'gateway not reachable',
-		};
-	}
-	try {
-		return {
-			ok: true,
-			status: JSON.parse(out.join('\n')) as StatusResponsePayload,
-		};
-	} catch (error) {
-		return {
-			ok: false,
-			message: `gateway status returned invalid JSON: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		};
-	}
-}
-
-function parseDoctorArgs(
-	args: string[],
-): {runnerId?: string} | {error: string} {
-	let runnerId: string | undefined;
-	for (let i = 0; i < args.length; i += 1) {
-		const arg = args[i];
-		if (arg === '--runner') {
-			const value = args[i + 1];
-			if (!value || value.startsWith('--')) {
-				return {error: 'dashboard doctor: --runner requires a runner id'};
-			}
-			runnerId = value;
-			i += 1;
-			continue;
-		}
-		return {error: `dashboard doctor: unexpected argument ${arg}`};
-	}
-	return runnerId === undefined ? {} : {runnerId};
-}
-
-function plane(
-	planeName: DiagnosticPlane,
-	ok: boolean,
-	note: string,
-	status: DiagnosticResult['status'] = ok ? 'ok' : 'fail',
-): DiagnosticResult {
-	return {plane: planeName, ok, status, note};
-}
-
-function formatDiagnostic(result: DiagnosticResult): string {
-	return `${result.plane}: ${result.status} — ${result.note}`;
-}
-
-function runtimePlane(
-	status: StatusResponsePayload | undefined,
-): DiagnosticResult {
-	if (!status) return plane('runtime', false, 'gateway status unavailable');
-	if (status.runtimes.length === 0) {
-		return plane('runtime', false, 'no runtime registered');
-	}
-	const active = status.runtimes.find(r => r.binding.state === 'active');
-	if (!active) {
-		return plane('runtime', false, 'runtime registered but not actively bound');
-	}
-	const binding = active.binding;
-	if (binding.state !== 'active') {
-		return plane('runtime', false, 'runtime registered but not actively bound');
-	}
-	return plane(
-		'runtime',
-		true,
-		`registered ${active.runtimeId} pid=${active.pid} epoch=${binding.epoch}`,
-	);
-}
-
-function listenerDescription(status: StatusResponsePayload): string {
-	const listener = status.listener;
-	if (listener.kind === 'uds') return `uds:${listener.socketPath}`;
-	return listener.url;
-}
-
-function consoleAdapterPlane(
-	status: StatusResponsePayload | undefined,
-): DiagnosticResult {
-	if (!status)
-		return plane('console-adapter', false, 'gateway status unavailable');
-	const channel = status.channels.find(c => c.id === 'console');
-	if (!channel) {
-		return plane('console-adapter', false, 'console channel is not registered');
-	}
-	const ok = channel.state === 'running';
-	return plane(
-		'console-adapter',
-		ok,
-		channel.note
-			? `${channel.state}: ${channel.note}`
-			: `console channel ${channel.state}`,
-		ok ? 'ok' : 'fail',
-	);
-}
-
-async function buildDiagnostics(opts: {
-	config: DashboardClientConfig | null;
-	runnerId?: string;
-	consoleConfig: ConsoleChannelConfig | null;
-	getGatewayStatus: () => Promise<{
-		ok: boolean;
-		status?: StatusResponsePayload;
-		message?: string;
-	}>;
-}): Promise<DiagnosticResult[]> {
-	const results: DiagnosticResult[] = [];
-	if (!opts.config) {
-		results.push(plane('pairing', false, 'not paired'));
-		results.push(plane('instance-socket', false, 'pairing required'));
-		results.push(plane('console-sidecar', false, 'pairing required'));
-		results.push(plane('gateway', false, 'pairing required'));
-		results.push(plane('console-adapter', false, 'pairing required'));
-		results.push(plane('runtime', false, 'pairing required'));
-		return results;
-	}
-
-	results.push(
-		plane(
-			'pairing',
-			true,
-			`paired to ${opts.config.dashboardUrl} as ${opts.config.instanceId}`,
-		),
-	);
-	results.push(
-		plane(
-			'instance-socket',
-			true,
-			'pairing is present; run "athena dashboard connect" to keep this instance online',
-			'warn',
-		),
-	);
-
-	if (opts.runnerId) {
-		if (!opts.consoleConfig) {
-			results.push(
-				plane(
-					'console-sidecar',
-					false,
-					'console sidecar missing; run "athena dashboard console link <runner-id>"',
-				),
-			);
-		} else if (opts.consoleConfig.runner_id !== opts.runnerId) {
-			results.push(
-				plane(
-					'console-sidecar',
-					false,
-					`console sidecar linked to ${opts.consoleConfig.runner_id}, expected ${opts.runnerId}`,
-				),
-			);
-		} else {
-			results.push(
-				plane(
-					'console-sidecar',
-					true,
-					`console sidecar linked to ${opts.runnerId}`,
-				),
-			);
-		}
-	} else {
-		results.push(
-			opts.consoleConfig
-				? plane(
-						'console-sidecar',
-						true,
-						`console sidecar linked to ${opts.consoleConfig.runner_id}`,
-					)
-				: plane(
-						'console-sidecar',
-						false,
-						'console sidecar missing; pass --runner and run console link',
-						'warn',
-					),
-		);
-	}
-
-	const gateway = await opts.getGatewayStatus();
-	if (!gateway.ok) {
-		results.push(
-			plane('gateway', false, gateway.message ?? 'gateway not reachable'),
-		);
-		results.push(plane('console-adapter', false, 'gateway status unavailable'));
-		results.push(plane('runtime', false, 'gateway status unavailable'));
-		return results;
-	}
-	results.push(
-		plane(
-			'gateway',
-			true,
-			gateway.status
-				? `daemon pid=${gateway.status.daemonPid} listener=${listenerDescription(
-						gateway.status,
-					)}`
-				: 'daemon status missing',
-		),
-	);
-	results.push(consoleAdapterPlane(gateway.status));
-	results.push(runtimePlane(gateway.status));
-	return results;
-}
-
 export async function runDashboardCommand(
 	input: DashboardCommandInput,
 	deps: DashboardCommandDeps = {},
@@ -494,13 +242,6 @@ export async function runDashboardCommand(
 		((c: DashboardClientConfig) => writeDashboardClientConfig(c));
 	const removeConfig =
 		deps.removeConfig ?? (() => removeDashboardClientConfig());
-	const writeConsoleConfig =
-		deps.writeConsoleChannelConfig ?? writeConsoleChannelConfig;
-	const readConsoleConfig =
-		deps.readConsoleChannelConfig ?? readConsoleChannelConfig;
-	const reloadGatewayChannels =
-		deps.reloadGatewayChannels ?? defaultReloadGatewayChannels;
-	const getGatewayStatus = deps.getGatewayStatus ?? defaultGetGatewayStatus;
 	const configPath = deps.configPath ?? (() => dashboardClientConfigPath());
 	const packageVersion = deps.packageVersion ?? readPackageVersion();
 
@@ -544,6 +285,10 @@ export async function runDashboardCommand(
 			capabilities: {
 				instanceSocket: true,
 				consoleAdapter: true,
+				runtimeDaemon: true,
+				cliVersion: packageVersion,
+				// Legacy field — older dashboards read `version`. Drop in a
+				// follow-up release once the dashboard accepts only `cliVersion`.
 				version: packageVersion,
 			},
 		};
@@ -585,6 +330,24 @@ export async function runDashboardCommand(
 			return 1;
 		}
 
+		// Refuse to install the daemon if the dashboard signals our CLI is too
+		// old. The pairing succeeded server-side already, so the user can still
+		// re-run pair after upgrading and the persisted config is the source of
+		// truth — we just don't spawn a daemon that the dashboard would refuse
+		// to handshake with.
+		if (
+			parsed.requiredCliVersion &&
+			compareSemver(packageVersion, parsed.requiredCliVersion) < 0
+		) {
+			logError(
+				`dashboard pair: cli version ${packageVersion} is older than the dashboard's required >=${parsed.requiredCliVersion}.`,
+			);
+			logError(
+				'dashboard pair: upgrade with `npm i -g @athenaflow/cli` then re-run pair.',
+			);
+			return 1;
+		}
+
 		const config: DashboardClientConfig = {
 			dashboardUrl: origin,
 			instanceId: parsed.instanceId,
@@ -593,41 +356,12 @@ export async function runDashboardCommand(
 			pairedAt: now(),
 		};
 		writeConfig(config);
-		const pairedRunner = parsed.runners?.[0];
-		let reloadResult:
-			| {
-					ok: boolean;
-					message: string;
-			  }
-			| undefined;
-		if (pairedRunner) {
-			const consoleConfig: ConsoleChannelConfig = {
-				broker_url: consoleBrokerUrl(origin, pairedRunner.runnerId),
-				runner_id: pairedRunner.runnerId,
-				dashboard_config: true,
-			};
-			writeConsoleConfig(consoleConfig);
-			if (!flags.json) {
-				logOut(
-					`dashboard: console linked runner ${pairedRunner.runnerId} to ${origin}`,
-				);
-			}
-			reloadResult = await reloadGatewayChannels();
-			if (reloadResult.ok) {
-				if (!flags.json) {
-					logOut(
-						`dashboard: gateway channels reloaded (${reloadResult.message})`,
-					);
-				}
-			} else {
-				logError(`dashboard: gateway reload skipped: ${reloadResult.message}`);
-				if (!flags.json) {
-					logOut(
-						'dashboard: start or reload the gateway before using the Console tab.',
-					);
-				}
-			}
-		}
+
+		const daemonStart = await (
+			deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
+		)({
+			log: msg => logOut(msg),
+		});
 
 		if (flags.json) {
 			logOut(
@@ -636,20 +370,61 @@ export async function runDashboardCommand(
 					instanceId: parsed.instanceId,
 					dashboardUrl: origin,
 					configPath: configPath(),
+					daemon: daemonStart,
 					...(parsed.runners ? {runners: parsed.runners} : {}),
-					...(reloadResult
-						? {
-								gatewayReload: {
-									ok: reloadResult.ok,
-									message: reloadResult.message,
-								},
-							}
+					...(parsed.capabilityAck
+						? {capabilityAck: parsed.capabilityAck}
+						: {}),
+					...(parsed.requiredCliVersion
+						? {requiredCliVersion: parsed.requiredCliVersion}
 						: {}),
 				}),
 			);
 		} else {
 			logOut(`dashboard: paired to ${origin} as ${parsed.instanceId}`);
+			if (parsed.runners && parsed.runners.length > 0) {
+				for (const runner of parsed.runners) {
+					logOut(
+						`dashboard: bound runner ${runner.name ?? runner.runnerId} (${runner.runnerId})`,
+					);
+				}
+			} else {
+				logOut('dashboard: no runner bound to this pairing token.');
+				logOut(
+					'dashboard: bind a runner from runner settings, then this machine will receive its runs.',
+				);
+			}
+			if (parsed.capabilityAck === undefined) {
+				logOut(
+					'dashboard: dashboard did not echo capabilityAck (older server). Continuing.',
+				);
+			}
+			if (daemonStart.ok) {
+				const status = daemonStart.alreadyRunning
+					? 'runtime daemon already running, restarted with new token'
+					: daemonStart.connected
+						? 'runtime daemon connected (verified socket open)'
+						: 'runtime daemon started but did not reach the socket within 10s';
+				logOut(`dashboard: ${status}`);
+				if (!daemonStart.connected && !daemonStart.alreadyRunning) {
+					logOut(
+						'dashboard pair: pairing succeeded; tail logs with `drisp dashboard logs --follow`.',
+					);
+				}
+			} else {
+				logError(
+					`dashboard: runtime daemon did not start${
+						daemonStart.message ? ` — ${daemonStart.message}` : ''
+					}`,
+				);
+				logOut(
+					'dashboard pair: pairing succeeded; start the daemon with `drisp dashboard daemon start`.',
+				);
+			}
+			logOut('dashboard: ready. Click Run in the dashboard.');
 		}
+		// Pairing on disk is the source of truth. A daemon spawn failure is a
+		// warning, not a pair failure — the user can retry `daemon start` later.
 		return 0;
 	}
 
@@ -667,10 +442,57 @@ export async function runDashboardCommand(
 			}
 			return 1;
 		}
+		const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+		let daemonReply: UdsResponse | null = null;
+		try {
+			daemonReply = await queryDaemon({cmd: 'status'});
+		} catch (err) {
+			daemonReply = {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+
+		// Optional runner check: if --runner is supplied, do the same dashboard
+		// GET that doctor does. Saves the user from running two commands when
+		// they want a full health check.
+		type RunnerHealth = {
+			id: string;
+			matches: boolean;
+			error?: string;
+			executionTarget?: string;
+			remoteInstanceId?: string;
+		};
+		let runnerHealth: RunnerHealth | undefined;
+		if (flags.runner) {
+			const refreshResult = await tryRefresh('refresh');
+			if (refreshResult.ok) {
+				runnerHealth = await fetchRunnerHealth(
+					fetchImpl,
+					config.dashboardUrl,
+					flags.runner,
+					refreshResult.token,
+				);
+			} else {
+				runnerHealth = {
+					id: flags.runner,
+					matches: false,
+					error: 'could not refresh access token',
+				};
+			}
+		}
+
+		const daemonRunning = daemonReply.ok && daemonReply.cmd === 'status';
+		const socketHealthy =
+			daemonRunning &&
+			(daemonReply as {socketConnected: boolean}).socketConnected;
+		const runnerOk = !runnerHealth || runnerHealth.matches;
+		const ok = daemonRunning && socketHealthy && runnerOk;
+
 		if (flags.json) {
 			logOut(
 				JSON.stringify({
-					ok: true,
+					ok,
 					paired: true,
 					instanceId: config.instanceId,
 					dashboardUrl: config.dashboardUrl,
@@ -679,71 +501,164 @@ export async function runDashboardCommand(
 						? {lastRefreshAt: config.lastRefreshAt}
 						: {}),
 					configPath: configPath(),
+					daemon:
+						daemonReply.ok && daemonReply.cmd === 'status'
+							? {
+									running: true,
+									pid: daemonReply.pid,
+									startedAt: daemonReply.startedAt,
+									socketConnected: daemonReply.socketConnected,
+									...(daemonReply.lastFrameAt !== undefined
+										? {lastFrameAt: daemonReply.lastFrameAt}
+										: {}),
+									activeRuns: daemonReply.activeRuns,
+									completedRuns: daemonReply.completedRuns,
+									...(daemonReply.refreshState
+										? {refreshState: daemonReply.refreshState}
+										: {}),
+								}
+							: {
+									running: false,
+									...(!daemonReply.ok ? {error: daemonReply.error} : {}),
+								},
+					...(runnerHealth ? {runner: runnerHealth} : {}),
 				}),
 			);
 		} else {
 			logOut(
 				`dashboard: paired to ${config.dashboardUrl} as ${config.instanceId}`,
 			);
-		}
-		return 0;
-	}
-
-	if (subcommand === 'doctor') {
-		const parsed = parseDoctorArgs(subcommandArgs);
-		if ('error' in parsed) {
-			logError(parsed.error);
-			return 2;
-		}
-		const planes = await buildDiagnostics({
-			config: readConfig(),
-			...(parsed.runnerId !== undefined ? {runnerId: parsed.runnerId} : {}),
-			consoleConfig: readConsoleConfig(),
-			getGatewayStatus,
-		});
-		const ok = planes.every(p => p.ok || p.status === 'warn');
-		if (flags.json) {
-			logOut(JSON.stringify({ok, planes}));
-		} else {
-			logOut('dashboard doctor:');
-			for (const result of planes) {
-				logOut(`  ${formatDiagnostic(result)}`);
+			if (runnerHealth) {
+				if (runnerHealth.matches) {
+					logOut(
+						`runner:    ${runnerHealth.id} bound to this instance (executionTarget=remote)`,
+					);
+				} else {
+					logError(
+						`runner:    ${runnerHealth.id} ${runnerHealth.error ?? 'not bound'}`,
+					);
+				}
+			}
+			if (daemonRunning) {
+				const r = daemonReply as Extract<UdsResponse, {cmd: 'status'}>;
+				const uptimeSec = Math.max(
+					0,
+					Math.floor((now() - r.startedAt) / 1_000),
+				);
+				logOut(
+					`daemon:    running (pid ${r.pid}, uptime ${formatDuration(uptimeSec)}, ${r.completedRuns} runs completed, ${r.activeRuns} active)`,
+				);
+				logOut(
+					`socket:    ${r.socketConnected ? 'connected' : 'disconnected'}${
+						r.lastFrameAt !== undefined
+							? ` (last frame ${formatDuration(
+									Math.max(0, Math.floor((now() - r.lastFrameAt) / 1_000)),
+								)} ago)`
+							: ''
+					}`,
+				);
+				if (r.refreshState) {
+					if (
+						r.refreshState.cooldownUntilMs !== undefined &&
+						r.refreshState.cooldownUntilMs > now()
+					) {
+						const remainingSec = Math.ceil(
+							(r.refreshState.cooldownUntilMs - now()) / 1_000,
+						);
+						logError(
+							`refresh:   circuit-broken — sleeping for ${formatDuration(
+								remainingSec,
+							)} before retry. Re-pair if this persists.`,
+						);
+					} else {
+						logOut(
+							`refresh:   ${r.refreshState.recentFailures} recent failure(s); next reconnect will retry`,
+						);
+					}
+				}
+			} else {
+				logOut(
+					'daemon:    NOT running. Start it with `drisp dashboard daemon start`.',
+				);
+			}
+			if (config.lastRefreshAt !== undefined) {
+				logOut(
+					`token:     last refreshed ${formatDuration(
+						Math.max(0, Math.floor((now() - config.lastRefreshAt) / 1_000)),
+					)} ago`,
+				);
 			}
 		}
 		return ok ? 0 : 1;
 	}
 
-	if (subcommand === 'console') {
-		const [action, runnerId, extra] = subcommandArgs;
-		if (action !== 'link' || !runnerId || extra) {
-			logError(
-				'dashboard console: Usage: athena dashboard console link <runner-id>',
-			);
+	if (subcommand === 'logs') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard logs: unexpected argument ${subcommandArgs[0]}`);
 			return 2;
 		}
-		const config = readConfig();
-		if (!config) {
+		const tail = flags.tail ?? 20;
+		const follow = flags.follow ?? false;
+		try {
+			const tailFn = deps.tailDaemonLog ?? defaultTailDaemonLog;
+			return await tailFn({tail, follow});
+		} catch (err) {
 			logError(
-				'dashboard console link: not paired. Run "athena dashboard pair" first.',
+				`dashboard logs: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return 1;
 		}
-		const consoleConfig: ConsoleChannelConfig = {
-			broker_url: consoleBrokerUrl(config.dashboardUrl, runnerId),
-			runner_id: runnerId,
-			dashboard_config: true,
-		};
-		writeConsoleConfig(consoleConfig);
-		logOut(
-			`dashboard: console linked runner ${runnerId} to ${config.dashboardUrl}`,
-		);
-		const reload = await reloadGatewayChannels();
-		if (reload.ok) {
-			logOut(`dashboard: gateway channels reloaded (${reload.message})`);
-		} else {
-			logError(`dashboard: gateway reload skipped: ${reload.message}`);
+	}
+
+	if (subcommand === 'runs') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard runs: unexpected argument ${subcommandArgs[0]}`);
+			return 2;
+		}
+		const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+		let reply: UdsResponse;
+		try {
+			reply = await queryDaemon({
+				cmd: 'runs',
+				...(flags.active === true ? {active: true} : {}),
+				...(flags.limit !== undefined ? {limit: flags.limit} : {}),
+			});
+		} catch (err) {
+			logError(
+				`dashboard runs: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return 1;
+		}
+		if (!reply.ok || reply.cmd !== 'runs') {
+			logError(
+				`dashboard runs: ${reply.ok ? 'unexpected reply' : reply.error}`,
+			);
+			return 1;
+		}
+		if (flags.json) {
+			logOut(JSON.stringify({ok: true, runs: reply.runs}));
+			return 0;
+		}
+		if (reply.runs.length === 0) {
+			logOut('dashboard: no runs recorded');
+			return 0;
+		}
+		logOut(['runId', 'started', 'duration', 'status'].join('\t'));
+		for (const run of reply.runs) {
+			const duration = run.endedAt
+				? formatDuration(
+						Math.max(0, Math.floor((run.endedAt - run.startedAt) / 1_000)),
+					)
+				: '—';
 			logOut(
-				'dashboard: start or reload the gateway before using the Console tab.',
+				[
+					run.runId,
+					formatDuration(
+						Math.max(0, Math.floor((now() - run.startedAt) / 1_000)),
+					) + ' ago',
+					duration,
+					run.status,
+				].join('\t'),
 			);
 		}
 		return 0;
@@ -806,106 +721,577 @@ export async function runDashboardCommand(
 		return 0;
 	}
 
+	if (subcommand === 'daemon') {
+		const mode = subcommandArgs[0];
+		if (mode === 'foreground') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon foreground: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const config = readConfig();
+			if (!config) {
+				logError(
+					'dashboard daemon foreground: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			let daemon;
+			try {
+				daemon = await runDashboardRuntimeDaemon({
+					readConfig,
+					refreshAccessToken: async () => performRefreshImpl('connect'),
+					makeInstanceSocketClient: deps.makeInstanceSocketClient,
+					executeRemoteAssignment: deps.executeRemoteAssignment,
+					log: (level, message) => {
+						if (level === 'error' || level === 'warn') {
+							logError(`dashboard daemon: ${message}`);
+						} else {
+							logOut(`dashboard daemon: ${message}`);
+						}
+					},
+				});
+			} catch (err) {
+				logError(
+					`dashboard daemon foreground: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			logOut(`dashboard daemon: foreground runtime connected`);
+			const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
+			const reason = await wait();
+			await daemon.stop(reason);
+			logOut(`dashboard daemon: stopped (${reason})`);
+			return 0;
+		}
+
+		if (mode === 'start') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon start: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			if (!readConfig()) {
+				logError(
+					'dashboard daemon start: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			const result = await (
+				deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
+			)({log: msg => logOut(msg)});
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (result.ok) {
+				logOut(
+					result.connected
+						? 'dashboard: daemon started and connected'
+						: 'dashboard: daemon started; socket not yet verified (tail logs)',
+				);
+			} else {
+				logError(
+					`dashboard daemon start: ${result.message ?? 'unknown failure'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
+		}
+
+		if (mode === 'stop') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon stop: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const result = await (deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon)(
+				{},
+			);
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (!result.wasRunning) {
+				logOut('dashboard: daemon not running');
+			} else if (result.ok) {
+				logOut('dashboard: daemon stopped');
+			} else {
+				logError(
+					`dashboard daemon stop: ${result.message ?? 'unknown failure'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
+		}
+
+		if (mode === 'restart') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon restart: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const stopResult = await (
+				deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon
+			)({});
+			if (stopResult.wasRunning && !stopResult.ok) {
+				logError(
+					`dashboard daemon restart: stop failed: ${stopResult.message ?? 'unknown'}`,
+				);
+				return 1;
+			}
+			const startResult = await (
+				deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
+			)({log: msg => logOut(msg)});
+			if (flags.json) {
+				logOut(JSON.stringify({restart: true, ...startResult}));
+			} else if (startResult.ok) {
+				logOut(
+					startResult.connected
+						? 'dashboard: daemon restarted and connected'
+						: 'dashboard: daemon restarted; socket not yet verified',
+				);
+			} else {
+				logError(
+					`dashboard daemon restart: ${startResult.message ?? 'unknown'}`,
+				);
+			}
+			return startResult.ok ? 0 : 1;
+		}
+
+		if (mode === 'install') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon install: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const installer = deps.installServiceUnit ?? defaultInstallServiceUnit;
+			const result = installer();
+			if (flags.json) {
+				logOut(JSON.stringify(result));
+			} else if (result.ok) {
+				logOut(`dashboard: wrote service unit at ${result.path}`);
+				logOut(`dashboard: load with: ${result.loadCommand}`);
+				logOut(`dashboard: start with: ${result.startCommand}`);
+			} else {
+				logError(
+					`dashboard daemon install: ${result.message ?? 'unsupported platform'}`,
+				);
+			}
+			return result.ok ? 0 : 1;
+		}
+
+		if (mode === 'reload') {
+			if (subcommandArgs.length > 1) {
+				logError(
+					`dashboard daemon reload: unexpected argument ${subcommandArgs[1]}`,
+				);
+				return 2;
+			}
+			const queryDaemon = deps.queryRuntimeDaemon ?? defaultQueryRuntimeDaemon;
+			try {
+				const reply = await queryDaemon({cmd: 'reload'});
+				if (!reply.ok) {
+					logError(`dashboard daemon reload: ${reply.error}`);
+					return 1;
+				}
+			} catch (err) {
+				logError(
+					`dashboard daemon reload: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			if (flags.json) {
+				logOut(JSON.stringify({ok: true}));
+			} else {
+				logOut('dashboard: daemon reloaded');
+			}
+			return 0;
+		}
+
+		logError(
+			`dashboard daemon: unknown subcommand ${
+				mode ? mode : '(missing)'
+			}. Expected "foreground|start|stop|restart|reload|install".`,
+		);
+		return 2;
+	}
+
 	if (subcommand === 'connect') {
 		if (subcommandArgs.length > 0) {
 			logError(`dashboard connect: unexpected argument ${subcommandArgs[0]}`);
 			return 2;
 		}
+		logError(
+			'dashboard connect: deprecated; use `dashboard daemon foreground` (or `daemon start` to background).',
+		);
+		return await runDashboardCommand(
+			{
+				subcommand: 'daemon',
+				subcommandArgs: ['foreground'],
+				flags: input.flags,
+			},
+			deps,
+		);
+	}
+
+	if (subcommand === 'doctor') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard doctor: unexpected argument ${subcommandArgs[0]}`);
+			return 2;
+		}
 		const config = readConfig();
 		if (!config) {
-			logError(
-				'dashboard connect: not paired. Run "athena dashboard pair" first.',
-			);
+			if (flags.json) {
+				logOut(JSON.stringify({ok: false, paired: false}));
+			} else {
+				logOut('dashboard: not paired');
+				logOut(
+					'dashboard doctor: run "drisp dashboard pair" before using doctor.',
+				);
+			}
 			return 1;
 		}
-		const result = await tryRefresh('connect');
-		if (!result.ok) return result.code;
-		const {token} = result;
 
-		const makeSocket =
-			deps.makeInstanceSocketClient ??
-			(o =>
-				createInstanceSocketClient({
-					dashboardUrl: o.dashboardUrl,
-					instanceId: o.instanceId,
-					accessToken: o.accessToken,
-					log: o.log,
-				}));
-		const client = makeSocket({
-			dashboardUrl: config.dashboardUrl,
-			instanceId: token.instanceId,
-			accessToken: token.accessToken,
-			log: (level, message) => {
-				if (level === 'error' || level === 'warn') {
-					logError(`dashboard: ${message}`);
-				}
-			},
-		});
+		// Only rotate the refresh token when we actually need an access token
+		// (runner check). Otherwise doctor would burn a token on every health
+		// check the user runs.
+		let token: DashboardAccessToken | null = null;
+		if (flags.runner) {
+			const refreshResult = await tryRefresh('refresh');
+			if (!refreshResult.ok) return refreshResult.code;
+			token = refreshResult.token;
+		}
+		const refreshed = readConfig();
 
-		const runAssignment =
-			deps.executeRemoteAssignment ?? executeRemoteAssignment;
-		let assignmentQueue = Promise.resolve();
-		client.onFrame(frame => {
-			if (frame.type !== 'job_assignment') return;
-			assignmentQueue = assignmentQueue
-				.then(() =>
-					runAssignment({
-						frame,
-						client,
-						projectDir: process.cwd(),
-						log: (level, message) => {
-							if (level === 'error' || level === 'warn') {
-								logError(`dashboard: ${message}`);
-							}
-						},
-					}),
-				)
-				.catch(err => {
-					logError(
-						`dashboard: remote assignment failed: ${
+		type RunnerReport = {
+			id: string;
+			executionTarget?: string;
+			remoteInstanceId?: string;
+			matches: boolean;
+			error?: string;
+		};
+		let runnerReport: RunnerReport | undefined;
+		let runnerOk = !flags.runner;
+
+		if (flags.runner && token) {
+			const runnerId = flags.runner;
+			const accessToken = token.accessToken;
+			const expectedInstanceId = token.instanceId;
+			const url = new URL(
+				`/api/runners/${encodeURIComponent(runnerId)}`,
+				config.dashboardUrl,
+			).toString();
+			let response: Response;
+			try {
+				response = await fetchImpl(url, {
+					method: 'GET',
+					headers: {
+						authorization: `Bearer ${accessToken}`,
+						accept: 'application/json',
+					},
+				});
+			} catch (err) {
+				runnerOk = false;
+				runnerReport = {
+					id: runnerId,
+					matches: false,
+					error: `request failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				};
+				return reportDoctor(false);
+			}
+			if (response.status === 404) {
+				runnerOk = false;
+				runnerReport = {
+					id: runnerId,
+					matches: false,
+					error: 'runner not found',
+				};
+			} else if (response.status === 405 || response.status === 501) {
+				runnerOk = false;
+				runnerReport = {
+					id: runnerId,
+					matches: false,
+					error:
+						'runner check unavailable: dashboard endpoint missing (GET /api/runners/<id>)',
+				};
+			} else if (!response.ok) {
+				runnerOk = false;
+				const message = await safeReadError(response);
+				runnerReport = {
+					id: runnerId,
+					matches: false,
+					error: `dashboard returned ${response.status}${
+						message ? ` — ${message}` : ''
+					}`,
+				};
+			} else {
+				let body: unknown;
+				try {
+					body = await response.json();
+				} catch (err) {
+					runnerOk = false;
+					runnerReport = {
+						id: runnerId,
+						matches: false,
+						error: `invalid response body: ${
 							err instanceof Error ? err.message : String(err)
 						}`,
+					};
+					return reportDoctor(false);
+				}
+				const obj = (
+					typeof body === 'object' && body !== null
+						? (body as Record<string, unknown>)
+						: {}
+				) as Record<string, unknown>;
+				const executionTarget =
+					typeof obj['executionTarget'] === 'string'
+						? (obj['executionTarget'] as string)
+						: undefined;
+				const remoteInstanceId =
+					typeof obj['remoteInstanceId'] === 'string'
+						? (obj['remoteInstanceId'] as string)
+						: undefined;
+				const matchesTarget = executionTarget === 'remote';
+				const matchesInstance = remoteInstanceId === expectedInstanceId;
+				const matches = matchesTarget && matchesInstance;
+				runnerOk = matches;
+				const reasons: string[] = [];
+				if (!matchesTarget) {
+					reasons.push(
+						`executionTarget is "${
+							executionTarget ?? 'unset'
+						}" (expected "remote")`,
 					);
-				});
-		});
+				}
+				if (!matchesInstance) {
+					reasons.push(
+						`remoteInstanceId is "${
+							remoteInstanceId ?? 'unset'
+						}" (expected "${expectedInstanceId}")`,
+					);
+				}
+				runnerReport = {
+					id: runnerId,
+					executionTarget,
+					remoteInstanceId,
+					matches,
+					error: reasons.length > 0 ? reasons.join('; ') : undefined,
+				};
+			}
+		}
 
-		try {
-			await client.connect();
-		} catch (err) {
-			logError(
-				`dashboard connect: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
+		return reportDoctor(runnerOk);
+
+		function reportDoctor(ok: boolean): number {
+			if (flags.json) {
+				logOut(
+					JSON.stringify({
+						ok,
+						paired: true,
+						instanceId: config!.instanceId,
+						dashboardUrl: config!.dashboardUrl,
+						pairedAt: config!.pairedAt,
+						...(refreshed?.lastRefreshAt !== undefined
+							? {lastRefreshAt: refreshed.lastRefreshAt}
+							: {}),
+						configPath: configPath(),
+						...(runnerReport ? {runner: runnerReport} : {}),
+					}),
+				);
+			} else {
+				logOut(
+					`dashboard: paired to ${config!.dashboardUrl} as ${config!.instanceId}`,
+				);
+				if (token) {
+					logOut(`dashboard: refresh token rotated, access token minted`);
+				}
+				if (runnerReport) {
+					if (runnerReport.matches) {
+						logOut(
+							`dashboard: runner ${runnerReport.id} bound to this instance (executionTarget=remote, remoteInstanceId=${runnerReport.remoteInstanceId})`,
+						);
+					} else {
+						logError(
+							`dashboard doctor: runner ${runnerReport.id} not bound — ${
+								runnerReport.error ?? 'unknown reason'
+							}`,
+						);
+					}
+				}
+			}
+			return ok ? 0 : 1;
+		}
+	}
+
+	if (subcommand === 'console') {
+		const sub = subcommandArgs[0];
+		if (sub === 'enable') {
+			const runnerId = subcommandArgs[1];
+			if (!runnerId) {
+				logError('dashboard console enable: missing <runnerId>');
+				return 2;
+			}
+			if (subcommandArgs.length > 2) {
+				logError(
+					`dashboard console enable: unexpected argument ${subcommandArgs[2]}`,
+				);
+				return 2;
+			}
+			// Opinionated wrapper around `console link`: extra preflight that
+			// the runner is bound to *this* instance, then delegate to link.
+			const config = readConfig();
+			if (!config) {
+				logError(
+					'dashboard console enable: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			const refreshResult = await tryRefresh('refresh');
+			if (!refreshResult.ok) return refreshResult.code;
+			const health = await fetchRunnerHealth(
+				fetchImpl,
+				config.dashboardUrl,
+				runnerId,
+				refreshResult.token,
 			);
-			return 1;
+			if (!health.matches) {
+				logError(
+					`dashboard console enable: runner ${runnerId} is not bound to this instance${
+						health.error ? ` (${health.error})` : ''
+					}`,
+				);
+				return 1;
+			}
+			return await runDashboardCommand(
+				{
+					subcommand: 'console',
+					subcommandArgs: ['link', runnerId],
+					flags: input.flags,
+				},
+				deps,
+			);
 		}
-
-		logOut(`dashboard: connected instance ${token.instanceId}`);
-
-		// Race the user-driven shutdown signal against an unsolicited socket
-		// close. If the socket drops first (server hangup, network, expired
-		// token) we exit non-zero so callers/process supervisors can react —
-		// reconnect-with-refresh is a follow-up.
-		const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
-		const closePromise = new Promise<{kind: 'closed'; reason: string}>(
-			resolve => {
-				client.onClose(reason => resolve({kind: 'closed', reason}));
-			},
+		if (sub === 'link') {
+			const runnerId = subcommandArgs[1];
+			if (!runnerId) {
+				logError('dashboard console link: missing <runnerId>');
+				return 2;
+			}
+			if (subcommandArgs.length > 2) {
+				logError(
+					`dashboard console link: unexpected argument ${subcommandArgs[2]}`,
+				);
+				return 2;
+			}
+			const config = readConfig();
+			if (!config) {
+				logError(
+					'dashboard console link: not paired. Run "drisp dashboard pair" first.',
+				);
+				return 1;
+			}
+			let brokerUrl: string;
+			try {
+				brokerUrl = consoleBrokerUrl(config.dashboardUrl, runnerId);
+			} catch (err) {
+				logError(
+					`dashboard console link: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			const dir = (deps.channelDir ?? channelSidecarDir)();
+			let previousBroker: string | undefined;
+			const target = path.join(dir, 'console.json');
+			try {
+				const existing = JSON.parse(fs.readFileSync(target, 'utf-8')) as {
+					broker_url?: unknown;
+				};
+				if (typeof existing.broker_url === 'string') {
+					previousBroker = existing.broker_url;
+				}
+			} catch {
+				// no existing file or unreadable — treated as fresh write
+			}
+			try {
+				fs.mkdirSync(dir, {recursive: true, mode: 0o700});
+			} catch (err) {
+				logError(
+					`dashboard console link: failed to create ${dir}: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			const payload = {
+				broker_url: brokerUrl,
+				runner_id: runnerId,
+				dashboard_config: true,
+			};
+			const tmp = `${target}.tmp`;
+			try {
+				fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', {
+					mode: 0o600,
+				});
+				fs.renameSync(tmp, target);
+			} catch (err) {
+				try {
+					fs.unlinkSync(tmp);
+				} catch {
+					// best-effort
+				}
+				logError(
+					`dashboard console link: failed to write ${target}: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return 1;
+			}
+			const reload = await (
+				deps.reloadGatewayChannels ?? defaultReloadGatewayChannels
+			)();
+			if (flags.json) {
+				logOut(
+					JSON.stringify({
+						ok: true,
+						runnerId,
+						brokerUrl,
+						path: target,
+						...(previousBroker ? {previousBrokerUrl: previousBroker} : {}),
+						gatewayReload: reload,
+					}),
+				);
+			} else {
+				if (previousBroker && previousBroker !== brokerUrl) {
+					logOut(`console: replaced existing config (was: ${previousBroker})`);
+				}
+				logOut(`console: linked runner ${runnerId} at ${brokerUrl}`);
+				logOut(`console: wrote ${target}`);
+				if (reload.ok) {
+					logOut(`console: gateway channels reloaded (${reload.message})`);
+				} else {
+					logError(`console: gateway reload skipped: ${reload.message}`);
+					logOut(
+						'console: start or reload the gateway before using the Console tab.',
+					);
+				}
+			}
+			return 0;
+		}
+		logError(
+			`dashboard console: unknown subcommand ${
+				sub ? sub : '(missing)'
+			}. Expected "enable <runnerId>" or "link <runnerId>".`,
 		);
-		const shutdownPromise = wait().then(reason => ({
-			kind: 'shutdown' as const,
-			reason,
-		}));
-		const exitTrigger = await Promise.race([closePromise, shutdownPromise]);
-
-		if (exitTrigger.kind === 'closed') {
-			logError(`dashboard: socket closed unexpectedly (${exitTrigger.reason})`);
-			client.close('socket closed');
-			return 1;
-		}
-		client.close(exitTrigger.reason);
-		logOut(`dashboard: disconnected (${exitTrigger.reason})`);
-		return 0;
+		return 2;
 	}
 
 	if (subcommand === 'unpair') {
@@ -913,11 +1299,107 @@ export async function runDashboardCommand(
 			logError(`dashboard unpair: unexpected argument ${subcommandArgs[0]}`);
 			return 2;
 		}
+		const config = readConfig();
+		if (!config) {
+			if (flags.json) {
+				logOut(JSON.stringify({ok: true, paired: false}));
+			} else {
+				logOut('dashboard unpair: not paired (nothing to do)');
+			}
+			return 0;
+		}
+
+		// 1. Stop the daemon first so it stops processing assignments before we
+		//    invalidate its credentials.
+		const stopResult = await (
+			deps.stopRuntimeDaemon ?? defaultStopRuntimeDaemon
+		)({});
+		if (!flags.json) {
+			if (stopResult.wasRunning) {
+				if (stopResult.ok) {
+					logOut('dashboard: runtime daemon stopped');
+				} else {
+					logError(
+						`dashboard: runtime daemon stop failed: ${
+							stopResult.message ?? 'unknown'
+						}`,
+					);
+				}
+			} else {
+				logOut('dashboard: runtime daemon not running (skipping stop)');
+			}
+		}
+
+		// 2. Best-effort revoke. If the dashboard endpoint is unavailable or the
+		//    network is down, surface a warning but proceed with local removal —
+		//    leaving a paired-on-disk-but-unreachable config is worse UX than a
+		//    server-side token that's still valid for a few minutes.
+		let revokeOk = false;
+		let revokeMessage: string | undefined;
+		try {
+			const refreshResult = await tryRefresh('refresh');
+			if (refreshResult.ok) {
+				const url = new URL(
+					`/api/instances/${encodeURIComponent(config.instanceId)}/revoke`,
+					config.dashboardUrl,
+				).toString();
+				const response = await fetchImpl(url, {
+					method: 'POST',
+					headers: {
+						authorization: `Bearer ${refreshResult.token.accessToken}`,
+						'content-type': 'application/json',
+					},
+					body: JSON.stringify({}),
+				});
+				if (response.ok || response.status === 404) {
+					revokeOk = true;
+				} else {
+					const detail = await safeReadError(response);
+					revokeMessage = `dashboard returned ${response.status}${
+						detail ? ` — ${detail}` : ''
+					}`;
+				}
+			} else {
+				revokeMessage = 'could not refresh access token';
+			}
+		} catch (err) {
+			revokeMessage = err instanceof Error ? err.message : String(err);
+		}
+
+		if (!flags.json) {
+			if (revokeOk) {
+				logOut(`dashboard: revoking refresh token at ${config.dashboardUrl}`);
+				logOut('dashboard: refresh token revoked');
+			} else {
+				logError(
+					`dashboard: revoke failed${revokeMessage ? `: ${revokeMessage}` : ''}`,
+				);
+				logOut(
+					'dashboard: WARNING — refresh token may still be valid until you revoke it from the dashboard UI.',
+				);
+			}
+		}
+
+		// 3. Remove local credentials.
 		removeConfig();
+
 		if (flags.json) {
-			logOut(JSON.stringify({ok: true}));
+			logOut(
+				JSON.stringify({
+					ok: true,
+					daemon: stopResult,
+					revoke: {
+						ok: revokeOk,
+						...(revokeMessage ? {message: revokeMessage} : {}),
+					},
+				}),
+			);
 		} else {
-			logOut('dashboard: unpaired');
+			logOut(
+				`dashboard: unpaired (credentials removed${
+					stopResult.wasRunning ? ', daemon stopped' : ''
+				})`,
+			);
 		}
 		return 0;
 	}
@@ -937,6 +1419,536 @@ function defaultWaitForShutdown(): Promise<string> {
 		process.once('SIGINT', onSignal);
 		process.once('SIGTERM', onSignal);
 	});
+}
+
+async function defaultReloadGatewayChannels(): Promise<{
+	ok: boolean;
+	message: string;
+}> {
+	const out: string[] = [];
+	const err: string[] = [];
+	const code = await runGatewayCommand(
+		{subcommand: 'reload-channels', subcommandArgs: []},
+		{
+			logOut: m => out.push(m),
+			logError: m => err.push(m),
+		},
+	);
+	return {
+		ok: code === 0,
+		message:
+			(code === 0 ? out.join('\n') : err.join('\n')) ||
+			(code === 0 ? 'gateway channels reloaded' : 'gateway not reachable'),
+	};
+}
+
+function resolveDaemonEntry(): string | null {
+	// `import.meta.url` resolves to the bundled chunk under `dist/`. The
+	// daemon entry is bundled as a sibling `dashboard-daemon.js`. Walking up
+	// to the chunk's directory is robust whether the chunk lives at
+	// `dist/cli.js` or at a hashed split chunk like `dist/chunk-X.js`.
+	let here: string;
+	try {
+		here = fileURLToPath(import.meta.url);
+	} catch {
+		return null;
+	}
+	const candidates = [
+		path.join(path.dirname(here), 'dashboard-daemon.js'),
+		// When invoked via `npm run start`, `here` may be the unbundled source
+		// path. Walk up until we hit a `dist/` sibling.
+		path.join(
+			path.dirname(here),
+			'..',
+			'..',
+			'..',
+			'dist',
+			'dashboard-daemon.js',
+		),
+	];
+	for (const candidate of candidates) {
+		try {
+			fs.accessSync(candidate, fs.constants.R_OK);
+			return candidate;
+		} catch {
+			// next candidate
+		}
+	}
+	return null;
+}
+
+// NODE_OPTIONS is intentionally excluded — it can carry --require/--inspect
+// which would let a parent shell inject arbitrary code into the daemon. The
+// daemon should boot from a clean environment.
+const DAEMON_ENV_ALLOWLIST = [
+	'HOME',
+	'PATH',
+	'LANG',
+	'LC_ALL',
+	'ATHENA_DASHBOARD_ORIGIN',
+];
+
+function buildDaemonEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = {};
+	for (const key of DAEMON_ENV_ALLOWLIST) {
+		if (env[key] !== undefined) out[key] = env[key];
+	}
+	for (const [key, value] of Object.entries(env)) {
+		if (key.startsWith('XDG_') && value !== undefined) {
+			out[key] = value;
+		}
+	}
+	return out;
+}
+
+const SOCKET_PROBE_TIMEOUT_MS = 10_000;
+const SOCKET_PROBE_INTERVAL_MS = 200;
+
+async function defaultStartRuntimeDaemon(opts: {
+	log: (msg: string) => void;
+}): Promise<RuntimeDaemonStartResult> {
+	const paths = daemonStatePaths();
+
+	// If a daemon is already alive, send a stop+start cycle so it picks up the
+	// rotated refresh token from the just-completed pair. Falling through into
+	// the spawn path covers the case where the lock is stale.
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state === 'held') {
+		try {
+			await sendUdsRequest(paths.socketPath, {
+				cmd: 'stop',
+				reason: 'pair-restart',
+			});
+		} catch (err) {
+			opts.log(
+				`daemon: pair-restart stop request failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+		// Wait for the previous daemon to release the lock.
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			const after = readPidLock(paths.pidPath);
+			if (after.state !== 'held') break;
+			await new Promise(r => setTimeout(r, 100));
+		}
+	}
+
+	const entry = resolveDaemonEntry();
+	if (!entry) {
+		return {
+			ok: false,
+			message: 'cannot resolve dashboard-daemon.js entry path',
+		};
+	}
+
+	let child: ReturnType<typeof spawn>;
+	try {
+		child = spawn(process.execPath, [entry], {
+			detached: true,
+			stdio: 'ignore',
+			env: buildDaemonEnv(process.env),
+		});
+	} catch (err) {
+		return {
+			ok: false,
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	child.unref();
+
+	// Track child lifecycle so we can fail fast when the daemon dies before
+	// the probe deadline rather than waiting the full 10s. Without this the
+	// user sees a generic "socket not verified within 10s" for any startup
+	// crash (binary mismatch, missing module, lock contention, etc.).
+	let earlyExit: string | undefined;
+	let spawnError: string | undefined;
+	const onError = (err: Error): void => {
+		spawnError = err.message;
+	};
+	const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+		earlyExit = `daemon exited early (code=${code ?? 'null'}, signal=${
+			signal ?? 'null'
+		})`;
+	};
+	child.once('error', onError);
+	child.once('exit', onExit);
+
+	// Verify-then-return: poll the daemon UDS until status reports the socket
+	// is connected, max 10s. Pairing succeeded on disk regardless — this is
+	// purely about reporting an honest "connected" status to the user.
+	const probeDeadline = Date.now() + SOCKET_PROBE_TIMEOUT_MS;
+	let lastError: string | undefined;
+	let connected = false;
+	let everReached = false;
+	let pid: number | undefined;
+	while (Date.now() < probeDeadline) {
+		if (spawnError) break;
+		if (earlyExit) break;
+		try {
+			const reply = await sendUdsRequest(
+				paths.socketPath,
+				{cmd: 'status'},
+				{timeoutMs: 1_500},
+			);
+			everReached = true;
+			if (reply.ok && reply.cmd === 'status') {
+				pid = reply.pid;
+				if (reply.socketConnected) {
+					connected = true;
+					break;
+				}
+			} else if (!reply.ok) {
+				lastError = reply.error;
+			}
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : String(err);
+		}
+		await new Promise(r => setTimeout(r, SOCKET_PROBE_INTERVAL_MS));
+	}
+
+	child.off('error', onError);
+	child.off('exit', onExit);
+
+	// "ok" iff we have evidence the daemon is alive: either the socket is fully
+	// connected, or we got at least one UDS reply. If the child crashed early
+	// or we never reached the daemon, that's a real start failure — the caller
+	// should treat it as such instead of optimistically "started in background".
+	const reachable = connected || everReached;
+	if (spawnError) {
+		return {
+			ok: false,
+			message: `daemon failed to start: ${spawnError}`,
+		};
+	}
+	if (earlyExit && !connected) {
+		return {
+			ok: false,
+			message: earlyExit,
+		};
+	}
+	if (!reachable) {
+		return {
+			ok: false,
+			message: `daemon did not respond on UDS within ${SOCKET_PROBE_TIMEOUT_MS}ms${
+				lastError ? ` (${lastError})` : ''
+			}`,
+		};
+	}
+
+	opts.log(
+		connected
+			? `daemon: socket verified${pid !== undefined ? ` (pid ${pid})` : ''}`
+			: `daemon: started but socket not yet connected${
+					lastError ? ` (${lastError})` : ''
+				}`,
+	);
+
+	return {
+		ok: true,
+		connected,
+		...(pid !== undefined ? {pid} : {}),
+		message: connected
+			? 'started, socket verified'
+			: 'started, socket not yet verified',
+	};
+}
+
+async function defaultStopRuntimeDaemon(
+	opts: {timeoutMs?: number} = {},
+): Promise<RuntimeDaemonStopResult> {
+	const paths = daemonStatePaths();
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state !== 'held') {
+		return {ok: true, wasRunning: false, message: 'daemon not running'};
+	}
+	try {
+		const reply = await sendUdsRequest(
+			paths.socketPath,
+			{cmd: 'stop', reason: 'cli-stop'},
+			{timeoutMs: opts.timeoutMs ?? 5_000},
+		);
+		if (!reply.ok) {
+			return {ok: false, wasRunning: true, message: reply.error};
+		}
+	} catch (err) {
+		return {
+			ok: false,
+			wasRunning: true,
+			message: err instanceof Error ? err.message : String(err),
+		};
+	}
+	// Wait for the lock to be released so callers know the previous daemon is
+	// fully gone before they restart.
+	const deadline = Date.now() + (opts.timeoutMs ?? 5_000);
+	while (Date.now() < deadline) {
+		const after = readPidLock(paths.pidPath);
+		if (after.state !== 'held') {
+			return {ok: true, wasRunning: true};
+		}
+		await new Promise(r => setTimeout(r, 100));
+	}
+	return {ok: false, wasRunning: true, message: 'daemon did not exit in time'};
+}
+
+async function defaultQueryRuntimeDaemon(
+	req: UdsRequest,
+): Promise<UdsResponse> {
+	const paths = daemonStatePaths();
+	const existing = readPidLock(paths.pidPath);
+	if (existing.state !== 'held') {
+		return {ok: false, error: 'daemon not running'};
+	}
+	return await sendUdsRequest(paths.socketPath, req);
+}
+
+async function defaultTailDaemonLog(opts: {
+	tail: number;
+	follow: boolean;
+}): Promise<number> {
+	const paths = daemonStatePaths();
+	let stream: fs.ReadStream | null = null;
+	let watcher: fs.FSWatcher | null = null;
+	try {
+		const stat = fs.statSync(paths.logPath);
+		const size = stat.size;
+		const buf = Buffer.alloc(Math.min(size, opts.tail * 1024));
+		const fd = fs.openSync(paths.logPath, 'r');
+		try {
+			fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length));
+		} finally {
+			fs.closeSync(fd);
+		}
+		const lines = buf
+			.toString('utf-8')
+			.split('\n')
+			.filter(l => l.length > 0);
+		const tail = lines.slice(-opts.tail);
+		for (const line of tail) {
+			process.stdout.write(line + '\n');
+		}
+		if (!opts.follow) return 0;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+			process.stderr.write(
+				`dashboard logs: log file ${paths.logPath} does not exist yet\n`,
+			);
+			return opts.follow ? 0 : 1;
+		}
+		throw err;
+	}
+
+	let position = fs.statSync(paths.logPath).size;
+	return await new Promise<number>(resolve => {
+		let pollTimer: NodeJS.Timeout | null = null;
+		const drain = (): void => {
+			try {
+				const stat = fs.statSync(paths.logPath);
+				if (stat.size < position) {
+					// rotated — start from the new file's beginning
+					position = 0;
+				}
+				if (stat.size > position) {
+					const fd = fs.openSync(paths.logPath, 'r');
+					const buf = Buffer.alloc(stat.size - position);
+					try {
+						fs.readSync(fd, buf, 0, buf.length, position);
+					} finally {
+						fs.closeSync(fd);
+					}
+					position = stat.size;
+					process.stdout.write(buf);
+				}
+			} catch (err) {
+				// ENOENT during rotation is expected; surface anything else.
+				if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+					process.stderr.write(
+						`dashboard logs: tail error: ${
+							err instanceof Error ? err.message : String(err)
+						}\n`,
+					);
+				}
+			}
+		};
+		try {
+			watcher = fs.watch(paths.logPath, {persistent: true}, () => {
+				drain();
+			});
+		} catch {
+			// fs.watch may fail on certain filesystems; fall back to polling
+			pollTimer = setInterval(drain, 500);
+			pollTimer.unref?.();
+		}
+		const onSignal = (): void => {
+			if (watcher) {
+				watcher.close();
+				watcher = null;
+			}
+			if (pollTimer) {
+				clearInterval(pollTimer);
+				pollTimer = null;
+			}
+			if (stream) {
+				stream.close();
+				stream = null;
+			}
+			resolve(0);
+		};
+		process.once('SIGINT', onSignal);
+		process.once('SIGTERM', onSignal);
+	});
+}
+
+function formatDuration(seconds: number): string {
+	if (!Number.isFinite(seconds) || seconds < 0) return '?';
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3_600) {
+		const m = Math.floor(seconds / 60);
+		const s = seconds % 60;
+		return s > 0 ? `${m}m${s}s` : `${m}m`;
+	}
+	if (seconds < 86_400) {
+		const h = Math.floor(seconds / 3_600);
+		const m = Math.floor((seconds % 3_600) / 60);
+		return m > 0 ? `${h}h${m}m` : `${h}h`;
+	}
+	const d = Math.floor(seconds / 86_400);
+	const h = Math.floor((seconds % 86_400) / 3_600);
+	return h > 0 ? `${d}d${h}h` : `${d}d`;
+}
+
+type FetchedRunnerHealth = {
+	id: string;
+	matches: boolean;
+	executionTarget?: string;
+	remoteInstanceId?: string;
+	error?: string;
+};
+
+async function fetchRunnerHealth(
+	fetchImpl: typeof fetch,
+	dashboardUrl: string,
+	runnerId: string,
+	token: DashboardAccessToken,
+): Promise<FetchedRunnerHealth> {
+	const url = new URL(
+		`/api/runners/${encodeURIComponent(runnerId)}`,
+		dashboardUrl,
+	).toString();
+	let response: Response;
+	try {
+		response = await fetchImpl(url, {
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${token.accessToken}`,
+				accept: 'application/json',
+			},
+		});
+	} catch (err) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `request failed: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		};
+	}
+	if (!response.ok) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `dashboard returned ${response.status}`,
+		};
+	}
+	let body: unknown;
+	try {
+		body = await response.json();
+	} catch (err) {
+		return {
+			id: runnerId,
+			matches: false,
+			error: `invalid response body: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		};
+	}
+	const obj =
+		typeof body === 'object' && body !== null
+			? (body as Record<string, unknown>)
+			: {};
+	const executionTarget =
+		typeof obj['executionTarget'] === 'string'
+			? (obj['executionTarget'] as string)
+			: undefined;
+	const remoteInstanceId =
+		typeof obj['remoteInstanceId'] === 'string'
+			? (obj['remoteInstanceId'] as string)
+			: undefined;
+	const matches =
+		executionTarget === 'remote' && remoteInstanceId === token.instanceId;
+	const reasons: string[] = [];
+	if (executionTarget !== 'remote') {
+		reasons.push(
+			`executionTarget=${executionTarget ?? 'unset'} (expected "remote")`,
+		);
+	}
+	if (remoteInstanceId !== token.instanceId) {
+		reasons.push(
+			`remoteInstanceId=${remoteInstanceId ?? 'unset'} (expected "${token.instanceId}")`,
+		);
+	}
+	return {
+		id: runnerId,
+		matches,
+		...(executionTarget !== undefined ? {executionTarget} : {}),
+		...(remoteInstanceId !== undefined ? {remoteInstanceId} : {}),
+		...(reasons.length > 0 ? {error: reasons.join('; ')} : {}),
+	};
+}
+
+function defaultInstallServiceUnit(): ServiceInstallResult {
+	const entry = resolveDaemonEntry();
+	if (!entry) {
+		return {
+			ok: false,
+			platform: 'unsupported',
+			message: 'cannot resolve dashboard-daemon.js entry path',
+		};
+	}
+	return installServiceUnit({
+		daemonEntry: entry,
+		nodeBinary: process.execPath,
+	});
+}
+
+function compareSemver(a: string, b: string): number {
+	const parseN = (s: string): [number, number, number] => {
+		const parts = s.replace(/^v/, '').split('-')[0]!.split('.');
+		return [
+			Number.parseInt(parts[0] ?? '0', 10) || 0,
+			Number.parseInt(parts[1] ?? '0', 10) || 0,
+			Number.parseInt(parts[2] ?? '0', 10) || 0,
+		];
+	};
+	const av = parseN(a);
+	const bv = parseN(b);
+	for (let i = 0; i < 3; i += 1) {
+		if (av[i]! < bv[i]!) return -1;
+		if (av[i]! > bv[i]!) return 1;
+	}
+	return 0;
+}
+
+function consoleBrokerUrl(dashboardUrl: string, runnerId: string): string {
+	const url = new URL(dashboardUrl);
+	if (url.protocol === 'https:') url.protocol = 'wss:';
+	else if (url.protocol === 'http:') url.protocol = 'ws:';
+	else throw new Error(`unsupported dashboard protocol: ${url.protocol}`);
+	url.pathname = `/api/runners/${encodeURIComponent(runnerId)}/console/adapter`;
+	url.search = '';
+	url.hash = '';
+	return url.toString();
 }
 
 async function safeReadError(response: Response): Promise<string> {
@@ -977,25 +1989,59 @@ function parsePairResponse(raw: unknown): PairResponse {
 	return {
 		instanceId,
 		refreshToken,
-		...(Array.isArray(obj['runners'])
-			? {
-					runners: obj['runners']
-						.map((entry: unknown) => {
-							if (typeof entry !== 'object' || entry === null) return null;
-							const runnerId = (entry as Record<string, unknown>)['runnerId'];
-							return typeof runnerId === 'string' && runnerId.length > 0
-								? {runnerId}
-								: null;
-						})
-						.filter((entry): entry is {runnerId: string} => entry !== null),
-				}
-			: {}),
 		...(typeof obj['jti'] === 'string' ? {jti: obj['jti'] as string} : {}),
 		...(typeof obj['accessToken'] === 'string'
 			? {accessToken: obj['accessToken'] as string}
 			: {}),
 		...(typeof obj['expiresInSec'] === 'number'
 			? {expiresInSec: obj['expiresInSec'] as number}
+			: {}),
+		...(Array.isArray(obj['runners'])
+			? {
+					runners: obj['runners']
+						.map(parsePairedRunner)
+						.filter((runner): runner is PairedRunner => runner !== null),
+				}
+			: {}),
+		...(typeof obj['requiredCliVersion'] === 'string'
+			? {requiredCliVersion: obj['requiredCliVersion'] as string}
+			: {}),
+		...(typeof obj['capabilityAck'] === 'object' &&
+		obj['capabilityAck'] !== null
+			? {capabilityAck: parseCapabilityAck(obj['capabilityAck'])}
+			: {}),
+	};
+}
+
+function parseCapabilityAck(raw: unknown): CapabilityAck {
+	if (typeof raw !== 'object' || raw === null) return {};
+	const obj = raw as Record<string, unknown>;
+	const ack: CapabilityAck = {};
+	if (typeof obj['runtimeDaemon'] === 'boolean') {
+		ack.runtimeDaemon = obj['runtimeDaemon'] as boolean;
+	}
+	if (typeof obj['consoleAdapter'] === 'boolean') {
+		ack.consoleAdapter = obj['consoleAdapter'] as boolean;
+	}
+	if (typeof obj['instanceSocket'] === 'boolean') {
+		ack.instanceSocket = obj['instanceSocket'] as boolean;
+	}
+	return ack;
+}
+
+function parsePairedRunner(raw: unknown): PairedRunner | null {
+	if (typeof raw !== 'object' || raw === null) return null;
+	const obj = raw as Record<string, unknown>;
+	const runnerId = obj['runnerId'];
+	if (typeof runnerId !== 'string' || runnerId.length === 0) return null;
+	return {
+		runnerId,
+		...(typeof obj['name'] === 'string' ? {name: obj['name'] as string} : {}),
+		...(typeof obj['executionTarget'] === 'string'
+			? {executionTarget: obj['executionTarget'] as string}
+			: {}),
+		...(typeof obj['remoteInstanceId'] === 'string'
+			? {remoteInstanceId: obj['remoteInstanceId'] as string}
 			: {}),
 	};
 }

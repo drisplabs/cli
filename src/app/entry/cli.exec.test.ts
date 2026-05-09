@@ -27,7 +27,6 @@ const EXEC_EXIT_CODE = {
 	USAGE: 2,
 	BOOTSTRAP: 3,
 	RUNTIME: 4,
-	POLICY: 5,
 	TIMEOUT: 6,
 	OUTPUT: 7,
 } as const;
@@ -93,10 +92,6 @@ vi.mock('./dashboardCommand', () => ({
 vi.mock('../exec', () => ({
 	runExec: runExecMock,
 	EXEC_EXIT_CODE,
-	EXEC_PERMISSION_POLICIES: ['allow', 'deny', 'fail'],
-	EXEC_QUESTION_POLICIES: ['empty', 'fail'],
-	EXEC_DEFAULT_PERMISSION_POLICY: 'fail',
-	EXEC_DEFAULT_QUESTION_POLICY: 'fail',
 }));
 
 vi.mock('../../ui/theme/index', () => ({
@@ -232,8 +227,7 @@ describe('cli exec mode', () => {
 			expect(runExecMock).toHaveBeenCalledWith(
 				expect.objectContaining({
 					prompt: 'hello from test',
-					onPermission: 'fail',
-					onQuestion: 'fail',
+					channels: [],
 				}),
 			);
 			expect(renderMock).not.toHaveBeenCalled();
@@ -270,11 +264,15 @@ describe('cli exec mode', () => {
 		}
 	});
 
-	it('validates invalid --on-permission policy', async () => {
-		const cli = await runCli(['exec', 'hello', '--on-permission=invalid']);
+	it('accepts --channel and forwards it to runExec', async () => {
+		const cli = await runCli(['exec', 'hello', '--channel', 'telegram']);
 		try {
-			expect(runExecMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.USAGE);
+			expect(runExecMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channels: ['telegram'],
+				}),
+			);
+			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
 		} finally {
 			cli.restore();
 		}
@@ -528,25 +526,6 @@ describe('cli exec mode', () => {
 			expect(runDashboardMock).toHaveBeenCalledWith({
 				subcommand: 'status',
 				subcommandArgs: [],
-				flags: {url: undefined, name: undefined, json: true},
-			});
-		} finally {
-			cli.restore();
-		}
-	});
-
-	it('forwards --runner to dashboard doctor as a subcommand argument', async () => {
-		const cli = await runCli([
-			'dashboard',
-			'doctor',
-			'--runner',
-			'runner_1',
-			'--json',
-		]);
-		try {
-			expect(runDashboardMock).toHaveBeenCalledWith({
-				subcommand: 'doctor',
-				subcommandArgs: ['--runner', 'runner_1'],
 				flags: {url: undefined, name: undefined, json: true},
 			});
 		} finally {

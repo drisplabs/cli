@@ -7,6 +7,30 @@ import {type ChildProcess} from 'node:child_process';
 class ProcessRegistry {
 	private processes = new Map<number, ChildProcess>();
 	private cleanupRegistered = false;
+	private asyncCleanups: Array<() => Promise<void>> = [];
+	private exiting = false;
+
+	/**
+	 * Register an async cleanup hook to run before the process exits via a
+	 * signal or unhandled error. Hooks race against a 2s timeout so a hung
+	 * cleanup can't block exit.
+	 */
+	registerAsyncCleanup(fn: () => Promise<void>): void {
+		this.asyncCleanups.push(fn);
+	}
+
+	private async runAsyncCleanups(timeoutMs = 2000): Promise<void> {
+		if (this.asyncCleanups.length === 0) {
+			return;
+		}
+		const all = Promise.all(this.asyncCleanups.map(fn => fn().catch(() => {})));
+		await Promise.race([
+			all,
+			new Promise<void>(resolve => {
+				setTimeout(resolve, timeoutMs).unref();
+			}),
+		]);
+	}
 
 	/**
 	 * Register a spawned process for tracking.
@@ -80,33 +104,36 @@ class ProcessRegistry {
 			this.killAll();
 		};
 
-		// Handle Ctrl+C
-		process.on('SIGINT', () => {
+		const exitWithCleanup = (code: number) => {
+			if (this.exiting) {
+				return;
+			}
+			this.exiting = true;
 			cleanup();
-			process.exit(130); // Standard exit code for SIGINT
-		});
+			void this.runAsyncCleanups().finally(() => {
+				process.exit(code);
+			});
+		};
+
+		// Handle Ctrl+C
+		process.on('SIGINT', () => exitWithCleanup(130));
 
 		// Handle termination signal
-		process.on('SIGTERM', () => {
-			cleanup();
-			process.exit(143); // Standard exit code for SIGTERM
-		});
+		process.on('SIGTERM', () => exitWithCleanup(143));
 
-		// Handle normal exit
+		// Handle normal exit (sync only — beforeExit can't await)
 		process.on('beforeExit', cleanup);
 
 		// Handle uncaught exceptions - cleanup before crashing
 		process.on('uncaughtException', error => {
 			console.error('Uncaught exception:', error);
-			cleanup();
-			process.exit(1);
+			exitWithCleanup(1);
 		});
 
 		// Handle unhandled promise rejections
 		process.on('unhandledRejection', reason => {
 			console.error('Unhandled rejection:', reason);
-			cleanup();
-			process.exit(1);
+			exitWithCleanup(1);
 		});
 	}
 }

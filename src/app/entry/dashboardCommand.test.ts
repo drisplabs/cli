@@ -1,8 +1,10 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {describe, expect, it, vi} from 'vitest';
 import {runDashboardCommand} from './dashboardCommand';
+import type {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
 import type {DashboardClientConfig} from '../../infra/config/dashboardClient';
-import type {ConsoleChannelConfig} from './dashboardCommand';
-import type {StatusResponsePayload} from '../../shared/gateway-protocol';
 
 function captureLogs() {
 	const out: string[] = [];
@@ -30,22 +32,16 @@ function makeDeps(overrides: {
 	fetchMock?: ReturnType<typeof vi.fn>;
 	stored?: DashboardClientConfig | null;
 	written?: DashboardClientConfig[];
-	consoleWrites?: ConsoleChannelConfig[];
-	reloadGatewayChannels?: ReturnType<typeof vi.fn>;
-	consoleConfig?: ConsoleChannelConfig | null;
-	gatewayStatus?: ReturnType<typeof vi.fn>;
 	removed?: {count: number};
 	now?: number;
 }) {
 	const writes = overrides.written ?? [];
-	const consoleWrites = overrides.consoleWrites ?? [];
 	const stored = {value: overrides.stored ?? null};
 	const removed = overrides.removed ?? {count: 0};
 	const cap = captureLogs();
 	return {
 		cap,
 		writes,
-		consoleWrites,
 		stored,
 		removed,
 		deps: {
@@ -67,22 +63,11 @@ function makeDeps(overrides: {
 				stored.value = null;
 				removed.count += 1;
 			},
-			writeConsoleChannelConfig: (config: ConsoleChannelConfig) => {
-				consoleWrites.push(config);
-			},
-			readConsoleChannelConfig: () => overrides.consoleConfig ?? null,
-			reloadGatewayChannels:
-				overrides.reloadGatewayChannels ??
-				vi.fn(async () => ({
-					ok: true,
-					message: 'reloaded',
-				})),
-			getGatewayStatus:
-				overrides.gatewayStatus ??
-				vi.fn(async () => ({
-					ok: false,
-					message: 'gateway not reachable',
-				})),
+			startRuntimeDaemon: vi.fn(async () => ({
+				ok: true,
+				connected: true,
+				message: 'connected',
+			})),
 			configPath: () => '/tmp/athena/dashboard.json',
 			logOut: cap.logOut,
 			logError: cap.logError,
@@ -192,6 +177,7 @@ describe('runDashboardCommand: pair', () => {
 			capabilities: {
 				instanceSocket: true,
 				consoleAdapter: true,
+				runtimeDaemon: true,
 				version: '9.9.9-test',
 			},
 		});
@@ -203,6 +189,44 @@ describe('runDashboardCommand: pair', () => {
 			fingerprint: STATIC_FINGERPRINT,
 			pairedAt: 1_700_000_000_000,
 		});
+	});
+
+	it('starts the runtime daemon after pairing and reports bound runners', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+				runners: [
+					{
+						runnerId: 'runner_1',
+						name: 'Nightly QA',
+						executionTarget: 'remote',
+						remoteInstanceId: 'inst_1',
+					},
+				],
+			}),
+		);
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			alreadyRunning: false,
+			connected: true,
+			message: 'connected',
+		}));
+		const {deps, cap} = makeDeps({fetchMock});
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			{...deps, startRuntimeDaemon},
+		);
+
+		expect(code).toBe(0);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain('runtime daemon connected');
+		expect(cap.out.join('\n')).toContain('bound runner Nightly QA (runner_1)');
 	});
 
 	it('does not log refresh token in human output', async () => {
@@ -299,216 +323,130 @@ describe('runDashboardCommand: pair', () => {
 		expect(cap.out.join('\n')).not.toContain('refresh_1');
 	});
 
-	it('writes console sidecar config when pairing response includes a runner', async () => {
+	it('exits 0 with a warning when daemon spawn fails', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			jsonResponse(200, {
 				instanceId: 'inst_1',
 				refreshToken: 'refresh_1',
-				runners: [{runnerId: 'runner_1'}],
 			}),
 		);
-		const reloadGatewayChannels = vi.fn(async () => ({
-			ok: true,
-			message: 'reloaded',
+		const {deps, cap, writes} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: false,
+			message: 'spawn ENOENT',
 		}));
-		const {deps, consoleWrites, cap} = makeDeps({
-			fetchMock,
-			reloadGatewayChannels,
-		});
 
 		const code = await runDashboardCommand(
 			{
 				subcommand: 'pair',
 				subcommandArgs: ['tok_1'],
-				flags: {url: 'https://app.drisp.dev'},
+				flags: {url: 'http://localhost:5173'},
 			},
-			deps,
+			{...deps, startRuntimeDaemon},
 		);
 
+		// Daemon failure is a warning, not a pair failure — pairing on disk is
+		// the source of truth.
 		expect(code).toBe(0);
-		expect(consoleWrites).toEqual([
-			{
-				broker_url: 'wss://app.drisp.dev/api/runners/runner_1/console/adapter',
-				runner_id: 'runner_1',
-				dashboard_config: true,
-			},
-		]);
-		expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
-		expect(cap.out.join('\n')).toContain(
-			'console linked runner runner_1 to https://app.drisp.dev',
-		);
+		expect(writes).toHaveLength(1);
+		expect(cap.err.join('\n')).toContain('runtime daemon did not start');
+		expect(cap.out.join('\n')).toContain('pairing succeeded; start the daemon');
 	});
 
-	it('keeps pair --json output parseable when pairing response includes a runner', async () => {
+	it('exits 1 when the dashboard requires a newer cli', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			jsonResponse(200, {
 				instanceId: 'inst_1',
 				refreshToken: 'refresh_1',
-				runners: [{runnerId: 'runner_1'}],
+				requiredCliVersion: '99.0.0',
+			}),
+		);
+		const {deps, cap, writes} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn();
+
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
+			},
+			{...deps, startRuntimeDaemon},
+		);
+
+		expect(code).toBe(1);
+		// Refusing the pair before writing config or starting the daemon avoids
+		// leaving the user with a half-broken setup.
+		expect(writes).toHaveLength(0);
+		expect(startRuntimeDaemon).not.toHaveBeenCalled();
+		expect(cap.err.join('\n')).toContain("older than the dashboard's required");
+	});
+
+	it('reports verified socket from defaultStartRuntimeDaemon probe result', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
 			}),
 		);
 		const {deps, cap} = makeDeps({fetchMock});
+		const startRuntimeDaemon = vi.fn(
+			async (opts: {log: (msg: string) => void}) => {
+				opts.log('daemon: socket verified (pid 4123)');
+				return {
+					ok: true,
+					connected: true,
+					pid: 4123,
+					message: 'started, socket verified',
+				};
+			},
+		);
 
 		const code = await runDashboardCommand(
 			{
 				subcommand: 'pair',
 				subcommandArgs: ['tok_1'],
-				flags: {url: 'https://app.drisp.dev', json: true},
+				flags: {url: 'http://localhost:5173'},
 			},
-			deps,
+			{...deps, startRuntimeDaemon},
 		);
 
 		expect(code).toBe(0);
-		const parsed = JSON.parse(cap.out.join('\n'));
-		expect(parsed).toMatchObject({
-			ok: true,
-			instanceId: 'inst_1',
-			dashboardUrl: 'https://app.drisp.dev',
-			runners: [{runnerId: 'runner_1'}],
-		});
-	});
-});
-
-describe('runDashboardCommand: doctor', () => {
-	const stored: DashboardClientConfig = {
-		dashboardUrl: 'http://localhost:3000',
-		instanceId: 'inst_1',
-		refreshToken: 'do-not-print',
-		fingerprint: 'fp-stored',
-		pairedAt: 1,
-	};
-
-	function gatewayStatus(
-		overrides: Partial<StatusResponsePayload> = {},
-	): StatusResponsePayload {
-		return {
-			daemonPid: 123,
-			startedAt: 1,
-			uptimeMs: 2,
-			version: '9.9.9',
-			listener: {
-				kind: 'uds',
-				socketPath: '/tmp/gateway.sock',
-			},
-			channels: [],
-			runtimes: [],
-			...overrides,
-		};
-	}
-
-	it('labels pairing as failed when the CLI is not paired', async () => {
-		const {deps, cap} = makeDeps({});
-		const code = await runDashboardCommand(
-			{
-				subcommand: 'doctor',
-				subcommandArgs: ['--runner', 'runner_1'],
-				flags: {},
-			},
-			deps,
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain(
+			'runtime daemon connected (verified socket open)',
 		);
-
-		expect(code).toBe(1);
-		expect(cap.out.join('\n')).toContain('pairing: fail');
-		expect(cap.out.join('\n')).toContain('not paired');
+		expect(cap.out.join('\n')).toContain('socket verified (pid 4123)');
 	});
 
-	it('reports healthy pairing, gateway, console adapter, and runtime planes', async () => {
-		const {deps, cap} = makeDeps({
-			stored,
-			consoleConfig: {
-				broker_url: 'ws://localhost:3000/api/runners/runner_1/console/adapter',
-				runner_id: 'runner_1',
-				dashboard_config: true,
-			},
-			gatewayStatus: vi.fn(async () => ({
-				ok: true,
-				status: gatewayStatus({
-					channels: [{id: 'console', state: 'running'}],
-					runtimes: [
-						{
-							runtimeId: 'runtime-1',
-							defaultAgentId: 'main',
-							pid: 1234,
-							registeredAt: 10,
-							binding: {
-								state: 'active',
-								boundAt: 10,
-								lastRebindAt: 15,
-								epoch: 1,
-							},
-							pendingDispatchCount: 0,
-						},
-					],
-				}),
-			})),
+	it('sends both cliVersion and legacy version capability fields', async () => {
+		let capturedBody: unknown = null;
+		const fetchMock = vi.fn(async (_url: string, init?: {body?: string}) => {
+			if (init?.body) capturedBody = JSON.parse(init.body);
+			return jsonResponse(200, {
+				instanceId: 'inst_1',
+				refreshToken: 'refresh_1',
+			});
+		});
+		const {deps} = makeDeps({
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
 		});
 
-		const code = await runDashboardCommand(
+		await runDashboardCommand(
 			{
-				subcommand: 'doctor',
-				subcommandArgs: ['--runner', 'runner_1'],
-				flags: {},
+				subcommand: 'pair',
+				subcommandArgs: ['tok_1'],
+				flags: {url: 'http://localhost:5173'},
 			},
 			deps,
 		);
 
-		expect(code).toBe(0);
-		const out = cap.out.join('\n');
-		expect(out).toContain('pairing: ok');
-		expect(out).toContain('console-sidecar: ok');
-		expect(out).toContain('gateway: ok');
-		expect(out).toContain('console-adapter: ok');
-		expect(out).toContain('runtime: ok');
-		expect(out).not.toContain('do-not-print');
-	});
-
-	it('flags a console sidecar runner mismatch before blaming the gateway', async () => {
-		const {deps, cap} = makeDeps({
-			stored,
-			consoleConfig: {
-				broker_url:
-					'ws://localhost:3000/api/runners/other_runner/console/adapter',
-				runner_id: 'other_runner',
-				dashboard_config: true,
+		expect(capturedBody).toMatchObject({
+			capabilities: {
+				cliVersion: '9.9.9-test',
+				version: '9.9.9-test',
+				runtimeDaemon: true,
 			},
-			gatewayStatus: vi.fn(async () => ({
-				ok: true,
-				status: gatewayStatus(),
-			})),
 		});
-
-		const code = await runDashboardCommand(
-			{
-				subcommand: 'doctor',
-				subcommandArgs: ['--runner', 'runner_1'],
-				flags: {},
-			},
-			deps,
-		);
-
-		expect(code).toBe(1);
-		expect(cap.out.join('\n')).toContain('console-sidecar: fail');
-		expect(cap.out.join('\n')).toContain('linked to other_runner');
-	});
-
-	it('emits token-free JSON diagnostics', async () => {
-		const {deps, cap} = makeDeps({stored});
-
-		const code = await runDashboardCommand(
-			{subcommand: 'doctor', subcommandArgs: [], flags: {json: true}},
-			deps,
-		);
-
-		expect(code).toBe(1);
-		const parsed = JSON.parse(cap.out.join('\n'));
-		expect(parsed.ok).toBe(false);
-		expect(parsed.planes).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({plane: 'pairing', ok: true}),
-				expect.objectContaining({plane: 'gateway', ok: false}),
-			]),
-		);
-		expect(cap.out.join('\n')).not.toContain('do-not-print');
 	});
 });
 
@@ -640,7 +578,7 @@ describe('runDashboardCommand: status', () => {
 		expect(cap.out.join('\n')).toContain('not paired');
 	});
 
-	it('prints instance id and origin without tokens', async () => {
+	it('prints pairing, daemon-down, and exits non-zero', async () => {
 		const stored: DashboardClientConfig = {
 			dashboardUrl: 'https://example.com',
 			instanceId: 'inst_1',
@@ -652,13 +590,53 @@ describe('runDashboardCommand: status', () => {
 
 		const code = await runDashboardCommand(
 			{subcommand: 'status', subcommandArgs: [], flags: {}},
-			deps,
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: false,
+					error: 'daemon not running',
+				}),
+			},
 		);
-		expect(code).toBe(0);
+		// Paired but daemon down → unhealthy axis → exit 1.
+		expect(code).toBe(1);
 		expect(cap.out.join('\n')).toContain(
 			'paired to https://example.com as inst_1',
 		);
+		expect(cap.out.join('\n')).toContain('NOT running');
 		expect(cap.out.join('\n')).not.toContain('do-not-print');
+	});
+
+	it('reports a healthy daemon and exits 0', async () => {
+		const stored: DashboardClientConfig = {
+			dashboardUrl: 'https://example.com',
+			instanceId: 'inst_1',
+			refreshToken: 'do-not-print',
+			fingerprint: 'fp-stored',
+			pairedAt: 1,
+		};
+		const {deps, cap} = makeDeps({stored});
+
+		const code = await runDashboardCommand(
+			{subcommand: 'status', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'status',
+					pid: 4123,
+					startedAt: Date.now() - 2_000,
+					socketConnected: true,
+					activeRuns: 0,
+					completedRuns: 2,
+					instanceId: 'inst_1',
+					dashboardUrl: 'https://example.com',
+				}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toMatch(/daemon:\s+running \(pid 4123/);
+		expect(cap.out.join('\n')).toContain('socket:    connected');
 	});
 
 	it('emits JSON without tokens', async () => {
@@ -674,7 +652,18 @@ describe('runDashboardCommand: status', () => {
 
 		await runDashboardCommand(
 			{subcommand: 'status', subcommandArgs: [], flags: {json: true}},
-			deps,
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'status',
+					pid: 1,
+					startedAt: 0,
+					socketConnected: true,
+					activeRuns: 0,
+					completedRuns: 0,
+				}),
+			},
 		);
 		const parsed = JSON.parse(cap.out.join('\n'));
 		expect(parsed).toMatchObject({
@@ -683,12 +672,68 @@ describe('runDashboardCommand: status', () => {
 			instanceId: 'inst_1',
 			dashboardUrl: 'https://example.com',
 			lastRefreshAt: 2,
+			daemon: {running: true, pid: 1, socketConnected: true},
 		});
 		expect(cap.out.join('\n')).not.toContain('do-not-print');
 	});
 });
 
-describe('runDashboardCommand: connect', () => {
+type FakeFrame =
+	import('../dashboard/instanceSocketClient').InstanceSocketFrame;
+type FakeRunEvent = {
+	runId: string;
+	seq: number;
+	ts: number;
+	kind: string;
+	payload?: unknown;
+};
+
+function makeFakeSocket(connectFn?: () => Promise<void>) {
+	const calls = {connect: 0, closed: [] as string[]};
+	const closeHandlers: Array<(reason: string) => void> = [];
+	const frameHandlers: Array<(frame: FakeFrame) => void> = [];
+	const runEvents: FakeRunEvent[] = [];
+	let lastOpts: {
+		dashboardUrl: string;
+		instanceId: string;
+		accessToken: string;
+	} | null = null;
+	const factory = (o: {
+		dashboardUrl: string;
+		instanceId: string;
+		accessToken: string;
+	}) => {
+		lastOpts = o;
+		return {
+			connect: async () => {
+				calls.connect += 1;
+				if (connectFn) await connectFn();
+			},
+			close: (reason?: string) => calls.closed.push(reason ?? ''),
+			onFrame: (h: (f: FakeFrame) => void) => {
+				frameHandlers.push(h);
+			},
+			onClose: (h: (reason: string) => void) => {
+				closeHandlers.push(h);
+			},
+			sendRunEvent: (event: FakeRunEvent) => runEvents.push(event),
+		};
+	};
+	return {
+		factory,
+		calls,
+		runEvents,
+		lastOpts: () => lastOpts,
+		emitClose: (reason: string) => {
+			for (const h of closeHandlers) h(reason);
+		},
+		emitFrame: (frame: FakeFrame) => {
+			for (const h of frameHandlers) h(frame);
+		},
+	};
+}
+
+describe('runDashboardCommand: connect (deprecation alias)', () => {
 	const stored: DashboardClientConfig = {
 		dashboardUrl: 'https://example.com',
 		instanceId: 'inst_1',
@@ -703,56 +748,6 @@ describe('runDashboardCommand: connect', () => {
 		expiresInSec: 900,
 	});
 
-	function makeFakeSocket() {
-		const calls = {
-			connect: 0,
-			closed: [] as string[],
-			runEvents: [] as unknown[],
-		};
-		const closeHandlers: Array<(reason: string) => void> = [];
-		const frameHandlers: Array<(frame: unknown) => void> = [];
-		let lastOpts: {
-			dashboardUrl: string;
-			instanceId: string;
-			accessToken: string;
-		} | null = null;
-		const factory = (o: {
-			dashboardUrl: string;
-			instanceId: string;
-			accessToken: string;
-		}) => {
-			lastOpts = o;
-			return {
-				connect: async () => {
-					calls.connect += 1;
-				},
-				close: (reason?: string) => {
-					calls.closed.push(reason ?? '');
-				},
-				onFrame: (handler: (frame: unknown) => void) => {
-					frameHandlers.push(handler);
-				},
-				onClose: (handler: (reason: string) => void) => {
-					closeHandlers.push(handler);
-				},
-				sendRunEvent: (frame: unknown) => {
-					calls.runEvents.push(frame);
-				},
-			};
-		};
-		return {
-			factory,
-			calls,
-			lastOpts: () => lastOpts,
-			emitClose: (reason: string) => {
-				for (const h of closeHandlers) h(reason);
-			},
-			emitFrame: (frame: unknown) => {
-				for (const h of frameHandlers) h(frame);
-			},
-		};
-	}
-
 	it('errors when not paired', async () => {
 		const {deps, cap} = makeDeps({});
 		const code = await runDashboardCommand(
@@ -763,7 +758,7 @@ describe('runDashboardCommand: connect', () => {
 		expect(cap.err.join('\n')).toContain('not paired');
 	});
 
-	it('refreshes an access token before opening the socket', async () => {
+	it('prints a deprecation warning and routes to daemon foreground', async () => {
 		const fakeSocket = makeFakeSocket();
 		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
@@ -784,8 +779,11 @@ describe('runDashboardCommand: connect', () => {
 			accessToken: 'fresh-access',
 			log: expect.any(Function),
 		});
-		expect(cap.out.join('\n')).toContain('connected instance inst_1');
-		expect(cap.out.join('\n')).toContain('disconnected (SIGINT)');
+		expect(cap.err.join('\n')).toContain(
+			'connect: deprecated; use `dashboard daemon foreground`',
+		);
+		expect(cap.out.join('\n')).toContain('foreground runtime connected');
+		expect(cap.out.join('\n')).toContain('stopped (SIGINT)');
 	});
 
 	it('exits 1 when refresh fails and never opens socket', async () => {
@@ -806,110 +804,6 @@ describe('runDashboardCommand: connect', () => {
 		expect(fakeSocket.calls.connect).toBe(0);
 	});
 
-	it('exits 1 when the socket closes before the shutdown signal', async () => {
-		const fakeSocket = makeFakeSocket();
-		const {deps, cap} = makeDeps({stored});
-
-		const pending = runDashboardCommand(
-			{subcommand: 'connect', subcommandArgs: [], flags: {}},
-			{
-				...deps,
-				performRefresh: happyRefresh,
-				makeInstanceSocketClient: fakeSocket.factory,
-				waitForShutdown: () => new Promise<string>(() => {}),
-			},
-		);
-		// Yield until runDashboardCommand has subscribed to onClose.
-		await new Promise(r => setTimeout(r, 0));
-		await new Promise(r => setTimeout(r, 0));
-		fakeSocket.emitClose('server gone');
-
-		const code = await pending;
-		expect(code).toBe(1);
-		expect(cap.err.join('\n')).toContain('socket closed unexpectedly');
-		expect(cap.err.join('\n')).toContain('server gone');
-	});
-
-	it('executes job assignments received from the dashboard socket', async () => {
-		const fakeSocket = makeFakeSocket();
-		const executeRemoteAssignment = vi.fn(async () => {});
-		const {deps} = makeDeps({stored});
-
-		const pending = runDashboardCommand(
-			{subcommand: 'connect', subcommandArgs: [], flags: {}},
-			{
-				...deps,
-				performRefresh: happyRefresh,
-				makeInstanceSocketClient: fakeSocket.factory,
-				executeRemoteAssignment,
-				waitForShutdown: () => new Promise<string>(() => {}),
-			},
-		);
-		await vi.waitFor(() => expect(fakeSocket.calls.connect).toBe(1));
-
-		fakeSocket.emitFrame({
-			type: 'job_assignment',
-			runId: 'run_42',
-			runSpec: {prompt: 'hello'},
-		});
-
-		await vi.waitFor(() => expect(executeRemoteAssignment).toHaveBeenCalled());
-		expect(executeRemoteAssignment).toHaveBeenCalledWith(
-			expect.objectContaining({
-				client: expect.any(Object),
-				frame: expect.objectContaining({
-					type: 'job_assignment',
-					runId: 'run_42',
-				}),
-			}),
-		);
-		fakeSocket.emitClose('done');
-		await pending;
-	});
-
-	it('does not drop job assignments emitted during socket connect', async () => {
-		const executeRemoteAssignment = vi.fn(async () => {});
-		const {deps} = makeDeps({stored});
-		let frameHandler: ((frame: unknown) => void) | undefined;
-		let closeHandler: ((reason: string) => void) | undefined;
-
-		const pending = runDashboardCommand(
-			{subcommand: 'connect', subcommandArgs: [], flags: {}},
-			{
-				...deps,
-				performRefresh: happyRefresh,
-				makeInstanceSocketClient: () => ({
-					connect: async () => {
-						frameHandler?.({
-							type: 'job_assignment',
-							runId: 'run_during_connect',
-							runSpec: {prompt: 'hello'},
-						});
-					},
-					close: () => {},
-					onFrame: handler => {
-						frameHandler = handler as (frame: unknown) => void;
-					},
-					onClose: handler => {
-						closeHandler = handler;
-					},
-					sendRunEvent: () => {},
-				}),
-				executeRemoteAssignment,
-				waitForShutdown: () => new Promise<string>(() => {}),
-			},
-		);
-
-		await vi.waitFor(() => expect(executeRemoteAssignment).toHaveBeenCalled());
-		expect(executeRemoteAssignment).toHaveBeenCalledWith(
-			expect.objectContaining({
-				frame: expect.objectContaining({runId: 'run_during_connect'}),
-			}),
-		);
-		closeHandler?.('done');
-		await pending;
-	});
-
 	it('reports socket connect failure and exits 1', async () => {
 		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
@@ -924,6 +818,7 @@ describe('runDashboardCommand: connect', () => {
 					close: () => {},
 					onFrame: () => {},
 					onClose: () => {},
+					sendRunEvent: () => {},
 				}),
 				waitForShutdown: async () => 'SIGINT',
 			},
@@ -933,114 +828,578 @@ describe('runDashboardCommand: connect', () => {
 	});
 });
 
-describe('runDashboardCommand: console link', () => {
+describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 	const stored: DashboardClientConfig = {
-		dashboardUrl: 'http://localhost:3000',
+		dashboardUrl: 'https://example.com',
 		instanceId: 'inst_1',
-		refreshToken: 'do-not-print',
+		refreshToken: 'old-refresh',
 		fingerprint: 'fp-stored',
 		pairedAt: 1,
 	};
 
-	it('requires an existing dashboard pairing', async () => {
+	const happyRefresh = async () => ({
+		instanceId: 'inst_1',
+		accessToken: 'a',
+		expiresInSec: 900,
+	});
+
+	it('routes job_assignment frames to the executor and de-dups runIds in flight', async () => {
+		const fake = makeFakeSocket();
+		const executor = vi.fn(async () => {});
+
+		const {deps} = makeDeps({stored});
+		const pending = runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				performRefresh: happyRefresh,
+				makeInstanceSocketClient: fake.factory,
+				executeRemoteAssignment:
+					executor as unknown as typeof executeRemoteAssignment,
+				waitForShutdown: async () => 'SIGINT',
+			},
+		);
+
+		await new Promise(r => setTimeout(r, 0));
+		const frame: FakeFrame = {
+			type: 'job_assignment',
+			runId: 'run_1',
+			runSpec: {prompt: 'hi'},
+		};
+		fake.emitFrame(frame);
+		fake.emitFrame(frame);
+
+		await pending;
+		expect(executor).toHaveBeenCalledTimes(1);
+		expect(executor.mock.calls[0]![0]).toMatchObject({frame});
+	});
+
+	it('aborts in-flight assignments on stop', async () => {
+		const fake = makeFakeSocket();
+		let signalStarted: () => void = () => {};
+		const startedPromise = new Promise<void>(r => {
+			signalStarted = r;
+		});
+		let seenSignal: AbortSignal | undefined;
+		const executor = vi.fn(async (input: {abortSignal?: AbortSignal}) => {
+			seenSignal = input.abortSignal;
+			signalStarted();
+			await new Promise<void>(resolve => {
+				input.abortSignal?.addEventListener('abort', () => resolve());
+			});
+		});
+
+		const {deps} = makeDeps({stored});
+		const pending = runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				performRefresh: happyRefresh,
+				makeInstanceSocketClient: fake.factory,
+				executeRemoteAssignment:
+					executor as unknown as typeof executeRemoteAssignment,
+				waitForShutdown: () => startedPromise.then(() => 'SIGINT'),
+			},
+		);
+
+		await new Promise(r => setTimeout(r, 0));
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_drain',
+			runSpec: {prompt: 'x'},
+		});
+
+		const code = await pending;
+		expect(code).toBe(0);
+		expect(executor).toHaveBeenCalledTimes(1);
+		expect(seenSignal?.aborted).toBe(true);
+		expect(fake.calls.closed.length).toBe(1);
+	});
+
+	it('ignores non-assignment frames', async () => {
+		const fake = makeFakeSocket();
+		const executor = vi.fn(async () => {});
+		const {deps} = makeDeps({stored});
+		const pending = runDashboardCommand(
+			{subcommand: 'connect', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				performRefresh: happyRefresh,
+				makeInstanceSocketClient: fake.factory,
+				executeRemoteAssignment:
+					executor as unknown as typeof executeRemoteAssignment,
+				waitForShutdown: async () => 'SIGINT',
+			},
+		);
+		await new Promise(r => setTimeout(r, 0));
+		fake.emitFrame({type: 'ping', ts: 1});
+		fake.emitFrame({type: 'cancel', runId: 'x'});
+		await pending;
+		expect(executor).not.toHaveBeenCalled();
+	});
+});
+
+describe('runDashboardCommand: doctor', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'old-refresh',
+		fingerprint: 'fp-stored',
+		pairedAt: 100,
+		lastRefreshAt: 200,
+	};
+
+	const happyRefresh = async () => ({
+		instanceId: 'inst_1',
+		accessToken: 'access-token',
+		expiresInSec: 900,
+	});
+
+	it('errors when not paired', async () => {
 		const {deps, cap} = makeDeps({});
 		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'runner_1'], flags: {}},
+			{subcommand: 'doctor', subcommandArgs: [], flags: {}},
+			deps,
+		);
+		expect(code).toBe(1);
+		expect(cap.out.join('\n')).toContain('not paired');
+	});
+
+	it('returns 0 when paired and no --runner is given', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'doctor', subcommandArgs: [], flags: {}},
+			{...deps, performRefresh: happyRefresh},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toContain('paired to https://example.com');
+	});
+
+	it('passes when runner reports executionTarget=remote and remoteInstanceId matches', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				id: 'r1',
+				executionTarget: 'remote',
+				remoteInstanceId: 'inst_1',
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'doctor', subcommandArgs: [], flags: {runner: 'r1'}},
+			{...deps, performRefresh: happyRefresh},
+		);
+		expect(code).toBe(0);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0]!;
+		expect(url).toBe('https://example.com/api/runners/r1');
+		expect((init as RequestInit).headers).toMatchObject({
+			authorization: 'Bearer access-token',
+		});
+		expect(cap.out.join('\n')).toContain('runner r1 bound to this instance');
+	});
+
+	it('fails with a specific reason when remoteInstanceId mismatches', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				id: 'r1',
+				executionTarget: 'remote',
+				remoteInstanceId: 'inst_other',
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'doctor', subcommandArgs: [], flags: {runner: 'r1'}},
+			{...deps, performRefresh: happyRefresh},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('remoteInstanceId is "inst_other"');
+	});
+
+	it('fails with a specific reason when executionTarget is not remote', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				id: 'r1',
+				executionTarget: 'local',
+				remoteInstanceId: 'inst_1',
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'doctor', subcommandArgs: [], flags: {runner: 'r1'}},
+			{...deps, performRefresh: happyRefresh},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('executionTarget is "local"');
+	});
+
+	it('reports endpoint-missing on 404 from runner GET', async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(jsonResponse(404, {error: 'not found'}));
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'doctor', subcommandArgs: [], flags: {runner: 'r1'}},
+			{...deps, performRefresh: happyRefresh},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('runner not found');
+	});
+
+	it('emits structured JSON when --json is set', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			jsonResponse(200, {
+				executionTarget: 'remote',
+				remoteInstanceId: 'inst_1',
+			}),
+		);
+		const {deps, cap} = makeDeps({fetchMock, stored});
+		await runDashboardCommand(
+			{
+				subcommand: 'doctor',
+				subcommandArgs: [],
+				flags: {runner: 'r1', json: true},
+			},
+			{...deps, performRefresh: happyRefresh},
+		);
+		const parsed = JSON.parse(cap.out.join('\n'));
+		expect(parsed).toMatchObject({
+			ok: true,
+			paired: true,
+			instanceId: 'inst_1',
+			dashboardUrl: 'https://example.com',
+			runner: {id: 'r1', matches: true},
+		});
+	});
+});
+
+describe('runDashboardCommand: console link', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'http://localhost:3000',
+		instanceId: 'inst_1',
+		refreshToken: 'r',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
+
+	function makeChannelDir() {
+		return fs.mkdtempSync(path.join(os.tmpdir(), 'drisp-channels-'));
+	}
+
+	it('errors when not paired', async () => {
+		const {deps, cap} = makeDeps({});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
 			deps,
 		);
 		expect(code).toBe(1);
 		expect(cap.err.join('\n')).toContain('not paired');
 	});
 
-	it('writes a console sidecar from the paired dashboard URL and reloads gateway channels', async () => {
-		const reloadGatewayChannels = vi.fn(async () => ({
-			ok: true,
-			message: 'loaded console',
-		}));
-		const consoleWrites: ConsoleChannelConfig[] = [];
-		const {deps, cap} = makeDeps({
-			stored,
-			consoleWrites,
-			reloadGatewayChannels,
-		});
-
+	it('rejects "console" without subcommand', async () => {
+		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'runner_1'], flags: {}},
+			{subcommand: 'console', subcommandArgs: [], flags: {}},
 			deps,
 		);
+		expect(code).toBe(2);
+		expect(cap.err.join('\n')).toContain('unknown subcommand');
+	});
 
+	it('requires <runnerId>', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link'], flags: {}},
+			deps,
+		);
+		expect(code).toBe(2);
+		expect(cap.err.join('\n')).toContain('missing <runnerId>');
+	});
+
+	it('writes a console.json sidecar with ws broker_url for http dashboard', async () => {
+		const dir = makeChannelDir();
+		const {deps, cap} = makeDeps({stored});
+		const reload = vi.fn().mockResolvedValue({ok: true, message: 'reloaded'});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
+			{...deps, channelDir: () => dir, reloadGatewayChannels: reload},
+		);
+		expect(reload).toHaveBeenCalledTimes(1);
 		expect(code).toBe(0);
-		expect(consoleWrites).toEqual([
+		const target = path.join(dir, 'console.json');
+		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
+		expect(content).toEqual({
+			broker_url: 'ws://localhost:3000/api/runners/r1/console/adapter',
+			runner_id: 'r1',
+			dashboard_config: true,
+		});
+		if (process.platform !== 'win32') {
+			const mode = fs.statSync(target).mode & 0o777;
+			expect(mode).toBe(0o600);
+		}
+		expect(cap.out.join('\n')).toContain('linked runner r1');
+	});
+
+	it('uses wss for https dashboard', async () => {
+		const dir = makeChannelDir();
+		const httpsStored = {...stored, dashboardUrl: 'https://app.drisp.dev'};
+		const {deps} = makeDeps({stored: httpsStored});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
 			{
-				broker_url: 'ws://localhost:3000/api/runners/runner_1/console/adapter',
-				runner_id: 'runner_1',
-				dashboard_config: true,
+				...deps,
+				channelDir: () => dir,
+				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
 			},
-		]);
-		expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
-		expect(cap.out.join('\n')).toContain('console linked runner runner_1');
-		expect(cap.out.join('\n')).toContain('gateway channels reloaded');
-		expect([...cap.out, ...cap.err].join('\n')).not.toContain('do-not-print');
-	});
-
-	it('derives wss broker URLs for https dashboards', async () => {
-		const consoleWrites: ConsoleChannelConfig[] = [];
-		const {deps} = makeDeps({
-			stored: {...stored, dashboardUrl: 'https://app.example.com'},
-			consoleWrites,
-		});
-
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'runner_1'], flags: {}},
-			deps,
 		);
-
 		expect(code).toBe(0);
-		expect(consoleWrites[0]?.broker_url).toBe(
-			'wss://app.example.com/api/runners/runner_1/console/adapter',
+		const target = path.join(dir, 'console.json');
+		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
+		expect(content.broker_url).toBe(
+			'wss://app.drisp.dev/api/runners/r1/console/adapter',
 		);
 	});
 
-	it('keeps the sidecar write when gateway reload is unavailable', async () => {
-		const consoleWrites: ConsoleChannelConfig[] = [];
-		const {deps, cap} = makeDeps({
-			stored,
-			consoleWrites,
-			reloadGatewayChannels: vi.fn(async () => ({
-				ok: false,
-				message: 'gateway not reachable',
-			})),
-		});
-
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'runner_1'], flags: {}},
-			deps,
+	it('replaces an existing sidecar and reports the previous broker_url', async () => {
+		const dir = makeChannelDir();
+		fs.writeFileSync(
+			path.join(dir, 'console.json'),
+			JSON.stringify({
+				broker_url: 'ws://old.example/runners/old/console/adapter',
+				runner_id: 'old',
+				dashboard_config: true,
+			}),
+			{mode: 0o600},
 		);
-
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
+			{
+				...deps,
+				channelDir: () => dir,
+				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
+			},
+		);
 		expect(code).toBe(0);
-		expect(consoleWrites).toHaveLength(1);
-		expect(cap.err.join('\n')).toContain('gateway not reachable');
-		expect(cap.out.join('\n')).toContain('start or reload the gateway');
+		expect(cap.out.join('\n')).toContain('replaced existing config');
+		expect(cap.out.join('\n')).toContain('old.example');
 	});
 });
 
 describe('runDashboardCommand: unpair', () => {
-	it('removes config and is idempotent', async () => {
-		const stored: DashboardClientConfig = {
-			dashboardUrl: 'https://example.com',
-			instanceId: 'inst_1',
-			refreshToken: 'tok',
-			fingerprint: 'fp',
-			pairedAt: 1,
-		};
-		const {deps, cap, removed} = makeDeps({stored});
+	const storedConfig: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'tok',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
 
+	it('reports nothing-to-do when not paired', async () => {
+		const {deps, cap, removed} = makeDeps({});
 		const code = await runDashboardCommand(
 			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
 			deps,
 		);
 		expect(code).toBe(0);
+		expect(removed.count).toBe(0);
+		expect(cap.out.join('\n')).toContain('not paired');
+	});
+
+	it('stops the daemon, revokes server-side, and removes config', async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({}),
+			text: async () => '',
+		});
+		const {deps, cap, removed} = makeDeps({
+			stored: storedConfig,
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
+		});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: true,
+		}));
+		const performRefresh = vi.fn(async () => ({
+			instanceId: 'inst_1',
+			accessToken: 'tok-access',
+			expiresInSec: 900,
+		}));
+
+		const code = await runDashboardCommand(
+			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
+			{...deps, stopRuntimeDaemon, performRefresh},
+		);
+		expect(code).toBe(0);
+		expect(stopRuntimeDaemon).toHaveBeenCalledTimes(1);
 		expect(removed.count).toBe(1);
-		expect(cap.out.join('\n')).toContain('unpaired');
+		// Revoke endpoint hit with the correct instance id.
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining('/api/instances/inst_1/revoke'),
+			expect.objectContaining({method: 'POST'}),
+		);
+		expect(cap.out.join('\n')).toContain('runtime daemon stopped');
+		expect(cap.out.join('\n')).toContain('refresh token revoked');
+		expect(cap.out.join('\n')).toContain('credentials removed');
+	});
+
+	it('warns and still removes config when revoke fails', async () => {
+		const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+		const {deps, cap, removed} = makeDeps({
+			stored: storedConfig,
+			fetchMock: fetchMock as unknown as ReturnType<typeof vi.fn>,
+		});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: false,
+		}));
+		const performRefresh = vi.fn(async () => ({
+			instanceId: 'inst_1',
+			accessToken: 'tok-access',
+			expiresInSec: 900,
+		}));
+
+		const code = await runDashboardCommand(
+			{subcommand: 'unpair', subcommandArgs: [], flags: {}},
+			{...deps, stopRuntimeDaemon, performRefresh},
+		);
+		// Local removal still succeeds — leaving paired-on-disk-but-unreachable
+		// is worse UX than a brief server-side residue.
+		expect(code).toBe(0);
+		expect(removed.count).toBe(1);
+		expect(cap.err.join('\n')).toContain('revoke failed');
+		expect(cap.out.join('\n')).toContain('credentials removed');
+	});
+});
+
+describe('runDashboardCommand: runs', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'r',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
+
+	it('lists runs returned by the daemon UDS', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'runs', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: true,
+					cmd: 'runs',
+					runs: [
+						{
+							runId: 'run_1',
+							startedAt: Date.now() - 30_000,
+							endedAt: Date.now() - 10_000,
+							status: 'completed',
+						},
+						{
+							runId: 'run_2',
+							startedAt: Date.now() - 5_000,
+							status: 'running',
+						},
+					],
+				}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toContain('run_1');
+		expect(cap.out.join('\n')).toContain('run_2');
+		expect(cap.out.join('\n')).toContain('running');
+		expect(cap.out.join('\n')).toContain('completed');
+	});
+
+	it('exits 1 when the daemon is not running', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'runs', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				queryRuntimeDaemon: async () => ({
+					ok: false,
+					error: 'daemon not running',
+				}),
+			},
+		);
+		expect(code).toBe(1);
+		expect(cap.err.join('\n')).toContain('daemon not running');
+	});
+});
+
+describe('runDashboardCommand: daemon start/stop/restart/reload', () => {
+	const stored: DashboardClientConfig = {
+		dashboardUrl: 'https://example.com',
+		instanceId: 'inst_1',
+		refreshToken: 'r',
+		fingerprint: 'fp',
+		pairedAt: 1,
+	};
+
+	it('start spawns the daemon and reports verified connection', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			connected: true,
+			pid: 4123,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['start'], flags: {}},
+			{...deps, startRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(cap.out.join('\n')).toContain('daemon started and connected');
+	});
+
+	it('stop reports daemon-not-running when not held', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: false,
+			message: 'daemon not running',
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['stop'], flags: {}},
+			{...deps, stopRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(cap.out.join('\n')).toContain('daemon not running');
+	});
+
+	it('restart calls stop then start', async () => {
+		const {deps} = makeDeps({stored});
+		const stopRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			wasRunning: true,
+		}));
+		const startRuntimeDaemon = vi.fn(async () => ({
+			ok: true,
+			connected: true,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['restart'], flags: {}},
+			{...deps, stopRuntimeDaemon, startRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(stopRuntimeDaemon).toHaveBeenCalledTimes(1);
+		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
+	});
+
+	it('reload routes a reload UDS command to the daemon', async () => {
+		const {deps} = makeDeps({stored});
+		const queryRuntimeDaemon = vi.fn(async () => ({
+			ok: true as const,
+			cmd: 'reload' as const,
+		}));
+		const code = await runDashboardCommand(
+			{subcommand: 'daemon', subcommandArgs: ['reload'], flags: {}},
+			{...deps, queryRuntimeDaemon},
+		);
+		expect(code).toBe(0);
+		expect(queryRuntimeDaemon).toHaveBeenCalledWith({cmd: 'reload'});
 	});
 });
