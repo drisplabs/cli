@@ -8,18 +8,13 @@ import {
 	extractFriendlyServerName,
 	parseToolName,
 } from '../../shared/utils/toolNameParser';
-import {isDefaultRenderKind} from './defaultRender';
 import {summarizeToolResult} from './toolSummary';
 import {type FeedEvent, type FeedEventKind} from './types';
 import {resolveVerb} from './verbMap';
 
-export type RunStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+// ── Public types ──────────────────────────────────────────
 
-/** Extract coarse event category from op string for visual grouping. */
-export function opCategory(op: string): string {
-	const dot = op.indexOf('.');
-	return dot >= 0 ? op.slice(0, dot) : op;
-}
+export type RunStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
 export type SummarySegmentRole =
 	| 'verb'
@@ -51,6 +46,31 @@ export type TimelineEntry = {
 	pairedPostEvent?: FeedEvent;
 };
 
+export type RunSummary = {
+	runId: string;
+	title: string;
+	status: RunStatus;
+	startedAt: number;
+	endedAt?: number;
+};
+
+export type SummaryResult = {
+	text: string;
+	segments: SummarySegment[];
+	/** Right-aligned outcome text (e.g., "13 files", "exit 0"). Empty/undefined = no outcome. */
+	outcome?: string;
+	/** True when outcome is a zero-result (0 files, 0 matches) — signals warning tint. */
+	outcomeZero?: boolean;
+};
+
+// ── Standalone utilities ──────────────────────────────────
+
+/** Extract coarse event category from op string for visual grouping. */
+export function opCategory(op: string): string {
+	const dot = op.indexOf('.');
+	return dot >= 0 ? op.slice(0, dot) : op;
+}
+
 export function computeDuplicateActors(entries: TimelineEntry[]): void {
 	for (let i = 0; i < entries.length; i++) {
 		const prev = i > 0 ? entries[i - 1]! : undefined;
@@ -63,299 +83,28 @@ export function computeDuplicateActors(entries: TimelineEntry[]): void {
 	}
 }
 
-export type RunSummary = {
-	runId: string;
-	title: string;
-	status: RunStatus;
-	startedAt: number;
-	endedAt?: number;
-};
-
-export function eventOperation(event: FeedEvent): string {
-	if (isDefaultRenderKind(event.kind)) return 'event';
-	switch (event.kind) {
-		case 'run.start':
-			return 'run.start';
-		case 'run.end':
-			if (event.data.status === 'completed') return 'run.ok';
-			if (event.data.status === 'failed') return 'run.fail';
-			return 'run.abort';
-		case 'user.prompt':
-			return 'prompt';
-		case 'plan.update':
-			return 'plan.upd';
-		case 'reasoning.summary':
-			return 'reason';
-		case 'usage.update':
-			return 'usage.upd';
-		case 'tool.delta':
-			return 'tool.call';
-		case 'tool.pre':
-			return 'tool.call';
-		case 'tool.post':
-			return 'tool.ok';
-		case 'tool.failure':
-			return 'tool.fail';
-		case 'subagent.start':
-			return 'sub.start';
-		case 'subagent.stop':
-			return 'sub.stop';
-		case 'permission.request':
-			return 'perm.req';
-		case 'permission.decision':
-			return `perm.${event.data.decision_type}`;
-		case 'stop.request':
-			return 'stop.req';
-		case 'stop.decision':
-			return `stop.${event.data.decision_type}`;
-		case 'session.start':
-			return 'sess.start';
-		case 'session.end':
-			return 'sess.end';
-		case 'notification':
-			return 'notify';
-		case 'runtime.error':
-			return 'error';
-		case 'thread.status':
-			return 'thread';
-		case 'turn.diff':
-			return 'diff';
-		case 'server.request.resolved':
-			return 'req.done';
-		case 'web.search':
-			return 'web.search';
-		case 'review.status':
-			return 'review';
-		case 'image.view':
-			return 'image';
-		case 'context.compaction':
-			return 'compact';
-		case 'mcp.progress':
-			return 'mcp.prog';
-		case 'terminal.input':
-			return 'term.in';
-		case 'skills.changed':
-			return 'skills';
-		case 'skills.loaded':
-			return 'skills';
-		case 'compact.pre':
-			return 'compact';
-		case 'setup':
-			return 'setup';
-		case 'unknown.hook':
-			return 'unknown';
-		case 'todo.add':
-			return 'todo.add';
-		case 'todo.update':
-			return 'todo.upd';
-		case 'todo.done':
-			return 'todo.done';
-		case 'agent.message':
-			return 'agent.msg';
-		case 'teammate.idle':
-			return 'tm.idle';
-		case 'task.completed':
-			return 'task.ok';
-		case 'config.change':
-			return 'cfg.chg';
-		default:
-			return 'event';
-	}
+/** Strip inline markdown syntax for compact single-line display. */
+export function stripMarkdownInline(text: string): string {
+	return text
+		.replace(/#{1,6}\s+/g, '')
+		.replace(/\*\*(.+?)\*\*/g, '$1')
+		.replace(/__(.+?)__/g, '$1')
+		.replace(/\*(.+?)\*/g, '$1')
+		.replace(/`(.+?)`/g, '$1')
+		.replace(/~~(.+?)~~/g, '$1');
 }
 
-/** Human-readable Title Case label for the EVENT column. */
-export function eventLabel(event: FeedEvent): string {
-	if (isDefaultRenderKind(event.kind)) return 'Event';
-	switch (event.kind) {
-		case 'run.start':
-			return 'Run Start';
-		case 'run.end':
-			if (event.data.status === 'completed') return 'Run OK';
-			if (event.data.status === 'failed') return 'Run Fail';
-			return 'Run Abort';
-		case 'user.prompt':
-			return 'User Prompt';
-		case 'plan.update':
-			return 'Plan Update';
-		case 'reasoning.summary':
-			return 'Reasoning';
-		case 'usage.update':
-			return 'Usage Update';
-		case 'tool.delta':
-			return 'Tool Call';
-		case 'tool.pre':
-			return 'Tool Call';
-		case 'tool.post':
-			return 'Tool OK';
-		case 'tool.failure':
-			return 'Tool Fail';
-		case 'subagent.start':
-			return 'Sub Start';
-		case 'subagent.stop':
-			return 'Sub Stop';
-		case 'permission.request':
-			return 'Perm Request';
-		case 'permission.decision':
-			switch (event.data.decision_type) {
-				case 'allow':
-					return 'Perm Allow';
-				case 'deny':
-					return 'Perm Deny';
-				case 'ask':
-					return 'Perm Ask';
-				case 'no_opinion':
-					return 'Perm Skip';
-				default:
-					return 'Perm Decision';
-			}
-		case 'stop.request':
-			return 'Stop Request';
-		case 'stop.decision':
-			switch (event.data.decision_type) {
-				case 'block':
-					return 'Stop Block';
-				case 'allow':
-					return 'Stop Allow';
-				case 'no_opinion':
-					return 'Stop Skip';
-				default:
-					return 'Stop Decision';
-			}
-		case 'session.start':
-			return 'Sess Start';
-		case 'session.end':
-			return 'Sess End';
-		case 'notification':
-			return 'Notify';
-		case 'runtime.error':
-			return 'Error';
-		case 'thread.status':
-			return 'Thread';
-		case 'turn.diff':
-			return 'Diff';
-		case 'server.request.resolved':
-			return 'Request';
-		case 'web.search':
-			return 'Web Search';
-		case 'review.status':
-			return 'Review';
-		case 'image.view':
-			return 'Image';
-		case 'context.compaction':
-			return 'Compaction';
-		case 'mcp.progress':
-			return 'MCP Progress';
-		case 'terminal.input':
-			return 'Terminal In';
-		case 'skills.changed':
-			return 'Skills';
-		case 'skills.loaded':
-			return 'Skills';
-		case 'compact.pre':
-			return 'Compact';
-		case 'setup':
-			return 'Setup';
-		case 'unknown.hook':
-			return 'Unknown';
-		case 'todo.add':
-			return 'Todo Add';
-		case 'todo.update':
-			return 'Todo Update';
-		case 'todo.done':
-			return 'Todo Done';
-		case 'agent.message':
-			return 'Agent Msg';
-		case 'teammate.idle':
-			return 'Team Idle';
-		case 'task.completed':
-			return 'Task OK';
-		case 'config.change':
-			return 'Config Chg';
-		default:
-			return 'Event';
-	}
+/** Extract first sentence (ends with `. ` or newline) from text. */
+export function firstSentence(text: string): string {
+	const nlIdx = text.indexOf('\n');
+	const sentIdx = text.indexOf('. ');
+	const nlEnd = nlIdx === -1 ? Infinity : nlIdx;
+	const sentEnd = sentIdx === -1 ? Infinity : sentIdx + 1;
+	const end = Math.min(nlEnd, sentEnd, text.length);
+	return text.slice(0, end).trim();
 }
 
-/** Extract contextual detail for the DETAIL column (tool name, agent type, etc.). */
-export function eventDetail(event: FeedEvent): string {
-	switch (event.kind) {
-		case 'tool.delta':
-		case 'tool.pre':
-		case 'tool.post':
-		case 'tool.failure':
-			return resolveDisplayName(event.data.tool_name);
-		case 'permission.request':
-			return resolveDisplayName(event.data.tool_name);
-		case 'subagent.start':
-		case 'subagent.stop':
-			return event.data.agent_type;
-		case 'todo.add':
-			return (event.data.priority ?? 'p1').toUpperCase();
-		case 'todo.update':
-		case 'todo.done':
-			return event.data.todo_id;
-		case 'session.start':
-			return event.data.source;
-		case 'plan.update':
-			return 'plan';
-		case 'reasoning.summary':
-			return 'summary';
-		case 'thread.status':
-			return event.data.status_type ?? 'status';
-		case 'server.request.resolved':
-			return event.data.request_id ?? 'request';
-		case 'web.search':
-			return event.data.action_type ?? event.data.phase;
-		case 'review.status':
-			return event.data.phase;
-		case 'image.view':
-			return event.data.path ?? 'image';
-		case 'context.compaction':
-			return event.data.phase;
-		case 'usage.update':
-			return 'tokens';
-		case 'config.change':
-			return event.data.source;
-		case 'setup':
-		case 'session.end':
-		case 'run.start':
-		case 'run.end':
-		case 'user.prompt':
-		case 'permission.decision':
-		case 'permission.denied':
-		case 'stop.request':
-		case 'stop.decision':
-		case 'stop.failure':
-		case 'notification':
-		case 'runtime.error':
-		case 'turn.diff':
-		case 'mcp.progress':
-		case 'terminal.input':
-		case 'skills.changed':
-		case 'skills.loaded':
-		case 'compact.pre':
-		case 'compact.post':
-		case 'unknown.hook':
-		case 'agent.message':
-		case 'teammate.idle':
-		case 'task.created':
-		case 'task.completed':
-		case 'cwd.changed':
-		case 'file.changed':
-		case 'elicitation.request':
-		case 'elicitation.result':
-		case 'channel.permission.relayed':
-		case 'channel.permission.resolved':
-		case 'channel.question.relayed':
-		case 'channel.question.resolved':
-		case 'channel.chat.inbound':
-		case 'channel.chat.outbound':
-		case 'gateway.function.invoked':
-		case 'gateway.function.completed':
-		case 'gateway.function.failed':
-			return '\u2500'; // ─ em dash placeholder
-	}
-}
+// ── Tool formatting helpers (shared by renderers) ─────────
 
 /** Resolve a tool name to its display form (e.g. MCP → `[server] action`). */
 function resolveDisplayName(toolName: string): string {
@@ -435,100 +184,6 @@ function formatToolSummary(
 	};
 }
 
-export type SummaryResult = {
-	text: string;
-	segments: SummarySegment[];
-	/** Right-aligned outcome text (e.g., "13 files", "exit 0"). Empty/undefined = no outcome. */
-	outcome?: string;
-	/** True when outcome is a zero-result (0 files, 0 matches) — signals warning tint. */
-	outcomeZero?: boolean;
-};
-
-export function eventSummary(event: FeedEvent): SummaryResult {
-	const harness = harnessSummary(event);
-	if (harness) return harness;
-
-	switch (event.kind) {
-		case 'tool.delta':
-		case 'tool.pre':
-		case 'tool.post':
-			return formatToolSummary(event.data.tool_name, event.data.tool_input);
-		case 'permission.request':
-			return formatPermissionSummary(event);
-		case 'tool.failure':
-			return formatToolSummary(
-				event.data.tool_name,
-				event.data.tool_input,
-				event.data.error,
-			);
-		case 'subagent.start':
-		case 'subagent.stop': {
-			const text = compactText(
-				event.data.description?.trim() || `id:${event.data.agent_id}`,
-				200,
-			);
-			return {text, segments: [{text, role: 'target'}]};
-		}
-		case 'agent.message': {
-			const text = eventSummaryText(event);
-			return {text, segments: [{text, role: 'plain'}]};
-		}
-		case 'setup':
-		case 'session.start':
-		case 'session.end':
-		case 'run.start':
-		case 'run.end':
-		case 'user.prompt':
-		case 'plan.update':
-		case 'reasoning.summary':
-		case 'usage.update':
-		case 'permission.decision':
-		case 'permission.denied':
-		case 'stop.request':
-		case 'stop.decision':
-		case 'stop.failure':
-		case 'notification':
-		case 'runtime.error':
-		case 'thread.status':
-		case 'turn.diff':
-		case 'server.request.resolved':
-		case 'web.search':
-		case 'review.status':
-		case 'image.view':
-		case 'context.compaction':
-		case 'mcp.progress':
-		case 'terminal.input':
-		case 'skills.changed':
-		case 'skills.loaded':
-		case 'compact.pre':
-		case 'compact.post':
-		case 'unknown.hook':
-		case 'todo.add':
-		case 'todo.update':
-		case 'todo.done':
-		case 'teammate.idle':
-		case 'task.created':
-		case 'task.completed':
-		case 'config.change':
-		case 'cwd.changed':
-		case 'file.changed':
-		case 'elicitation.request':
-		case 'elicitation.result':
-		case 'channel.permission.relayed':
-		case 'channel.permission.resolved':
-		case 'channel.question.relayed':
-		case 'channel.question.resolved':
-		case 'channel.chat.inbound':
-		case 'channel.chat.outbound':
-		case 'gateway.function.invoked':
-		case 'gateway.function.completed':
-		case 'gateway.function.failed': {
-			const text = eventSummaryText(event);
-			return {text, segments: [{text, role: 'target'}]};
-		}
-	}
-}
-
 function formatPermissionSummary(
 	event: Extract<FeedEvent, {kind: 'permission.request'}>,
 ): SummaryResult {
@@ -546,233 +201,6 @@ function formatPermissionSummary(
 	};
 }
 
-/** Strip inline markdown syntax for compact single-line display. */
-export function stripMarkdownInline(text: string): string {
-	return text
-		.replace(/#{1,6}\s+/g, '')
-		.replace(/\*\*(.+?)\*\*/g, '$1')
-		.replace(/__(.+?)__/g, '$1')
-		.replace(/\*(.+?)\*/g, '$1')
-		.replace(/`(.+?)`/g, '$1')
-		.replace(/~~(.+?)~~/g, '$1');
-}
-
-/** Extract first sentence (ends with `. ` or newline) from text. */
-export function firstSentence(text: string): string {
-	const nlIdx = text.indexOf('\n');
-	const sentIdx = text.indexOf('. ');
-	// Convert -1 (not found) to Infinity so Math.min picks the real match
-	const nlEnd = nlIdx === -1 ? Infinity : nlIdx;
-	const sentEnd = sentIdx === -1 ? Infinity : sentIdx + 1; // +1 to include the period
-	const end = Math.min(nlEnd, sentEnd, text.length);
-	return text.slice(0, end).trim();
-}
-
-function eventSummaryText(event: FeedEvent): string {
-	switch (event.kind) {
-		case 'run.start':
-			return compactText(
-				event.data.trigger.prompt_preview || 'interactive',
-				200,
-			);
-		case 'run.end':
-			return compactText(formatRunEndSummary(event), 200);
-		case 'user.prompt':
-			return compactText(event.data.prompt, 200);
-		case 'plan.update': {
-			if (event.data.explanation) {
-				return compactText(event.data.explanation, 200);
-			}
-			if (event.data.plan && event.data.plan.length > 0) {
-				const completed = event.data.plan.filter(
-					step => step.status === 'completed',
-				).length;
-				return compactText(`${completed}/${event.data.plan.length} steps`, 200);
-			}
-			return compactText(event.data.delta || 'plan updated', 200);
-		}
-		case 'reasoning.summary':
-			return compactText(
-				firstSentence(stripMarkdownInline(event.data.message)),
-				200,
-			);
-		case 'usage.update': {
-			const total = event.data.usage?.total;
-			const delta = event.data.delta?.total;
-			if (typeof total === 'number' && typeof delta === 'number') {
-				return compactText(
-					`${total.toLocaleString()} total (+${delta.toLocaleString()})`,
-					200,
-				);
-			}
-			if (typeof total === 'number') {
-				return compactText(`${total.toLocaleString()} total`, 200);
-			}
-			return compactText('usage updated', 200);
-		}
-		case 'permission.decision': {
-			const detail =
-				event.data.decision_type === 'deny'
-					? event.data.message || event.data.reason
-					: event.data.reason;
-			return compactText(detail || event.data.decision_type, 200);
-		}
-		case 'stop.request':
-			return compactText(
-				event.data.stop_hook_active ? 'Stop hook active' : 'Stop hook inactive',
-				200,
-			);
-		case 'stop.decision':
-			return compactText(event.data.reason || event.data.decision_type, 200);
-		case 'session.start':
-			return compactText(event.data.source, 200);
-		case 'session.end':
-			return compactText(event.data.reason, 200);
-		case 'notification':
-			return compactText(stripMarkdownInline(event.data.message), 200);
-		case 'runtime.error':
-			return compactText(stripMarkdownInline(event.data.message), 200);
-		case 'thread.status':
-			return compactText(event.data.message, 200);
-		case 'turn.diff':
-			return compactText(event.data.message, 200);
-		case 'server.request.resolved':
-			return compactText(event.data.message, 200);
-		case 'web.search':
-			return compactText(event.data.message, 200);
-		case 'review.status':
-			return compactText(event.data.message, 200);
-		case 'image.view':
-			return compactText(event.data.message, 200);
-		case 'context.compaction':
-			return compactText(event.data.message, 200);
-		case 'mcp.progress':
-			return compactText(event.data.message, 200);
-		case 'terminal.input':
-			return compactText(event.data.message, 200);
-		case 'skills.changed':
-		case 'skills.loaded':
-			return compactText(event.data.message, 200);
-		case 'compact.pre':
-			return compactText(event.data.trigger, 200);
-		case 'setup':
-			return compactText(event.data.trigger, 200);
-		case 'unknown.hook':
-			return compactText(event.data.hook_event_name, 200);
-		case 'todo.add':
-			return compactText(
-				`${event.data.priority?.toUpperCase() ?? 'P1'} ${event.data.text}`,
-				200,
-			);
-		case 'todo.update': {
-			const patchFields = Object.keys(event.data.patch);
-			return compactText(
-				`${event.data.todo_id} ${patchFields.length > 0 ? patchFields.join(',') : 'update'}`,
-				200,
-			);
-		}
-		case 'todo.done':
-			return compactText(
-				`${event.data.todo_id} ${event.data.reason || 'done'}`,
-				200,
-			);
-		case 'agent.message':
-			return compactText(
-				firstSentence(stripMarkdownInline(event.data.message)),
-				200,
-			);
-		case 'teammate.idle':
-			return compactText(
-				`${event.data.teammate_name} idle in ${event.data.team_name}`,
-				200,
-			);
-		case 'task.created':
-		case 'task.completed':
-			return compactText(event.data.task_subject, 200);
-		case 'config.change':
-			return compactText(
-				`${event.data.source}${event.data.file_path ? ` ${event.data.file_path}` : ''}`,
-				200,
-			);
-		case 'cwd.changed':
-			return compactText(`cwd → ${event.data.cwd}`, 200);
-		case 'file.changed':
-			return compactText(`changed ${event.data.file_path}`, 200);
-		case 'stop.failure':
-			return compactText(
-				`${event.data.error_type}${event.data.error_message ? `: ${event.data.error_message}` : ''}`,
-				200,
-			);
-		case 'permission.denied':
-			return compactText(
-				`${event.data.tool_name}${event.data.reason ? `: ${event.data.reason}` : ''}`,
-				200,
-			);
-		case 'elicitation.request':
-			return compactText(`elicitation from ${event.data.mcp_server}`, 200);
-		case 'elicitation.result':
-			return compactText(
-				`${event.data.mcp_server} → ${event.data.action}`,
-				200,
-			);
-		case 'channel.permission.relayed':
-			return compactText(
-				`${event.data.channel_name}: ${event.data.tool_name} (${event.data.channel_request_id})`,
-				200,
-			);
-		case 'channel.permission.resolved':
-			return compactText(
-				`${event.data.channel_name} ${event.data.source} ${event.data.tool_name}`,
-				200,
-			);
-		case 'channel.question.relayed':
-			return compactText(
-				`${event.data.channel_name}: ${event.data.title} (${event.data.channel_request_id})`,
-				200,
-			);
-		case 'channel.question.resolved':
-			return compactText(
-				`${event.data.channel_name || event.data.source} ${event.data.source} ${event.data.title}`,
-				200,
-			);
-		case 'channel.chat.inbound':
-			return compactText(
-				`${event.data.channel_name}: ${event.data.content}`,
-				200,
-			);
-		case 'channel.chat.outbound':
-			return compactText(
-				`${event.data.channel_name} → ${event.data.target_peer_id}: ${event.data.content}`,
-				200,
-			);
-		case 'gateway.function.invoked':
-			return compactText(
-				`fn invoked: ${event.data.function_name} (${event.data.caller_kind})`,
-				200,
-			);
-		case 'gateway.function.completed':
-			return compactText(
-				`fn ok: ${event.data.function_name} ${event.data.duration_ms}ms`,
-				200,
-			);
-		case 'gateway.function.failed':
-			return compactText(
-				`fn ${event.data.reason}: ${event.data.function_name} — ${event.data.error_message}`,
-				200,
-			);
-		case 'compact.post':
-			return compactText(`compacted (${event.data.trigger})`, 200);
-		case 'tool.pre':
-		case 'tool.delta':
-		case 'tool.post':
-		case 'tool.failure':
-		case 'permission.request':
-		case 'subagent.start':
-		case 'subagent.stop':
-			return compactText('event', 200);
-	}
-}
-
 function formatRunEndSummary(
 	event: Extract<FeedEvent, {kind: 'run.end'}>,
 ): string {
@@ -784,125 +212,929 @@ function formatRunEndSummary(
 	return `${event.data.status} · ${toolText}`;
 }
 
-export function expansionForEvent(event: FeedEvent): string {
-	switch (event.kind) {
-		case 'tool.pre':
-		case 'tool.delta':
-			return JSON.stringify(
-				{tool: event.data.tool_name, args: event.data.tool_input},
-				null,
-				2,
-			);
-		case 'tool.post':
-			return JSON.stringify(
-				{
-					tool: event.data.tool_name,
-					args: event.data.tool_input,
-					result: event.data.tool_response,
-				},
-				null,
-				2,
-			);
-		case 'tool.failure':
-			return JSON.stringify(
-				{
-					tool: event.data.tool_name,
-					args: event.data.tool_input,
-					error: event.data.error,
-					interrupt: event.data.is_interrupt,
-				},
-				null,
-				2,
-			);
-		case 'permission.request':
-			return JSON.stringify(
-				{
-					tool: event.data.tool_name,
-					args: event.data.tool_input,
-					suggestions: event.data.permission_suggestions,
-				},
-				null,
-				2,
-			);
-		case 'subagent.stop':
-		case 'run.end':
-		case 'plan.update':
-		case 'reasoning.summary':
-		case 'usage.update':
-		case 'runtime.error':
-		case 'thread.status':
-		case 'turn.diff':
-		case 'server.request.resolved':
-		case 'web.search':
-		case 'review.status':
-		case 'image.view':
-		case 'context.compaction':
-		case 'mcp.progress':
-		case 'terminal.input':
-		case 'skills.changed':
-		case 'skills.loaded':
-			return JSON.stringify(event.data, null, 2);
-		case 'setup':
-		case 'session.start':
-		case 'session.end':
-		case 'run.start':
-		case 'user.prompt':
-		case 'permission.decision':
-		case 'permission.denied':
-		case 'stop.request':
-		case 'stop.decision':
-		case 'stop.failure':
-		case 'notification':
-		case 'subagent.start':
-		case 'compact.pre':
-		case 'compact.post':
-		case 'unknown.hook':
-		case 'todo.add':
-		case 'todo.update':
-		case 'todo.done':
-		case 'agent.message':
-		case 'teammate.idle':
-		case 'task.created':
-		case 'task.completed':
-		case 'config.change':
-		case 'cwd.changed':
-		case 'file.changed':
-		case 'elicitation.request':
-		case 'elicitation.result':
-		case 'channel.permission.relayed':
-		case 'channel.permission.resolved':
-		case 'channel.question.relayed':
-		case 'channel.question.resolved':
-		case 'channel.chat.inbound':
-		case 'channel.chat.outbound':
-		case 'gateway.function.invoked':
-		case 'gateway.function.completed':
-		case 'gateway.function.failed':
-			return JSON.stringify(event.raw ?? event.data, null, 2);
+/**
+ * Use the harness-supplied display title (if any) as the row summary.
+ * Returns undefined when the event has no harness hint.
+ */
+function harnessSummary(event: FeedEvent): SummaryResult | undefined {
+	const title = event.display?.title?.trim();
+	if (!title) return undefined;
+	const text = compactText(title, 200);
+	return {text, segments: [{text, role: 'target'}]};
+}
+
+function postOutcome(postEvent: FeedEvent): string | undefined {
+	if (postEvent.kind === 'tool.failure') {
+		return summarizeToolResult(
+			postEvent.data.tool_name,
+			postEvent.data.tool_input,
+			undefined,
+			postEvent.data.error,
+		);
 	}
+	if (postEvent.kind === 'tool.post') {
+		return summarizeToolResult(
+			postEvent.data.tool_name,
+			postEvent.data.tool_input,
+			postEvent.data.tool_response,
+		);
+	}
+	return undefined;
+}
+
+// ── Renderer interfaces ───────────────────────────────────
+
+type Ev<K extends FeedEventKind> = Extract<FeedEvent, {kind: K}>;
+
+interface EventRenderer<K extends FeedEventKind> {
+	operation: (event: Ev<K>) => string;
+	label: (event: Ev<K>) => string;
+	detail: (event: Ev<K>) => string;
+	summary: (event: Ev<K>) => SummaryResult;
+	expansion: (event: Ev<K>) => string;
+	/** Optional kind-specific error rule. Default: `false` (the level === 'error' rule applies globally). */
+	isError?: (event: Ev<K>) => boolean;
+}
+
+type RendererRegistry = {[K in FeedEventKind]: EventRenderer<K>};
+
+/**
+ * Default summary for kinds whose summary is just a compacted single line
+ * derived from a kind-specific text builder.
+ */
+function plainSummary(text: string): SummaryResult {
+	const compact = compactText(text, 200);
+	return {text: compact, segments: [{text: compact, role: 'target'}]};
+}
+
+/** Default expansion: pretty-printed JSON of `event.data`. */
+function dataExpansion<K extends FeedEventKind>(event: Ev<K>): string {
+	return JSON.stringify(event.data, null, 2);
+}
+
+/** Default expansion for kinds rendered with `isDefaultRenderKind`. */
+function rawOrDataExpansion<K extends FeedEventKind>(event: Ev<K>): string {
+	return JSON.stringify(event.raw ?? event.data, null, 2);
+}
+
+/** Default-rendered kinds use a uniform shape across all five surfaces. */
+function defaultRenderer<K extends FeedEventKind>(
+	summarize: (event: Ev<K>) => string,
+): EventRenderer<K> {
+	return {
+		operation: () => 'event',
+		label: () => 'Event',
+		detail: () => '─',
+		summary: event => plainSummary(summarize(event)),
+		expansion: rawOrDataExpansion,
+	};
+}
+
+// ── Per-kind renderers ────────────────────────────────────
+
+// === run lifecycle ===
+
+const sessionStart: EventRenderer<'session.start'> = {
+	operation: () => 'sess.start',
+	label: () => 'Sess Start',
+	detail: event => event.data.source,
+	summary: event => plainSummary(event.data.source),
+	expansion: rawOrDataExpansion,
+};
+
+const sessionEnd: EventRenderer<'session.end'> = {
+	operation: () => 'sess.end',
+	label: () => 'Sess End',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.reason),
+	expansion: rawOrDataExpansion,
+};
+
+const runStart: EventRenderer<'run.start'> = {
+	operation: () => 'run.start',
+	label: () => 'Run Start',
+	detail: () => '─',
+	summary: event =>
+		plainSummary(event.data.trigger.prompt_preview || 'interactive'),
+	expansion: rawOrDataExpansion,
+};
+
+const runEnd: EventRenderer<'run.end'> = {
+	operation: event => {
+		if (event.data.status === 'completed') return 'run.ok';
+		if (event.data.status === 'failed') return 'run.fail';
+		return 'run.abort';
+	},
+	label: event => {
+		if (event.data.status === 'completed') return 'Run OK';
+		if (event.data.status === 'failed') return 'Run Fail';
+		return 'Run Abort';
+	},
+	detail: () => '─',
+	summary: event => plainSummary(formatRunEndSummary(event)),
+	expansion: dataExpansion,
+	isError: event => event.data.status !== 'completed',
+};
+
+const userPrompt: EventRenderer<'user.prompt'> = {
+	operation: () => 'prompt',
+	label: () => 'User Prompt',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.prompt),
+	expansion: rawOrDataExpansion,
+};
+
+// === plan / reasoning / usage ===
+
+const planUpdate: EventRenderer<'plan.update'> = {
+	operation: () => 'plan.upd',
+	label: () => 'Plan Update',
+	detail: () => 'plan',
+	summary: event => {
+		if (event.data.explanation) return plainSummary(event.data.explanation);
+		if (event.data.plan && event.data.plan.length > 0) {
+			const completed = event.data.plan.filter(
+				step => step.status === 'completed',
+			).length;
+			return plainSummary(`${completed}/${event.data.plan.length} steps`);
+		}
+		return plainSummary(event.data.delta || 'plan updated');
+	},
+	expansion: dataExpansion,
+};
+
+const reasoningSummary: EventRenderer<'reasoning.summary'> = {
+	operation: () => 'reason',
+	label: () => 'Reasoning',
+	detail: () => 'summary',
+	summary: event =>
+		plainSummary(firstSentence(stripMarkdownInline(event.data.message))),
+	expansion: dataExpansion,
+};
+
+const usageUpdate: EventRenderer<'usage.update'> = {
+	operation: () => 'usage.upd',
+	label: () => 'Usage Update',
+	detail: () => 'tokens',
+	summary: event => {
+		const total = event.data.usage?.total;
+		const delta = event.data.delta?.total;
+		if (typeof total === 'number' && typeof delta === 'number') {
+			return plainSummary(
+				`${total.toLocaleString()} total (+${delta.toLocaleString()})`,
+			);
+		}
+		if (typeof total === 'number') {
+			return plainSummary(`${total.toLocaleString()} total`);
+		}
+		return plainSummary('usage updated');
+	},
+	expansion: dataExpansion,
+};
+
+// === tool lifecycle ===
+
+const toolDelta: EventRenderer<'tool.delta'> = {
+	operation: () => 'tool.call',
+	label: () => 'Tool Call',
+	detail: event => resolveDisplayName(event.data.tool_name),
+	summary: event =>
+		formatToolSummary(event.data.tool_name, event.data.tool_input),
+	expansion: event =>
+		JSON.stringify(
+			{tool: event.data.tool_name, args: event.data.tool_input},
+			null,
+			2,
+		),
+};
+
+const toolPre: EventRenderer<'tool.pre'> = {
+	operation: () => 'tool.call',
+	label: () => 'Tool Call',
+	detail: event => resolveDisplayName(event.data.tool_name),
+	summary: event =>
+		formatToolSummary(event.data.tool_name, event.data.tool_input),
+	expansion: event =>
+		JSON.stringify(
+			{tool: event.data.tool_name, args: event.data.tool_input},
+			null,
+			2,
+		),
+};
+
+const toolPost: EventRenderer<'tool.post'> = {
+	operation: () => 'tool.ok',
+	label: () => 'Tool OK',
+	detail: event => resolveDisplayName(event.data.tool_name),
+	summary: event =>
+		formatToolSummary(event.data.tool_name, event.data.tool_input),
+	expansion: event =>
+		JSON.stringify(
+			{
+				tool: event.data.tool_name,
+				args: event.data.tool_input,
+				result: event.data.tool_response,
+			},
+			null,
+			2,
+		),
+};
+
+const toolFailure: EventRenderer<'tool.failure'> = {
+	operation: () => 'tool.fail',
+	label: () => 'Tool Fail',
+	detail: event => resolveDisplayName(event.data.tool_name),
+	summary: event =>
+		formatToolSummary(
+			event.data.tool_name,
+			event.data.tool_input,
+			event.data.error,
+		),
+	expansion: event =>
+		JSON.stringify(
+			{
+				tool: event.data.tool_name,
+				args: event.data.tool_input,
+				error: event.data.error,
+				interrupt: event.data.is_interrupt,
+			},
+			null,
+			2,
+		),
+	isError: () => true,
+};
+
+// === permission ===
+
+const permissionRequest: EventRenderer<'permission.request'> = {
+	operation: () => 'perm.req',
+	label: () => 'Perm Request',
+	detail: event => resolveDisplayName(event.data.tool_name),
+	summary: event => formatPermissionSummary(event),
+	expansion: event =>
+		JSON.stringify(
+			{
+				tool: event.data.tool_name,
+				args: event.data.tool_input,
+				suggestions: event.data.permission_suggestions,
+			},
+			null,
+			2,
+		),
+};
+
+const permissionDecision: EventRenderer<'permission.decision'> = {
+	operation: event => `perm.${event.data.decision_type}`,
+	label: event => {
+		switch (event.data.decision_type) {
+			case 'allow':
+				return 'Perm Allow';
+			case 'deny':
+				return 'Perm Deny';
+			case 'ask':
+				return 'Perm Ask';
+			case 'no_opinion':
+				return 'Perm Skip';
+			default:
+				return 'Perm Decision';
+		}
+	},
+	detail: () => '─',
+	summary: event => {
+		const detail =
+			event.data.decision_type === 'deny'
+				? event.data.message || event.data.reason
+				: event.data.reason;
+		return plainSummary(detail || event.data.decision_type);
+	},
+	expansion: rawOrDataExpansion,
+	isError: event => event.data.decision_type === 'deny',
+};
+
+// === stop ===
+
+const stopRequest: EventRenderer<'stop.request'> = {
+	operation: () => 'stop.req',
+	label: () => 'Stop Request',
+	detail: () => '─',
+	summary: event =>
+		plainSummary(
+			event.data.stop_hook_active ? 'Stop hook active' : 'Stop hook inactive',
+		),
+	expansion: rawOrDataExpansion,
+};
+
+const stopDecision: EventRenderer<'stop.decision'> = {
+	operation: event => `stop.${event.data.decision_type}`,
+	label: event => {
+		switch (event.data.decision_type) {
+			case 'block':
+				return 'Stop Block';
+			case 'allow':
+				return 'Stop Allow';
+			case 'no_opinion':
+				return 'Stop Skip';
+			default:
+				return 'Stop Decision';
+		}
+	},
+	detail: () => '─',
+	summary: event => plainSummary(event.data.reason || event.data.decision_type),
+	expansion: rawOrDataExpansion,
+	isError: event => event.data.decision_type === 'block',
+};
+
+// === subagent ===
+
+const subagentStart: EventRenderer<'subagent.start'> = {
+	operation: () => 'sub.start',
+	label: () => 'Sub Start',
+	detail: event => event.data.agent_type,
+	summary: event => {
+		const text = compactText(
+			event.data.description?.trim() || `id:${event.data.agent_id}`,
+			200,
+		);
+		return {text, segments: [{text, role: 'target'}]};
+	},
+	expansion: rawOrDataExpansion,
+};
+
+const subagentStop: EventRenderer<'subagent.stop'> = {
+	operation: () => 'sub.stop',
+	label: () => 'Sub Stop',
+	detail: event => event.data.agent_type,
+	summary: event => {
+		const text = compactText(
+			event.data.description?.trim() || `id:${event.data.agent_id}`,
+			200,
+		);
+		return {text, segments: [{text, role: 'target'}]};
+	},
+	expansion: dataExpansion,
+};
+
+// === notification / error / status ===
+
+const notification: EventRenderer<'notification'> = {
+	operation: () => 'notify',
+	label: () => 'Notify',
+	detail: () => '─',
+	summary: event => plainSummary(stripMarkdownInline(event.data.message)),
+	expansion: rawOrDataExpansion,
+};
+
+const runtimeError: EventRenderer<'runtime.error'> = {
+	operation: () => 'error',
+	label: () => 'Error',
+	detail: () => '─',
+	summary: event => plainSummary(stripMarkdownInline(event.data.message)),
+	expansion: dataExpansion,
+	isError: () => true,
+};
+
+const threadStatus: EventRenderer<'thread.status'> = {
+	operation: () => 'thread',
+	label: () => 'Thread',
+	detail: event => event.data.status_type ?? 'status',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const turnDiff: EventRenderer<'turn.diff'> = {
+	operation: () => 'diff',
+	label: () => 'Diff',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const serverRequestResolved: EventRenderer<'server.request.resolved'> = {
+	operation: () => 'req.done',
+	label: () => 'Request',
+	detail: event => event.data.request_id ?? 'request',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const webSearch: EventRenderer<'web.search'> = {
+	operation: () => 'web.search',
+	label: () => 'Web Search',
+	detail: event => event.data.action_type ?? event.data.phase,
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const reviewStatus: EventRenderer<'review.status'> = {
+	operation: () => 'review',
+	label: () => 'Review',
+	detail: event => event.data.phase,
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const imageView: EventRenderer<'image.view'> = {
+	operation: () => 'image',
+	label: () => 'Image',
+	detail: event => event.data.path ?? 'image',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const contextCompaction: EventRenderer<'context.compaction'> = {
+	operation: () => 'compact',
+	label: () => 'Compaction',
+	detail: event => event.data.phase,
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const mcpProgress: EventRenderer<'mcp.progress'> = {
+	operation: () => 'mcp.prog',
+	label: () => 'MCP Progress',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const terminalInput: EventRenderer<'terminal.input'> = {
+	operation: () => 'term.in',
+	label: () => 'Terminal In',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const skillsChanged: EventRenderer<'skills.changed'> = {
+	operation: () => 'skills',
+	label: () => 'Skills',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+const skillsLoaded: EventRenderer<'skills.loaded'> = {
+	operation: () => 'skills',
+	label: () => 'Skills',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.message),
+	expansion: dataExpansion,
+};
+
+// === compaction / setup / unknown ===
+
+const compactPre: EventRenderer<'compact.pre'> = {
+	operation: () => 'compact',
+	label: () => 'Compact',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.trigger),
+	expansion: dataExpansion,
+};
+
+const setup: EventRenderer<'setup'> = {
+	operation: () => 'setup',
+	label: () => 'Setup',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.trigger),
+	expansion: rawOrDataExpansion,
+};
+
+const unknownHook: EventRenderer<'unknown.hook'> = {
+	operation: () => 'unknown',
+	label: () => 'Unknown',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.hook_event_name),
+	expansion: rawOrDataExpansion,
+};
+
+// === todos ===
+
+const todoAdd: EventRenderer<'todo.add'> = {
+	operation: () => 'todo.add',
+	label: () => 'Todo Add',
+	detail: event => (event.data.priority ?? 'p1').toUpperCase(),
+	summary: event =>
+		plainSummary(
+			`${event.data.priority?.toUpperCase() ?? 'P1'} ${event.data.text}`,
+		),
+	expansion: rawOrDataExpansion,
+};
+
+const todoUpdate: EventRenderer<'todo.update'> = {
+	operation: () => 'todo.upd',
+	label: () => 'Todo Update',
+	detail: event => event.data.todo_id,
+	summary: event => {
+		const patchFields = Object.keys(event.data.patch);
+		return plainSummary(
+			`${event.data.todo_id} ${patchFields.length > 0 ? patchFields.join(',') : 'update'}`,
+		);
+	},
+	expansion: rawOrDataExpansion,
+};
+
+const todoDone: EventRenderer<'todo.done'> = {
+	operation: () => 'todo.done',
+	label: () => 'Todo Done',
+	detail: event => event.data.todo_id,
+	summary: event =>
+		plainSummary(`${event.data.todo_id} ${event.data.reason || 'done'}`),
+	expansion: rawOrDataExpansion,
+};
+
+// === agent / teammate / task ===
+
+const agentMessage: EventRenderer<'agent.message'> = {
+	operation: () => 'agent.msg',
+	label: () => 'Agent Msg',
+	detail: () => '─',
+	summary: event => {
+		const text = compactText(
+			firstSentence(stripMarkdownInline(event.data.message)),
+			200,
+		);
+		return {text, segments: [{text, role: 'plain'}]};
+	},
+	expansion: rawOrDataExpansion,
+};
+
+const teammateIdle: EventRenderer<'teammate.idle'> = {
+	operation: () => 'tm.idle',
+	label: () => 'Team Idle',
+	detail: () => '─',
+	summary: event =>
+		plainSummary(`${event.data.teammate_name} idle in ${event.data.team_name}`),
+	expansion: rawOrDataExpansion,
+};
+
+const taskCompleted: EventRenderer<'task.completed'> = {
+	operation: () => 'task.ok',
+	label: () => 'Task OK',
+	detail: () => '─',
+	summary: event => plainSummary(event.data.task_subject),
+	expansion: rawOrDataExpansion,
+};
+
+// === config ===
+
+const configChange: EventRenderer<'config.change'> = {
+	operation: () => 'cfg.chg',
+	label: () => 'Config Chg',
+	detail: event => event.data.source,
+	summary: event =>
+		plainSummary(
+			`${event.data.source}${event.data.file_path ? ` ${event.data.file_path}` : ''}`,
+		),
+	expansion: rawOrDataExpansion,
+};
+
+// === default-rendered kinds ───────────────────────────────
+// All of these collapse to op='event' / label='Event' / detail='─'.
+// Their expansion uses raw ?? data, and their summary is a plain compact.
+
+const compactPost: EventRenderer<'compact.post'> = defaultRenderer(
+	event => `compacted (${event.data.trigger})`,
+);
+
+const taskCreated: EventRenderer<'task.created'> = defaultRenderer(
+	event => event.data.task_subject,
+);
+
+const cwdChanged: EventRenderer<'cwd.changed'> = defaultRenderer(
+	event => `cwd → ${event.data.cwd}`,
+);
+
+const fileChanged: EventRenderer<'file.changed'> = defaultRenderer(
+	event => `changed ${event.data.file_path}`,
+);
+
+const stopFailure: EventRenderer<'stop.failure'> = defaultRenderer(
+	event =>
+		`${event.data.error_type}${event.data.error_message ? `: ${event.data.error_message}` : ''}`,
+);
+
+const permissionDenied: EventRenderer<'permission.denied'> = defaultRenderer(
+	event =>
+		`${event.data.tool_name}${event.data.reason ? `: ${event.data.reason}` : ''}`,
+);
+
+const elicitationRequest: EventRenderer<'elicitation.request'> =
+	defaultRenderer(event => `elicitation from ${event.data.mcp_server}`);
+
+const elicitationResult: EventRenderer<'elicitation.result'> = defaultRenderer(
+	event => `${event.data.mcp_server} → ${event.data.action}`,
+);
+
+const channelPermissionRelayed: EventRenderer<'channel.permission.relayed'> =
+	defaultRenderer(
+		event =>
+			`${event.data.channel_name}: ${event.data.tool_name} (${event.data.channel_request_id})`,
+	);
+
+const channelPermissionResolved: EventRenderer<'channel.permission.resolved'> =
+	defaultRenderer(
+		event =>
+			`${event.data.channel_name} ${event.data.source} ${event.data.tool_name}`,
+	);
+
+const channelQuestionRelayed: EventRenderer<'channel.question.relayed'> =
+	defaultRenderer(
+		event =>
+			`${event.data.channel_name}: ${event.data.title} (${event.data.channel_request_id})`,
+	);
+
+const channelQuestionResolved: EventRenderer<'channel.question.resolved'> =
+	defaultRenderer(
+		event =>
+			`${event.data.channel_name || event.data.source} ${event.data.source} ${event.data.title}`,
+	);
+
+const channelChatInbound: EventRenderer<'channel.chat.inbound'> =
+	defaultRenderer(event => `${event.data.channel_name}: ${event.data.content}`);
+
+const channelChatOutbound: EventRenderer<'channel.chat.outbound'> =
+	defaultRenderer(
+		event =>
+			`${event.data.channel_name} → ${event.data.target_peer_id}: ${event.data.content}`,
+	);
+
+const gatewayFunctionInvoked: EventRenderer<'gateway.function.invoked'> =
+	defaultRenderer(
+		event =>
+			`fn invoked: ${event.data.function_name} (${event.data.caller_kind})`,
+	);
+
+const gatewayFunctionCompleted: EventRenderer<'gateway.function.completed'> =
+	defaultRenderer(
+		event => `fn ok: ${event.data.function_name} ${event.data.duration_ms}ms`,
+	);
+
+const gatewayFunctionFailed: EventRenderer<'gateway.function.failed'> =
+	defaultRenderer(
+		event =>
+			`fn ${event.data.reason}: ${event.data.function_name} — ${event.data.error_message}`,
+	);
+
+// ── Registry ──────────────────────────────────────────────
+
+const RENDERERS = {
+	'session.start': sessionStart,
+	'session.end': sessionEnd,
+	'run.start': runStart,
+	'run.end': runEnd,
+	'user.prompt': userPrompt,
+	'plan.update': planUpdate,
+	'reasoning.summary': reasoningSummary,
+	'usage.update': usageUpdate,
+	'tool.delta': toolDelta,
+	'tool.pre': toolPre,
+	'tool.post': toolPost,
+	'tool.failure': toolFailure,
+	'permission.request': permissionRequest,
+	'permission.decision': permissionDecision,
+	'stop.request': stopRequest,
+	'stop.decision': stopDecision,
+	'subagent.start': subagentStart,
+	'subagent.stop': subagentStop,
+	notification,
+	'runtime.error': runtimeError,
+	'thread.status': threadStatus,
+	'turn.diff': turnDiff,
+	'server.request.resolved': serverRequestResolved,
+	'web.search': webSearch,
+	'review.status': reviewStatus,
+	'image.view': imageView,
+	'context.compaction': contextCompaction,
+	'mcp.progress': mcpProgress,
+	'terminal.input': terminalInput,
+	'skills.changed': skillsChanged,
+	'skills.loaded': skillsLoaded,
+	'compact.pre': compactPre,
+	'compact.post': compactPost,
+	setup,
+	'unknown.hook': unknownHook,
+	'todo.add': todoAdd,
+	'todo.update': todoUpdate,
+	'todo.done': todoDone,
+	'agent.message': agentMessage,
+	'teammate.idle': teammateIdle,
+	'task.created': taskCreated,
+	'task.completed': taskCompleted,
+	'config.change': configChange,
+	'cwd.changed': cwdChanged,
+	'file.changed': fileChanged,
+	'stop.failure': stopFailure,
+	'permission.denied': permissionDenied,
+	'elicitation.request': elicitationRequest,
+	'elicitation.result': elicitationResult,
+	'channel.permission.relayed': channelPermissionRelayed,
+	'channel.permission.resolved': channelPermissionResolved,
+	'channel.question.relayed': channelQuestionRelayed,
+	'channel.question.resolved': channelQuestionResolved,
+	'channel.chat.inbound': channelChatInbound,
+	'channel.chat.outbound': channelChatOutbound,
+	'gateway.function.invoked': gatewayFunctionInvoked,
+	'gateway.function.completed': gatewayFunctionCompleted,
+	'gateway.function.failed': gatewayFunctionFailed,
+} as const satisfies RendererRegistry;
+
+/** Lookup helper: dispatches an event to its renderer with proper type narrowing. */
+function rendererFor<E extends FeedEvent>(event: E): EventRenderer<E['kind']> {
+	return RENDERERS[event.kind] as unknown as EventRenderer<E['kind']>;
+}
+
+// ── Public dispatch functions ─────────────────────────────
+
+export function eventOperation(event: FeedEvent): string {
+	return rendererFor(event).operation(event as never);
+}
+
+/** Human-readable Title Case label for the EVENT column. */
+export function eventLabel(event: FeedEvent): string {
+	return rendererFor(event).label(event as never);
+}
+
+/** Extract contextual detail for the DETAIL column (tool name, agent type, etc.). */
+export function eventDetail(event: FeedEvent): string {
+	return rendererFor(event).detail(event as never);
+}
+
+export function eventSummary(event: FeedEvent): SummaryResult {
+	const harness = harnessSummary(event);
+	if (harness) return harness;
+	return rendererFor(event).summary(event as never);
+}
+
+export function expansionForEvent(event: FeedEvent): string {
+	return rendererFor(event).expansion(event as never);
 }
 
 export function isEventError(event: FeedEvent): boolean {
 	if (event.level === 'error') return true;
-	if (event.kind === 'tool.failure') return true;
-	if (event.kind === 'runtime.error') return true;
-	if (event.kind === 'run.end') return event.data.status !== 'completed';
-	if (
-		event.kind === 'permission.decision' &&
-		event.data.decision_type === 'deny'
-	) {
-		return true;
-	}
-	if (event.kind === 'stop.decision' && event.data.decision_type === 'block') {
-		return true;
-	}
-	return false;
+	const renderer = rendererFor(event);
+	return renderer.isError?.(event as never) ?? false;
 }
 
 export function isEventExpandable(event: FeedEvent): boolean {
 	void event;
 	return true;
 }
+
+// ── Tool-pair (merged) renderers ─────────────────────────
+
+interface ToolPairRenderer {
+	operation: (
+		pre: Ev<'tool.pre'> | Ev<'permission.request'>,
+		post: FeedEvent,
+	) => string;
+	label: (
+		pre: Ev<'tool.pre'> | Ev<'permission.request'>,
+		post: FeedEvent,
+	) => string;
+	summary: (
+		pre: Ev<'tool.pre'> | Ev<'permission.request'>,
+		post: FeedEvent,
+	) => SummaryResult;
+}
+
+const toolPairOk: ToolPairRenderer = {
+	operation: () => 'tool.ok',
+	label: () => 'Tool OK',
+	summary: (pre, post) => buildMergedToolSummary(pre, post),
+};
+
+const toolPairFail: ToolPairRenderer = {
+	operation: () => 'tool.fail',
+	label: () => 'Tool Fail',
+	summary: (pre, post) => buildMergedToolSummary(pre, post),
+};
+
+/** Lookup keyed by the post event's kind. Only `tool.post` and `tool.failure` produce a merged rendering. */
+const TOOL_PAIRS: Partial<Record<FeedEventKind, ToolPairRenderer>> = {
+	'tool.post': toolPairOk,
+	'tool.failure': toolPairFail,
+};
+
+function buildMergedToolSummary(
+	event: Ev<'tool.pre'> | Ev<'permission.request'>,
+	postEvent: FeedEvent,
+): SummaryResult {
+	const harness = harnessSummary(event) ?? harnessSummary(postEvent);
+	if (harness) {
+		return {
+			...harness,
+			outcome: postOutcome(postEvent),
+			outcomeZero: false,
+		};
+	}
+
+	const toolName = event.data.tool_name;
+	// Prefer tool.pre input, but fall back to tool.post input when the pre
+	// event lacks useful data (e.g. codex WebSearch where query only arrives
+	// with item/completed).
+	const preInput = event.data.tool_input;
+	const postInput =
+		postEvent.kind === 'tool.post' || postEvent.kind === 'tool.failure'
+			? postEvent.data.tool_input
+			: undefined;
+	const toolInput =
+		postInput && Object.keys(preInput).every(k => preInput[k] == null)
+			? postInput
+			: preInput;
+	const parsed = parseToolName(toolName);
+	const name = resolveVerb(toolName, parsed);
+	const primaryInput = withMcpServerContext(
+		parsed,
+		summarizeToolPrimaryInput(toolName, toolInput),
+	);
+
+	let resultText: string;
+	if (postEvent.kind === 'tool.failure') {
+		resultText = summarizeToolResult(
+			toolName,
+			toolInput,
+			undefined,
+			postEvent.data.error,
+		);
+	} else if (postEvent.kind === 'tool.post') {
+		resultText = summarizeToolResult(
+			toolName,
+			toolInput,
+			postEvent.data.tool_response,
+		);
+	} else {
+		// tool.delta or other — caller already filtered, but be defensive
+		return eventSummary(event);
+	}
+
+	const prefix = primaryInput ? `${name} ${primaryInput}` : name;
+	const prefixText = compactText(prefix, 200);
+	const segments: SummarySegment[] = primaryInput
+		? [
+				{text: name, role: 'verb'},
+				{text: prefixText.slice(name.length), role: 'target'},
+			]
+		: [{text: prefixText, role: 'verb'}];
+
+	if (!resultText) {
+		return {text: prefixText, segments};
+	}
+	return {
+		text: prefixText,
+		segments,
+		outcome: resultText,
+		outcomeZero: /^0\s/.test(resultText),
+	};
+}
+
+// ── Public merged dispatch functions ─────────────────────
+
+/**
+ * Return the merged op code for a tool.pre that has a paired post/failure.
+ * Falls back to the default eventOperation when no postEvent is given.
+ */
+export function mergedEventOperation(
+	event: FeedEvent,
+	postEvent?: FeedEvent,
+): string {
+	if (!postEvent) return eventOperation(event);
+	const pair = TOOL_PAIRS[postEvent.kind];
+	if (!pair) return eventOperation(event);
+	return pair.operation(event as never, postEvent);
+}
+
+/**
+ * Return the merged Title Case label for a tool.pre that has a paired post/failure.
+ * Falls back to the default eventLabel when no postEvent is given.
+ */
+export function mergedEventLabel(
+	event: FeedEvent,
+	postEvent?: FeedEvent,
+): string {
+	if (!postEvent) return eventLabel(event);
+	const pair = TOOL_PAIRS[postEvent.kind];
+	if (!pair) return eventLabel(event);
+	return pair.label(event as never, postEvent);
+}
+
+/**
+ * Return the merged summary for a tool.pre paired with its post/failure.
+ * Format: "ToolName — result summary" with verb/target segments.
+ */
+export function mergedEventSummary(
+	event: FeedEvent,
+	postEvent?: FeedEvent,
+): SummaryResult {
+	if (!postEvent) return eventSummary(event);
+	if (event.kind !== 'tool.pre' && event.kind !== 'permission.request') {
+		return eventSummary(event);
+	}
+	const pair = TOOL_PAIRS[postEvent.kind];
+	if (!pair) return eventSummary(event);
+	return pair.summary(event, postEvent);
+}
+
+// ── Run title / status / stability ───────────────────────
 
 export function deriveRunTitle(
 	currentPromptPreview: string | undefined,
@@ -947,148 +1179,6 @@ export const VERBOSE_ONLY_KINDS: ReadonlySet<FeedEventKind> = new Set([
 	'usage.update',
 	'reasoning.summary',
 ]);
-
-// ── Merged tool event helpers ────────────────────────────
-
-/**
- * Return the merged op code for a tool.pre that has a paired post/failure.
- * Falls back to the default eventOperation when no postEvent is given.
- */
-export function mergedEventOperation(
-	event: FeedEvent,
-	postEvent?: FeedEvent,
-): string {
-	if (!postEvent) return eventOperation(event);
-	if (postEvent.kind === 'tool.failure') return 'tool.fail';
-	if (postEvent.kind === 'tool.post') return 'tool.ok';
-	return eventOperation(event);
-}
-
-/**
- * Return the merged Title Case label for a tool.pre that has a paired post/failure.
- * Falls back to the default eventLabel when no postEvent is given.
- */
-export function mergedEventLabel(
-	event: FeedEvent,
-	postEvent?: FeedEvent,
-): string {
-	if (!postEvent) return eventLabel(event);
-	if (postEvent.kind === 'tool.failure') return 'Tool Fail';
-	if (postEvent.kind === 'tool.post') return 'Tool OK';
-	return eventLabel(event);
-}
-
-/**
- * Return the merged summary for a tool.pre paired with its post/failure.
- * Format: "ToolName — result summary" with verb/target segments.
- */
-export function mergedEventSummary(
-	event: FeedEvent,
-	postEvent?: FeedEvent,
-): SummaryResult {
-	if (!postEvent) return eventSummary(event);
-	if (event.kind !== 'tool.pre' && event.kind !== 'permission.request') {
-		return eventSummary(event);
-	}
-	const harness = harnessSummary(event) ?? harnessSummary(postEvent);
-	if (harness) {
-		return {
-			...harness,
-			outcome: postOutcome(postEvent),
-			outcomeZero: false,
-		};
-	}
-
-	const toolName = event.data.tool_name;
-	// Prefer tool.pre input, but fall back to tool.post input when the pre
-	// event lacks useful data (e.g. codex WebSearch where query only arrives
-	// with item/completed).
-	const preInput = event.data.tool_input;
-	const postInput =
-		postEvent.kind === 'tool.post' || postEvent.kind === 'tool.failure'
-			? postEvent.data.tool_input
-			: undefined;
-	const toolInput =
-		postInput && Object.keys(preInput).every(k => preInput[k] == null)
-			? postInput
-			: preInput;
-	const parsed = parseToolName(toolName);
-	const name = resolveVerb(toolName, parsed);
-	const primaryInput = withMcpServerContext(
-		parsed,
-		summarizeToolPrimaryInput(toolName, toolInput),
-	);
-
-	let resultText: string;
-	if (postEvent.kind === 'tool.failure') {
-		resultText = summarizeToolResult(
-			toolName,
-			toolInput,
-			undefined,
-			postEvent.data.error,
-		);
-	} else if (postEvent.kind === 'tool.delta') {
-		return eventSummary(event);
-	} else if (postEvent.kind === 'tool.post') {
-		resultText = summarizeToolResult(
-			toolName,
-			toolInput,
-			postEvent.data.tool_response,
-		);
-	} else {
-		return eventSummary(event);
-	}
-
-	const prefix = primaryInput ? `${name} ${primaryInput}` : name;
-	const prefixText = compactText(prefix, 200);
-	const segments: SummarySegment[] = primaryInput
-		? [
-				{text: name, role: 'verb'},
-				{text: prefixText.slice(name.length), role: 'target'},
-			]
-		: [{text: prefixText, role: 'verb'}];
-
-	if (!resultText) {
-		return {text: prefixText, segments};
-	}
-	return {
-		text: prefixText,
-		segments,
-		outcome: resultText,
-		outcomeZero: /^0\s/.test(resultText),
-	};
-}
-
-/**
- * Use the harness-supplied display title (if any) as the row summary.
- * Returns undefined when the event has no harness hint, so callers can fall
- * back to their tool-input-derived synthesis.
- */
-function harnessSummary(event: FeedEvent): SummaryResult | undefined {
-	const title = event.display?.title?.trim();
-	if (!title) return undefined;
-	const text = compactText(title, 200);
-	return {text, segments: [{text, role: 'target'}]};
-}
-
-function postOutcome(postEvent: FeedEvent): string | undefined {
-	if (postEvent.kind === 'tool.failure') {
-		return summarizeToolResult(
-			postEvent.data.tool_name,
-			postEvent.data.tool_input,
-			undefined,
-			postEvent.data.error,
-		);
-	}
-	if (postEvent.kind === 'tool.post') {
-		return summarizeToolResult(
-			postEvent.data.tool_name,
-			postEvent.data.tool_input,
-			postEvent.data.tool_response,
-		);
-	}
-	return undefined;
-}
 
 /**
  * A TimelineEntry is "stable" when its content is finalized and won't change.
