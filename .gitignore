@@ -18,3 +18,5 @@ dist
 
 # Environment variables (contains secrets like POSTHOG_API_KEY)
 .env
+
+.env.local
