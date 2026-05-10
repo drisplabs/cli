@@ -201,7 +201,7 @@ describe('M5 session flow', () => {
 			pid: 1,
 		});
 		c1.close();
-		await waitUntil(() => daemon!.registry.getCurrent() === null);
+		await waitUntil(() => daemon!.pipeline.getCurrentRuntime() === null);
 		// After cleanup, a fresh runtime can register.
 		const c2 = await connect({socketPath: paths.socketPath, token});
 		try {
@@ -210,7 +210,7 @@ describe('M5 session flow', () => {
 				defaultAgentId: 'main',
 				pid: 2,
 			});
-			expect(daemon!.registry.getCurrent()?.runtimeId).toBe('r2');
+			expect(daemon!.pipeline.getCurrentRuntime()?.runtimeId).toBe('r2');
 		} finally {
 			c2.close();
 		}
@@ -237,12 +237,12 @@ describe('M5 session flow', () => {
 		c1.close();
 		await waitUntil(
 			() =>
-				daemon!.registry.getCurrent()?.runtimeId === 'r1' &&
-				!daemon!.registry.hasActiveBinding('r1'),
+				daemon!.pipeline.getCurrentRuntime()?.runtimeId === 'r1' &&
+				!daemon!.pipeline.hasActiveBinding('r1'),
 		);
 
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:stale'});
-		await waitUntil(() => daemon!.inboundQueue.size() === 1);
+		await waitUntil(() => daemon!.pipeline.pendingInboundCount() === 1);
 
 		const c2 = await connect({socketPath: paths.socketPath, token});
 		try {
@@ -260,8 +260,8 @@ describe('M5 session flow', () => {
 			expect(dispatchPushed.mock.calls[0]?.[0].inbound.idempotencyKey).toBe(
 				'fk:stale',
 			);
-			expect(daemon.registry.getCurrent()?.pid).toBe(2);
-			expect(daemon.inboundQueue.size()).toBe(0);
+			expect(daemon.pipeline.getCurrentRuntime()?.pid).toBe(2);
+			expect(daemon.pipeline.pendingInboundCount()).toBe(0);
 		} finally {
 			c2.close();
 		}
@@ -285,7 +285,7 @@ describe('M5 session flow', () => {
 		});
 		c1.close();
 
-		await waitUntil(() => daemon!.registry.getCurrent() === null, 500);
+		await waitUntil(() => daemon!.pipeline.getCurrentRuntime() === null, 500);
 
 		const c2 = await connect({socketPath: paths.socketPath, token});
 		try {
@@ -294,7 +294,7 @@ describe('M5 session flow', () => {
 				defaultAgentId: 'main',
 				pid: 2,
 			});
-			expect(daemon.registry.getCurrent()?.runtimeId).toBe('r2');
+			expect(daemon.pipeline.getCurrentRuntime()?.runtimeId).toBe('r2');
 		} finally {
 			c2.close();
 		}

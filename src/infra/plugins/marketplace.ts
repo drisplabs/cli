@@ -1,8 +1,8 @@
 /**
- * Marketplace plugin resolver — public entry points for workflow plugin and
- * workflow source resolution. Implementation primitives live in
- * `marketplaceShared.ts`, `versionedPluginResolution.ts`, and
- * `workflowSourceResolution.ts`; this module re-exports the public surface.
+ * Marketplace plugin resolver — public entry points for plugin and workflow
+ * source resolution. Implementation primitives live in `marketplaceShared.ts`,
+ * `versionedPluginResolution.ts`, and `workflowResolver.ts`; this module
+ * re-exports the public surface.
  */
 
 import {execFileSync} from 'node:child_process';
@@ -10,7 +10,6 @@ import fs from 'node:fs';
 import {
 	buildMarketplacePluginResolution,
 	ensureRepo,
-	formatWorkflowListingSource,
 	isMarketplaceRef,
 	isMarketplaceSlug,
 	marketplaceRepoCacheDir,
@@ -19,13 +18,9 @@ import {
 	resolvePluginDirFromManifest,
 	resolvePluginManifestPath,
 	resolvePluginVersionFromDir,
-	resolveWorkflowManifestPath,
 	type MarketplaceEntry,
 	type MarketplaceManifest,
 	type MarketplacePluginTarget,
-	type MarketplaceWorkflowListing,
-	type WorkflowListingSource,
-	type WorkflowMarketplaceSource,
 } from './marketplaceShared';
 import {
 	pluginNpmPackageName,
@@ -35,11 +30,16 @@ import {
 } from './versionedPluginResolution';
 import {
 	findMarketplaceRepoDir,
+	formatWorkflowListingSource,
 	listMarketplaceWorkflows,
 	listMarketplaceWorkflowsFromRepo,
 	resolveMarketplaceWorkflow,
+	resolveWorkflowManifestPath,
 	resolveWorkflowMarketplaceSource,
-} from './workflowSourceResolution';
+	type MarketplaceWorkflowListing,
+	type WorkflowListingSource,
+	type WorkflowMarketplaceSource,
+} from './workflowResolver';
 
 /**
  * Pull latest changes for a cached marketplace repo.
@@ -130,7 +130,7 @@ export {
 	resolveWorkflowInstall,
 	gatherMarketplaceWorkflowSources,
 	type ResolvedWorkflowSource,
-} from './workflowSourceResolution';
+} from './workflowResolver';
 export {
 	WorkflowAmbiguityError,
 	WorkflowNotFoundError,

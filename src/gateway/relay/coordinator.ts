@@ -45,30 +45,23 @@ export type RelayCoordinatorOptions = {
 	log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
 };
 
-type PendingPermissionEntry = {
-	kind: 'permission';
+type PendingBroadcast<K extends string, TResult> = {
+	kind: K;
 	channelRequestId: string;
 	fingerprint: string;
 	runtimeId?: string;
 	controllers: AbortController[];
 	timer: NodeJS.Timeout;
-	resolve: (result: PermissionRelayResult) => void;
-	result: Promise<PermissionRelayResult>;
+	resolve: (result: TResult) => void;
+	result: Promise<TResult>;
 	settled: boolean;
 };
 
-type PendingQuestionEntry = {
-	kind: 'question';
-	channelRequestId: string;
-	fingerprint: string;
-	runtimeId?: string;
-	controllers: AbortController[];
-	timer: NodeJS.Timeout;
-	resolve: (result: QuestionRelayResult) => void;
-	result: Promise<QuestionRelayResult>;
-	settled: boolean;
-};
-
+type PendingPermissionEntry = PendingBroadcast<
+	'permission',
+	PermissionRelayResult
+>;
+type PendingQuestionEntry = PendingBroadcast<'question', QuestionRelayResult>;
 type PendingEntry = PendingPermissionEntry | PendingQuestionEntry;
 
 export type PermissionBroadcast = {
@@ -142,10 +135,7 @@ export class RelayCoordinator {
 			resolveFn = resolve;
 		});
 		const timer = setTimeout(() => {
-			this.settlePermission(channelRequestId, {
-				kind: 'cancelled',
-				reason: 'timeout',
-			});
+			this.settle(channelRequestId, {kind: 'cancelled', reason: 'timeout'});
 		}, ttlMs);
 		if (typeof timer.unref === 'function') timer.unref();
 		const entry: PendingPermissionEntry = {
@@ -174,10 +164,7 @@ export class RelayCoordinator {
 				.then(() => adapter.requestPermissionVerdict!(fullReq, ctrl.signal))
 				.then(res => {
 					if (res.kind === 'verdict') {
-						this.settlePermission(channelRequestId, {
-							...res,
-							channelId: adapter.id,
-						});
+						this.settle(channelRequestId, {...res, channelId: adapter.id});
 					}
 				})
 				.catch(err => {
@@ -240,10 +227,7 @@ export class RelayCoordinator {
 			resolveFn = resolve;
 		});
 		const timer = setTimeout(() => {
-			this.settleQuestion(channelRequestId, {
-				kind: 'cancelled',
-				reason: 'timeout',
-			});
+			this.settle(channelRequestId, {kind: 'cancelled', reason: 'timeout'});
 		}, ttlMs);
 		if (typeof timer.unref === 'function') timer.unref();
 		const entry: PendingQuestionEntry = {
@@ -271,10 +255,7 @@ export class RelayCoordinator {
 				.then(() => adapter.requestQuestionAnswer!(fullReq, ctrl.signal))
 				.then(res => {
 					if (res.kind === 'answer') {
-						this.settleQuestion(channelRequestId, {
-							...res,
-							channelId: adapter.id,
-						});
+						this.settle(channelRequestId, {...res, channelId: adapter.id});
 					}
 				})
 				.catch(err => {
@@ -304,11 +285,7 @@ export class RelayCoordinator {
 		) {
 			return false;
 		}
-		if (entry.kind === 'permission') {
-			this.settlePermission(channelRequestId, {kind: 'cancelled', reason});
-		} else {
-			this.settleQuestion(channelRequestId, {kind: 'cancelled', reason});
-		}
+		this.settle(channelRequestId, {kind: 'cancelled', reason});
 		return true;
 	}
 
@@ -322,34 +299,21 @@ export class RelayCoordinator {
 		}
 	}
 
-	private settlePermission(
+	private settle(
 		channelRequestId: string,
-		result: PermissionRelayResult,
+		result: PermissionRelayResult | QuestionRelayResult,
 	): void {
 		const entry = this.pending.get(channelRequestId);
-		if (!entry || entry.kind !== 'permission' || entry.settled) return;
+		if (!entry || entry.settled) return;
 		entry.settled = true;
 		this.pending.delete(channelRequestId);
 		clearTimeout(entry.timer);
 		for (const ctrl of entry.controllers) {
 			if (!ctrl.signal.aborted) ctrl.abort();
 		}
-		entry.resolve(result);
-	}
-
-	private settleQuestion(
-		channelRequestId: string,
-		result: QuestionRelayResult,
-	): void {
-		const entry = this.pending.get(channelRequestId);
-		if (!entry || entry.kind !== 'question' || entry.settled) return;
-		entry.settled = true;
-		this.pending.delete(channelRequestId);
-		clearTimeout(entry.timer);
-		for (const ctrl of entry.controllers) {
-			if (!ctrl.signal.aborted) ctrl.abort();
-		}
-		entry.resolve(result);
+		(entry.resolve as (r: PermissionRelayResult | QuestionRelayResult) => void)(
+			result,
+		);
 	}
 }
 

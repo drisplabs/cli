@@ -40,50 +40,6 @@ export type MarketplaceManifest = {
 	workflows?: MarketplaceEntry[];
 };
 
-/**
- * Origin of a workflow listing. Local listings intentionally have no
- * `name@owner/repo` marketplace ref: they aren't addressable via GitHub and
- * synthesising a fake `@local/<basename>` ref would mislead users into
- * believing the ref is installable.
- */
-export type WorkflowListingSource =
-	| {kind: 'remote'; slug: string; owner: string; repo: string}
-	| {kind: 'local'; repoDir: string};
-
-/**
- * Human-readable label for a workflow listing's origin, suitable for CLI
- * search output and error messages.
- */
-export function formatWorkflowListingSource(
-	source: WorkflowListingSource,
-): string {
-	return source.kind === 'remote' ? source.slug : `local:${source.repoDir}`;
-}
-
-export type MarketplaceWorkflowListing = {
-	name: string;
-	description?: string;
-	version?: string;
-	workflowPath: string;
-	/** Marketplace ref in `name@owner/repo` form. Only set for remote sources. */
-	ref?: string;
-	/** Origin of this listing, used for display and disambiguation. */
-	source: WorkflowListingSource;
-};
-
-export type WorkflowMarketplaceSource =
-	| {
-			kind: 'remote';
-			slug: string;
-			owner: string;
-			repo: string;
-	  }
-	| {
-			kind: 'local';
-			path: string;
-			repoDir: string;
-	  };
-
 const MARKETPLACE_REF_RE = /^[a-zA-Z0-9_-]+@[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const MARKETPLACE_SLUG_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -124,18 +80,6 @@ export function resolvePluginManifestPath(repoDir: string): string {
 
 function resolveLegacyPluginManifestPath(repoDir: string): string {
 	return path.join(repoDir, '.claude-plugin', 'marketplace.json');
-}
-
-export function resolveWorkflowManifestPath(repoDir: string): string {
-	const preferredManifestPath = path.join(
-		repoDir,
-		'.athena-workflow',
-		'marketplace.json',
-	);
-	const legacyManifestPath = resolveLegacyPluginManifestPath(repoDir);
-	return fs.existsSync(preferredManifestPath)
-		? preferredManifestPath
-		: legacyManifestPath;
 }
 
 export function readManifest(manifestPath: string): MarketplaceManifest {
@@ -233,108 +177,6 @@ export function resolvePluginDirFromManifest(
 	}
 
 	return pluginDir;
-}
-
-function resolveWorkflowEntryPath(
-	entry: MarketplaceEntry,
-	manifest: MarketplaceManifest,
-	repoDir: string,
-): string {
-	if (typeof entry.source !== 'string') {
-		throw new Error(
-			`Workflow "${entry.name}" uses a remote source type which is not supported.`,
-		);
-	}
-
-	let sourcePath = entry.source;
-	const {workflowRoot} = manifest.metadata ?? {};
-	if (
-		workflowRoot &&
-		!path.isAbsolute(sourcePath) &&
-		!sourcePath.startsWith('./') &&
-		!sourcePath.startsWith('../')
-	) {
-		sourcePath = path.join(workflowRoot, sourcePath);
-	}
-
-	const workflowPath = path.resolve(repoDir, sourcePath);
-
-	if (
-		!workflowPath.startsWith(repoDir + path.sep) &&
-		workflowPath !== repoDir
-	) {
-		throw new Error(
-			`Workflow "${entry.name}" source resolves outside the marketplace repo: ${workflowPath}`,
-		);
-	}
-
-	const resolvedWorkflowPath = preferCanonicalWorkflowPath(
-		repoDir,
-		workflowPath,
-	);
-
-	if (!fs.existsSync(resolvedWorkflowPath)) {
-		throw new Error(`Workflow source not found: ${resolvedWorkflowPath}`);
-	}
-
-	return resolvedWorkflowPath;
-}
-
-export function resolveWorkflowPathFromManifest(
-	workflowName: string,
-	repoDir: string,
-	manifestPath: string,
-): string {
-	const manifest = readManifest(manifestPath);
-	const workflows = manifest.workflows ?? [];
-	const entry = workflows.find(w => w.name === workflowName);
-	if (!entry) {
-		const available = workflows.map(w => w.name).join(', ') || '(none)';
-		throw new Error(
-			`Workflow "${workflowName}" not found in marketplace manifest ${manifestPath}. Available workflows: ${available}`,
-		);
-	}
-	return resolveWorkflowEntryPath(entry, manifest, repoDir);
-}
-
-export function listWorkflowEntriesFromManifest(
-	repoDir: string,
-	manifestPath: string,
-	source: WorkflowListingSource,
-): MarketplaceWorkflowListing[] {
-	const manifest = readManifest(manifestPath);
-	const workflows = manifest.workflows ?? [];
-
-	return workflows
-		.filter(
-			(entry): entry is MarketplaceEntry & {source: string} =>
-				typeof entry.source === 'string',
-		)
-		.map(entry => ({
-			name: entry.name,
-			description: entry.description,
-			version: entry.version,
-			workflowPath: resolveWorkflowEntryPath(entry, manifest, repoDir),
-			ref:
-				source.kind === 'remote'
-					? `${entry.name}@${source.owner}/${source.repo}`
-					: undefined,
-			source,
-		}));
-}
-
-function preferCanonicalWorkflowPath(
-	repoDir: string,
-	workflowPath: string,
-): string {
-	const relativePath = path.relative(repoDir, workflowPath);
-	const segments = relativePath.split(path.sep);
-	if (segments[0] !== '.workflows') {
-		return workflowPath;
-	}
-
-	const canonicalPath = path.join(repoDir, 'workflows', ...segments.slice(1));
-	return fs.existsSync(canonicalPath) ? canonicalPath : workflowPath;
 }
 
 export function isMarketplaceRef(entry: string): boolean {

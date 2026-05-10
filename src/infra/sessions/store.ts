@@ -12,22 +12,15 @@ import type {
 	StoredSession,
 	WorkflowRunSnapshot,
 	PersistedWorkflowRun,
+	SessionRow,
 } from './types';
+import {rowToAthenaSession} from './types';
 
 export type SessionStoreOptions = {
 	sessionId: string;
 	projectDir: string;
 	dbPath: string;
 	label?: string;
-};
-
-type SessionRow = {
-	id: string;
-	project_dir: string;
-	created_at: number;
-	updated_at: number;
-	label: string | null;
-	event_count: number | null;
 };
 
 export type SessionStore = {
@@ -225,15 +218,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 		const adapterSessionIds = adapterRows.map(r => r.session_id);
 
 		const session: AthenaSession = sessionRow
-			? {
-					id: sessionRow.id,
-					projectDir: sessionRow.project_dir,
-					createdAt: sessionRow.created_at,
-					updatedAt: sessionRow.updated_at,
-					label: sessionRow.label ?? undefined,
-					eventCount: sessionRow.event_count ?? 0,
-					adapterSessionIds,
-				}
+			? rowToAthenaSession(sessionRow, adapterSessionIds)
 			: {
 					id: opts.sessionId,
 					projectDir: opts.projectDir,
@@ -275,25 +260,19 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 			.prepare('SELECT session_id FROM adapter_sessions ORDER BY started_at')
 			.all() as {session_id: string}[];
 
+		const adapterSessionIds = adapterRows.map(r => r.session_id);
+
 		if (!sessionRow) {
 			return {
 				id: opts.sessionId,
 				projectDir: opts.projectDir,
 				createdAt: now,
 				updatedAt: now,
-				adapterSessionIds: adapterRows.map(r => r.session_id),
+				adapterSessionIds,
 			};
 		}
 
-		return {
-			id: sessionRow.id,
-			projectDir: sessionRow.project_dir,
-			createdAt: sessionRow.created_at,
-			updatedAt: sessionRow.updated_at,
-			label: sessionRow.label ?? undefined,
-			eventCount: sessionRow.event_count ?? 0,
-			adapterSessionIds: adapterRows.map(r => r.session_id),
-		};
+		return rowToAthenaSession(sessionRow, adapterSessionIds);
 	}
 
 	const updateTokens = db.prepare(

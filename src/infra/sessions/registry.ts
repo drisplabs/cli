@@ -2,17 +2,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type {AthenaSession} from './types';
+import type {AthenaSession, SessionRow} from './types';
+import {rowToAthenaSession} from './types';
 import {SCHEMA_VERSION} from './schema';
-
-type SessionRow = {
-	id: string;
-	project_dir: string;
-	created_at: number;
-	updated_at: number;
-	label: string | null;
-	event_count: number | null;
-};
 
 export function sessionsDir(): string {
 	return path.join(os.homedir(), '.config', 'athena', 'sessions');
@@ -59,16 +51,11 @@ function readSessionFromDb(dbPath: string): AthenaSession | null {
 			}
 		}
 
-		return {
-			id: row.id,
-			projectDir: row.project_dir,
-			createdAt: row.created_at,
-			updatedAt: row.updated_at,
-			label: row.label ?? undefined,
-			eventCount: row.event_count ?? 0,
+		return rowToAthenaSession(
+			row,
+			adapters.map(a => a.session_id),
 			firstPrompt,
-			adapterSessionIds: adapters.map(a => a.session_id),
-		};
+		);
 	} catch {
 		return null;
 	} finally {

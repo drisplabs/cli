@@ -78,3 +78,17 @@ app     ← can import from all layers
 - Pre-commit hook runs lint-staged (eslint + prettier on staged files)
 - Legacy shim paths are banned — import from layer boundaries (`app/core/harnesses/infra/ui/shared`)
 - UI components may only import from `feed/types.ts` and `feed/expandable.ts`, not stateful feed internals
+
+## Agent skills
+
+### Issue tracker
+
+GitHub issues on `drisplabs/cli` (upstream); always pass `--repo drisplabs/cli` to `gh` because this clone has two remotes. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`); only `wontfix` exists upstream today, the rest are created on first use. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root (neither exists yet — `/grill-with-docs` creates them lazily). See `docs/agents/domain.md`.

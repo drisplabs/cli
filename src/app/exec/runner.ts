@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import {
-	handleEvent,
-	type ControllerCallbacks,
-} from '../../core/controller/runtimeController';
+import type {ControllerCallbacks} from '../../core/controller/runtimeController';
 import {createFeedMapper} from '../../core/feed/mapper';
+import {
+	ingestRuntimeDecision,
+	ingestRuntimeEvent,
+} from '../../core/feed/ingest';
 import {
 	type RuntimeDecision,
 	type RuntimeEvent,
@@ -25,6 +26,7 @@ import {
 } from '../channels/relayAdapter';
 import {startSessionBridge} from '../channels/sessionBridgeLifecycle';
 import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
+import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
 import type {
 	ExecRunFailure,
@@ -115,7 +117,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	// the absence of one) governs approvals.
 	const rules: import('../../core/controller/rules').HookRule[] = [];
 
-	let failure: ExecRunFailure | undefined;
 	let runtimeStarted = false;
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let streamFinalMessage: string | null = null;
@@ -191,22 +192,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			| undefined,
 	});
 
-	function registerFailure(next: ExecRunFailure): void {
-		if (failure) return;
-		failure = next;
+	const latch = createFailureLatch(next => {
 		output.error(next.message);
 		output.emitJsonEvent('exec.error', {
 			kind: next.kind,
 			message: next.message,
 		});
 		void sessionController.kill();
-	}
+	});
 
 	const abortListener = (): void => {
-		registerFailure({
-			kind: 'process',
-			message: 'Execution cancelled.',
-		});
+		latch.register({kind: 'process', message: 'Execution cancelled.'});
 	};
 	if (options.signal?.aborted) {
 		abortListener();
@@ -214,7 +210,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		options.signal?.addEventListener('abort', abortListener, {once: true});
 	}
 
-	const hasFailure = (): boolean => failure !== undefined;
 	const currentAdapterSessionId = (): string | null => adapterSessionId;
 
 	const bridgeFactory = options.bridgeFactory ?? startSessionBridge;
@@ -271,26 +266,22 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			data: runtimeEvent.data,
 		});
 
-		if (hasFailure()) return;
+		if (latch.hasFailure()) return;
 
-		const controllerResult = handleEvent(runtimeEvent, controllerCallbacks);
-		if (controllerResult.handled && controllerResult.decision) {
-			runtime.sendDecision(runtimeEvent.id, controllerResult.decision);
+		const {feedEvents, decision} = ingestRuntimeEvent(runtimeEvent, {
+			mapper,
+			store,
+			controllerCallbacks,
+			onPersistFailure: message => output.warn(message),
+		});
+		if (decision) {
+			runtime.sendDecision(runtimeEvent.id, decision);
 		}
-
-		const mapped = mapper.mapEvent(runtimeEvent);
-		for (const event of mapped) {
+		for (const event of feedEvents) {
 			if (event.kind === 'agent.message') {
 				mappedFinalMessage = event.data.message;
 			}
 		}
-
-		safePersist(
-			store,
-			() => store.recordEvent(runtimeEvent, mapped),
-			message => output.warn(message),
-			'recordEvent failed',
-		);
 	});
 
 	const unsubscribeDecision = runtime.onDecision(
@@ -299,23 +290,18 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				eventId,
 				decision,
 			});
-
-			const mapped = mapper.mapDecision(eventId, decision);
-			if (!mapped) return;
-
-			safePersist(
+			ingestRuntimeDecision(eventId, decision, {
+				mapper,
 				store,
-				() => store.recordFeedEvents([mapped]),
-				message => output.warn(message),
-				'recordFeedEvents failed',
-			);
+				onPersistFailure: message => output.warn(message),
+			});
 		},
 	);
 
 	let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 	if (typeof options.timeoutMs === 'number' && options.timeoutMs > 0) {
 		timeoutTimer = setTimeout(() => {
-			registerFailure({
+			latch.register({
 				kind: 'timeout',
 				message: `Execution timed out after ${options.timeoutMs}ms.`,
 			});
@@ -402,10 +388,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		cumulativeTokens = runResult.tokens;
 
 		// Map runner terminal status to exec failure if applicable.
-		// External failures (from runtime event handler) take precedence — check !failure first.
-		if (!failure) {
+		// External failures (from runtime event handler) take precedence — check !latch.hasFailure() first.
+		if (!latch.hasFailure()) {
 			if (runResult.status === 'blocked') {
-				registerFailure(
+				latch.register(
 					workflowFailure(
 						'blocked',
 						runResult.stopReason
@@ -414,21 +400,21 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					),
 				);
 			} else if (runResult.status === 'exhausted') {
-				registerFailure(
+				latch.register(
 					workflowFailure(
 						'exhausted',
 						`Workflow reached the maximum of ${workflow?.loop?.maxIterations ?? 0} iterations.`,
 					),
 				);
 			} else if (runResult.status === 'failed') {
-				registerFailure({
+				latch.register({
 					kind: 'process',
 					message: runResult.stopReason ?? 'Workflow run failed.',
 				});
 			}
 		}
 	} catch (error) {
-		registerFailure({
+		latch.register({
 			kind: 'process',
 			message: error instanceof Error ? error.message : String(error),
 		});
@@ -451,46 +437,29 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		streamMessage: streamFinalMessage,
 		mappedMessage: mappedFinalMessage,
 	});
-	if (resolvedFinalMessage.source === 'empty' && !failure) {
+	if (resolvedFinalMessage.source === 'empty' && !latch.hasFailure()) {
 		const warning =
 			'No assistant message found in stream or hook events; writing empty output.';
 		output.warn(warning);
 		output.emitJsonEvent('exec.warning', {message: warning});
 	}
 
-	if (!failure && options.outputLastMessagePath) {
+	if (!latch.hasFailure() && options.outputLastMessagePath) {
 		try {
 			await output.writeLastMessage(
 				options.outputLastMessagePath,
 				resolvedFinalMessage.message,
 			);
 		} catch (error) {
-			failure = {
+			latch.register({
 				kind: 'output',
 				message: `Failed writing --output-last-message: ${error instanceof Error ? error.message : String(error)}`,
-			};
-			output.error(failure.message);
-			output.emitJsonEvent('exec.error', {
-				kind: failure.kind,
-				message: failure.message,
 			});
 		}
 	}
 
-	let exitCode: ExecRunResult['exitCode'] = EXEC_EXIT_CODE.SUCCESS;
-	if (failure?.kind === 'timeout') {
-		exitCode = EXEC_EXIT_CODE.TIMEOUT;
-	} else if (failure?.kind === 'output') {
-		exitCode = EXEC_EXIT_CODE.OUTPUT;
-	} else if (failure?.kind === 'workflow') {
-		exitCode =
-			failure.state === 'exhausted'
-				? EXEC_EXIT_CODE.WORKFLOW_EXHAUSTED
-				: EXEC_EXIT_CODE.WORKFLOW_BLOCKED;
-	} else if (failure) {
-		exitCode = EXEC_EXIT_CODE.RUNTIME;
-	}
-
+	const failure = latch.current();
+	const exitCode = exitCodeFromFailure(failure);
 	const success = exitCode === EXEC_EXIT_CODE.SUCCESS;
 	const finalMessage = success ? resolvedFinalMessage.message : null;
 	if (success && finalMessage !== null) {

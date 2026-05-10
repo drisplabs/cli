@@ -28,7 +28,7 @@ The module that converts `RuntimeEvent` → `FeedEvent[]` and `RuntimeDecision` 
 
 ### State inside the FeedMapper
 
-The mapper is internally composed of four named seams; each owns one slice of the mapper's state and has its own test surface.
+The mapper is internally composed of six named seams; each owns one slice of the mapper's state and has its own test surface.
 
 **RunLifecycle**:
 Owns `currentSession`, `currentRun`, run/session sequence numbers, and per-run counters (tool uses, failures, permission requests, blocks). Decides when a run starts, ends, or rolls over.
@@ -44,6 +44,14 @@ _Avoid_: request index, decision router.
 **AgentMessageStream**:
 Owns pending message buffers, dedup state per actor scope, and reasoning summary accumulation. Decides when an in-flight message is emittable.
 
+**RootPlanTracker**:
+Owns the **Root plan** — the canonical task list surfaced via `FeedMapper.getTasks()`. Knows how to compare a proposed plan against the current one (`differs`) and how to replace it (`set`). Updated from `session.start` bootstrap, `plan.delta`, and `tool.pre` for `TodoWrite`.
+_Avoid_: task store, plan state.
+
+**SubagentTracker**:
+Owns the **Subagent stack** (LIFO of active subagent actor IDs), the **Pending description** handoff, and the per-agent description registry. Caller-prefixes actor IDs (`subagent:<id>`) — the tracker treats them as opaque strings.
+_Avoid_: agent stack, subagent state.
+
 ### Identity
 
 **Run**:
@@ -55,13 +63,40 @@ A drisp instance lifecycle. Spans many **Runs**. Identified by an adapter sessio
 **Actor**:
 A participant in a **Run** — the root agent or a subagent. Subagents form a stack (LIFO).
 
+**Subagent**:
+A child agent spawned by the root agent via the `Task` (or `Agent`) tool. Pushed onto the **Subagent stack** at `subagent.start`, removed at `subagent.stop`. Tracked by **SubagentTracker** for the duration of its lifecycle.
+
+**Root plan**:
+The canonical task list for the current session, sourced from `TodoWrite` tool inputs or `plan.delta` events and surfaced publicly via `FeedMapper.getTasks()`. Owned by **RootPlanTracker**. Survives across **Runs** within a **Session**.
+_Avoid_: tasks (too generic), todo list (used in tool input but not as a domain term inside core/).
+
+**Pending description**:
+A description string captured from a subagent-spawning tool's input (`tool.pre` for `Task`/`Agent`) and consumed by the next `subagent.start` to populate the event payload and description registry. Single-slot buffer, cleared on consume or on a subsequent subagent `tool.pre` without a description.
+
+### Gateway
+
+**Dispatch turn**:
+One inbound channel message routed to the **Registered runtime** and whose reply is routed back. Identified by a `dispatchId` minted on entry and resolved on `session.turn.complete`. Durable on both sides — parked in the **inbound queue** if no runtime is bound, parked in the **outbox** if the channel send fails.
+_Avoid_: turn (overloaded with the FeedMapper "run"), dispatch (verb only).
+
+**Registered runtime**:
+The single Athena runtime currently bound to the gateway. Owns a `defaultAgentId`, a connection, a binding state (`active` | `stale` | absent), and a push handle the gateway uses to deliver `session.dispatch.turn` frames. Single-runtime in v1 — multi-runtime is a future change.
+
+**DispatchPipeline**:
+The gateway module that owns the **Dispatch turn** end-to-end. Wraps the binding store, the inbound queue, the outbox + drain loop, and the runtime push handle behind one interface. Owns the stale-binding grace timer and emits observer notifications for telemetry and external dispose.
+_Avoid_: dispatcher (the historical class is now an internal collaborator), message pipeline (too generic).
+
 ## Relationships
 
 - A **Session** contains many **Runs**.
 - A **Run** is owned by one root **Actor**, which may spawn subagent **Actors**.
 - A **RuntimeEvent** is mapped to zero or more **FeedEvent**s by the **FeedMapper**.
 - A **RuntimeDecision** is mapped to one **FeedEvent** by the **FeedMapper**, correlated through **DecisionCorrelation**.
-- The **FeedMapper** is composed of **RunLifecycle**, **ToolCorrelation**, **DecisionCorrelation**, and **AgentMessageStream** as internal seams. Their combined interface is the seven-method `FeedMapper` type.
+- The **FeedMapper** is composed of **RunLifecycle**, **ToolCorrelation**, **DecisionCorrelation**, **AgentMessageStream**, **RootPlanTracker**, and **SubagentTracker** as internal seams. Their combined interface is the seven-method `FeedMapper` type.
+- The **Pending description** flows from `tool.pre` (Task/Agent) to the next `subagent.start`, where **SubagentTracker** consumes and clears it.
+- The **Root plan** persists across **Runs** within a **Session** — only per-run state (subagent stack, tool/decision correlation, message stream) is reset between runs.
+- A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
+- The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
 
 ## Example dialogue
 
@@ -72,3 +107,4 @@ A participant in a **Run** — the root agent or a subagent. Subagents form a st
 
 - "event" alone is ambiguous between **RuntimeEvent** and **FeedEvent** — always qualify.
 - "session" alone is ambiguous between drisp **Session** and harness adapter session — say "adapter session" for the latter.
+- "task" is overloaded by the protocol: `TodoWrite` tool inputs use it for plan items, while the `Task` tool spawns **Subagents**. Inside core/, say **plan step** for the former and **Subagent** for the latter — never bare "task."

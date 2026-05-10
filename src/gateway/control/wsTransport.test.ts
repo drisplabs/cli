@@ -1,16 +1,9 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import crypto from 'node:crypto';
 import {createDispatcher, type DispatcherDeps} from './handlers';
 import {connect, type ControlClient} from './client';
-import {
-	startControlServer,
-	type ConnectionContext,
-	type ControlServer,
-} from './server';
-import {SessionRegistry} from '../sessionRegistry';
+import {startControlServer, type ControlServer} from './server';
 import {ChannelManager} from '../channelManager';
-import {Dispatcher} from '../dispatcher';
-import {InboundQueue} from '../state/inboundQueue';
+import {DispatchPipeline} from '../dispatchPipeline';
 import {openGatewayState, type GatewayStateDb} from '../state/db';
 import {RelayCoordinator} from '../relay/coordinator';
 import {createWsClientTransport} from '../transport/wsClient';
@@ -70,12 +63,15 @@ describe('loopback WS control transport', () => {
 	let server: ControlServer | undefined;
 	let client: ControlClient | undefined;
 	let db: GatewayStateDb | undefined;
+	let pipeline: DispatchPipeline | undefined;
 
 	afterEach(async () => {
 		client?.close();
 		client = undefined;
 		if (server) await server.close();
 		server = undefined;
+		if (pipeline) await pipeline.stop();
+		pipeline = undefined;
 		db?.close();
 		db = undefined;
 	});
@@ -90,39 +86,20 @@ describe('loopback WS control transport', () => {
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => channelManager.listAdapters(),
 		});
-		const registry = new SessionRegistry();
-		const runtimeConnections = new Map<string, ConnectionContext>();
-		const inboundQueue = new InboundQueue(db);
-		const dispatcher = new Dispatcher({
-			registry,
-			pushDispatch: payload => {
-				const current = registry.getCurrent();
-				if (!current) return;
-				runtimeConnections.get(current.runtimeId)?.push({
-					push_id: crypto.randomUUID(),
-					ts: Date.now(),
-					kind: 'session.dispatch.turn',
-					payload,
-				});
-			},
-			sendOutbound: (channelId, msg) => channelManager.send(channelId, msg),
-			inboundQueue,
+		pipeline = new DispatchPipeline({
+			stateDb: db,
+			send: (channelId, msg) => channelManager.send(channelId, msg),
+			outbox: {tickIntervalMs: 60_000},
 		});
+		pipeline.start();
 		channelManager.setInboundSink(message => {
-			dispatcher.handleInbound(message);
+			pipeline!.handleInbound(message);
 		});
 		const state: DispatcherDeps = {
 			startedAt,
-			registry,
-			dispatcher,
+			pipeline,
 			channelManager,
 			relayCoordinator,
-			registerRuntimeConnection: (runtimeId, ctx) => {
-				runtimeConnections.set(runtimeId, ctx);
-			},
-			unregisterRuntimeConnection: runtimeId => {
-				runtimeConnections.delete(runtimeId);
-			},
 		};
 		const transport = createWsServerTransport({
 			host: '127.0.0.1',

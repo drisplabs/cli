@@ -5,10 +5,11 @@
  * registered as a runtime cannot create or cancel relay requests).
  */
 
-import {describe, expect, it, vi} from 'vitest';
+import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createDispatcher} from './handlers';
 import {RelayCoordinator} from '../relay/coordinator';
-import {SessionRegistry} from '../sessionRegistry';
+import {DispatchPipeline} from '../dispatchPipeline';
+import {openGatewayState, type GatewayStateDb} from '../state/db';
 import type {ConnectionContext} from './server';
 import type {
 	ChannelAdapter,
@@ -61,15 +62,36 @@ function expectError(
 	return res;
 }
 
+const cleanup: Array<{db: GatewayStateDb; pipeline: DispatchPipeline}> = [];
+
+function makePipeline(): DispatchPipeline {
+	const db = openGatewayState(':memory:');
+	const pipeline = new DispatchPipeline({
+		stateDb: db,
+		send: async () => ({providerMessageId: 'm', deliveredAt: 0}),
+		outbox: {tickIntervalMs: 60_000},
+	});
+	cleanup.push({db, pipeline});
+	return pipeline;
+}
+
+afterEach(async () => {
+	while (cleanup.length > 0) {
+		const entry = cleanup.pop()!;
+		await entry.pipeline.stop();
+		entry.db.close();
+	}
+});
+
 describe('dispatcher: relay.* require a registered runtime connection', () => {
 	it('relay.permission.request rejects unregistered authenticated callers', async () => {
-		const registry = new SessionRegistry();
+		const pipeline = makePipeline();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => [makeAdapter()],
 		});
 		const handle = createDispatcher({
 			startedAt: 0,
-			registry,
+			pipeline,
 			relayCoordinator,
 		});
 		const res = await handle(
@@ -86,13 +108,13 @@ describe('dispatcher: relay.* require a registered runtime connection', () => {
 	});
 
 	it('relay.question.request rejects unregistered authenticated callers', async () => {
-		const registry = new SessionRegistry();
+		const pipeline = makePipeline();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => [makeAdapter()],
 		});
 		const handle = createDispatcher({
 			startedAt: 0,
-			registry,
+			pipeline,
 			relayCoordinator,
 		});
 		const res = await handle(
@@ -116,14 +138,14 @@ describe('dispatcher: relay.* require a registered runtime connection', () => {
 	});
 
 	it('relay.permission.cancel rejects unregistered authenticated callers', async () => {
-		const registry = new SessionRegistry();
+		const pipeline = makePipeline();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => [makeAdapter()],
 		});
 		const cancelSpy = vi.spyOn(relayCoordinator, 'cancel');
 		const handle = createDispatcher({
 			startedAt: 0,
-			registry,
+			pipeline,
 			relayCoordinator,
 		});
 		const res = await handle(
@@ -139,14 +161,14 @@ describe('dispatcher: relay.* require a registered runtime connection', () => {
 	});
 
 	it('relay.question.cancel rejects unregistered authenticated callers', async () => {
-		const registry = new SessionRegistry();
+		const pipeline = makePipeline();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => [makeAdapter()],
 		});
 		const cancelSpy = vi.spyOn(relayCoordinator, 'cancel');
 		const handle = createDispatcher({
 			startedAt: 0,
-			registry,
+			pipeline,
 			relayCoordinator,
 		});
 		const res = await handle(
@@ -162,15 +184,20 @@ describe('dispatcher: relay.* require a registered runtime connection', () => {
 	});
 
 	it('relay.permission.request succeeds once the connection is bound to a runtime', async () => {
-		const registry = new SessionRegistry();
+		const pipeline = makePipeline();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => [makeAdapter()],
 		});
-		registry.register({runtimeId: 'r1', defaultAgentId: 'main', pid: 1});
-		registry.bindConnection('r1', 'conn-r1');
+		pipeline.registerRuntime({
+			runtimeId: 'r1',
+			defaultAgentId: 'main',
+			pid: 1,
+			connectionId: 'conn-r1',
+			push: vi.fn(),
+		});
 		const handle = createDispatcher({
 			startedAt: 0,
-			registry,
+			pipeline,
 			relayCoordinator,
 		});
 		const reqPromise = handle(

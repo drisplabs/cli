@@ -9,19 +9,14 @@
  * registration from config and the cloud function invoker land in M6+.
  */
 
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import {loadChannelSidecars} from '../infra/config/channels';
 import {instantiateAdapter} from './adapters/factory';
 import {loadOrCreateToken, requireTokenForBind} from './auth';
 import {ChannelManager} from './channelManager';
 import {createDispatcher} from './control/handlers';
-import {
-	startControlServer,
-	type ConnectionContext,
-	type ControlServer,
-} from './control/server';
-import {Dispatcher} from './dispatcher';
+import {startControlServer, type ControlServer} from './control/server';
+import {DispatchPipeline} from './dispatchPipeline';
 import {acquireLock, type LockHandle} from './lock';
 import {
 	isLoopbackHost,
@@ -30,14 +25,9 @@ import {
 	type GatewayListenSpec,
 	type GatewayPaths,
 } from './paths';
-import {OutboundDispatcher} from './outboundDispatcher';
 import {RelayCoordinator} from './relay/coordinator';
-import {SessionRegistry} from './sessionRegistry';
 import {openGatewayState, type GatewayStateDb} from './state/db';
-import {InboundQueue} from './state/inboundQueue';
-import {Outbox} from './state/outbox';
 import {createWsServerTransport} from './transport/tlsWs';
-import {writeGatewayTrace} from '../infra/gatewayTrace';
 import {
 	trackGatewayRuntimeExpired,
 	trackGatewayRuntimeRebind,
@@ -100,13 +90,9 @@ export type DaemonHandle = {
 	startedAt: number;
 	pid: number;
 	paths: GatewayPaths;
-	registry: SessionRegistry;
-	dispatcher: Dispatcher;
+	pipeline: DispatchPipeline;
 	channelManager: ChannelManager;
 	relayCoordinator: RelayCoordinator;
-	inboundQueue: InboundQueue;
-	outbox: Outbox;
-	outboundDispatcher: OutboundDispatcher;
 	listener: {
 		kind: GatewayListenSpec['kind'];
 		socketPath?: string;
@@ -145,36 +131,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 	};
 
 	const stateDb: GatewayStateDb = openGatewayState(paths.statePath);
-	const inboundQueue = new InboundQueue(stateDb);
-	const outbox = new Outbox(stateDb);
 
-	const registry = new SessionRegistry();
 	const channelManager = new ChannelManager();
 	const relayCoordinator = new RelayCoordinator({
 		adapters: () => channelManager.listAdapters(),
 	});
 
-	// Push frames target the connection that registered as the runtime. The
-	// map is the only state the daemon keeps about active connections.
-	const runtimeConnections = new Map<string, ConnectionContext>();
-	const staleRuntimeTimers = new Map<string, NodeJS.Timeout>();
 	const connectionOpenedAt = new Map<string, number>();
 	const disconnectGracePeriodMs = opts.disconnectGracePeriodMs ?? 0;
 	let listenerStatus: ListenerStatusEntry | null = null;
-	const pushDispatch = (
-		payload: import('../shared/gateway-protocol').SessionDispatchTurnPushPayload,
-	): void => {
-		const current = registry.getCurrent();
-		if (!current) return;
-		const ctx = runtimeConnections.get(current.runtimeId);
-		if (!ctx) return;
-		ctx.push({
-			push_id: crypto.randomUUID(),
-			ts: Date.now(),
-			kind: 'session.dispatch.turn',
-			payload,
-		});
-	};
 	const log = (
 		level: 'debug' | 'info' | 'warn' | 'error',
 		message: string,
@@ -184,36 +149,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		process[stream].write(`athena-gateway: [${level}] ${message}\n`);
 	};
 
-	const outboundDispatcher = new OutboundDispatcher({
-		outbox,
+	const pipeline = new DispatchPipeline({
+		stateDb,
 		send: (channelId, msg) => channelManager.send(channelId, msg),
+		gracePeriodMs: disconnectGracePeriodMs,
 		log,
+		observers: {
+			onRuntimeRebind: ({gapMs, epoch}) =>
+				trackGatewayRuntimeRebind({gapMs, epoch}),
+			onRuntimeExpired: ({gapMs}) => trackGatewayRuntimeExpired({gapMs}),
+			// Single-runtime v1: blanket dispose is safe. Multi-runtime must
+			// scope to the disconnecting runtime via disposeAllForRuntime.
+			onRuntimeConnectionLost: () =>
+				relayCoordinator.disposeAll('connection_lost'),
+		},
 	});
-	outboundDispatcher.start();
+	pipeline.start();
 
-	const dispatcher = new Dispatcher({
-		registry,
-		pushDispatch,
-		canDispatch: () => {
-			const current = registry.getCurrent();
-			return current ? registry.hasActiveBinding(current.runtimeId) : false;
-		},
-		sendOutbound: async (channelId, msg) => {
-			const result = await outboundDispatcher.dispatch(channelId, msg);
-			if (result.kind === 'sent') return result.result;
-			// Queued: return a synthetic SendResult so the caller knows the
-			// message has been accepted for eventual delivery. The real
-			// providerMessageId is unknown until a retry succeeds.
-			return {
-				providerMessageId: `outbox:${result.outboxId}`,
-				deliveredAt: Date.now(),
-			};
-		},
-		inboundQueue,
-		log,
-	});
 	channelManager.setInboundSink(inbound => {
-		dispatcher.handleInbound(inbound);
+		pipeline.handleInbound(inbound);
 	});
 
 	const channelConfigHome = opts.env?.HOME;
@@ -334,45 +288,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 
 	const handler = createDispatcher({
 		startedAt,
-		registry,
-		dispatcher,
+		pipeline,
 		channelManager,
 		relayCoordinator,
 		getListener: () => listenerStatus ?? buildListenerStatus(listenSpec, null),
 		reloadChannels,
-		registerRuntimeConnection: (runtimeId, ctx) => {
-			const timer = staleRuntimeTimers.get(runtimeId);
-			if (timer) {
-				clearTimeout(timer);
-				staleRuntimeTimers.delete(runtimeId);
-			}
-			const previousBinding = registry.getBinding();
-			const wasStale = previousBinding?.state === 'stale';
-			const staleSince = wasStale ? previousBinding.staleSince : null;
-			registry.bindConnection(runtimeId, ctx.connectionId);
-			runtimeConnections.set(runtimeId, ctx);
-			writeGatewayTrace(
-				`daemon registered runtime runtimeId=${runtimeId} connectionId=${ctx.connectionId}`,
-			);
-			if (wasStale && staleSince !== null) {
-				const newBinding = registry.getBinding();
-				if (newBinding?.state === 'active') {
-					trackGatewayRuntimeRebind({
-						gapMs: Date.now() - staleSince,
-						epoch: newBinding.epoch,
-					});
-				}
-			}
-		},
-		unregisterRuntimeConnection: runtimeId => {
-			const timer = staleRuntimeTimers.get(runtimeId);
-			if (timer) {
-				clearTimeout(timer);
-				staleRuntimeTimers.delete(runtimeId);
-			}
-			runtimeConnections.delete(runtimeId);
-			writeGatewayTrace(`daemon unregistered runtime runtimeId=${runtimeId}`);
-		},
 	});
 
 	let server: ControlServer;
@@ -410,56 +330,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 					reason: 'closed',
 					durationMs,
 				});
-				// If the registered runtime's connection drops without unregister,
-				// either clean up immediately (local default) or keep the registration
-				// stale for a remote reconnect grace window.
-				const current = registry.getCurrent();
-				if (
-					current &&
-					runtimeConnections.get(current.runtimeId)?.connectionId ===
-						ctx.connectionId
-				) {
-					writeGatewayTrace(
-						`daemon runtime connection disconnected runtimeId=${current.runtimeId} connectionId=${ctx.connectionId}`,
-					);
-					runtimeConnections.delete(current.runtimeId);
-					const staleAt = Date.now();
-					registry.markConnectionStale(ctx.connectionId);
-					if (disconnectGracePeriodMs <= 0) {
-						try {
-							registry.unregister(current.runtimeId);
-						} catch {
-							// already unregistered
-						}
-						// Single-runtime v1: blanket dispose is safe. Multi-runtime
-						// must scope this to the disconnecting runtime via
-						// disposeAllForRuntime(runtimeId, reason).
-						relayCoordinator.disposeAll('connection_lost');
-						return;
-					}
-					const runtimeId = current.runtimeId;
-					const timer = setTimeout(() => {
-						staleRuntimeTimers.delete(runtimeId);
-						const latest = registry.getCurrent();
-						if (
-							latest?.runtimeId === runtimeId &&
-							!registry.hasActiveBinding(runtimeId)
-						) {
-							try {
-								registry.unregister(runtimeId);
-							} catch {
-								// already unregistered
-							}
-							// Single-runtime v1: blanket dispose is safe. Multi-runtime
-							// must scope this to runtimeId.
-							relayCoordinator.disposeAll('connection_lost');
-							trackGatewayRuntimeExpired({
-								gapMs: Date.now() - staleAt,
-							});
-						}
-					}, disconnectGracePeriodMs);
-					staleRuntimeTimers.set(runtimeId, timer);
-				}
+				pipeline.notifyConnectionClosed(ctx.connectionId);
 			},
 		});
 		if (listenSpec.kind === 'tcp') {
@@ -502,11 +373,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		if (stopping) return;
 		stopping = true;
 		try {
-			outboundDispatcher.stop();
-			for (const timer of staleRuntimeTimers.values()) {
-				clearTimeout(timer);
-			}
-			staleRuntimeTimers.clear();
+			await pipeline.stop();
 			relayCoordinator.disposeAll('auto_resolved');
 			await channelManager.stop();
 			await server.close();
@@ -533,13 +400,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		startedAt,
 		pid,
 		paths,
-		registry,
-		dispatcher,
+		pipeline,
 		channelManager,
 		relayCoordinator,
-		inboundQueue,
-		outbox,
-		outboundDispatcher,
 		listener,
 		stop,
 	};

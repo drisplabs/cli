@@ -12,6 +12,33 @@ export type AthenaSession = {
 	adapterSessionIds: string[];
 };
 
+/** Raw database row from the `session` table. */
+export type SessionRow = {
+	id: string;
+	project_dir: string;
+	created_at: number;
+	updated_at: number;
+	label: string | null;
+	event_count: number | null;
+};
+
+export function rowToAthenaSession(
+	row: SessionRow,
+	adapterSessionIds: string[],
+	firstPrompt?: string,
+): AthenaSession {
+	return {
+		id: row.id,
+		projectDir: row.project_dir,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+		label: row.label ?? undefined,
+		eventCount: row.event_count ?? 0,
+		firstPrompt,
+		adapterSessionIds,
+	};
+}
+
 export type AdapterSessionRecord = {
 	sessionId: string;
 	startedAt: number;

@@ -30,6 +30,8 @@ import {createRunLifecycle} from './internals/runLifecycle';
 import {createDecisionCorrelation} from './internals/decisionCorrelation';
 import {createToolCorrelation} from './internals/toolCorrelation';
 import {createAgentMessageStream} from './internals/agentMessageStream';
+import {createRootPlanTracker} from './internals/rootPlanTracker';
+import {createSubagentTracker} from './internals/subagentTracker';
 
 export type FeedMapper = {
 	mapEvent(event: RuntimeEvent): FeedEvent[];
@@ -64,11 +66,8 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const toolCorrelation = createToolCorrelation();
 	const transcriptReader = createTranscriptReader();
 	const actors = new ActorRegistry();
-
-	let lastRootTasks: TodoItem[] = [];
-	const activeSubagentStack: string[] = []; // LIFO of active subagent actor IDs
-	let lastTaskDescription: string | undefined;
-	const subagentDescriptions = new Map<string, string>();
+	const rootPlan = createRootPlanTracker();
+	const subagents = createSubagentTracker();
 
 	function makeEvent(
 		kind: FeedEventKind,
@@ -130,8 +129,8 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 				e.actor_id === 'agent:root' &&
 				(e.data as {tool_name?: string}).tool_name === 'TodoWrite'
 			) {
-				lastRootTasks = extractTodoItems(
-					(e.data as {tool_input?: unknown}).tool_input,
+				rootPlan.set(
+					extractTodoItems((e.data as {tool_input?: unknown}).tool_input),
 				);
 			}
 		}
@@ -168,7 +167,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		toolCorrelation.resetForNewRun();
 		decisionCorrelation.resetForNewRun();
 		agentMessageStream.resetForNewRun();
-		activeSubagentStack.length = 0;
+		subagents.clear();
 
 		runLifecycle.openNewRun(
 			runtimeEvent.timestamp,
@@ -191,9 +190,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	}
 
 	function resolveToolActor(): string {
-		return activeSubagentStack.length > 0
-			? activeSubagentStack[activeSubagentStack.length - 1]!
-			: 'agent:root';
+		return subagents.peek() ?? 'agent:root';
 	}
 
 	function resolveToolUseId(
@@ -247,8 +244,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		};
 		const eventKind = event.kind;
 		const results: FeedEvent[] = [];
-		const currentScope = (): 'root' | 'subagent' =>
-			activeSubagentStack.length > 0 ? 'subagent' : 'root';
+		const currentScope = (): 'root' | 'subagent' => subagents.currentScope();
 
 		// Fallback: emit agent.message from last_assistant_message when transcript yields nothing
 		function emitFallbackMessage(
@@ -443,25 +439,14 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 			case 'plan.delta': {
 				const planSteps = d['plan'];
 				if (Array.isArray(planSteps) && planSteps.length > 0) {
-					const changed =
-						planSteps.length !== lastRootTasks.length ||
-						planSteps.some(
-							(step: {step?: string; status?: string}, i: number) => {
-								const content = typeof step.step === 'string' ? step.step : '';
-								const status = mapPlanStepStatus(step.status);
-								return (
-									content !== lastRootTasks[i]?.content ||
-									status !== lastRootTasks[i]?.status
-								);
-							},
-						);
-					if (changed) {
-						lastRootTasks = planSteps.map(
-							(step: {step?: string; status?: string}) => ({
-								content: typeof step.step === 'string' ? step.step : '',
-								status: mapPlanStepStatus(step.status),
-							}),
-						);
+					const next = planSteps.map(
+						(step: {step?: string; status?: string}) => ({
+							content: typeof step.step === 'string' ? step.step : '',
+							status: mapPlanStepStatus(step.status),
+						}),
+					);
+					if (rootPlan.differs(next)) {
+						rootPlan.set(next);
 						results.push(
 							makeEvent(
 								'todo.update',
@@ -634,15 +619,16 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 				}
 
 				if (toolName === 'TodoWrite' && fe.actor_id === 'agent:root') {
-					lastRootTasks = extractTodoItems(readObject(d['tool_input']));
+					rootPlan.set(extractTodoItems(readObject(d['tool_input'])));
 				}
 
 				if (isSubagentTool(toolName)) {
 					const input = readObject(d['tool_input']);
-					lastTaskDescription =
-						typeof input['description'] === 'string'
-							? input['description']
-							: undefined;
+					if (typeof input['description'] === 'string') {
+						subagents.recordPendingDescription(input['description']);
+					} else {
+						subagents.clearPendingDescription();
+					}
 				}
 				break;
 			}
@@ -811,8 +797,10 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 					actors.ensureSubagent(agentId, agentType ?? 'unknown');
 					const currentRun = runLifecycle.getCurrentRun();
 					if (currentRun) currentRun.actors.subagent_ids.push(agentId);
-					activeSubagentStack.push(`subagent:${agentId}`);
+					subagents.pushActor(`subagent:${agentId}`);
 				}
+				const description =
+					subagents.consumePendingDescription() ?? readString(d['prompt']);
 				results.push(
 					makeEvent(
 						'subagent.start',
@@ -821,8 +809,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 						{
 							agent_id: agentId ?? '',
 							agent_type: agentType ?? '',
-							description:
-								lastTaskDescription ?? readString(d['prompt']) ?? undefined,
+							description: description ?? undefined,
 							tool: readString(d['tool']),
 							sender_thread_id: readString(d['sender_thread_id']),
 							receiver_thread_id: readString(d['receiver_thread_id']),
@@ -832,13 +819,9 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 						event,
 					),
 				);
-				if (agentId && (lastTaskDescription || readString(d['prompt']))) {
-					subagentDescriptions.set(
-						agentId,
-						lastTaskDescription ?? readString(d['prompt']) ?? '',
-					);
+				if (agentId && description) {
+					subagents.setDescription(agentId, description);
 				}
-				lastTaskDescription = undefined;
 				break;
 			}
 
@@ -846,9 +829,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 				results.push(...ensureRunArray(event));
 				const agentId = event.agentId ?? readString(d['agent_id']);
 				if (agentId) {
-					const actorId = `subagent:${agentId}`;
-					const idx = activeSubagentStack.lastIndexOf(actorId);
-					if (idx !== -1) activeSubagentStack.splice(idx, 1);
+					subagents.popActor(`subagent:${agentId}`);
 				}
 				const subStopActorId = `subagent:${agentId ?? 'unknown'}`;
 				const subStopEvt = makeEvent(
@@ -861,7 +842,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 						stop_hook_active: readBoolean(d['stop_hook_active']) ?? false,
 						agent_transcript_path: readString(d['agent_transcript_path']),
 						last_assistant_message: readString(d['last_assistant_message']),
-						description: subagentDescriptions.get(agentId ?? ''),
+						description: subagents.description(agentId ?? ''),
 						tool: readString(d['tool']),
 						status: readString(d['status']),
 						sender_thread_id: readString(d['sender_thread_id']),
@@ -1490,7 +1471,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		getSession: () => runLifecycle.getSession(),
 		getCurrentRun: () => runLifecycle.getCurrentRun(),
 		getActors: () => actors.all(),
-		getTasks: () => lastRootTasks,
+		getTasks: () => rootPlan.current(),
 		allocateSeq: () => runLifecycle.allocateSeq(),
 	};
 }

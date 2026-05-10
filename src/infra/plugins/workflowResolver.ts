@@ -1,28 +1,198 @@
+/**
+ * Workflow source resolution — single source of truth.
+ *
+ * Owns: ref-shape detection, manifest traversal, version pinning, source
+ * precedence, and ambiguity detection for workflow sources.
+ *
+ * Primitives that are shared with plugin resolution (readManifest, parseRef,
+ * ensureRepo, …) remain in marketplaceShared.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import {
 	ensureRepo,
 	isMarketplaceRef,
 	isMarketplaceSlug,
-	listWorkflowEntriesFromManifest,
 	parseRef,
+	readManifest,
 	requireGitForMarketplace,
 	resolvePluginManifestPath,
-	resolveWorkflowManifestPath,
-	resolveWorkflowPathFromManifest,
-	type MarketplaceWorkflowListing,
-	type WorkflowMarketplaceSource,
+	type MarketplaceEntry,
+	type MarketplaceManifest,
 } from './marketplaceShared';
 import * as marketplaceShared from './marketplaceShared';
 import {
 	WorkflowAmbiguityError,
 	WorkflowNotFoundError,
+	WorkflowVersionNotFoundError,
 	type WorkflowAmbiguityCandidate,
 } from './workflowSourceErrors';
 
+export {WorkflowVersionNotFoundError} from './workflowSourceErrors';
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+/**
+ * Origin of a workflow listing. Local listings intentionally have no
+ * `name@owner/repo` marketplace ref: they aren't addressable via GitHub and
+ * synthesising a fake `@local/<basename>` ref would mislead users.
+ */
+export type WorkflowListingSource =
+	| {kind: 'remote'; slug: string; owner: string; repo: string}
+	| {kind: 'local'; repoDir: string};
+
+export type MarketplaceWorkflowListing = {
+	name: string;
+	description?: string;
+	version?: string;
+	workflowPath: string;
+	/** Marketplace ref in `name@owner/repo` form. Only set for remote sources. */
+	ref?: string;
+	source: WorkflowListingSource;
+};
+
+export type WorkflowMarketplaceSource =
+	| {kind: 'remote'; slug: string; owner: string; repo: string}
+	| {kind: 'local'; path: string; repoDir: string};
+
+export type ResolvedWorkflowSource =
+	| {
+			kind: 'marketplace-remote';
+			slug: string;
+			owner: string;
+			repo: string;
+			workflowName: string;
+			version?: string;
+			ref: string;
+			manifestPath: string;
+			workflowPath: string;
+	  }
+	| {
+			kind: 'marketplace-local';
+			repoDir: string;
+			workflowName: string;
+			version?: string;
+			manifestPath: string;
+			workflowPath: string;
+	  }
+	| {
+			kind: 'filesystem';
+			workflowPath: string;
+	  };
+
+// ── Manifest path resolution ───────────────────────────────────────────────
+
+export function resolveWorkflowManifestPath(repoDir: string): string {
+	const preferred = path.join(repoDir, '.athena-workflow', 'marketplace.json');
+	const legacy = path.join(repoDir, '.claude-plugin', 'marketplace.json');
+	return fs.existsSync(preferred) ? preferred : legacy;
+}
+
+export function formatWorkflowListingSource(
+	source: WorkflowListingSource,
+): string {
+	return source.kind === 'remote' ? source.slug : `local:${source.repoDir}`;
+}
+
+// ── Manifest traversal ─────────────────────────────────────────────────────
+
+function preferCanonicalWorkflowPath(
+	repoDir: string,
+	workflowPath: string,
+): string {
+	const relativePath = path.relative(repoDir, workflowPath);
+	const segments = relativePath.split(path.sep);
+	if (segments[0] !== '.workflows') return workflowPath;
+	const canonical = path.join(repoDir, 'workflows', ...segments.slice(1));
+	return fs.existsSync(canonical) ? canonical : workflowPath;
+}
+
+function resolveWorkflowEntryPath(
+	entry: MarketplaceEntry,
+	manifest: MarketplaceManifest,
+	repoDir: string,
+): string {
+	if (typeof entry.source !== 'string') {
+		throw new Error(
+			`Workflow "${entry.name}" uses a remote source type which is not supported.`,
+		);
+	}
+
+	let sourcePath = entry.source;
+	const {workflowRoot} = manifest.metadata ?? {};
+	if (
+		workflowRoot &&
+		!path.isAbsolute(sourcePath) &&
+		!sourcePath.startsWith('./') &&
+		!sourcePath.startsWith('../')
+	) {
+		sourcePath = path.join(workflowRoot, sourcePath);
+	}
+
+	const workflowPath = path.resolve(repoDir, sourcePath);
+	if (
+		!workflowPath.startsWith(repoDir + path.sep) &&
+		workflowPath !== repoDir
+	) {
+		throw new Error(
+			`Workflow "${entry.name}" source resolves outside the marketplace repo: ${workflowPath}`,
+		);
+	}
+
+	const resolved = preferCanonicalWorkflowPath(repoDir, workflowPath);
+	if (!fs.existsSync(resolved)) {
+		throw new Error(`Workflow source not found: ${resolved}`);
+	}
+	return resolved;
+}
+
+export function resolveWorkflowPathFromManifest(
+	workflowName: string,
+	repoDir: string,
+	manifestPath: string,
+): string {
+	const manifest = readManifest(manifestPath);
+	const workflows = manifest.workflows ?? [];
+	const entry = workflows.find(w => w.name === workflowName);
+	if (!entry) {
+		const available = workflows.map(w => w.name).join(', ') || '(none)';
+		throw new Error(
+			`Workflow "${workflowName}" not found in marketplace manifest ${manifestPath}. Available workflows: ${available}`,
+		);
+	}
+	return resolveWorkflowEntryPath(entry, manifest, repoDir);
+}
+
+export function listWorkflowEntriesFromManifest(
+	repoDir: string,
+	manifestPath: string,
+	source: WorkflowListingSource,
+): MarketplaceWorkflowListing[] {
+	const manifest = readManifest(manifestPath);
+	const workflows = manifest.workflows ?? [];
+	return workflows
+		.filter(
+			(entry): entry is MarketplaceEntry & {source: string} =>
+				typeof entry.source === 'string',
+		)
+		.map(entry => ({
+			name: entry.name,
+			description: entry.description,
+			version: entry.version,
+			workflowPath: resolveWorkflowEntryPath(entry, manifest, repoDir),
+			ref:
+				source.kind === 'remote'
+					? `${entry.name}@${source.owner}/${source.repo}`
+					: undefined,
+			source,
+		}));
+}
+
+// ── Repo discovery ─────────────────────────────────────────────────────────
+
 export function findMarketplaceRepoDir(startPath: string): string | undefined {
 	let currentDir = path.resolve(startPath);
-
 	for (;;) {
 		if (
 			fs.existsSync(resolveWorkflowManifestPath(currentDir)) ||
@@ -30,14 +200,13 @@ export function findMarketplaceRepoDir(startPath: string): string | undefined {
 		) {
 			return currentDir;
 		}
-
 		const parentDir = path.dirname(currentDir);
-		if (parentDir === currentDir) {
-			return undefined;
-		}
+		if (parentDir === currentDir) return undefined;
 		currentDir = parentDir;
 	}
 }
+
+// ── High-level resolution ──────────────────────────────────────────────────
 
 export function resolveWorkflowMarketplaceSource(
 	source: string,
@@ -61,12 +230,7 @@ export function resolveWorkflowMarketplaceSource(
 			`Local marketplace not found from source: ${trimmed}. Expected a marketplace repo root or a path inside one.`,
 		);
 	}
-
-	return {
-		kind: 'local',
-		path: resolvedPath,
-		repoDir,
-	};
+	return {kind: 'local', path: resolvedPath, repoDir};
 }
 
 export function listMarketplaceWorkflows(
@@ -103,70 +267,8 @@ export function resolveMarketplaceWorkflow(ref: string): string {
 	);
 }
 
-/**
- * Thrown when a workflow with the requested name exists in a marketplace but
- * the pinned version does not match. Surfaced separately from the generic
- * "not found" error so the resolver can report the specific mismatch instead
- * of a confusing catch-all message.
- */
-export class WorkflowVersionNotFoundError extends Error {
-	readonly workflowName: string;
-	readonly requestedVersion: string;
-	readonly availableVersion: string | undefined;
-	readonly sourceLabel: string;
+// ── Source gathering ───────────────────────────────────────────────────────
 
-	constructor(
-		workflowName: string,
-		requestedVersion: string,
-		availableVersion: string | undefined,
-		sourceLabel: string,
-	) {
-		const availableText = availableVersion
-			? `found version ${availableVersion}`
-			: 'marketplace entry does not declare a version';
-		super(
-			`Workflow "${workflowName}" version ${requestedVersion} not found in ${sourceLabel} (${availableText}).`,
-		);
-		this.name = 'WorkflowVersionNotFoundError';
-		this.workflowName = workflowName;
-		this.requestedVersion = requestedVersion;
-		this.availableVersion = availableVersion;
-		this.sourceLabel = sourceLabel;
-	}
-}
-
-type ParsedWorkflowName = {
-	bareName: string;
-	pinnedVersion: string | undefined;
-};
-
-/**
- * Marketplace refs (`name@owner/repo`) are handled upstream by
- * `isMarketplaceRef` and never reach this function, so any `@<suffix>`
- * without a slash is unambiguously a version pin.
- */
-function parseBareWorkflowName(source: string): ParsedWorkflowName {
-	const atIdx = source.indexOf('@');
-	if (atIdx <= 0 || atIdx === source.length - 1) {
-		return {bareName: source, pinnedVersion: undefined};
-	}
-	const suffix = source.slice(atIdx + 1);
-	if (suffix.includes('/')) {
-		// Looks like an owner/repo slug but failed isMarketplaceRef upstream.
-		// Leave untouched so the normal not-found path reports it.
-		return {bareName: source, pinnedVersion: undefined};
-	}
-	return {
-		bareName: source.slice(0, atIdx),
-		pinnedVersion: suffix,
-	};
-}
-
-/**
- * Turn a configured marketplace source string (or loose workflow.json path)
- * into one or more canonical ResolvedWorkflowSource entries. Pure w.r.t.
- * arguments — remote marketplaces are fetched via ensureRepo elsewhere.
- */
 export function gatherMarketplaceWorkflowSources(
 	source: string,
 ): ResolvedWorkflowSource[] {
@@ -175,12 +277,7 @@ export function gatherMarketplaceWorkflowSources(
 
 	// Loose workflow.json file
 	if (fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile()) {
-		return [
-			{
-				kind: 'filesystem',
-				workflowPath: fs.realpathSync(resolvedPath),
-			},
-		];
+		return [{kind: 'filesystem', workflowPath: fs.realpathSync(resolvedPath)}];
 	}
 
 	// Remote marketplace slug
@@ -229,6 +326,23 @@ export function gatherMarketplaceWorkflowSources(
 		manifestPath,
 		workflowPath: entry.workflowPath,
 	}));
+}
+
+// ── Install resolution ─────────────────────────────────────────────────────
+
+type ParsedWorkflowName = {bareName: string; pinnedVersion: string | undefined};
+
+function parseBareWorkflowName(source: string): ParsedWorkflowName {
+	const atIdx = source.indexOf('@');
+	if (atIdx <= 0 || atIdx === source.length - 1) {
+		return {bareName: source, pinnedVersion: undefined};
+	}
+	const suffix = source.slice(atIdx + 1);
+	if (suffix.includes('/')) {
+		// Looks like an owner/repo slug but failed isMarketplaceRef upstream.
+		return {bareName: source, pinnedVersion: undefined};
+	}
+	return {bareName: source.slice(0, atIdx), pinnedVersion: suffix};
 }
 
 function resolvedSourceLabel(s: ResolvedWorkflowSource): string {
@@ -282,7 +396,7 @@ export function resolveWorkflowInstall(
 		return {kind: 'filesystem', workflowPath: fs.realpathSync(resolvedPath)};
 	}
 
-	// Bare name (optionally version-pinned): gather all configured sources.
+	// Bare name (optionally version-pinned): search all configured sources.
 	const {bareName, pinnedVersion} = parseBareWorkflowName(sourceOrName);
 	if (bareName.includes('/') || bareName.includes('\\')) {
 		throw new Error(`Workflow source not found: ${sourceOrName}`);
@@ -331,28 +445,3 @@ export function resolveWorkflowInstall(
 	}
 	return allListings[0]!;
 }
-
-export type ResolvedWorkflowSource =
-	| {
-			kind: 'marketplace-remote';
-			slug: string;
-			owner: string;
-			repo: string;
-			workflowName: string;
-			version?: string;
-			ref: string;
-			manifestPath: string;
-			workflowPath: string;
-	  }
-	| {
-			kind: 'marketplace-local';
-			repoDir: string;
-			workflowName: string;
-			version?: string;
-			manifestPath: string;
-			workflowPath: string;
-	  }
-	| {
-			kind: 'filesystem';
-			workflowPath: string;
-	  };

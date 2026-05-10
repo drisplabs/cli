@@ -25,9 +25,7 @@ import {
 	startControlServer,
 	type ControlServer,
 } from '../../gateway/control/server';
-import {SessionRegistry} from '../../gateway/sessionRegistry';
-import {Dispatcher} from '../../gateway/dispatcher';
-import {InboundQueue} from '../../gateway/state/inboundQueue';
+import {DispatchPipeline} from '../../gateway/dispatchPipeline';
 import {openGatewayState, type GatewayStateDb} from '../../gateway/state/db';
 import {RelayCoordinator} from '../../gateway/relay/coordinator';
 import {ChannelManager} from '../../gateway/channelManager';
@@ -149,14 +147,13 @@ describe('SessionBridge integration', () => {
 	it('registers through an explicit remote WS endpoint', async () => {
 		const token = 'remote-token';
 		const channelManager = new ChannelManager();
-		const registry = new SessionRegistry();
 		stateDb = openGatewayState(':memory:');
-		const dispatcher = new Dispatcher({
-			registry,
-			pushDispatch: () => {},
-			sendOutbound: (channelId, msg) => channelManager.send(channelId, msg),
-			inboundQueue: new InboundQueue(stateDb),
+		const pipeline = new DispatchPipeline({
+			stateDb,
+			send: (channelId, msg) => channelManager.send(channelId, msg),
+			outbox: {tickIntervalMs: 60_000},
 		});
+		pipeline.start();
 		const relayCoordinator = new RelayCoordinator({
 			adapters: () => channelManager.listAdapters(),
 		});
@@ -170,8 +167,7 @@ describe('SessionBridge integration', () => {
 			startedAt: Date.now(),
 			handler: createDispatcher({
 				startedAt: Date.now(),
-				registry,
-				dispatcher,
+				pipeline,
 				channelManager,
 				relayCoordinator,
 			}),
@@ -190,7 +186,8 @@ describe('SessionBridge integration', () => {
 
 		await bridge.start();
 
-		expect(registry.getCurrent()?.runtimeId).toBe('remote-s1');
+		expect(pipeline.getCurrentRuntime()?.runtimeId).toBe('remote-s1');
+		await pipeline.stop();
 	}, 15_000);
 
 	it('round-trips dispatch.turn → completeTurn → adapter.send', async () => {
@@ -273,7 +270,7 @@ describe('SessionBridge integration', () => {
 		// Background reconnect kicks in immediately — wait for the rebind to
 		// produce a fresh active binding (lastRebindAt is set on rebind).
 		await waitUntil(() => {
-			const b = daemon!.registry.getBinding();
+			const b = daemon!.pipeline.getBinding();
 			return b?.state === 'active' && b.lastRebindAt !== undefined;
 		}, 3_000);
 
@@ -286,7 +283,7 @@ describe('SessionBridge integration', () => {
 
 		expect(reply).toMatchObject({delivered: true});
 		expect(adapter.sentMessages.at(-1)?.text).toBe('reconnected reply');
-		expect(daemon.registry.getBinding()?.state).toBe('active');
+		expect(daemon.pipeline.getBinding()?.state).toBe('active');
 	}, 15_000);
 
 	it('background reconnect re-registers without an RPC and drains parked inbound', async () => {
@@ -327,8 +324,8 @@ describe('SessionBridge integration', () => {
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:bg-after-drop'});
 
 		await waitUntil(() => seen.includes('fk:bg-after-drop'), 3_000);
-		expect(daemon.registry.getBinding()?.state).toBe('active');
-		expect(daemon.registry.getBinding()?.lastRebindAt).toBeDefined();
+		expect(daemon.pipeline.getBinding()?.state).toBe('active');
+		expect(daemon.pipeline.getBinding()?.lastRebindAt).toBeDefined();
 		expect(bridge.getConnectionState()).toBe('connected');
 	}, 15_000);
 
@@ -348,7 +345,7 @@ describe('SessionBridge integration', () => {
 
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:pre1'});
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:pre2'});
-		await waitUntil(() => daemon!.inboundQueue.size() === 2);
+		await waitUntil(() => daemon!.pipeline.pendingInboundCount() === 2);
 
 		bridge = new SessionBridge({
 			runtimeId: 'late-sub-1',
@@ -428,7 +425,7 @@ describe('SessionBridge integration', () => {
 		// be parked in the durable queue.
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:queue1'});
 		adapter.emitInbound({...inbound, idempotencyKey: 'fk:queue2'});
-		await waitUntil(() => daemon!.inboundQueue.size() === 2);
+		await waitUntil(() => daemon!.pipeline.pendingInboundCount() === 2);
 
 		bridge = new SessionBridge({
 			runtimeId: 'q1',
@@ -447,7 +444,7 @@ describe('SessionBridge integration', () => {
 			'fk:queue1',
 			'fk:queue2',
 		]);
-		expect(daemon.inboundQueue.size()).toBe(0);
+		expect(daemon.pipeline.pendingInboundCount()).toBe(0);
 	}, 15_000);
 
 	it('relayPermission broadcasts to the registered adapter and returns the verdict', async () => {
@@ -582,7 +579,7 @@ describe('SessionBridge integration', () => {
 
 		(bridge as unknown as {client: {close: () => void}}).client.close();
 		await waitUntil(() => {
-			const b = daemon!.registry.getBinding();
+			const b = daemon!.pipeline.getBinding();
 			return b?.state === 'active' && b.lastRebindAt !== undefined;
 		}, 3_000);
 
@@ -641,7 +638,7 @@ describe('SessionBridge integration', () => {
 		bridge = undefined;
 
 		await waitUntil(() => daemon!.relayCoordinator.pendingCount() === 0, 3_000);
-		expect(daemon.registry.getCurrent()).toBeNull();
+		expect(daemon.pipeline.getCurrentRuntime()).toBeNull();
 		await expect(relayPromise).rejects.toBeDefined();
 	}, 15_000);
 

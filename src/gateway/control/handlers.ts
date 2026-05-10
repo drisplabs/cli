@@ -1,9 +1,10 @@
 /**
  * Request dispatcher for gateway control-plane envelopes.
  *
- * M3 implements `ping` and `status`. M5 adds session lifecycle
- * (`session.register`, `session.unregister`, `session.turn.complete`) and
- * direct `channel.send`. Cloud function and relay kinds land in M6/M7.
+ * Each envelope kind is declared as a `ControlHandlerSpec`. The dispatcher
+ * built by `createDispatcher` looks up the spec by kind, runs the uniform
+ * preconditions (required dependencies, registered-runtime connection),
+ * invokes the handler, and wraps the result in an `ok`/`error` envelope.
  */
 
 import {createRequire} from 'node:module';
@@ -34,14 +35,13 @@ import type {
 	ChannelReloadResult,
 } from '../../shared/gateway-protocol';
 import type {ChannelManager} from '../channelManager';
-import type {Dispatcher} from '../dispatcher';
+import type {DispatchPipeline} from '../dispatchPipeline';
 import type {RelayCoordinator} from '../relay/coordinator';
 import {
 	AlreadyRegisteredError,
 	maybeLastRebindAt,
 	NotRegisteredError,
-	type SessionRegistry,
-} from '../sessionRegistry';
+} from '../runtimeBindingStore';
 import type {ConnectionContext, RequestHandler} from './server';
 
 // Build-time inject from tsup `define`. Replaced literally with the
@@ -76,20 +76,9 @@ function readVersion(): string {
 
 export type DispatcherDeps = {
 	startedAt: number;
-	registry?: SessionRegistry;
-	dispatcher?: Dispatcher;
+	pipeline?: DispatchPipeline;
 	channelManager?: ChannelManager;
 	relayCoordinator?: RelayCoordinator;
-	/**
-	 * Registers a connection-scoped push function under the runtime's id so
-	 * the dispatcher can reach the right socket. Wired by daemon.ts; absent
-	 * in tests that don't need session.* round-trips.
-	 */
-	registerRuntimeConnection?: (
-		runtimeId: string,
-		ctx: ConnectionContext,
-	) => void;
-	unregisterRuntimeConnection?: (runtimeId: string) => void;
 	/**
 	 * Returns the daemon's effective listener at status-query time. Daemon
 	 * sets it after the listener actually binds (port 0 resolves at listen);
@@ -99,300 +88,323 @@ export type DispatcherDeps = {
 	reloadChannels?: () => Promise<{results: ChannelReloadResult[]}>;
 };
 
+type HandlerContext = {
+	deps: DispatcherDeps;
+	connection: ConnectionContext;
+	/**
+	 * Runtime id resolved from the connection when the spec requires a
+	 * registered runtime. Undefined when no pipeline is configured (test
+	 * shape) or when the spec does not require runtime registration.
+	 */
+	callerRuntimeId: string | undefined;
+	/** Wall-clock time captured at envelope receipt. */
+	ts: number;
+};
+
+type ControlHandlerSpec = {
+	kind: string;
+	/**
+	 * Names of `DispatcherDeps` fields that must be present (non-undefined)
+	 * for this kind. If any are missing the dispatcher returns `unsupported`
+	 * with `unsupportedMessage`.
+	 */
+	requires?: ReadonlyArray<keyof DispatcherDeps>;
+	/** Message used in the `unsupported` error when a required dep is absent. */
+	unsupportedMessage?: string;
+	/**
+	 * When true, the dispatcher refuses the request unless the connection is
+	 * bound to a registered runtime (only checked when a registry is
+	 * configured — tests without one bypass this check).
+	 */
+	requireRegisteredRuntime?: boolean;
+	handle: (
+		envelope: ControlEnvelope,
+		ctx: HandlerContext,
+	) => Promise<unknown> | unknown;
+};
+
+const PING: ControlHandlerSpec = {
+	kind: 'ping',
+	handle: (_envelope, {ts, deps}) => {
+		const payload: PingResponsePayload = {
+			pong: true,
+			daemonPid: process.pid,
+			uptimeMs: ts - deps.startedAt,
+		};
+		return payload;
+	},
+};
+
+const STATUS: ControlHandlerSpec = {
+	kind: 'status',
+	handle: (_envelope, {ts, deps}) => {
+		const channels = (deps.channelManager?.listChannels() ?? []).map(c => ({
+			id: c.id,
+			state:
+				c.health?.transportOk === false
+					? ('degraded' as const)
+					: ('running' as const),
+			...(c.health?.at !== undefined ? {lastHealthAt: c.health.at} : {}),
+			...(c.health?.note !== undefined ? {note: c.health.note} : {}),
+		}));
+		const payload: StatusResponsePayload = {
+			daemonPid: process.pid,
+			startedAt: deps.startedAt,
+			uptimeMs: ts - deps.startedAt,
+			version: readVersion(),
+			listener: deps.getListener?.() ?? {
+				kind: 'uds',
+				socketPath: '<unknown>',
+			},
+			channels,
+			runtimes: runtimeStatusEntries(deps.pipeline),
+		};
+		return payload;
+	},
+};
+
+const CHANNELS_RELOAD: ControlHandlerSpec = {
+	kind: 'channels.reload',
+	requires: ['reloadChannels'],
+	unsupportedMessage: 'channel reload not configured',
+	handle: async (_envelope, {deps}) => {
+		const payload: ChannelsReloadResponsePayload = await deps.reloadChannels!();
+		return payload;
+	},
+};
+
+const SESSION_REGISTER: ControlHandlerSpec = {
+	kind: 'session.register',
+	requires: ['pipeline'],
+	unsupportedMessage: 'session.register not configured',
+	handle: (envelope, {deps, connection}) => {
+		const req = envelope.payload as SessionRegisterRequestPayload;
+		const reg = deps.pipeline!.registerRuntime({
+			runtimeId: req.runtimeId,
+			defaultAgentId: req.defaultAgentId,
+			pid: req.pid,
+			connectionId: connection.connectionId,
+			push: connection.push,
+		});
+		const payload: SessionRegisterResponsePayload = {
+			registeredAt: reg.registeredAt,
+			gatewayStartedAt: deps.startedAt,
+		};
+		return payload;
+	},
+};
+
+const SESSION_UNREGISTER: ControlHandlerSpec = {
+	kind: 'session.unregister',
+	requires: ['pipeline'],
+	unsupportedMessage: 'session.unregister not configured',
+	handle: (envelope, {deps, ts}) => {
+		const req = envelope.payload as SessionUnregisterRequestPayload;
+		deps.pipeline!.unregisterRuntime(req.runtimeId);
+		const payload: SessionUnregisterResponsePayload = {
+			unregisteredAt: ts,
+		};
+		return payload;
+	},
+};
+
+const SESSION_TURN_COMPLETE: ControlHandlerSpec = {
+	kind: 'session.turn.complete',
+	requires: ['pipeline'],
+	unsupportedMessage: 'pipeline not configured',
+	handle: async (envelope, {deps}) => {
+		const req = envelope.payload as SessionTurnCompleteRequestPayload;
+		return await deps.pipeline!.handleTurnComplete(req);
+	},
+};
+
+const CHANNEL_SEND: ControlHandlerSpec = {
+	kind: 'channel.send',
+	requires: ['channelManager'],
+	unsupportedMessage: 'channel manager not configured',
+	handle: async (envelope, {deps}) => {
+		const req = envelope.payload as ChannelSendRequestPayload;
+		const result = await deps.channelManager!.send(
+			req.message.location.channelId,
+			req.message,
+		);
+		const payload: ChannelSendResponsePayload = {
+			providerMessageId: result.providerMessageId,
+			deliveredAt: result.deliveredAt,
+		};
+		return payload;
+	},
+};
+
+const RELAY_PERMISSION_REQUEST: ControlHandlerSpec = {
+	kind: 'relay.permission.request',
+	requires: ['relayCoordinator'],
+	unsupportedMessage: 'relay coordinator not configured',
+	requireRegisteredRuntime: true,
+	handle: async (envelope, {deps, callerRuntimeId}) => {
+		const req = envelope.payload as RelayPermissionRequestPayload;
+		const broadcast = deps.relayCoordinator!.requestPermission({
+			...(req.channelRequestId !== undefined
+				? {channelRequestId: req.channelRequestId}
+				: {}),
+			toolName: req.toolName,
+			description: req.description,
+			inputPreview: req.inputPreview,
+			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
+			...(callerRuntimeId !== undefined ? {runtimeId: callerRuntimeId} : {}),
+		});
+		const result = await broadcast.result;
+		const payload: RelayPermissionResponsePayload = {
+			channelRequestId: broadcast.channelRequestId,
+			result,
+		};
+		return payload;
+	},
+};
+
+const RELAY_PERMISSION_CANCEL: ControlHandlerSpec = {
+	kind: 'relay.permission.cancel',
+	requires: ['relayCoordinator'],
+	unsupportedMessage: 'relay coordinator not configured',
+	requireRegisteredRuntime: true,
+	handle: (envelope, {deps, callerRuntimeId}) => {
+		const req = envelope.payload as RelayPermissionCancelRequestPayload;
+		const cancelled = deps.relayCoordinator!.cancel(
+			req.channelRequestId,
+			req.reason,
+			callerRuntimeId,
+		);
+		const payload: RelayPermissionCancelResponsePayload = {cancelled};
+		return payload;
+	},
+};
+
+const RELAY_QUESTION_REQUEST: ControlHandlerSpec = {
+	kind: 'relay.question.request',
+	requires: ['relayCoordinator'],
+	unsupportedMessage: 'relay coordinator not configured',
+	requireRegisteredRuntime: true,
+	handle: async (envelope, {deps, callerRuntimeId}) => {
+		const req = envelope.payload as RelayQuestionRequestPayload;
+		const broadcast = deps.relayCoordinator!.requestQuestion({
+			...(req.channelRequestId !== undefined
+				? {channelRequestId: req.channelRequestId}
+				: {}),
+			title: req.title,
+			questions: req.questions,
+			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
+			...(callerRuntimeId !== undefined ? {runtimeId: callerRuntimeId} : {}),
+		});
+		const result = await broadcast.result;
+		const payload: RelayQuestionResponsePayload = {
+			channelRequestId: broadcast.channelRequestId,
+			result,
+		};
+		return payload;
+	},
+};
+
+const RELAY_QUESTION_CANCEL: ControlHandlerSpec = {
+	kind: 'relay.question.cancel',
+	requires: ['relayCoordinator'],
+	unsupportedMessage: 'relay coordinator not configured',
+	requireRegisteredRuntime: true,
+	handle: (envelope, {deps, callerRuntimeId}) => {
+		const req = envelope.payload as RelayQuestionCancelRequestPayload;
+		const cancelled = deps.relayCoordinator!.cancel(
+			req.channelRequestId,
+			req.reason,
+			callerRuntimeId,
+		);
+		const payload: RelayQuestionCancelResponsePayload = {cancelled};
+		return payload;
+	},
+};
+
+const HANDLERS: ReadonlyMap<string, ControlHandlerSpec> = new Map(
+	[
+		PING,
+		STATUS,
+		CHANNELS_RELOAD,
+		SESSION_REGISTER,
+		SESSION_UNREGISTER,
+		SESSION_TURN_COMPLETE,
+		CHANNEL_SEND,
+		RELAY_PERMISSION_REQUEST,
+		RELAY_PERMISSION_CANCEL,
+		RELAY_QUESTION_REQUEST,
+		RELAY_QUESTION_CANCEL,
+	].map(spec => [spec.kind, spec]),
+);
+
 export function createDispatcher(deps: DispatcherDeps): RequestHandler {
 	const handle: RequestHandler = async (envelope, connection) => {
 		const ts = Date.now();
-		switch (envelope.kind) {
-			case 'ping': {
-				const payload: PingResponsePayload = {
-					pong: true,
-					daemonPid: process.pid,
-					uptimeMs: ts - deps.startedAt,
-				};
-				return ok(envelope, ts, payload);
-			}
-			case 'status': {
-				const channels = (deps.channelManager?.listChannels() ?? []).map(c => ({
-					id: c.id,
-					state:
-						c.health?.transportOk === false
-							? ('degraded' as const)
-							: ('running' as const),
-					...(c.health?.at !== undefined ? {lastHealthAt: c.health.at} : {}),
-					...(c.health?.note !== undefined ? {note: c.health.note} : {}),
-				}));
-				const payload: StatusResponsePayload = {
-					daemonPid: process.pid,
-					startedAt: deps.startedAt,
-					uptimeMs: ts - deps.startedAt,
-					version: readVersion(),
-					listener: deps.getListener?.() ?? {
-						kind: 'uds',
-						socketPath: '<unknown>',
-					},
-					channels,
-					runtimes: runtimeStatusEntries(deps.registry),
-				};
-				return ok(envelope, ts, payload);
-			}
-			case 'channels.reload': {
-				if (!deps.reloadChannels) {
+		const spec = HANDLERS.get(envelope.kind);
+		if (!spec) {
+			return error(
+				envelope,
+				ts,
+				'unknown_kind',
+				`unknown kind: ${envelope.kind}`,
+			);
+		}
+
+		if (spec.requires) {
+			for (const name of spec.requires) {
+				if (deps[name] === undefined) {
 					return error(
 						envelope,
 						ts,
 						'unsupported',
-						'channel reload not configured',
+						spec.unsupportedMessage ?? `${spec.kind} not configured`,
 					);
 				}
-				const payload: ChannelsReloadResponsePayload =
-					await deps.reloadChannels();
-				return ok(envelope, ts, payload);
 			}
-			case 'session.register': {
-				if (!deps.registry)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'session.register not configured',
-					);
-				const req = envelope.payload as SessionRegisterRequestPayload;
-				try {
-					const reg = deps.registry.register({
-						runtimeId: req.runtimeId,
-						defaultAgentId: req.defaultAgentId,
-						pid: req.pid,
-					});
-					deps.registerRuntimeConnection?.(req.runtimeId, connection);
-					// Drain inbound parked while no runtime was registered. Order is
-					// FIFO, but the runtime's single-slot queue (AppShell) handles
-					// concurrency: extras are buffered.
-					try {
-						deps.dispatcher?.drainPending();
-					} catch (err) {
-						process.stderr.write(
-							`gateway: drainPending failed: ${
-								err instanceof Error ? err.message : String(err)
-							}\n`,
-						);
-					}
-					const payload: SessionRegisterResponsePayload = {
-						registeredAt: reg.registeredAt,
-						gatewayStartedAt: deps.startedAt,
-					};
-					return ok(envelope, ts, payload);
-				} catch (err) {
-					if (err instanceof AlreadyRegisteredError) {
-						return error(envelope, ts, err.code, err.message);
-					}
-					throw err;
-				}
-			}
-			case 'session.unregister': {
-				if (!deps.registry)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'session.unregister not configured',
-					);
-				const req = envelope.payload as SessionUnregisterRequestPayload;
-				try {
-					deps.registry.unregister(req.runtimeId);
-					deps.unregisterRuntimeConnection?.(req.runtimeId);
-					const payload: SessionUnregisterResponsePayload = {
-						unregisteredAt: ts,
-					};
-					return ok(envelope, ts, payload);
-				} catch (err) {
-					if (err instanceof NotRegisteredError) {
-						return error(envelope, ts, err.code, err.message);
-					}
-					throw err;
-				}
-			}
-			case 'session.turn.complete': {
-				if (!deps.dispatcher)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'dispatcher not configured',
-					);
-				const req = envelope.payload as SessionTurnCompleteRequestPayload;
-				const result = await deps.dispatcher.handleTurnComplete(req);
-				return ok(envelope, ts, result);
-			}
-			case 'channel.send': {
-				if (!deps.channelManager)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'channel manager not configured',
-					);
-				const req = envelope.payload as ChannelSendRequestPayload;
-				const result = await deps.channelManager.send(
-					req.message.location.channelId,
-					req.message,
-				);
-				const payload: ChannelSendResponsePayload = {
-					providerMessageId: result.providerMessageId,
-					deliveredAt: result.deliveredAt,
-				};
-				return ok(envelope, ts, payload);
-			}
-			case 'relay.permission.request': {
-				if (!deps.relayCoordinator)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'relay coordinator not configured',
-					);
-				const req = envelope.payload as RelayPermissionRequestPayload;
-				const callerRuntimeId =
-					deps.registry?.getRuntimeIdByConnection(connection.connectionId) ??
-					undefined;
-				if (deps.registry && callerRuntimeId === undefined) {
-					return error(
-						envelope,
-						ts,
-						'not_registered',
-						'relay.permission.request requires a registered runtime connection',
-					);
-				}
-				const broadcast = deps.relayCoordinator.requestPermission({
-					...(req.channelRequestId !== undefined
-						? {channelRequestId: req.channelRequestId}
-						: {}),
-					toolName: req.toolName,
-					description: req.description,
-					inputPreview: req.inputPreview,
-					...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
-					...(callerRuntimeId !== undefined
-						? {runtimeId: callerRuntimeId}
-						: {}),
-				});
-				const result = await broadcast.result;
-				const payload: RelayPermissionResponsePayload = {
-					channelRequestId: broadcast.channelRequestId,
-					result,
-				};
-				return ok(envelope, Date.now(), payload);
-			}
-			case 'relay.permission.cancel': {
-				if (!deps.relayCoordinator)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'relay coordinator not configured',
-					);
-				const req = envelope.payload as RelayPermissionCancelRequestPayload;
-				const callerRuntimeId =
-					deps.registry?.getRuntimeIdByConnection(connection.connectionId) ??
-					undefined;
-				if (deps.registry && callerRuntimeId === undefined) {
-					return error(
-						envelope,
-						ts,
-						'not_registered',
-						'relay.permission.cancel requires a registered runtime connection',
-					);
-				}
-				const cancelled = deps.relayCoordinator.cancel(
-					req.channelRequestId,
-					req.reason,
-					callerRuntimeId,
-				);
-				const payload: RelayPermissionCancelResponsePayload = {cancelled};
-				return ok(envelope, ts, payload);
-			}
-			case 'relay.question.request': {
-				if (!deps.relayCoordinator)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'relay coordinator not configured',
-					);
-				const req = envelope.payload as RelayQuestionRequestPayload;
-				const callerRuntimeId =
-					deps.registry?.getRuntimeIdByConnection(connection.connectionId) ??
-					undefined;
-				if (deps.registry && callerRuntimeId === undefined) {
-					return error(
-						envelope,
-						ts,
-						'not_registered',
-						'relay.question.request requires a registered runtime connection',
-					);
-				}
-				const broadcast = deps.relayCoordinator.requestQuestion({
-					...(req.channelRequestId !== undefined
-						? {channelRequestId: req.channelRequestId}
-						: {}),
-					title: req.title,
-					questions: req.questions,
-					...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
-					...(callerRuntimeId !== undefined
-						? {runtimeId: callerRuntimeId}
-						: {}),
-				});
-				const result = await broadcast.result;
-				const payload: RelayQuestionResponsePayload = {
-					channelRequestId: broadcast.channelRequestId,
-					result,
-				};
-				return ok(envelope, Date.now(), payload);
-			}
-			case 'relay.question.cancel': {
-				if (!deps.relayCoordinator)
-					return error(
-						envelope,
-						ts,
-						'unsupported',
-						'relay coordinator not configured',
-					);
-				const req = envelope.payload as RelayQuestionCancelRequestPayload;
-				const callerRuntimeId =
-					deps.registry?.getRuntimeIdByConnection(connection.connectionId) ??
-					undefined;
-				if (deps.registry && callerRuntimeId === undefined) {
-					return error(
-						envelope,
-						ts,
-						'not_registered',
-						'relay.question.cancel requires a registered runtime connection',
-					);
-				}
-				const cancelled = deps.relayCoordinator.cancel(
-					req.channelRequestId,
-					req.reason,
-					callerRuntimeId,
-				);
-				const payload: RelayQuestionCancelResponsePayload = {cancelled};
-				return ok(envelope, ts, payload);
-			}
-			default:
+		}
+
+		let callerRuntimeId: string | undefined;
+		if (spec.requireRegisteredRuntime) {
+			callerRuntimeId =
+				deps.pipeline?.getRuntimeIdByConnection(connection.connectionId) ??
+				undefined;
+			if (deps.pipeline && callerRuntimeId === undefined) {
 				return error(
 					envelope,
 					ts,
-					'unknown_kind',
-					`unknown kind: ${envelope.kind}`,
+					'not_registered',
+					`${spec.kind} requires a registered runtime connection`,
 				);
+			}
+		}
+
+		try {
+			const payload = await spec.handle(envelope, {
+				deps,
+				connection,
+				callerRuntimeId,
+				ts,
+			});
+			return ok(envelope, Date.now(), payload);
+		} catch (err) {
+			if (
+				err instanceof AlreadyRegisteredError ||
+				err instanceof NotRegisteredError
+			) {
+				return error(envelope, ts, err.code, err.message);
+			}
+			throw err;
 		}
 	};
 	return handle;
 }
 
 function runtimeStatusEntries(
-	registry: SessionRegistry | undefined,
+	pipeline: DispatchPipeline | undefined,
 ): RuntimeStatusEntry[] {
-	const runtime = registry?.getCurrent();
-	if (!runtime || !registry) return [];
-	const binding = registry.getBinding();
+	const runtime = pipeline?.getCurrentRuntime();
+	if (!runtime || !pipeline) return [];
+	const binding = pipeline.getBinding();
 	return [
 		{
 			runtimeId: runtime.runtimeId,
@@ -415,7 +427,7 @@ function runtimeStatusEntries(
 								...maybeLastRebindAt(binding.lastRebindAt),
 							}
 						: {state: 'none'},
-			pendingDispatchCount: registry.pendingDispatchCount(),
+			pendingDispatchCount: pipeline.pendingDispatchCount(),
 		},
 	];
 }

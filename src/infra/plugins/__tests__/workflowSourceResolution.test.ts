@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
 import * as marketplaceShared from '../marketplaceShared';
-import type {ResolvedWorkflowSource} from '../workflowSourceResolution';
+import type {ResolvedWorkflowSource} from '../workflowResolver';
 import {
 	gatherMarketplaceWorkflowSources,
 	resolveWorkflowInstall,
 	WorkflowVersionNotFoundError,
-} from '../workflowSourceResolution';
+} from '../workflowResolver';
 import {
 	WorkflowAmbiguityError,
 	WorkflowNotFoundError,

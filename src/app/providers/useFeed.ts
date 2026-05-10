@@ -31,9 +31,10 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {TodoItem} from '../../core/feed/todo';
 import {createFeedMapper, type FeedMapper} from '../../core/feed/mapper';
 import {
-	handleEvent,
-	type ControllerCallbacks,
-} from '../../core/controller/runtimeController';
+	ingestRuntimeDecision,
+	ingestRuntimeEvent,
+} from '../../core/feed/ingest';
+import type {ControllerCallbacks} from '../../core/controller/runtimeController';
 import {writeGatewayTrace} from '../../infra/gatewayTrace';
 import {
 	getActivePerfCycleId,
@@ -413,7 +414,6 @@ export function useFeed(
 				source: 'runtime.event',
 				runtime_kind: runtimeEvent.kind,
 			});
-			// Run controller for rule matching / queue management
 			try {
 				if (
 					options?.relayPermission &&
@@ -423,25 +423,17 @@ export function useFeed(
 						`useFeed permission event relay-enabled id=${runtimeEvent.id} tool=${runtimeEvent.toolName ?? ''}`,
 					);
 				}
-				const result = handleEvent(runtimeEvent, controllerCallbacks);
+				const {feedEvents: newFeedEvents, decision} = ingestRuntimeEvent(
+					runtimeEvent,
+					{
+						mapper: mapperRef.current,
+						store: sessionStoreRef.current,
+						controllerCallbacks,
+					},
+				);
 
-				if (result.handled && result.decision) {
-					// Immediate decision (rule match) — send
-					runtime.sendDecision(runtimeEvent.id, result.decision);
-				}
-
-				// Map to feed events
-				const newFeedEvents = mapperRef.current.mapEvent(runtimeEvent);
-
-				// Persist runtime event + derived feed events
-				if (sessionStoreRef.current) {
-					try {
-						sessionStoreRef.current.recordEvent(runtimeEvent, newFeedEvents);
-					} catch (err) {
-						sessionStoreRef.current.markDegraded(
-							`recordEvent failed: ${err instanceof Error ? err.message : err}`,
-						);
-					}
+				if (decision) {
+					runtime.sendDecision(runtimeEvent.id, decision);
 				}
 
 				if (!abortRef.current.signal.aborted && newFeedEvents.length > 0) {
@@ -488,19 +480,11 @@ export function useFeed(
 					) {
 						dequeueQuestion(eventId);
 					}
-					const feedEvent = mapperRef.current.mapDecision(eventId, decision);
+					const feedEvent = ingestRuntimeDecision(eventId, decision, {
+						mapper: mapperRef.current,
+						store: sessionStoreRef.current,
+					});
 					if (feedEvent) {
-						// Persist decision event (feed-only, no runtime event)
-						if (sessionStoreRef.current) {
-							try {
-								sessionStoreRef.current.recordFeedEvents([feedEvent]);
-							} catch (err) {
-								sessionStoreRef.current.markDegraded(
-									`recordFeedEvents failed: ${err instanceof Error ? err.message : err}`,
-								);
-							}
-						}
-
 						feedStoreRef.current!.pushEvents([feedEvent]);
 
 						// Auto-dequeue permissions/questions when decision arrives

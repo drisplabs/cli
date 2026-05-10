@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import net from 'node:net';
+import {tryReadFrame, writeFrame} from './udsFrameCodec';
 
 /**
  * Length-prefixed JSON protocol over UDS. Each frame is `<len>\n<body>` where
@@ -117,7 +118,7 @@ async function handleConnection(
 	handler: UdsHandler,
 	log?: UdsServerLogger,
 ): Promise<void> {
-	let buffer = Buffer.alloc(0);
+	let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 	socket.on('data', chunk => {
 		const chunkBuf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
 		buffer = Buffer.concat([buffer, chunkBuf]);
@@ -134,21 +135,15 @@ async function handleConnection(
 
 	async function drain(): Promise<void> {
 		for (;;) {
-			const newlineIdx = buffer.indexOf(0x0a);
-			if (newlineIdx < 0) return;
-			const lenStr = buffer.subarray(0, newlineIdx).toString('utf-8');
-			const len = Number.parseInt(lenStr, 10);
-			if (!Number.isFinite(len) || len < 0 || len > 1_000_000) {
-				log?.(
-					'warn',
-					`uds bad framing header: ${JSON.stringify(lenStr.slice(0, 32))}`,
-				);
+			const frame = tryReadFrame(buffer);
+			if (frame === null) return;
+			if (!frame.ok) {
+				log?.('warn', frame.error);
 				socket.destroy();
 				return;
 			}
-			if (buffer.length < newlineIdx + 1 + len) return;
-			const body = buffer.subarray(newlineIdx + 1, newlineIdx + 1 + len);
-			buffer = buffer.subarray(newlineIdx + 1 + len);
+			const {body} = frame;
+			buffer = frame.rest;
 			let parsed: UdsRequest;
 			try {
 				parsed = JSON.parse(body.toString('utf-8')) as UdsRequest;
@@ -171,13 +166,6 @@ async function handleConnection(
 	}
 }
 
-function writeFrame(socket: net.Socket, response: UdsResponse): void {
-	const body = JSON.stringify(response);
-	const buf = Buffer.from(body, 'utf-8');
-	socket.write(`${buf.length}\n`);
-	socket.write(buf);
-}
-
 export type UdsClientOptions = {
 	timeoutMs?: number;
 };
@@ -190,7 +178,7 @@ export async function sendUdsRequest(
 	const timeoutMs = options.timeoutMs ?? 5_000;
 	return await new Promise<UdsResponse>((resolve, reject) => {
 		const socket = net.createConnection(socketPath);
-		let buffer = Buffer.alloc(0);
+		let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 		let settled = false;
 
 		const timer = setTimeout(() => {
@@ -214,32 +202,21 @@ export async function sendUdsRequest(
 		};
 
 		socket.on('connect', () => {
-			const body = JSON.stringify(request);
-			const buf = Buffer.from(body, 'utf-8');
-			socket.write(`${buf.length}\n`);
-			socket.write(buf);
+			writeFrame(socket, request);
 		});
 
 		socket.on('data', chunk => {
 			const chunkBuf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
 			buffer = Buffer.concat([buffer, chunkBuf]);
-			const newlineIdx = buffer.indexOf(0x0a);
-			if (newlineIdx < 0) return;
-			const len = Number.parseInt(
-				buffer.subarray(0, newlineIdx).toString('utf-8'),
-				10,
-			);
-			if (!Number.isFinite(len)) {
+			const frame = tryReadFrame(buffer);
+			if (frame === null) return;
+			if (!frame.ok) {
 				finish(() => reject(new Error('uds reply malformed')));
 				return;
 			}
-			if (buffer.length < newlineIdx + 1 + len) return;
-			const body = buffer
-				.subarray(newlineIdx + 1, newlineIdx + 1 + len)
-				.toString('utf-8');
 			let parsed: UdsResponse;
 			try {
-				parsed = JSON.parse(body) as UdsResponse;
+				parsed = JSON.parse(frame.body.toString('utf-8')) as UdsResponse;
 			} catch (err) {
 				finish(() =>
 					reject(
