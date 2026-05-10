@@ -21,6 +21,14 @@
  *
  * No relay-capable adapters? `request*` resolves with `{kind: 'no_relay'}`
  * so the caller can fall back to local-only resolution.
+ *
+ * Internal seams:
+ *   - `PendingRegistry` (./pendingRegistry) owns the channelRequestId map,
+ *     collision detection, settle, runtime-scoped cancel, and disposeAll.
+ *   - The private `broadcast` helper owns the AbortController fanout, the
+ *     TTL timer, the per-adapter promise wiring, and entry registration —
+ *     parameterised so the two public methods specialise only the target
+ *     filter, the request shape, and the success-shape extraction.
  */
 
 import type {
@@ -32,6 +40,12 @@ import type {
 	RelayCancelReason,
 } from '../../shared/gateway-protocol';
 import {generateChannelRequestId} from '../../shared/gateway-protocol/channelRequestId';
+import {
+	PendingRegistry,
+	collisionMessage,
+	type AnyRelayResult,
+	type PendingKind,
+} from './pendingRegistry';
 
 export const DEFAULT_RELAY_TTL_MS = 5 * 60_000;
 
@@ -44,25 +58,6 @@ export type RelayCoordinatorOptions = {
 	idFactory?: () => string;
 	log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
 };
-
-type PendingBroadcast<K extends string, TResult> = {
-	kind: K;
-	channelRequestId: string;
-	fingerprint: string;
-	runtimeId?: string;
-	controllers: AbortController[];
-	timer: NodeJS.Timeout;
-	resolve: (result: TResult) => void;
-	result: Promise<TResult>;
-	settled: boolean;
-};
-
-type PendingPermissionEntry = PendingBroadcast<
-	'permission',
-	PermissionRelayResult
->;
-type PendingQuestionEntry = PendingBroadcast<'question', QuestionRelayResult>;
-type PendingEntry = PendingPermissionEntry | PendingQuestionEntry;
 
 export type PermissionBroadcast = {
 	channelRequestId: string;
@@ -79,7 +74,7 @@ export class RelayCoordinator {
 	private readonly defaultTtlMs: number;
 	private readonly idFactory: () => string;
 	private readonly log: RelayCoordinatorOptions['log'];
-	private readonly pending = new Map<string, PendingEntry>();
+	private readonly registry = new PendingRegistry();
 
 	constructor(opts: RelayCoordinatorOptions) {
 		this.adapters = opts.adapters;
@@ -96,88 +91,51 @@ export class RelayCoordinator {
 		},
 	): PermissionBroadcast {
 		const channelRequestId = req.channelRequestId ?? this.idFactory();
-		const ttlMs = req.ttlMs ?? this.defaultTtlMs;
 		const targets = this.adapters().filter(
 			a =>
 				a.capabilities.relayPermission &&
 				typeof a.requestPermissionVerdict === 'function',
 		);
 		if (targets.length === 0) {
-			return {
-				channelRequestId,
-				result: Promise.resolve({kind: 'no_relay'}),
-			};
+			return {channelRequestId, result: Promise.resolve({kind: 'no_relay'})};
 		}
 		const fingerprint = permissionFingerprint(req);
-		const existing = this.pending.get(channelRequestId);
-		if (existing) {
-			if (existing.kind !== 'permission') {
-				throw new Error(
-					`channel_request_id_collision: ${channelRequestId} is bound to a question relay`,
-				);
-			}
-			if (existing.fingerprint !== fingerprint) {
-				throw new Error(
-					`channel_request_id_collision: ${channelRequestId} payload mismatch`,
-				);
-			}
-			if (existing.runtimeId !== req.runtimeId) {
-				throw new Error(
-					`channel_request_owner_mismatch: ${channelRequestId} owned by a different runtime`,
-				);
-			}
-			return {channelRequestId, result: existing.result};
-		}
-
-		const controllers = targets.map(() => new AbortController());
-		let resolveFn!: (result: PermissionRelayResult) => void;
-		const result = new Promise<PermissionRelayResult>(resolve => {
-			resolveFn = resolve;
-		});
-		const timer = setTimeout(() => {
-			this.settle(channelRequestId, {kind: 'cancelled', reason: 'timeout'});
-		}, ttlMs);
-		if (typeof timer.unref === 'function') timer.unref();
-		const entry: PendingPermissionEntry = {
-			kind: 'permission',
+		const inspect = this.registry.inspect(
 			channelRequestId,
+			'permission',
 			fingerprint,
-			...(req.runtimeId !== undefined ? {runtimeId: req.runtimeId} : {}),
-			controllers,
-			timer,
-			resolve: resolveFn,
-			result,
-			settled: false,
-		};
-		this.pending.set(channelRequestId, entry);
-
+			req.runtimeId,
+		);
+		if (inspect.kind === 'collision') {
+			throw new Error(
+				collisionMessage(channelRequestId, inspect.reason, 'permission'),
+			);
+		}
+		if (inspect.kind === 'attach') {
+			return {
+				channelRequestId,
+				result: inspect.entry.result as Promise<PermissionRelayResult>,
+			};
+		}
 		const fullReq: PermissionRelayRequest = {
 			channelRequestId,
 			toolName: req.toolName,
 			description: req.description,
 			inputPreview: req.inputPreview,
 		};
-
-		targets.forEach((adapter, idx) => {
-			const ctrl = controllers[idx]!;
-			Promise.resolve()
-				.then(() => adapter.requestPermissionVerdict!(fullReq, ctrl.signal))
-				.then(res => {
-					if (res.kind === 'verdict') {
-						this.settle(channelRequestId, {...res, channelId: adapter.id});
-					}
-				})
-				.catch(err => {
-					this.log?.(
-						'warn',
-						`adapter ${adapter.id} permission relay failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				});
+		const result = this.broadcast({
+			kind: 'permission',
+			channelRequestId,
+			ttlMs: req.ttlMs ?? this.defaultTtlMs,
+			runtimeId: req.runtimeId,
+			fingerprint,
+			targets,
+			perAdapter: async (adapter, signal) => {
+				const res = await adapter.requestPermissionVerdict!(fullReq, signal);
+				return res.kind === 'verdict' ? {...res, channelId: adapter.id} : null;
+			},
 		});
-
-		return {channelRequestId, result};
+		return {channelRequestId, result: result as Promise<PermissionRelayResult>};
 	}
 
 	requestQuestion(
@@ -188,87 +146,50 @@ export class RelayCoordinator {
 		},
 	): QuestionBroadcast {
 		const channelRequestId = req.channelRequestId ?? this.idFactory();
-		const ttlMs = req.ttlMs ?? this.defaultTtlMs;
 		const targets = this.adapters().filter(
 			a =>
 				a.capabilities.relayQuestion &&
 				typeof a.requestQuestionAnswer === 'function',
 		);
 		if (targets.length === 0) {
-			return {
-				channelRequestId,
-				result: Promise.resolve({kind: 'no_relay'}),
-			};
+			return {channelRequestId, result: Promise.resolve({kind: 'no_relay'})};
 		}
 		const fingerprint = questionFingerprint(req);
-		const existing = this.pending.get(channelRequestId);
-		if (existing) {
-			if (existing.kind !== 'question') {
-				throw new Error(
-					`channel_request_id_collision: ${channelRequestId} is bound to a permission relay`,
-				);
-			}
-			if (existing.fingerprint !== fingerprint) {
-				throw new Error(
-					`channel_request_id_collision: ${channelRequestId} payload mismatch`,
-				);
-			}
-			if (existing.runtimeId !== req.runtimeId) {
-				throw new Error(
-					`channel_request_owner_mismatch: ${channelRequestId} owned by a different runtime`,
-				);
-			}
-			return {channelRequestId, result: existing.result};
-		}
-
-		const controllers = targets.map(() => new AbortController());
-		let resolveFn!: (result: QuestionRelayResult) => void;
-		const result = new Promise<QuestionRelayResult>(resolve => {
-			resolveFn = resolve;
-		});
-		const timer = setTimeout(() => {
-			this.settle(channelRequestId, {kind: 'cancelled', reason: 'timeout'});
-		}, ttlMs);
-		if (typeof timer.unref === 'function') timer.unref();
-		const entry: PendingQuestionEntry = {
-			kind: 'question',
+		const inspect = this.registry.inspect(
 			channelRequestId,
+			'question',
 			fingerprint,
-			...(req.runtimeId !== undefined ? {runtimeId: req.runtimeId} : {}),
-			controllers,
-			timer,
-			resolve: resolveFn,
-			result,
-			settled: false,
-		};
-		this.pending.set(channelRequestId, entry);
-
+			req.runtimeId,
+		);
+		if (inspect.kind === 'collision') {
+			throw new Error(
+				collisionMessage(channelRequestId, inspect.reason, 'question'),
+			);
+		}
+		if (inspect.kind === 'attach') {
+			return {
+				channelRequestId,
+				result: inspect.entry.result as Promise<QuestionRelayResult>,
+			};
+		}
 		const fullReq: QuestionRelayRequest = {
 			channelRequestId,
 			title: req.title,
 			questions: req.questions,
 		};
-
-		targets.forEach((adapter, idx) => {
-			const ctrl = controllers[idx]!;
-			Promise.resolve()
-				.then(() => adapter.requestQuestionAnswer!(fullReq, ctrl.signal))
-				.then(res => {
-					if (res.kind === 'answer') {
-						this.settle(channelRequestId, {...res, channelId: adapter.id});
-					}
-				})
-				.catch(err => {
-					this.log?.(
-						'warn',
-						`adapter ${adapter.id} question relay failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				});
+		const result = this.broadcast({
+			kind: 'question',
+			channelRequestId,
+			ttlMs: req.ttlMs ?? this.defaultTtlMs,
+			runtimeId: req.runtimeId,
+			fingerprint,
+			targets,
+			perAdapter: async (adapter, signal) => {
+				const res = await adapter.requestQuestionAnswer!(fullReq, signal);
+				return res.kind === 'answer' ? {...res, channelId: adapter.id} : null;
+			},
 		});
-
-		return {channelRequestId, result};
+		return {channelRequestId, result: result as Promise<QuestionRelayResult>};
 	}
 
 	cancel(
@@ -276,44 +197,82 @@ export class RelayCoordinator {
 		reason: RelayCancelReason,
 		expectedRuntimeId?: string,
 	): boolean {
-		const entry = this.pending.get(channelRequestId);
-		if (!entry) return false;
-		if (
-			expectedRuntimeId !== undefined &&
-			entry.runtimeId !== undefined &&
-			entry.runtimeId !== expectedRuntimeId
-		) {
-			return false;
-		}
-		this.settle(channelRequestId, {kind: 'cancelled', reason});
-		return true;
+		return this.registry.cancel(channelRequestId, reason, expectedRuntimeId);
 	}
 
 	pendingCount(): number {
-		return this.pending.size;
+		return this.registry.count();
 	}
 
 	disposeAll(reason: RelayCancelReason = 'auto_resolved'): void {
-		for (const id of [...this.pending.keys()]) {
-			this.cancel(id, reason);
-		}
+		this.registry.disposeAll(reason);
 	}
 
-	private settle(
-		channelRequestId: string,
-		result: PermissionRelayResult | QuestionRelayResult,
-	): void {
-		const entry = this.pending.get(channelRequestId);
-		if (!entry || entry.settled) return;
-		entry.settled = true;
-		this.pending.delete(channelRequestId);
-		clearTimeout(entry.timer);
-		for (const ctrl of entry.controllers) {
-			if (!ctrl.signal.aborted) ctrl.abort();
-		}
-		(entry.resolve as (r: PermissionRelayResult | QuestionRelayResult) => void)(
+	private broadcast(args: {
+		kind: PendingKind;
+		channelRequestId: string;
+		ttlMs: number;
+		runtimeId: string | undefined;
+		fingerprint: string;
+		targets: ReadonlyArray<ChannelAdapter>;
+		perAdapter: (
+			adapter: ChannelAdapter,
+			signal: AbortSignal,
+		) => Promise<AnyRelayResult | null>;
+	}): Promise<AnyRelayResult> {
+		const {
+			kind,
+			channelRequestId,
+			ttlMs,
+			runtimeId,
+			fingerprint,
+			targets,
+			perAdapter,
+		} = args;
+		const controllers = targets.map(() => new AbortController());
+		let resolveFn!: (result: AnyRelayResult) => void;
+		const result = new Promise<AnyRelayResult>(resolve => {
+			resolveFn = resolve;
+		});
+		const timer = setTimeout(() => {
+			this.registry.settle(channelRequestId, {
+				kind: 'cancelled',
+				reason: 'timeout',
+			});
+		}, ttlMs);
+		if (typeof timer.unref === 'function') timer.unref();
+		this.registry.register({
+			kind,
+			channelRequestId,
+			fingerprint,
+			runtimeId,
+			controllers,
+			timer,
+			resolve: resolveFn,
 			result,
-		);
+			settled: false,
+		});
+
+		targets.forEach((adapter, idx) => {
+			const ctrl = controllers[idx]!;
+			Promise.resolve()
+				.then(() => perAdapter(adapter, ctrl.signal))
+				.then(res => {
+					if (res !== null) {
+						this.registry.settle(channelRequestId, res);
+					}
+				})
+				.catch(err => {
+					this.log?.(
+						'warn',
+						`adapter ${adapter.id} ${kind} relay failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				});
+		});
+
+		return result;
 	}
 }
 
