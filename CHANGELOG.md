@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/drisplabs/cli/compare/cli-v0.4.2...cli-v0.4.3) (2026-05-10)
+
+
+### Bug Fixes
+
+* **console:** add CLI-side heartbeat to ConsoleBrokerClient ([04a4b1d](https://github.com/drisplabs/cli/commit/04a4b1d3967af4e00e272107306c6a45bb6885a1))
+* **feed:** preserve assistant messages across partial-flush hook reads ([7b9f615](https://github.com/drisplabs/cli/commit/7b9f615c271585bb9d5e216b009911a12ed83b76))
+
 ## [0.4.2](https://github.com/drisplabs/cli/compare/cli-v0.4.1...cli-v0.4.2) (2026-05-09)
 
 
