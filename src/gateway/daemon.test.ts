@@ -164,7 +164,7 @@ describe('startDaemon', () => {
 				id: 'unknown',
 				ok: false,
 				action: 'failed',
-				reason: 'unknown channel: unknown',
+				reason: 'unknown channel kind: unknown',
 			},
 		]);
 		client.close();

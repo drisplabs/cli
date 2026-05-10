@@ -56,7 +56,7 @@ export const telegramModule: AdapterModule<TelegramAdapterOptions> = {
 		return {ok: true, config};
 	},
 
-	create(config) {
-		return new TelegramAdapter(config);
+	create(config, instanceId) {
+		return new TelegramAdapter(config, instanceId);
 	},
 };

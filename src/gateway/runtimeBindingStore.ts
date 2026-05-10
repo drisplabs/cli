@@ -18,6 +18,14 @@ export type RegisteredRuntime = {
 	defaultAgentId: string;
 	pid: number;
 	registeredAt: number;
+	/**
+	 * Optional binding to a dashboard-side **Attachment** (one runner attached
+	 * to this instance). Today this is unset and the gateway hosts one runtime
+	 * total; once `job_assignment` carries `attachmentId`, multi-runtime
+	 * support keys the binding map on it. See
+	 * `docs/adr/0001-attachment-supervisor.md`.
+	 */
+	attachmentId?: string;
 };
 
 export type RuntimeConnectionBinding =

@@ -56,10 +56,10 @@ export type TelegramAdapterOptions = {
 	}) => TelegramBot;
 };
 
-const TELEGRAM_ID = 'telegram';
+export const TELEGRAM_DEFAULT_ID = 'telegram';
 
 export class TelegramAdapter implements ChannelAdapter {
-	readonly id = TELEGRAM_ID;
+	readonly id: string;
 	readonly capabilities: ChannelCapabilities = {
 		chat: true,
 		threads: true,
@@ -77,8 +77,9 @@ export class TelegramAdapter implements ChannelAdapter {
 	private lastTransportOk = true;
 	private ctx: AdapterContext | null = null;
 
-	constructor(opts: TelegramAdapterOptions) {
+	constructor(opts: TelegramAdapterOptions, id: string = TELEGRAM_DEFAULT_ID) {
 		this.opts = opts;
+		this.id = id;
 		this.relay = new TelegramRelay({
 			resolveTarget: () => {
 				if (this.opts.defaultChatId === undefined) return null;
@@ -206,7 +207,7 @@ export class TelegramAdapter implements ChannelAdapter {
 					this.markHealth(true);
 					continue;
 				}
-				const inbound = normalizeInbound(update, allow);
+				const inbound = normalizeInbound(update, allow, this.id);
 				if (!inbound) continue;
 				this.lastInboundAt = inbound.receivedAt;
 				this.markHealth(true);
@@ -256,6 +257,7 @@ export class TelegramAdapter implements ChannelAdapter {
 function normalizeInbound(
 	update: TelegramUpdate,
 	allow: Set<string> | null,
+	channelId: string,
 ): NormalizedInbound | null {
 	const message = update.message ?? update.edited_message;
 	if (!message) return null;
@@ -276,7 +278,7 @@ function normalizeInbound(
 
 	return {
 		location: {
-			channelId: TELEGRAM_ID,
+			channelId,
 			accountId,
 			...(isPrivate
 				? {peer: {id: chatId, kind: 'user' as const}}

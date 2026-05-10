@@ -35,12 +35,12 @@ import type {
 import {type ConsoleBrokerClient, createConsoleBrokerClient} from './client';
 import type {ConsoleAdapterOptions, ConsoleBrokerClientFactory} from './types';
 
-const CONSOLE_ID = 'console';
+export const CONSOLE_DEFAULT_ID = 'console';
 const CLIENT_NAME = 'athena-cli';
 const CLIENT_VERSION = '0.0.0';
 
 export class ConsoleAdapter implements ChannelAdapter {
-	readonly id = CONSOLE_ID;
+	readonly id: string;
 	readonly capabilities: ChannelCapabilities = {
 		chat: true,
 		threads: true,
@@ -69,8 +69,9 @@ export class ConsoleAdapter implements ChannelAdapter {
 		}
 	>();
 
-	constructor(opts: ConsoleAdapterOptions) {
+	constructor(opts: ConsoleAdapterOptions, id: string = CONSOLE_DEFAULT_ID) {
 		this.opts = opts;
+		this.id = id;
 	}
 
 	async start(ctx: AdapterContext): Promise<void> {
@@ -235,7 +236,7 @@ export class ConsoleAdapter implements ChannelAdapter {
 		if (!entry) return;
 		this.pendingPermissions.delete(channelRequestId);
 		entry.signal.removeEventListener('abort', entry.abortListener);
-		entry.resolve({kind: 'verdict', behavior: decision, channelId: CONSOLE_ID});
+		entry.resolve({kind: 'verdict', behavior: decision, channelId: this.id});
 	}
 
 	private disposePermissions(
@@ -318,7 +319,7 @@ export class ConsoleAdapter implements ChannelAdapter {
 			entry.resolve({kind: 'cancelled', reason: 'auto_resolved'});
 			return;
 		}
-		entry.resolve({kind: 'answer', answers: filtered, channelId: CONSOLE_ID});
+		entry.resolve({kind: 'answer', answers: filtered, channelId: this.id});
 	}
 
 	private disposeQuestions(
@@ -377,7 +378,7 @@ export class ConsoleAdapter implements ChannelAdapter {
 			this.ctx?.log('warn', 'console.message.in dropped: missing messageId');
 			return;
 		}
-		const inbound = normalizeInbound(frame, this.opts.runnerId);
+		const inbound = normalizeInbound(frame, this.opts.runnerId, this.id);
 		if (!inbound || !this.ctx) return;
 		try {
 			this.ctx.emitInbound(inbound);
@@ -532,6 +533,7 @@ function isValidConsoleAddress(value: unknown): value is {
 function normalizeInbound(
 	frame: AthenaConsoleInboundMessageFrame,
 	runnerId: string,
+	channelId: string,
 ): NormalizedInbound | null {
 	if (typeof frame.text !== 'string' || frame.text.length === 0) return null;
 	const userId = frame.address.userId ?? 'console-user';
@@ -541,7 +543,7 @@ function normalizeInbound(
 			: `console:${runnerId}:${frame.messageId}`;
 	return {
 		location: {
-			channelId: CONSOLE_ID,
+			channelId,
 			accountId: frame.address.workspaceId ?? runnerId,
 			peer: {id: userId, kind: 'user'},
 			...(frame.address.threadId !== undefined

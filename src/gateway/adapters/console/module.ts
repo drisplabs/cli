@@ -87,8 +87,8 @@ export const consoleModule: AdapterModule<ConsoleAdapterOptions> = {
 		return {ok: true, config};
 	},
 
-	create(config) {
-		return new ConsoleAdapter(config);
+	create(config, instanceId) {
+		return new ConsoleAdapter(config, instanceId);
 	},
 };
 

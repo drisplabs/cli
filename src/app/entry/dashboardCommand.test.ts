@@ -1115,7 +1115,7 @@ describe('runDashboardCommand: console link', () => {
 		expect(cap.err.join('\n')).toContain('missing <runnerId>');
 	});
 
-	it('writes a console.json sidecar with ws broker_url for http dashboard', async () => {
+	it('writes a per-runner sidecar with kind/instance_id and ws broker_url for http dashboard', async () => {
 		const dir = makeChannelDir();
 		const {deps, cap} = makeDeps({stored});
 		const reload = vi.fn().mockResolvedValue({ok: true, message: 'reloaded'});
@@ -1125,9 +1125,11 @@ describe('runDashboardCommand: console link', () => {
 		);
 		expect(reload).toHaveBeenCalledTimes(1);
 		expect(code).toBe(0);
-		const target = path.join(dir, 'console.json');
+		const target = path.join(dir, 'console-r1.json');
 		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
 		expect(content).toEqual({
+			kind: 'console',
+			instance_id: 'console:r1',
 			broker_url: 'ws://localhost:3000/api/runners/r1/console/adapter',
 			runner_id: 'r1',
 			dashboard_config: true,
@@ -1152,20 +1154,22 @@ describe('runDashboardCommand: console link', () => {
 			},
 		);
 		expect(code).toBe(0);
-		const target = path.join(dir, 'console.json');
+		const target = path.join(dir, 'console-r1.json');
 		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
 		expect(content.broker_url).toBe(
 			'wss://app.drisp.dev/api/runners/r1/console/adapter',
 		);
 	});
 
-	it('replaces an existing sidecar and reports the previous broker_url', async () => {
+	it('replaces an existing per-runner sidecar and reports the previous broker_url', async () => {
 		const dir = makeChannelDir();
 		fs.writeFileSync(
-			path.join(dir, 'console.json'),
+			path.join(dir, 'console-r1.json'),
 			JSON.stringify({
-				broker_url: 'ws://old.example/runners/old/console/adapter',
-				runner_id: 'old',
+				kind: 'console',
+				instance_id: 'console:r1',
+				broker_url: 'ws://old.example/runners/r1/console/adapter',
+				runner_id: 'r1',
 				dashboard_config: true,
 			}),
 			{mode: 0o600},
@@ -1182,6 +1186,60 @@ describe('runDashboardCommand: console link', () => {
 		expect(code).toBe(0);
 		expect(cap.out.join('\n')).toContain('replaced existing config');
 		expect(cap.out.join('\n')).toContain('old.example');
+	});
+
+	it('migrates legacy console.json pointing at the same runner', async () => {
+		const dir = makeChannelDir();
+		const legacy = path.join(dir, 'console.json');
+		fs.writeFileSync(
+			legacy,
+			JSON.stringify({
+				broker_url: 'ws://legacy.example/runners/r1/console/adapter',
+				runner_id: 'r1',
+				dashboard_config: true,
+			}),
+			{mode: 0o600},
+		);
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
+			{
+				...deps,
+				channelDir: () => dir,
+				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(fs.existsSync(legacy)).toBe(false);
+		expect(fs.existsSync(path.join(dir, 'console-r1.json'))).toBe(true);
+		expect(cap.out.join('\n')).toContain('replaced existing config');
+		expect(cap.out.join('\n')).toContain('legacy.example');
+	});
+
+	it('preserves legacy console.json bound to a different runner', async () => {
+		const dir = makeChannelDir();
+		const legacy = path.join(dir, 'console.json');
+		fs.writeFileSync(
+			legacy,
+			JSON.stringify({
+				broker_url: 'ws://other.example/runners/other/console/adapter',
+				runner_id: 'other',
+				dashboard_config: true,
+			}),
+			{mode: 0o600},
+		);
+		const {deps} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
+			{
+				...deps,
+				channelDir: () => dir,
+				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
+			},
+		);
+		expect(code).toBe(0);
+		expect(fs.existsSync(legacy)).toBe(true);
+		expect(fs.existsSync(path.join(dir, 'console-r1.json'))).toBe(true);
 	});
 });
 

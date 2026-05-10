@@ -12,9 +12,37 @@ export type RunEventFrame = {
 export type InstanceSocketFrame =
 	| {type: 'ping'; ts: number}
 	| {type: 'pong'; ts: number}
-	| {type: 'job_assignment'; runId: string; runSpec?: unknown}
+	| {
+			type: 'job_assignment';
+			runId: string;
+			runSpec?: unknown;
+			/**
+			 * The runner this assignment is bound to. Top-level so the CLI can
+			 * route to the right Attachment without inspecting `runSpec`.
+			 * Optional: dashboards predating phase-1 of the supervisor work
+			 * don't emit it. The CLI falls back to single-runtime semantics
+			 * when absent.
+			 */
+			runnerId?: string;
+	  }
 	| {type: 'assignment_accepted'; runId: string}
-	| {type: 'cancel'; runId: string}
+	| {type: 'cancel'; runId: string; runnerId?: string}
+	| {
+			/**
+			 * Pushed by the dashboard when a runner is bound to or unbound from
+			 * this instance. Full-list semantics — the CLI's mirror reconciles
+			 * via `diffAttachments`. Optional fields mirror the pair-response
+			 * runner shape so the same parser fits both paths.
+			 */
+			type: 'attachments.changed';
+			attachments: Array<{
+				runnerId: string;
+				name?: string;
+				slug?: string;
+				executionTarget?: string;
+				remoteInstanceId?: string;
+			}>;
+	  }
 	| {type: 'error'; code: string; message?: string}
 	| RunEventFrame;
 

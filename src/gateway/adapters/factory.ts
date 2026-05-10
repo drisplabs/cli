@@ -17,16 +17,16 @@ export type InstantiateResult =
 	| {ok: false; reason: string};
 
 export function instantiateAdapter(sidecar: ChannelSidecar): InstantiateResult {
-	const module = findAdapterModule(sidecar.name);
+	const module = findAdapterModule(sidecar.kind);
 	if (!module) {
-		return {ok: false, reason: `unknown channel: ${sidecar.name}`};
+		return {ok: false, reason: `unknown channel kind: ${sidecar.kind}`};
 	}
 	const parsed = module.parseConfig({
 		options: sidecar.options,
 		allowedUserIds: sidecar.allowedUserIds,
 	});
 	if (!parsed.ok) {
-		return {ok: false, reason: `${sidecar.name}: ${parsed.reason}`};
+		return {ok: false, reason: `${sidecar.instanceId}: ${parsed.reason}`};
 	}
-	return {ok: true, adapter: module.create(parsed.config)};
+	return {ok: true, adapter: module.create(parsed.config, sidecar.instanceId)};
 }

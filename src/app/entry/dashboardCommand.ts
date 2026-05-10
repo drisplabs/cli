@@ -26,6 +26,12 @@ import {
 	writeDashboardClientConfig,
 } from '../../infra/config/dashboardClient';
 import {
+	type AttachmentMirror,
+	readAttachmentMirror,
+	removeAttachmentMirror,
+	writeAttachmentMirror,
+} from '../../infra/config/attachmentMirror';
+import {
 	daemonStatePaths,
 	type DaemonStatePaths,
 } from '../../infra/daemon/stateDir';
@@ -64,6 +70,8 @@ Subcommands:
             so the daemon starts automatically on login.
   doctor    Verify pairing health. With --runner <id>, also confirms the
             runner is bound to this instance.
+  list      Print the local attachment mirror (the runners the dashboard
+            reported as bound to this instance at the last pair/refresh).
   console enable <runnerId>
             Configure the console channel for a runner (opinionated;
             writes the sidecar and reloads the gateway).
@@ -137,6 +145,9 @@ export type DashboardCommandDeps = {
 	writeConfig?: (config: DashboardClientConfig) => void;
 	removeConfig?: () => void;
 	configPath?: () => string;
+	readMirror?: () => AttachmentMirror | null;
+	writeMirror?: (mirror: AttachmentMirror) => void;
+	removeMirror?: () => void;
 	logOut?: (message: string) => void;
 	logError?: (message: string) => void;
 	makeInstanceSocketClient?: (opts: {
@@ -243,6 +254,10 @@ export async function runDashboardCommand(
 	const removeConfig =
 		deps.removeConfig ?? (() => removeDashboardClientConfig());
 	const configPath = deps.configPath ?? (() => dashboardClientConfigPath());
+	const readMirror = deps.readMirror ?? (() => readAttachmentMirror());
+	const writeMirror =
+		deps.writeMirror ?? ((m: AttachmentMirror) => writeAttachmentMirror(m));
+	const removeMirror = deps.removeMirror ?? (() => removeAttachmentMirror());
 	const packageVersion = deps.packageVersion ?? readPackageVersion();
 
 	const {subcommand, subcommandArgs, flags} = input;
@@ -356,6 +371,33 @@ export async function runDashboardCommand(
 			pairedAt: now(),
 		};
 		writeConfig(config);
+
+		// Mirror the dashboard's runner-attachment list locally. The dashboard
+		// remains the source of truth — we just stop discarding the data the
+		// pair response already carries, so subsequent commands and the
+		// gateway can read "which runners are attached?" without a round-trip.
+		try {
+			writeMirror({
+				instanceId: parsed.instanceId,
+				fetchedAt: now(),
+				attachments: (parsed.runners ?? []).map(r => ({
+					runnerId: r.runnerId,
+					...(r.name !== undefined ? {name: r.name} : {}),
+					...(r.executionTarget !== undefined
+						? {executionTarget: r.executionTarget}
+						: {}),
+					...(r.remoteInstanceId !== undefined
+						? {remoteInstanceId: r.remoteInstanceId}
+						: {}),
+				})),
+			});
+		} catch (err) {
+			logError(
+				`dashboard pair: failed to write attachment mirror: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
 
 		const daemonStart = await (
 			deps.startRuntimeDaemon ?? defaultStartRuntimeDaemon
@@ -1209,8 +1251,14 @@ export async function runDashboardCommand(
 				return 1;
 			}
 			const dir = (deps.channelDir ?? channelSidecarDir)();
+			// Per-runner sidecar so multiple runners can be linked without
+			// overwriting each other. The legacy `console.json` (single-instance)
+			// continues to load via backward-compat in channels.ts; we also clean
+			// it up if it points at this same runner, since it would now collide
+			// with the per-runner instance after a future kind-aware reload.
+			const target = path.join(dir, `console-${runnerId}.json`);
+			const legacyTarget = path.join(dir, 'console.json');
 			let previousBroker: string | undefined;
-			const target = path.join(dir, 'console.json');
 			try {
 				const existing = JSON.parse(fs.readFileSync(target, 'utf-8')) as {
 					broker_url?: unknown;
@@ -1219,7 +1267,21 @@ export async function runDashboardCommand(
 					previousBroker = existing.broker_url;
 				}
 			} catch {
-				// no existing file or unreadable — treated as fresh write
+				// no existing per-runner file — also check legacy
+				try {
+					const legacy = JSON.parse(fs.readFileSync(legacyTarget, 'utf-8')) as {
+						broker_url?: unknown;
+						runner_id?: unknown;
+					};
+					if (
+						typeof legacy.broker_url === 'string' &&
+						legacy.runner_id === runnerId
+					) {
+						previousBroker = legacy.broker_url;
+					}
+				} catch {
+					// no legacy file either — treated as fresh write
+				}
 			}
 			try {
 				fs.mkdirSync(dir, {recursive: true, mode: 0o700});
@@ -1232,6 +1294,8 @@ export async function runDashboardCommand(
 				return 1;
 			}
 			const payload = {
+				kind: 'console',
+				instance_id: `console:${runnerId}`,
 				broker_url: brokerUrl,
 				runner_id: runnerId,
 				dashboard_config: true,
@@ -1254,6 +1318,21 @@ export async function runDashboardCommand(
 					}`,
 				);
 				return 1;
+			}
+			// If a legacy console.json points at THIS same runner, retire it so
+			// the gateway doesn't try to register two adapters with the same
+			// instance id (the new per-runner sidecar uses console:<runnerId>;
+			// the legacy bare 'console' id would collide on any reload that
+			// bumps the legacy file's instance id to match).
+			try {
+				const legacy = JSON.parse(fs.readFileSync(legacyTarget, 'utf-8')) as {
+					runner_id?: unknown;
+				};
+				if (legacy.runner_id === runnerId) {
+					fs.unlinkSync(legacyTarget);
+				}
+			} catch {
+				// no legacy file or unreadable — nothing to clean up
 			}
 			const reload = await (
 				deps.reloadGatewayChannels ?? defaultReloadGatewayChannels
@@ -1292,6 +1371,73 @@ export async function runDashboardCommand(
 			}. Expected "enable <runnerId>" or "link <runnerId>".`,
 		);
 		return 2;
+	}
+
+	if (subcommand === 'list') {
+		if (subcommandArgs.length > 0) {
+			logError(`dashboard list: unexpected argument ${subcommandArgs[0]}`);
+			return 2;
+		}
+		const config = readConfig();
+		if (!config) {
+			if (flags.json) {
+				logOut(JSON.stringify({ok: false, paired: false}));
+			} else {
+				logError(
+					'dashboard list: not paired. Run "drisp dashboard pair" first.',
+				);
+			}
+			return 1;
+		}
+		const mirror = readMirror();
+		if (!mirror) {
+			if (flags.json) {
+				logOut(
+					JSON.stringify({
+						ok: true,
+						paired: true,
+						instanceId: config.instanceId,
+						attachments: [],
+						mirror: null,
+					}),
+				);
+			} else {
+				logOut(
+					`dashboard list: paired as ${config.instanceId}, no attachment mirror on disk.`,
+				);
+				logOut(
+					'dashboard list: re-run `drisp dashboard pair` to refresh the mirror.',
+				);
+			}
+			return 0;
+		}
+		if (flags.json) {
+			logOut(
+				JSON.stringify({
+					ok: true,
+					paired: true,
+					instanceId: mirror.instanceId,
+					fetchedAt: mirror.fetchedAt,
+					attachments: mirror.attachments,
+				}),
+			);
+		} else {
+			logOut(`dashboard: instance ${mirror.instanceId}`);
+			logOut(
+				`dashboard: mirror fetched ${new Date(mirror.fetchedAt).toISOString()}`,
+			);
+			if (mirror.attachments.length === 0) {
+				logOut('dashboard: no runners attached.');
+			} else {
+				logOut(`dashboard: ${mirror.attachments.length} runner(s) attached:`);
+				for (const a of mirror.attachments) {
+					const label = a.name ? `${a.name} (${a.runnerId})` : a.runnerId;
+					const target = a.executionTarget ? ` [${a.executionTarget}]` : '';
+					logOut(`  - ${label}${target}`);
+				}
+			}
+		}
+		return 0;
 	}
 
 	if (subcommand === 'unpair') {
@@ -1380,8 +1526,9 @@ export async function runDashboardCommand(
 			}
 		}
 
-		// 3. Remove local credentials.
+		// 3. Remove local credentials and the attachment mirror.
 		removeConfig();
+		removeMirror();
 
 		if (flags.json) {
 			logOut(

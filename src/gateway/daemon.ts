@@ -186,7 +186,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			});
 		}
 
-		const sidecarIds = new Set(sidecars.map(s => s.name));
+		const sidecarIds = new Set(sidecars.map(s => s.instanceId));
 		for (const channel of channelManager.listChannels()) {
 			if (sidecarIds.has(channel.id)) continue;
 			try {
@@ -209,13 +209,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		for (const sidecar of sidecars) {
 			const existed = channelManager
 				.listChannels()
-				.some(channel => channel.id === sidecar.name);
+				.some(channel => channel.id === sidecar.instanceId);
 			if (existed) {
 				try {
-					await channelManager.unregister(sidecar.name, 'shutdown');
+					await channelManager.unregister(sidecar.instanceId, 'shutdown');
 				} catch (err) {
 					results.push({
-						id: sidecar.name,
+						id: sidecar.instanceId,
 						ok: false,
 						action: 'failed',
 						reason: err instanceof Error ? err.message : String(err),
@@ -226,7 +226,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			const built = instantiateAdapter(sidecar);
 			if (!built.ok) {
 				results.push({
-					id: sidecar.name,
+					id: sidecar.instanceId,
 					ok: false,
 					action: 'failed',
 					reason: built.reason,
@@ -236,16 +236,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			try {
 				await channelManager.register(built.adapter);
 				results.push({
-					id: sidecar.name,
+					id: sidecar.instanceId,
 					ok: true,
 					action: existed ? 'replaced' : 'registered',
 				});
 				if (!opts.silent) {
-					process.stdout.write(`athena-gateway: registered ${sidecar.name}\n`);
+					process.stdout.write(
+						`athena-gateway: registered ${sidecar.instanceId}\n`,
+					);
 				}
 			} catch (err) {
 				results.push({
-					id: sidecar.name,
+					id: sidecar.instanceId,
 					ok: false,
 					action: 'failed',
 					reason: err instanceof Error ? err.message : String(err),
@@ -267,18 +269,20 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			const built = instantiateAdapter(sidecar);
 			if (!built.ok) {
 				process.stderr.write(
-					`athena-gateway: ${sidecar.name}: ${built.reason}\n`,
+					`athena-gateway: ${sidecar.instanceId}: ${built.reason}\n`,
 				);
 				continue;
 			}
 			try {
 				await channelManager.register(built.adapter);
 				if (!opts.silent) {
-					process.stdout.write(`athena-gateway: registered ${sidecar.name}\n`);
+					process.stdout.write(
+						`athena-gateway: registered ${sidecar.instanceId}\n`,
+					);
 				}
 			} catch (err) {
 				process.stderr.write(
-					`athena-gateway: register ${sidecar.name} failed: ${
+					`athena-gateway: register ${sidecar.instanceId} failed: ${
 						err instanceof Error ? err.message : String(err)
 					}\n`,
 				);

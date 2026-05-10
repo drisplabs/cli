@@ -16,8 +16,27 @@ import os from 'node:os';
 import path from 'node:path';
 
 export type ChannelSidecar = {
+	/**
+	 * Filename stem (no .json). Historically also the routing key into the
+	 * adapter registry — preserved for diagnostics. New sidecars should set
+	 * `kind` explicitly so the routing key is independent of the filename.
+	 */
 	name: string;
 	path: string;
+	/**
+	 * Adapter module to instantiate (e.g. "console", "telegram"). Defaults to
+	 * `name` when the sidecar omits it, preserving backward compatibility for
+	 * single-instance configs like `console.json`.
+	 */
+	kind: string;
+	/**
+	 * Stable identity reported by the resulting adapter — must be unique
+	 * across all loaded sidecars (ChannelManager rejects duplicates).
+	 * Defaults to `kind` when omitted, so `console.json` continues to load
+	 * with `id="console"`. Multi-instance configs (e.g. one console per
+	 * runner) set this to a unique value like `"console:<runnerId>"`.
+	 */
+	instanceId: string;
 	allowedUserIds: string[];
 	options: Record<string, unknown>;
 };
@@ -103,13 +122,31 @@ function loadOne(name: string, filePath: string): LoadOne {
 				};
 		}
 	}
+	const kindRaw = obj['kind'];
+	if (
+		kindRaw !== undefined &&
+		(typeof kindRaw !== 'string' || kindRaw.length === 0)
+	) {
+		return {ok: false, reason: 'kind must be a non-empty string'};
+	}
+	const kind = (kindRaw as string | undefined) ?? name;
+	const instanceIdRaw = obj['instance_id'];
+	if (
+		instanceIdRaw !== undefined &&
+		(typeof instanceIdRaw !== 'string' || instanceIdRaw.length === 0)
+	) {
+		return {ok: false, reason: 'instance_id must be a non-empty string'};
+	}
+	const instanceId = (instanceIdRaw as string | undefined) ?? kind;
 	const options: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(obj)) {
-		if (key === 'allowed_user_ids') continue;
+		if (key === 'allowed_user_ids' || key === 'kind' || key === 'instance_id') {
+			continue;
+		}
 		options[key] = value;
 	}
 	return {
 		ok: true,
-		sidecar: {name, path: filePath, allowedUserIds, options},
+		sidecar: {name, path: filePath, kind, instanceId, allowedUserIds, options},
 	};
 }

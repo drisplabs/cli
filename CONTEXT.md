@@ -54,6 +54,16 @@ _Avoid_: agent stack, subagent state.
 
 ### Identity
 
+**Attachment**:
+The binding between a paired CLI instance and one dashboard-side **runner**.
+Owned by the dashboard (the CLI never creates or deletes one — it only
+mirrors). Surfaced locally in `~/.config/athena/attachments.json`. Each
+Attachment receives runner-runs and a console transport in parallel with
+others. Long-term — see `docs/adr/0001-attachment-supervisor.md` — each
+Attachment will own its own harness child process and its own Session.
+_Avoid_: pairing (overloaded with the auth handshake), runner binding (verb
+phrase, not a noun for the resulting state).
+
 **Run**:
 One agent invocation within a **Session**. Triggered by `session.start` or `user.prompt`. Has a status (`running` | `completed`), counters, and an actor tree.
 

@@ -139,5 +139,12 @@ export interface AdapterModule<TConfig = unknown> {
 		options: Record<string, unknown>;
 		allowedUserIds: ReadonlyArray<string>;
 	}): {ok: true; config: TConfig} | {ok: false; reason: string};
-	create(config: TConfig): ChannelAdapter;
+	/**
+	 * Construct an adapter. `instanceId` is the unique routing id this
+	 * adapter must report as `adapter.id`; it comes from the sidecar's
+	 * `instance_id` field (defaulting to the module's `name`). Modules MUST
+	 * thread it through to the adapter's id so multi-instance deployments
+	 * (e.g. one console per runner) can coexist in the same gateway.
+	 */
+	create(config: TConfig, instanceId: string): ChannelAdapter;
 }
