@@ -83,6 +83,8 @@ export type {
 	AthenaConsoleFrameBase,
 	AthenaConsoleHelloFrame,
 	AthenaConsoleReadyFrame,
+	AthenaConsolePingFrame,
+	AthenaConsolePongFrame,
 	AthenaConsoleInboundMessageFrame,
 	AthenaConsoleOutboundMessageFrame,
 	AthenaConsolePermissionRequestFrame,

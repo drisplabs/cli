@@ -14,6 +14,8 @@ import type {RelayQuestion, RelayQuestionOption} from './relay';
 export type AthenaConsoleFrameKind =
 	| 'console.hello'
 	| 'console.ready'
+	| 'console.ping'
+	| 'console.pong'
 	| 'console.message.in'
 	| 'console.message.out'
 	| 'console.permission.request'
@@ -130,6 +132,14 @@ export type AthenaConsoleQuestionCancelFrame = AthenaConsoleFrameBase & {
 	reason?: string;
 };
 
+export type AthenaConsolePingFrame = AthenaConsoleFrameBase & {
+	kind: 'console.ping';
+};
+
+export type AthenaConsolePongFrame = AthenaConsoleFrameBase & {
+	kind: 'console.pong';
+};
+
 export type AthenaConsoleAckFrame = AthenaConsoleFrameBase & {
 	kind: 'console.ack';
 	refFrameId: string;
@@ -145,6 +155,8 @@ export type AthenaConsoleErrorFrame = AthenaConsoleFrameBase & {
 export type AthenaConsoleFrame =
 	| AthenaConsoleHelloFrame
 	| AthenaConsoleReadyFrame
+	| AthenaConsolePingFrame
+	| AthenaConsolePongFrame
 	| AthenaConsoleInboundMessageFrame
 	| AthenaConsoleOutboundMessageFrame
 	| AthenaConsolePermissionRequestFrame

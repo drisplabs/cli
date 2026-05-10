@@ -19,6 +19,7 @@ import {WebSocket} from 'ws';
 import type {
 	AthenaConsoleFrame,
 	AthenaConsoleHelloFrame,
+	AthenaConsolePingFrame,
 	AthenaConsoleReadyFrame,
 } from '../../../shared/gateway-protocol';
 
@@ -33,6 +34,13 @@ export type ConsoleReconnectOptions = {
 };
 
 export type PairingTokenProvider = () => Promise<string>;
+
+export type ConsoleHeartbeatOptions = {
+	/** How often to send a console.ping frame (ms). Default: 30 000. */
+	intervalMs?: number;
+	/** Terminate the connection if no console.pong arrives within this window (ms). Default: 90 000. */
+	timeoutMs?: number;
+};
 
 export type ConsoleBrokerClientOptions = {
 	brokerUrl: string;
@@ -53,6 +61,7 @@ export type ConsoleBrokerClientOptions = {
 	log: ConsoleBrokerClientLogger;
 	connectTimeoutMs?: number;
 	reconnect?: ConsoleReconnectOptions;
+	heartbeat?: ConsoleHeartbeatOptions;
 };
 
 export type ConsoleHelloPayload = {
@@ -76,6 +85,8 @@ export type ConsoleBrokerClient = {
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_INITIAL_RECONNECT_MS = 1_000;
 const DEFAULT_MAX_RECONNECT_MS = 30_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 90_000;
 
 export function createConsoleBrokerClient(
 	opts: ConsoleBrokerClientOptions,
@@ -95,6 +106,10 @@ export function createConsoleBrokerClient(
 	const initialDelay =
 		opts.reconnect?.initialDelayMs ?? DEFAULT_INITIAL_RECONNECT_MS;
 	const maxDelay = opts.reconnect?.maxDelayMs ?? DEFAULT_MAX_RECONNECT_MS;
+	const heartbeatInterval =
+		opts.heartbeat?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+	const heartbeatTimeout =
+		opts.heartbeat?.timeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
 	let ws: WebSocket | null = null;
 	let ready: AthenaConsoleReadyFrame | null = null;
 	let closeRequested = false;
@@ -102,6 +117,8 @@ export function createConsoleBrokerClient(
 	let reconnectTimer: NodeJS.Timeout | null = null;
 	let lastHello: ConsoleHelloPayload | null = null;
 	let currentToken: string | null = null;
+	let heartbeatTimer: NodeJS.Timeout | null = null;
+	let lastPongAt: number | null = null;
 	const frameHandlers = new Set<(frame: AthenaConsoleFrame) => void>();
 	const closeHandlers = new Set<(reason: string) => void>();
 	const readyHandlers = new Set<
@@ -112,6 +129,48 @@ export function createConsoleBrokerClient(
 	function redact(message: string): string {
 		if (!currentToken) return message;
 		return message.split(currentToken).join(tokenRedacted);
+	}
+
+	function stopHeartbeat(): void {
+		if (heartbeatTimer) {
+			clearInterval(heartbeatTimer);
+			heartbeatTimer = null;
+		}
+		lastPongAt = null;
+	}
+
+	function startHeartbeat(currentWs: WebSocket): void {
+		stopHeartbeat();
+		lastPongAt = Date.now();
+		heartbeatTimer = setInterval(() => {
+			if (currentWs !== ws || currentWs.readyState !== WebSocket.OPEN) {
+				stopHeartbeat();
+				return;
+			}
+			if (lastPongAt !== null && Date.now() - lastPongAt >= heartbeatTimeout) {
+				opts.log(
+					'warn',
+					'console broker: heartbeat watchdog fired, no pong received — terminating',
+				);
+				stopHeartbeat();
+				try {
+					currentWs.terminate();
+				} catch {
+					// best-effort
+				}
+				return;
+			}
+			const ping: AthenaConsolePingFrame = {
+				kind: 'console.ping',
+				frameId: makeFrameId(),
+				sentAt: Date.now(),
+			};
+			try {
+				currentWs.send(JSON.stringify(ping));
+			} catch {
+				// best-effort; close event will drive reconnect
+			}
+		}, heartbeatInterval);
 	}
 
 	function emitClose(reason: string): void {
@@ -284,6 +343,10 @@ export function createConsoleBrokerClient(
 						);
 						return;
 					}
+					if (parsed.kind === 'console.pong') {
+						lastPongAt = Date.now();
+						return;
+					}
 					for (const h of [...frameHandlers]) {
 						try {
 							h(parsed);
@@ -311,12 +374,15 @@ export function createConsoleBrokerClient(
 
 		// Permanent close listener — drives reconnect.
 		next.on('close', (_code, reasonBuf) => {
+			stopHeartbeat();
 			if (next !== ws) return; // a later attempt has already taken over
 			ws = null;
 			ready = null;
 			emitClose(reasonBuf.toString() || 'closed');
 			if (!closeRequested) scheduleReconnect();
 		});
+
+		startHeartbeat(next);
 	}
 
 	async function connect(hello: ConsoleHelloPayload): Promise<void> {
@@ -328,6 +394,7 @@ export function createConsoleBrokerClient(
 
 	function close(reason: string): void {
 		closeRequested = true;
+		stopHeartbeat();
 		if (reconnectTimer) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;

@@ -578,3 +578,128 @@ describe('ConsoleBrokerClient — pairingTokenProvider', () => {
 		}
 	});
 });
+
+describe('ConsoleBrokerClient — heartbeat', () => {
+	let server: WebSocketServer;
+	let port: number;
+	let serverSockets: ServerWebSocket[] = [];
+
+	beforeEach(async () => {
+		server = new WebSocketServer({port: 0, host: '127.0.0.1'});
+		await new Promise<void>(resolve =>
+			server.once('listening', () => resolve()),
+		);
+		const addr = server.address();
+		if (typeof addr !== 'object' || addr === null) throw new Error('no addr');
+		port = addr.port;
+		serverSockets = [];
+		server.on('connection', ws => {
+			serverSockets.push(ws);
+		});
+	});
+
+	afterEach(async () => {
+		for (const ws of serverSockets) ws.terminate();
+		await new Promise<void>(resolve => server.close(() => resolve()));
+	});
+
+	const url = (): string => `ws://127.0.0.1:${port}/adapter`;
+
+	function autoReady(
+		onMessage?: (ws: ServerWebSocket, frame: AthenaConsoleFrame) => void,
+	): void {
+		server.on('connection', ws => {
+			ws.on('message', data => {
+				const frame = JSON.parse(String(data)) as AthenaConsoleFrame;
+				if (frame.kind === 'console.hello') {
+					ws.send(
+						JSON.stringify({
+							kind: 'console.ready',
+							frameId: 'r',
+							sentAt: 0,
+							protocolVersion: 1,
+							brokerName: 'b',
+							address: {runnerId: 'r1'},
+						}),
+					);
+				}
+				onMessage?.(ws, frame);
+			});
+		});
+	}
+
+	it('sends console.ping frames after ready', async () => {
+		const pingsReceived: AthenaConsoleFrame[] = [];
+		autoReady((_ws, frame) => {
+			if (frame.kind === 'console.ping') pingsReceived.push(frame);
+		});
+
+		const client = createConsoleBrokerClient({
+			brokerUrl: url(),
+			pairingToken: 'tok',
+			log: () => {},
+			heartbeat: {intervalMs: 40, timeoutMs: 500},
+		});
+		await client.connect({runnerId: 'r1', clientName: 'c', clientVersion: 'x'});
+
+		await vi.waitFor(
+			() => expect(pingsReceived.length).toBeGreaterThanOrEqual(2),
+			{
+				timeout: 500,
+			},
+		);
+		expect(pingsReceived[0]!.kind).toBe('console.ping');
+		client.close('done');
+	});
+
+	it('terminates the connection when no pong is received within the timeout', async () => {
+		autoReady();
+		const client = createConsoleBrokerClient({
+			brokerUrl: url(),
+			pairingToken: 'tok',
+			log: () => {},
+			heartbeat: {intervalMs: 40, timeoutMs: 80},
+			reconnect: {initialDelayMs: 5, maxDelayMs: 50},
+		});
+
+		await client.connect({runnerId: 'r1', clientName: 'c', clientVersion: 'x'});
+		expect(serverSockets).toHaveLength(1);
+
+		await vi.waitFor(
+			() => expect(serverSockets.length).toBeGreaterThanOrEqual(2),
+			{
+				timeout: 1000,
+			},
+		);
+		client.close('done');
+	});
+
+	it('resets the watchdog when a pong is received, keeping the connection alive', async () => {
+		autoReady((ws, frame) => {
+			if (frame.kind === 'console.ping') {
+				ws.send(
+					JSON.stringify({
+						kind: 'console.pong',
+						frameId: 'pong-1',
+						sentAt: Date.now(),
+					}),
+				);
+			}
+		});
+
+		const client = createConsoleBrokerClient({
+			brokerUrl: url(),
+			pairingToken: 'tok',
+			log: () => {},
+			heartbeat: {intervalMs: 40, timeoutMs: 120},
+			reconnect: {initialDelayMs: 5, maxDelayMs: 50},
+		});
+
+		await client.connect({runnerId: 'r1', clientName: 'c', clientVersion: 'x'});
+
+		// Let several ping/pong cycles run; connection must not reconnect
+		await new Promise(r => setTimeout(r, 250));
+		expect(serverSockets).toHaveLength(1);
+		client.close('done');
+	});
+});
