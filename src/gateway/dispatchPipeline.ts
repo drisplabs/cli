@@ -75,12 +75,21 @@ export type RegisterRuntimeInput = {
 	pid: number;
 	connectionId: string;
 	push: (env: ControlPushEnvelope) => void;
+	/**
+	 * Optional dashboard-side **Attachment** key. When set, the runtime
+	 * occupies the slot keyed by `attachmentId`; otherwise it occupies the
+	 * single fallback slot used by frames that arrive without an attachmentId.
+	 * See `docs/adr/0001-attachment-supervisor.md` (phase 4).
+	 */
+	attachmentId?: string;
 };
 
 type RuntimePushHandle = {
 	connectionId: string;
 	push: (env: ControlPushEnvelope) => void;
 };
+
+type AttachmentKey = string | undefined;
 
 export {
 	type RegisteredRuntime,
@@ -100,7 +109,8 @@ export class DispatchPipeline {
 	private readonly log: DispatchPipelineOptions['log'];
 	private readonly now: () => number;
 	private readonly idFactory: () => string;
-	private push: RuntimePushHandle | null = null;
+	private readonly pushes: Map<AttachmentKey, RuntimePushHandle> = new Map();
+	private readonly connectionToKey: Map<string, AttachmentKey> = new Map();
 
 	constructor(opts: DispatchPipelineOptions) {
 		this.bindingStore = new RuntimeBindingStore({
@@ -151,9 +161,13 @@ export class DispatchPipeline {
 
 	// ── inbound (channel side) ───────────────────────────────
 
-	handleInbound(inbound: NormalizedInbound): DispatchResult {
-		const current = this.bindingStore.getCurrent();
-		if (!current || !this.bindingStore.hasActiveBinding(current.runtimeId)) {
+	handleInbound(
+		inbound: NormalizedInbound,
+		options: {attachmentId?: string} = {},
+	): DispatchResult {
+		const key: AttachmentKey = options.attachmentId;
+		const current = this.bindingStore.getCurrentByAttachment(key);
+		if (!current || !this.bindingStore.hasActiveBindingForAttachment(key)) {
 			const result = this.inboundQueue.enqueue(inbound);
 			if (result.kind === 'queued') {
 				this.log?.(
@@ -175,12 +189,13 @@ export class DispatchPipeline {
 			);
 			return {kind: 'dropped', reason: 'queue_full'};
 		}
-		return this.dispatchInboundToRuntime(inbound, current);
+		return this.dispatchInboundToRuntime(inbound, current, key);
 	}
 
 	private dispatchInboundToRuntime(
 		inbound: NormalizedInbound,
 		current: RegisteredRuntime,
+		key: AttachmentKey,
 	): DispatchResult {
 		const sessionKey = deriveSessionKey(inbound.location);
 		const agentId = this.resolveAgent({
@@ -200,7 +215,7 @@ export class DispatchPipeline {
 			agentId,
 			location: inbound.location,
 		});
-		this.pushDispatch({
+		this.pushDispatch(key, {
 			dispatchId: entry.dispatchId,
 			sessionKey,
 			agentId,
@@ -209,9 +224,13 @@ export class DispatchPipeline {
 		return {kind: 'dispatched', dispatchId: entry.dispatchId, sessionKey};
 	}
 
-	private pushDispatch(payload: SessionDispatchTurnPushPayload): void {
-		if (!this.push) return;
-		this.push.push({
+	private pushDispatch(
+		key: AttachmentKey,
+		payload: SessionDispatchTurnPushPayload,
+	): void {
+		const handle = this.pushes.get(key);
+		if (!handle) return;
+		handle.push({
 			push_id: this.idFactory(),
 			ts: this.now(),
 			kind: 'session.dispatch.turn',
@@ -222,46 +241,67 @@ export class DispatchPipeline {
 	// ── runtime side ─────────────────────────────────────────
 
 	registerRuntime(input: RegisterRuntimeInput): {registeredAt: number} {
+		const key: AttachmentKey = input.attachmentId;
 		const result = this.bindingStore.bind({
 			runtimeId: input.runtimeId,
 			defaultAgentId: input.defaultAgentId,
 			pid: input.pid,
 			connectionId: input.connectionId,
+			...(input.attachmentId !== undefined
+				? {attachmentId: input.attachmentId}
+				: {}),
 		});
-		this.push = {connectionId: input.connectionId, push: input.push};
+		const previous = this.pushes.get(key);
+		if (previous && previous.connectionId !== input.connectionId) {
+			this.connectionToKey.delete(previous.connectionId);
+		}
+		this.pushes.set(key, {
+			connectionId: input.connectionId,
+			push: input.push,
+		});
+		this.connectionToKey.set(input.connectionId, key);
 
 		writeGatewayTrace(
 			`pipeline registered runtime runtimeId=${input.runtimeId} connectionId=${input.connectionId}`,
 		);
 
-		this.drainPending();
+		this.drainPending(key);
 		return {registeredAt: result.registeredAt};
 	}
 
 	unregisterRuntime(runtimeId: string): void {
+		const slot = this.findSlotByRuntimeId(runtimeId);
 		this.bindingStore.unbind(runtimeId);
 		this.registry.clearDispatches();
-		this.push = null;
+		if (slot) {
+			const handle = this.pushes.get(slot.key);
+			this.pushes.delete(slot.key);
+			if (handle) this.connectionToKey.delete(handle.connectionId);
+		}
 		writeGatewayTrace(`pipeline unregistered runtime runtimeId=${runtimeId}`);
 	}
 
 	notifyConnectionClosed(connectionId: string): void {
+		const key = this.connectionToKey.get(connectionId);
 		const runtimeId = this.bindingStore.notifyConnectionClosed(connectionId);
 		if (runtimeId === null) return;
 		writeGatewayTrace(
 			`pipeline runtime connection closed runtimeId=${runtimeId} connectionId=${connectionId}`,
 		);
-		this.push = null;
+		if (key !== undefined || this.pushes.has(key)) {
+			this.pushes.delete(key);
+			this.connectionToKey.delete(connectionId);
+		}
 	}
 
 	async handleTurnComplete(
 		payload: SessionTurnCompleteRequestPayload,
 	): Promise<SessionTurnCompleteResponsePayload> {
-		const current = this.bindingStore.getCurrent();
+		const slot = this.findSlotByRuntimeId(payload.runtimeId);
 		writeGatewayTrace(
 			`pipeline turn.complete received runtimeId=${payload.runtimeId} dispatchId=${payload.dispatchId} channel=${payload.location.channelId} account=${payload.location.accountId} thread=${payload.location.thread?.id ?? ''} textLength=${payload.text.length}`,
 		);
-		if (!current || current.runtimeId !== payload.runtimeId) {
+		if (!slot) {
 			throw new Error('runtime mismatch on session.turn.complete');
 		}
 		let entry;
@@ -303,15 +343,21 @@ export class DispatchPipeline {
 		};
 	}
 
-	private drainPending(): void {
-		const current = this.bindingStore.getCurrent();
+	private findSlotByRuntimeId(
+		runtimeId: string,
+	): {key: AttachmentKey; runtime: RegisteredRuntime} | null {
+		return this.bindingStore.getAttachmentKeyByRuntimeId(runtimeId);
+	}
+
+	private drainPending(key: AttachmentKey): void {
+		const current = this.bindingStore.getCurrentByAttachment(key);
 		if (!current || !this.bindingStore.hasActiveBinding(current.runtimeId))
 			return;
 		const parked = this.inboundQueue.drain();
 		let dispatched = 0;
 		let dropped = 0;
 		for (const {inbound} of parked) {
-			const result = this.dispatchInboundToRuntime(inbound, current);
+			const result = this.dispatchInboundToRuntime(inbound, current, key);
 			if (result.kind === 'dispatched') dispatched += 1;
 			else dropped += 1;
 		}
@@ -327,6 +373,12 @@ export class DispatchPipeline {
 
 	getCurrentRuntime(): RegisteredRuntime | null {
 		return this.bindingStore.getCurrent();
+	}
+
+	getCurrentRuntimeByAttachment(
+		attachmentId: string | undefined,
+	): RegisteredRuntime | null {
+		return this.bindingStore.getCurrentByAttachment(attachmentId);
 	}
 
 	getBinding() {

@@ -28,4 +28,20 @@ describe('getInteractionHints', () => {
 		expect(unknown.canBlock).toBe(false);
 		expect(unknown.defaultTimeoutMs).toBe(4000);
 	});
+
+	it('AskUserQuestion waits indefinitely (no auto-passthrough)', () => {
+		// AskUserQuestion is the human-in-the-loop tool. Sharing the 5-minute
+		// permission timeout caused the runtime to fire a passthrough decision
+		// before the user could answer, after which Claude exited and the
+		// workflow loop ticked a fresh iteration that lost the question.
+		const ask = getInteractionHints('tool.pre', 'AskUserQuestion');
+		expect(ask.expectsDecision).toBe(true);
+		expect(ask.canBlock).toBe(true);
+		expect(ask.defaultTimeoutMs).toBeNull();
+	});
+
+	it('non-AskUserQuestion tool.pre keeps the permission timeout', () => {
+		const bashPre = getInteractionHints('tool.pre', 'Bash');
+		expect(bashPre.defaultTimeoutMs).toBe(300_000);
+	});
 });

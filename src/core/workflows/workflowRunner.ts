@@ -273,7 +273,9 @@ export function createWorkflowRunner(
 					} else if (loopStop.reason === 'max_iterations') {
 						status = 'exhausted';
 					} else if (loopStop.reason === 'skeleton_not_replaced') {
-						status = 'completed';
+						status = 'failed';
+						stopReason =
+							'tracker skeleton was never replaced — Claude did not bootstrap the tracker';
 					} else {
 						status = 'failed';
 						stopReason = `Loop stopped: ${loopStop.reason}`;

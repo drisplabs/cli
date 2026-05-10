@@ -10,6 +10,7 @@ import {
 	type InstanceSocketLogger,
 } from '../dashboard/instanceSocketClient';
 import {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
+import {reconcileConsoleSidecars} from '../dashboard/consoleSidecarReconciler';
 import {runDashboardRuntimeDaemon} from '../dashboard/runtimeDaemon';
 import {runGatewayCommand} from './gatewayCommand';
 import {
@@ -397,6 +398,39 @@ export async function runDashboardCommand(
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
+		}
+
+		// Reconcile per-runner console sidecars to match the freshly-paired
+		// runner list, then nudge the gateway to load the new adapters. The
+		// dashboard owns the attachment list; we just project it onto the
+		// channels directory.
+		const reconcileDir = (deps.channelDir ?? channelSidecarDir)();
+		let reconcileChanged = false;
+		try {
+			const reconciled = reconcileConsoleSidecars({
+				channelDir: reconcileDir,
+				dashboardUrl: origin,
+				desired: (parsed.runners ?? []).map(r => ({runnerId: r.runnerId})),
+			});
+			reconcileChanged =
+				reconciled.written.length > 0 || reconciled.removed.length > 0;
+		} catch (err) {
+			logError(
+				`dashboard pair: failed to reconcile console sidecars: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+		if (reconcileChanged) {
+			try {
+				await (deps.reloadGatewayChannels ?? defaultReloadGatewayChannels)();
+			} catch (err) {
+				logError(
+					`dashboard pair: failed to reload gateway channels: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
 		}
 
 		const daemonStart = await (
@@ -1925,7 +1959,7 @@ async function defaultTailDaemonLog(opts: {
 		} catch {
 			// fs.watch may fail on certain filesystems; fall back to polling
 			pollTimer = setInterval(drain, 500);
-			pollTimer.unref?.();
+			pollTimer.unref();
 		}
 		const onSignal = (): void => {
 			if (watcher) {

@@ -97,14 +97,16 @@ export type SessionBridgePermissionRequest = {
 	toolName: string;
 	description: string;
 	inputPreview: string;
-	ttlMs?: number;
+	// null = no local deadline (human-in-the-loop, e.g. AskUserQuestion).
+	ttlMs?: number | null;
 };
 
 export type SessionBridgeQuestionRequest = {
 	channelRequestId?: string;
 	title: string;
 	questions: RelayQuestion[];
-	ttlMs?: number;
+	// null = no local deadline (human-in-the-loop, e.g. AskUserQuestion).
+	ttlMs?: number | null;
 };
 
 export type SessionBridgeTurnComplete = {
@@ -299,7 +301,8 @@ export class SessionBridge {
 			inputPreview: req.inputPreview,
 			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
 		};
-		const overallTimeoutMs = req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS;
+		const overallTimeoutMs =
+			req.ttlMs === null ? null : (req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS);
 		return this.requestWithReconnect<
 			RelayPermissionRequestPayload,
 			RelayPermissionResponsePayload
@@ -316,7 +319,8 @@ export class SessionBridge {
 			questions: req.questions,
 			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
 		};
-		const overallTimeoutMs = req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS;
+		const overallTimeoutMs =
+			req.ttlMs === null ? null : (req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS);
 		return this.requestWithReconnect<
 			RelayQuestionRequestPayload,
 			RelayQuestionResponsePayload
@@ -334,26 +338,30 @@ export class SessionBridge {
 	private async requestWithReconnect<TPayload, TResponse>(
 		kind: string,
 		payload: TPayload,
-		overallTimeoutMs: number,
+		// null = wait indefinitely (human-in-the-loop, e.g. AskUserQuestion).
+		overallTimeoutMs: number | null,
 	): Promise<TResponse> {
-		const deadline = Date.now() + overallTimeoutMs;
+		const deadline =
+			overallTimeoutMs === null ? null : Date.now() + overallTimeoutMs;
 		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- bounded by deadline + thrown errors below
 		while (true) {
 			const client = await this.requireConnectedClient();
-			const remaining = deadline - Date.now();
-			if (remaining <= 0) {
+			const remaining = deadline === null ? null : deadline - Date.now();
+			if (remaining !== null && remaining <= 0) {
 				throw new GatewayProtocolError(`request ${kind} timed out`);
 			}
 			try {
 				return await client.request<TPayload, TResponse>(kind, payload, {
-					timeoutMs: remaining,
+					// When unbounded, pass the largest safe setTimeout value so the
+					// inner request never self-cancels in any human time scale.
+					timeoutMs: remaining ?? 2_147_483_647,
 				});
 			} catch (err) {
 				if (
 					err instanceof GatewayProtocolError &&
 					err.code === 'connection_closed' &&
 					!this.stopped &&
-					Date.now() < deadline
+					(deadline === null || Date.now() < deadline)
 				) {
 					writeGatewayTrace(
 						`sessionBridge relay retry kind=${kind} runtimeId=${this.opts.runtimeId}`,

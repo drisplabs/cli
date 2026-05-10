@@ -44,7 +44,7 @@ export function mapEnvelopeToRuntimeEvent(
 		agentId: translated.agentId,
 		agentType: translated.agentType,
 		context,
-		interaction: getInteractionHints(translated.kind),
+		interaction: getInteractionHints(translated.kind, translated.toolName),
 		payload: safePayload,
 		display: buildClaudeDisplay(translated.kind, translated.data),
 	};

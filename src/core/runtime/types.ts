@@ -58,8 +58,13 @@ export type RuntimeEvent = {
 	interaction: {
 		/** Whether runtime waits for sendDecision() */
 		expectsDecision: boolean;
-		/** Adapter-enforced timeout in ms (undefined = no timeout) */
-		defaultTimeoutMs?: number;
+		/**
+		 * Adapter-enforced timeout in ms.
+		 * - number: auto-passthrough after this many ms with no decision
+		 * - null: wait indefinitely (human-in-the-loop; never auto-passthrough)
+		 * - undefined: adapter falls back to its default TTL
+		 */
+		defaultTimeoutMs?: number | null;
 		/** Protocol capability: can this event type be blocked? */
 		canBlock?: boolean;
 	};

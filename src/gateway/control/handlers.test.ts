@@ -260,3 +260,71 @@ describe('dispatcher: channels.reload', () => {
 		expect(err.error.code).toBe('unsupported');
 	});
 });
+
+describe('dispatcher: session.register attachmentId routing', () => {
+	it('places the runtime in the attachmentId-keyed slot when the payload carries one', async () => {
+		const pipeline = makePipeline();
+		const handle = createDispatcher({startedAt: 0, pipeline});
+
+		const res = await handle(
+			envelope('session.register', {
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				attachmentId: 'a1',
+			}),
+			makeConnection('conn-r1'),
+		);
+
+		expect(res.ok).toBe(true);
+		expect(pipeline.getCurrentRuntimeByAttachment('a1')?.runtimeId).toBe('r1');
+		expect(pipeline.getCurrentRuntime()).toBeNull(); // legacy slot is empty
+	});
+
+	it('places the runtime in the legacy slot when the payload omits attachmentId', async () => {
+		const pipeline = makePipeline();
+		const handle = createDispatcher({startedAt: 0, pipeline});
+
+		const res = await handle(
+			envelope('session.register', {
+				runtimeId: 'r-legacy',
+				defaultAgentId: 'main',
+				pid: 1,
+			}),
+			makeConnection('conn-legacy'),
+		);
+
+		expect(res.ok).toBe(true);
+		expect(pipeline.getCurrentRuntime()?.runtimeId).toBe('r-legacy');
+		expect(pipeline.getCurrentRuntimeByAttachment('a1')).toBeNull();
+	});
+
+	it('accepts two runtimes registering under distinct attachmentIds without conflict', async () => {
+		const pipeline = makePipeline();
+		const handle = createDispatcher({startedAt: 0, pipeline});
+
+		const r1 = await handle(
+			envelope('session.register', {
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				attachmentId: 'a1',
+			}),
+			makeConnection('conn-r1'),
+		);
+		const r2 = await handle(
+			envelope('session.register', {
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				attachmentId: 'a2',
+			}),
+			makeConnection('conn-r2'),
+		);
+
+		expect(r1.ok).toBe(true);
+		expect(r2.ok).toBe(true);
+		expect(pipeline.getCurrentRuntimeByAttachment('a1')?.runtimeId).toBe('r1');
+		expect(pipeline.getCurrentRuntimeByAttachment('a2')?.runtimeId).toBe('r2');
+	});
+});

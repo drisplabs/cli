@@ -89,7 +89,8 @@ export type AthenaConsolePermissionRequestFrame = AthenaConsoleFrameBase & {
 	toolName: string;
 	description: string;
 	inputPreview: string;
-	ttlMs?: number;
+	// null = no console-side timeout (human-in-the-loop).
+	ttlMs?: number | null;
 };
 
 export type AthenaConsolePermissionResponseFrame = AthenaConsoleFrameBase & {
@@ -111,7 +112,8 @@ export type AthenaConsoleQuestionRequestFrame = AthenaConsoleFrameBase & {
 	channelRequestId: string;
 	title: string;
 	questions: readonly RelayQuestion[];
-	ttlMs?: number;
+	// null = no console-side timeout (human-in-the-loop).
+	ttlMs?: number | null;
 };
 
 export type AthenaConsoleQuestionResponseFrame = AthenaConsoleFrameBase & {

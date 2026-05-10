@@ -143,6 +143,45 @@ describe('RelayCoordinator', () => {
 		}
 	});
 
+	it('ttlMs: null disables the broadcast timeout (human-in-the-loop)', async () => {
+		// AskUserQuestion is human-in-the-loop. The broadcast must not
+		// cancel the pending request just because the human is taking
+		// their time — otherwise Claude exits and the workflow loop
+		// ticks a fresh iteration that lost the question context.
+		vi.useFakeTimers();
+		try {
+			const adapter = makeAdapter('a', {
+				question: () => new Promise(() => {}),
+			});
+			const coord = new RelayCoordinator({
+				adapters: () => [adapter],
+				defaultTtlMs: 100,
+			});
+			const {result} = coord.requestQuestion({
+				ttlMs: null,
+				title: 'pick',
+				questions: [
+					{
+						key: 'q',
+						header: 'h',
+						question: 'q?',
+						multi_select: false,
+						options: [],
+					},
+				],
+			});
+			let settled = false;
+			void result.then(() => {
+				settled = true;
+			});
+			vi.advanceTimersByTime(60 * 60 * 1000); // an hour
+			await Promise.resolve();
+			expect(settled).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('question relay honours the same race semantics', async () => {
 		const adapter = makeAdapter('a', {
 			question: async () => ({

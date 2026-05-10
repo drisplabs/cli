@@ -99,13 +99,21 @@ export type ChannelsReloadResponsePayload = {
 
 /**
  * Identifies a single Athena interactive runtime that has registered with the
- * gateway. The gateway enforces one-runtime-at-a-time; duplicate registration
- * is rejected with code `already_registered`.
+ * gateway. The gateway hosts at most one runtime per **attachment slot**: a
+ * register that targets the same `attachmentId` (or both omit it, hitting the
+ * single legacy slot) as an existing registration is rejected with code
+ * `already_registered`.
+ *
+ * `attachmentId` is the dashboard-side runner key. Harnesses launched without
+ * an attachment context omit it and occupy the legacy slot; future
+ * supervisor-spawned children pass their attachmentId so the gateway can
+ * route inbound by attachment. See `docs/adr/0001-attachment-supervisor.md`.
  */
 export type SessionRegisterRequestPayload = {
 	runtimeId: string;
 	defaultAgentId: string;
 	pid: number;
+	attachmentId?: string;
 };
 export type SessionRegisterResponsePayload = {
 	registeredAt: number;
@@ -166,7 +174,8 @@ export type RelayPermissionRequestPayload = {
 	toolName: string;
 	description: string;
 	inputPreview: string;
-	ttlMs?: number;
+	// null = no broadcast timeout (human-in-the-loop).
+	ttlMs?: number | null;
 };
 export type RelayPermissionResponsePayload = {
 	channelRequestId: string;
@@ -185,7 +194,8 @@ export type RelayQuestionRequestPayload = {
 	channelRequestId?: string;
 	title: string;
 	questions: RelayQuestion[];
-	ttlMs?: number;
+	// null = no broadcast timeout (human-in-the-loop).
+	ttlMs?: number | null;
 };
 export type RelayQuestionResponsePayload = {
 	channelRequestId: string;

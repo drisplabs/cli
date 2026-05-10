@@ -1,16 +1,18 @@
 /**
  * RuntimeBindingStore — owns the registered-runtime binding state machine.
  *
- * States: absent → active → stale → (active | absent)
+ * States per attachment slot: absent → active → stale → (active | absent)
  *
- * A gateway hosts at most one Athena runtime at a time. This store tracks
- * the registered runtime identity, the current connection binding, and the
- * optional grace-period timer that holds the slot open when the TCP/UDS
- * connection drops so the runtime can reconnect without losing queued inbound.
+ * The store hosts one runtime per **attachment slot**, keyed by `attachmentId`.
+ * Frames that arrive without an `attachmentId` (legacy / pre-Phase-1) hit the
+ * single fallback slot keyed by `undefined`. Each slot tracks its own
+ * runtime identity, connection binding, and optional grace-period timer.
  *
  * Observer callbacks are emitted synchronously from the mutating methods so
  * the caller can update ancillary state (e.g. clearing the push handle) in
  * the same turn.
+ *
+ * See `docs/adr/0001-attachment-supervisor.md` (phase 4).
  */
 
 export type RegisteredRuntime = {
@@ -20,9 +22,8 @@ export type RegisteredRuntime = {
 	registeredAt: number;
 	/**
 	 * Optional binding to a dashboard-side **Attachment** (one runner attached
-	 * to this instance). Today this is unset and the gateway hosts one runtime
-	 * total; once `job_assignment` carries `attachmentId`, multi-runtime
-	 * support keys the binding map on it. See
+	 * to this instance). When unset, the runtime occupies the single fallback
+	 * slot used by frames that arrive without an `attachmentId`. See
 	 * `docs/adr/0001-attachment-supervisor.md`.
 	 */
 	attachmentId?: string;
@@ -84,11 +85,17 @@ export type RuntimeBindingStoreOptions = {
 	now?: () => number;
 };
 
+type AttachmentKey = string | undefined;
+
+type Slot = {
+	runtime: RegisteredRuntime;
+	binding: RuntimeConnectionBinding | null;
+	staleTimer: NodeJS.Timeout | null;
+	staleSince: number | null;
+};
+
 export class RuntimeBindingStore {
-	private current: RegisteredRuntime | null = null;
-	private bindingState: RuntimeConnectionBinding | null = null;
-	private staleTimer: NodeJS.Timeout | null = null;
-	private staleSince: number | null = null;
+	private readonly slots: Map<AttachmentKey, Slot> = new Map();
 	private readonly gracePeriodMs: number;
 	private readonly observers: RuntimeBindingObservers;
 	private readonly now: () => number;
@@ -107,38 +114,47 @@ export class RuntimeBindingStore {
 		defaultAgentId: string;
 		pid: number;
 		connectionId: string;
+		attachmentId?: string;
 	}): {registeredAt: number} {
-		const previous = this.bindingState;
-		const wasStale = previous?.state === 'stale';
+		const key: AttachmentKey = input.attachmentId;
+		const existing = this.slots.get(key);
+		const previousBinding = existing?.binding ?? null;
+		const wasStale = previousBinding?.state === 'stale';
 		const staleSince = wasStale
-			? (previous as {staleSince: number}).staleSince
+			? (previousBinding as {staleSince: number}).staleSince
 			: null;
 
-		if (!this.current) {
-			this.current = {
+		let runtime: RegisteredRuntime;
+		if (!existing) {
+			runtime = {
 				runtimeId: input.runtimeId,
 				defaultAgentId: input.defaultAgentId,
 				pid: input.pid,
 				registeredAt: this.now(),
+				...(input.attachmentId !== undefined
+					? {attachmentId: input.attachmentId}
+					: {}),
 			};
-		} else if (this.current.runtimeId === input.runtimeId) {
-			this.current = {
-				...this.current,
+		} else if (existing.runtime.runtimeId === input.runtimeId) {
+			runtime = {
+				...existing.runtime,
 				defaultAgentId: input.defaultAgentId,
 				pid: input.pid,
 			};
 		} else {
-			throw new AlreadyRegisteredError(this.current);
+			throw new AlreadyRegisteredError(existing.runtime);
 		}
 
 		const now = this.now();
 		const isRebind =
-			previous !== null &&
-			(previous.state === 'stale' ||
-				previous.connectionId !== input.connectionId);
-		const lastRebindAt = isRebind ? now : previous?.lastRebindAt;
-		const epoch = previous ? previous.epoch + (isRebind ? 1 : 0) : 1;
-		this.bindingState = {
+			previousBinding !== null &&
+			(previousBinding.state === 'stale' ||
+				previousBinding.connectionId !== input.connectionId);
+		const lastRebindAt = isRebind ? now : previousBinding?.lastRebindAt;
+		const epoch = previousBinding
+			? previousBinding.epoch + (isRebind ? 1 : 0)
+			: 1;
+		const newBinding: RuntimeConnectionBinding = {
 			state: 'active',
 			connectionId: input.connectionId,
 			boundAt: now,
@@ -146,125 +162,160 @@ export class RuntimeBindingStore {
 			...maybeLastRebindAt(lastRebindAt),
 		};
 
-		this.clearStaleTimer();
+		const slot: Slot = existing
+			? {...existing, runtime, binding: newBinding}
+			: {runtime, binding: newBinding, staleTimer: null, staleSince: null};
+		this.clearStaleTimerForSlot(slot);
+		this.slots.set(key, slot);
 
 		if (wasStale && staleSince !== null) {
 			this.observers.onRuntimeRebind?.({
 				runtimeId: input.runtimeId,
 				gapMs: now - staleSince,
-				epoch: this.bindingState.epoch,
+				epoch: newBinding.epoch,
 			});
 		}
 
-		return {registeredAt: this.current.registeredAt};
+		return {registeredAt: runtime.registeredAt};
 	}
 
 	/** Fully unregister a runtime. Throws NotRegisteredError if id does not match. */
 	unbind(runtimeId: string): void {
-		if (!this.current || this.current.runtimeId !== runtimeId) {
+		const entry = this.findSlotByRuntimeId(runtimeId);
+		if (!entry) {
 			throw new NotRegisteredError();
 		}
-		this.current = null;
-		this.bindingState = null;
-		this.clearStaleTimer();
+		this.clearStaleTimerForSlot(entry.slot);
+		this.slots.delete(entry.key);
+		this.observers.onRuntimeConnectionLost?.({runtimeId, graceful: true});
 	}
 
 	/**
 	 * Called when the transport connection closes.
-	 * Returns the runtimeId if the close was for the current binding (caller should
+	 * Returns the runtimeId if the close was for a current binding (caller should
 	 * clear the push handle); returns null if the connectionId was not recognised.
 	 */
 	notifyConnectionClosed(connectionId: string): string | null {
-		if (
-			!this.current ||
-			!this.bindingState ||
-			this.bindingState.connectionId !== connectionId
-		) {
-			return null;
-		}
+		const entry = this.findSlotByConnectionId(connectionId);
+		if (!entry) return null;
 
-		const runtimeId = this.current.runtimeId;
+		const {key, slot} = entry;
+		const runtimeId = slot.runtime.runtimeId;
 		const now = this.now();
-		this.bindingState = {
+		const previousBinding = slot.binding!;
+		slot.binding = {
 			state: 'stale',
 			connectionId,
 			staleSince: now,
-			epoch: this.bindingState.epoch,
-			...maybeLastRebindAt(this.bindingState.lastRebindAt),
+			epoch: previousBinding.epoch,
+			...maybeLastRebindAt(previousBinding.lastRebindAt),
 		};
 
 		if (this.gracePeriodMs <= 0) {
-			this.current = null;
-			this.bindingState = null;
+			this.slots.delete(key);
 			this.observers.onRuntimeConnectionLost?.({runtimeId, graceful: false});
 			return runtimeId;
 		}
 
-		this.staleSince = now;
-		this.staleTimer = setTimeout(() => {
-			this.expireStaleBinding(runtimeId);
+		slot.staleSince = now;
+		slot.staleTimer = setTimeout(() => {
+			this.expireStaleBinding(key, runtimeId);
 		}, this.gracePeriodMs);
 		return runtimeId;
 	}
 
 	stop(): void {
-		this.clearStaleTimer();
+		for (const slot of this.slots.values()) {
+			this.clearStaleTimerForSlot(slot);
+		}
 	}
 
 	// ── reads ─────────────────────────────────────────────────
 
 	hasActiveBinding(runtimeId?: string): boolean {
-		if (
-			!this.current ||
-			!this.bindingState ||
-			this.bindingState.state !== 'active'
-		) {
-			return false;
-		}
-		return runtimeId === undefined || this.current.runtimeId === runtimeId;
+		const slot = this.slots.get(undefined);
+		if (!slot || !slot.binding || slot.binding.state !== 'active') return false;
+		return runtimeId === undefined || slot.runtime.runtimeId === runtimeId;
+	}
+
+	hasActiveBindingForAttachment(key: string | undefined): boolean {
+		const slot = this.slots.get(key);
+		return !!slot && !!slot.binding && slot.binding.state === 'active';
 	}
 
 	getCurrent(): RegisteredRuntime | null {
-		return this.current;
+		return this.slots.get(undefined)?.runtime ?? null;
+	}
+
+	getCurrentByAttachment(
+		attachmentId: string | undefined,
+	): RegisteredRuntime | null {
+		return this.slots.get(attachmentId)?.runtime ?? null;
 	}
 
 	getBinding(): RuntimeConnectionBinding | null {
-		return this.bindingState;
+		return this.slots.get(undefined)?.binding ?? null;
 	}
 
 	getRuntimeIdByConnection(connectionId: string): string | null {
-		if (!this.current || !this.bindingState) return null;
-		return this.bindingState.connectionId === connectionId
-			? this.current.runtimeId
-			: null;
+		const entry = this.findSlotByConnectionId(connectionId);
+		return entry ? entry.slot.runtime.runtimeId : null;
+	}
+
+	/**
+	 * Returns the attachment slot key (or `undefined` for the legacy slot) that
+	 * holds the given runtime, or `null` if no slot does. Lets callers
+	 * route per-attachment side-state (like push handles) keyed the same way
+	 * as the binding map.
+	 */
+	getAttachmentKeyByRuntimeId(runtimeId: string): {
+		key: string | undefined;
+		runtime: RegisteredRuntime;
+	} | null {
+		const entry = this.findSlotByRuntimeId(runtimeId);
+		return entry ? {key: entry.key, runtime: entry.slot.runtime} : null;
 	}
 
 	// ── private ───────────────────────────────────────────────
 
-	private expireStaleBinding(runtimeId: string): void {
-		this.staleTimer = null;
-		const since = this.staleSince;
-		this.staleSince = null;
-		if (
-			!this.current ||
-			this.current.runtimeId !== runtimeId ||
-			this.hasActiveBinding(runtimeId)
-		) {
-			return;
-		}
-		this.current = null;
-		this.bindingState = null;
+	private expireStaleBinding(key: AttachmentKey, runtimeId: string): void {
+		const slot = this.slots.get(key);
+		if (!slot) return;
+		slot.staleTimer = null;
+		const since = slot.staleSince;
+		slot.staleSince = null;
+		if (slot.runtime.runtimeId !== runtimeId) return;
+		if (slot.binding?.state === 'active') return;
+		this.slots.delete(key);
 		this.observers.onRuntimeConnectionLost?.({runtimeId, graceful: false});
 		if (since !== null) {
 			this.observers.onRuntimeExpired?.({runtimeId, gapMs: this.now() - since});
 		}
 	}
 
-	private clearStaleTimer(): void {
-		if (this.staleTimer) {
-			clearTimeout(this.staleTimer);
-			this.staleTimer = null;
+	private clearStaleTimerForSlot(slot: Slot): void {
+		if (slot.staleTimer) {
+			clearTimeout(slot.staleTimer);
+			slot.staleTimer = null;
 		}
-		this.staleSince = null;
+		slot.staleSince = null;
+	}
+
+	private findSlotByRuntimeId(
+		runtimeId: string,
+	): {key: AttachmentKey; slot: Slot} | null {
+		for (const [key, slot] of this.slots) {
+			if (slot.runtime.runtimeId === runtimeId) return {key, slot};
+		}
+		return null;
+	}
+
+	private findSlotByConnectionId(
+		connectionId: string,
+	): {key: AttachmentKey; slot: Slot} | null {
+		for (const [key, slot] of this.slots) {
+			if (slot.binding?.connectionId === connectionId) return {key, slot};
+		}
+		return null;
 	}
 }

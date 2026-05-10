@@ -68,6 +68,16 @@ describe('RuntimeBindingStore — registration', () => {
 		expect(store.getBinding()).toBeNull();
 	});
 
+	it('unbind fires onRuntimeConnectionLost with graceful=true', () => {
+		const {store, observers} = makeStore();
+		store.bind(R1);
+		store.unbind('r1');
+		expect(observers.onRuntimeConnectionLost).toHaveBeenCalledWith({
+			runtimeId: 'r1',
+			graceful: true,
+		});
+	});
+
 	it('allows a new runtime after unbind', () => {
 		const {store} = makeStore();
 		store.bind(R1);
@@ -241,5 +251,127 @@ describe('RuntimeBindingStore — connection lifecycle (grace>0)', () => {
 		vi.advanceTimersByTime(60_000);
 		expect(observers.onRuntimeExpired).not.toHaveBeenCalled();
 		expect(store.getCurrent()?.runtimeId).toBe('r1'); // not yet expired
+	});
+});
+
+describe('RuntimeBindingStore — multi-runtime by attachmentId', () => {
+	it('hosts two runtimes concurrently when each carries a distinct attachmentId', () => {
+		const {store} = makeStore();
+		store.bind({...R1, attachmentId: 'a1'});
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+		});
+		expect(store.getCurrentByAttachment('a1')?.runtimeId).toBe('r1');
+		expect(store.getCurrentByAttachment('a2')?.runtimeId).toBe('r2');
+	});
+
+	it('rejects a second runtime registering under the same attachmentId', () => {
+		const {store} = makeStore();
+		store.bind({...R1, attachmentId: 'a1'});
+		expect(() =>
+			store.bind({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c2',
+				attachmentId: 'a1',
+			}),
+		).toThrow(AlreadyRegisteredError);
+	});
+
+	it('unbinding one attachment leaves the other intact', () => {
+		const {store} = makeStore();
+		store.bind({...R1, attachmentId: 'a1'});
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+		});
+		store.unbind('r1');
+		expect(store.getCurrentByAttachment('a1')).toBeNull();
+		expect(store.getCurrentByAttachment('a2')?.runtimeId).toBe('r2');
+	});
+
+	it('connection close affects only the matching attachment slot (grace=0)', () => {
+		const {store, observers} = makeStore();
+		store.bind({...R1, attachmentId: 'a1'});
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+		});
+
+		const returned = store.notifyConnectionClosed('c2');
+		expect(returned).toBe('r2');
+		expect(store.getCurrentByAttachment('a2')).toBeNull();
+		expect(store.getCurrentByAttachment('a1')?.runtimeId).toBe('r1');
+		expect(observers.onRuntimeConnectionLost).toHaveBeenCalledWith({
+			runtimeId: 'r2',
+			graceful: false,
+		});
+	});
+
+	it('legacy bind (no attachmentId) is independent from attachment-keyed binds', () => {
+		const {store} = makeStore();
+		store.bind(R1); // legacy slot
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+		});
+
+		// legacy reads still operate on the undefined slot
+		expect(store.getCurrent()?.runtimeId).toBe('r1');
+		expect(store.getBinding()?.state).toBe('active');
+		expect(store.hasActiveBinding('r1')).toBe(true);
+		expect(store.hasActiveBinding('r2')).toBe(false); // r2 is not in the legacy slot
+		expect(store.getRuntimeIdByConnection('c1')).toBe('r1');
+		expect(store.getRuntimeIdByConnection('c2')).toBe('r2');
+		expect(store.getCurrentByAttachment(undefined)?.runtimeId).toBe('r1');
+		expect(store.getCurrentByAttachment('a2')?.runtimeId).toBe('r2');
+	});
+
+	it('connection close on one slot does not expire the other during grace', () => {
+		vi.useFakeTimers();
+		try {
+			let t = 1000;
+			const {store, observers} = makeStore({
+				gracePeriodMs: 30_000,
+				now: () => t,
+			});
+			store.bind({...R1, attachmentId: 'a1'});
+			store.bind({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c2',
+				attachmentId: 'a2',
+			});
+
+			t = 2_000;
+			store.notifyConnectionClosed('c2');
+			t = 32_001;
+			vi.advanceTimersByTime(30_001);
+
+			expect(store.getCurrentByAttachment('a2')).toBeNull();
+			expect(store.getCurrentByAttachment('a1')?.runtimeId).toBe('r1');
+			expect(observers.onRuntimeExpired).toHaveBeenCalledWith({
+				runtimeId: 'r2',
+				gapMs: 30_001,
+			});
+			expect(observers.onRuntimeExpired).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

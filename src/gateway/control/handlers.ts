@@ -185,6 +185,9 @@ const SESSION_REGISTER: ControlHandlerSpec = {
 			pid: req.pid,
 			connectionId: connection.connectionId,
 			push: connection.push,
+			...(req.attachmentId !== undefined
+				? {attachmentId: req.attachmentId}
+				: {}),
 		});
 		const payload: SessionRegisterResponsePayload = {
 			registeredAt: reg.registeredAt,

@@ -86,7 +86,7 @@ export class RelayCoordinator {
 	requestPermission(
 		req: Omit<PermissionRelayRequest, 'channelRequestId'> & {
 			channelRequestId?: string;
-			ttlMs?: number;
+			ttlMs?: number | null;
 			runtimeId?: string;
 		},
 	): PermissionBroadcast {
@@ -126,7 +126,7 @@ export class RelayCoordinator {
 		const result = this.broadcast({
 			kind: 'permission',
 			channelRequestId,
-			ttlMs: req.ttlMs ?? this.defaultTtlMs,
+			ttlMs: req.ttlMs === null ? null : (req.ttlMs ?? this.defaultTtlMs),
 			runtimeId: req.runtimeId,
 			fingerprint,
 			targets,
@@ -141,7 +141,7 @@ export class RelayCoordinator {
 	requestQuestion(
 		req: Omit<QuestionRelayRequest, 'channelRequestId'> & {
 			channelRequestId?: string;
-			ttlMs?: number;
+			ttlMs?: number | null;
 			runtimeId?: string;
 		},
 	): QuestionBroadcast {
@@ -180,7 +180,7 @@ export class RelayCoordinator {
 		const result = this.broadcast({
 			kind: 'question',
 			channelRequestId,
-			ttlMs: req.ttlMs ?? this.defaultTtlMs,
+			ttlMs: req.ttlMs === null ? null : (req.ttlMs ?? this.defaultTtlMs),
 			runtimeId: req.runtimeId,
 			fingerprint,
 			targets,
@@ -211,7 +211,8 @@ export class RelayCoordinator {
 	private broadcast(args: {
 		kind: PendingKind;
 		channelRequestId: string;
-		ttlMs: number;
+		// null = no broadcast timeout (human-in-the-loop, e.g. AskUserQuestion).
+		ttlMs: number | null;
 		runtimeId: string | undefined;
 		fingerprint: string;
 		targets: ReadonlyArray<ChannelAdapter>;
@@ -234,13 +235,16 @@ export class RelayCoordinator {
 		const result = new Promise<AnyRelayResult>(resolve => {
 			resolveFn = resolve;
 		});
-		const timer = setTimeout(() => {
-			this.registry.settle(channelRequestId, {
-				kind: 'cancelled',
-				reason: 'timeout',
-			});
-		}, ttlMs);
-		if (typeof timer.unref === 'function') timer.unref();
+		const timer =
+			ttlMs === null
+				? undefined
+				: setTimeout(() => {
+						this.registry.settle(channelRequestId, {
+							kind: 'cancelled',
+							reason: 'timeout',
+						});
+					}, ttlMs);
+		if (timer && typeof timer.unref === 'function') timer.unref();
 		this.registry.register({
 			kind,
 			channelRequestId,

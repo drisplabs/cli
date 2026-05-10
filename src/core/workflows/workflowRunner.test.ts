@@ -272,7 +272,7 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('completes cleanly when tracker skeleton is left untouched', async () => {
+	it('fails when the tracker skeleton is never replaced', async () => {
 		const projectDir = makeTempDir();
 
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
@@ -293,11 +293,14 @@ describe('createWorkflowRunner', () => {
 		});
 
 		const result = await handle.result;
-		expect(result.status).toBe('completed');
-		expect(result.stopReason).toBeUndefined();
+		expect(result.status).toBe('failed');
+		expect(result.stopReason).toMatch(/tracker skeleton.*never.*replaced/i);
 		expect(startTurn).toHaveBeenCalledTimes(1);
 		expect(persistRunState).toHaveBeenLastCalledWith(
-			expect.objectContaining({status: 'completed', stopReason: undefined}),
+			expect.objectContaining({
+				status: 'failed',
+				stopReason: expect.stringMatching(/tracker skeleton.*never.*replaced/i),
+			}),
 		);
 	});
 

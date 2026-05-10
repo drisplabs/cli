@@ -39,11 +39,16 @@ function makeDeps(overrides: {
 	const stored = {value: overrides.stored ?? null};
 	const removed = overrides.removed ?? {count: 0};
 	const cap = captureLogs();
+	// Per-test isolated channel dir so reconciler runs don't touch the
+	// user's ~/.config/athena/channels. Mocked reloadGatewayChannels keeps
+	// pair tests off the real UDS socket.
+	const channelDirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-test-'));
 	return {
 		cap,
 		writes,
 		stored,
 		removed,
+		channelDirPath,
 		deps: {
 			fetch: overrides.fetchMock as unknown as typeof fetch,
 			now: () => overrides.now ?? 1_700_000_000_000,
@@ -69,6 +74,11 @@ function makeDeps(overrides: {
 				message: 'connected',
 			})),
 			configPath: () => '/tmp/athena/dashboard.json',
+			channelDir: () => channelDirPath,
+			reloadGatewayChannels: vi.fn(async () => ({
+				ok: true,
+				message: 'reloaded (test mock)',
+			})),
 			logOut: cap.logOut,
 			logError: cap.logError,
 		},
@@ -227,6 +237,61 @@ describe('runDashboardCommand: pair', () => {
 		expect(startRuntimeDaemon).toHaveBeenCalledTimes(1);
 		expect(cap.out.join('\n')).toContain('runtime daemon connected');
 		expect(cap.out.join('\n')).toContain('bound runner Nightly QA (runner_1)');
+	});
+
+	it('reconciles per-runner console sidecars and reloads the gateway after pairing', async () => {
+		const channelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-side-'));
+		try {
+			const fetchMock = vi.fn().mockResolvedValue(
+				jsonResponse(200, {
+					instanceId: 'inst_1',
+					refreshToken: 'refresh_1',
+					runners: [
+						{runnerId: 'r1', name: 'one'},
+						{runnerId: 'r2', name: 'two'},
+					],
+				}),
+			);
+			// Stale dashboard-managed sidecar for a runner no longer attached.
+			fs.writeFileSync(
+				path.join(channelDir, 'console-rOld.json'),
+				JSON.stringify({
+					kind: 'console',
+					instance_id: 'console:rOld',
+					broker_url: 'wss://old',
+					runner_id: 'rOld',
+					dashboard_config: true,
+				}),
+			);
+			const reloadGatewayChannels = vi.fn(async () => ({
+				ok: true,
+				message: 'reloaded',
+			}));
+			const {deps} = makeDeps({fetchMock});
+
+			const code = await runDashboardCommand(
+				{
+					subcommand: 'pair',
+					subcommandArgs: ['tok_1'],
+					flags: {url: 'http://localhost:5173'},
+				},
+				{...deps, channelDir: () => channelDir, reloadGatewayChannels},
+			);
+
+			expect(code).toBe(0);
+			expect(fs.existsSync(path.join(channelDir, 'console-r1.json'))).toBe(
+				true,
+			);
+			expect(fs.existsSync(path.join(channelDir, 'console-r2.json'))).toBe(
+				true,
+			);
+			expect(fs.existsSync(path.join(channelDir, 'console-rOld.json'))).toBe(
+				false,
+			);
+			expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
+		} finally {
+			fs.rmSync(channelDir, {recursive: true, force: true});
+		}
 	});
 
 	it('does not log refresh token in human output', async () => {

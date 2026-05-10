@@ -187,7 +187,7 @@ export async function sendUdsRequest(
 			socket.destroy();
 			reject(new Error(`uds request timed out after ${timeoutMs}ms`));
 		}, timeoutMs);
-		timer.unref?.();
+		timer.unref();
 
 		const finish = (action: () => void): void => {
 			if (settled) return;

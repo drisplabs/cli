@@ -204,7 +204,7 @@ export async function executeRemoteAssignment({
 		});
 		const timeoutPromise = new Promise<'timeout'>(resolve => {
 			const t = setTimeout(() => resolve('timeout'), runStreamConnectTimeoutMs);
-			t.unref?.();
+			t.unref();
 		});
 		try {
 			const result = await Promise.race([
@@ -401,7 +401,7 @@ export async function executeRemoteAssignment({
 		if (runStream) {
 			const drainTimeout = new Promise<void>(resolve => {
 				const t = setTimeout(() => resolve(), 10_000);
-				t.unref?.();
+				t.unref();
 			});
 			await Promise.race([runStream.whenTerminated(), drainTimeout]);
 			await runStream.close('done');

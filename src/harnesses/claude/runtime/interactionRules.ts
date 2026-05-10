@@ -176,7 +176,23 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 	unknown: DEFAULT_HINTS,
 };
 
-export function getInteractionHints(kind: string): InteractionHints {
+// AskUserQuestion is human-in-the-loop. It must not share the permission
+// timeout — otherwise the runtime auto-passthroughs, Claude exits with the
+// question unanswered, and a workflow loop ticks a fresh iteration that has
+// no memory of the question.
+const ASK_USER_QUESTION_HINTS: InteractionHints = {
+	expectsDecision: true,
+	defaultTimeoutMs: null,
+	canBlock: true,
+};
+
+export function getInteractionHints(
+	kind: string,
+	toolName?: string,
+): InteractionHints {
+	if (kind === 'tool.pre' && toolName === 'AskUserQuestion') {
+		return ASK_USER_QUESTION_HINTS;
+	}
 	const maybeRule = (RULES as Partial<Record<string, InteractionHints>>)[kind];
 	return maybeRule ?? DEFAULT_HINTS;
 }

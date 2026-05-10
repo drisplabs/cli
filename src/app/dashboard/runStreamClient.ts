@@ -177,10 +177,10 @@ export function createRunStreamClient(
 				);
 			}
 			heartbeatTimer = setTimer(tick, heartbeatMs);
-			heartbeatTimer.unref?.();
+			heartbeatTimer.unref();
 		};
 		heartbeatTimer = setTimer(tick, heartbeatMs);
-		heartbeatTimer.unref?.();
+		heartbeatTimer.unref();
 	}
 
 	function bumpWatchdog(): void {
@@ -197,7 +197,7 @@ export function createRunStreamClient(
 				// best-effort
 			}
 		}, watchdogMs);
-		watchdogTimer.unref?.();
+		watchdogTimer.unref();
 	}
 
 	function flushQueue(): void {
@@ -306,7 +306,7 @@ export function createRunStreamClient(
 			reconnectTimer = null;
 			void openSocket();
 		}, delayMs);
-		reconnectTimer.unref?.();
+		reconnectTimer.unref();
 	}
 
 	async function openSocket(): Promise<void> {
@@ -335,7 +335,7 @@ export function createRunStreamClient(
 			if (next !== ws) return;
 			ws = null;
 			clearTimers();
-			const reason = reasonBuf?.toString?.() || 'closed';
+			const reason = reasonBuf.toString() || 'closed';
 			if (code === 1000 && reason === 'run_terminated') {
 				notifyTerminated();
 				return;

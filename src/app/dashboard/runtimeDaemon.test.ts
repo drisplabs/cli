@@ -83,6 +83,86 @@ describe('runDashboardRuntimeDaemon', () => {
 		await stop.stop('test');
 	});
 
+	it('reconciles console sidecars and reloads the gateway when an attachments.changed frame arrives', async () => {
+		const fake = makeFakeSocket();
+		const reconcileChannels = vi.fn(() => ({
+			written: ['r1'],
+			removed: [] as string[],
+		}));
+		const reloadGatewayChannels = vi.fn(async () => ({
+			ok: true,
+			message: 'reloaded',
+		}));
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: vi.fn(async () => {}),
+			reconnectDelaysMs: [],
+			writeMirror: vi.fn(),
+			reconcileChannels,
+			reloadGatewayChannels,
+		});
+
+		fake.emitFrame({
+			type: 'attachments.changed',
+			attachments: [{runnerId: 'r1', name: 'one'}],
+		});
+		await Promise.resolve();
+
+		expect(reconcileChannels).toHaveBeenCalledTimes(1);
+		expect(reconcileChannels.mock.calls[0]![0]).toMatchObject({
+			dashboardUrl: 'https://example.com',
+			desired: [{runnerId: 'r1'}],
+		});
+		expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
+
+		await daemon.stop('test');
+	});
+
+	it('does not reload the gateway when reconcile reports no changes', async () => {
+		const fake = makeFakeSocket();
+		const reconcileChannels = vi.fn(() => ({
+			written: [] as string[],
+			removed: [] as string[],
+		}));
+		const reloadGatewayChannels = vi.fn(async () => ({
+			ok: true,
+			message: 'reloaded',
+		}));
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: vi.fn(async () => {}),
+			reconnectDelaysMs: [],
+			writeMirror: vi.fn(),
+			reconcileChannels,
+			reloadGatewayChannels,
+		});
+
+		fake.emitFrame({
+			type: 'attachments.changed',
+			attachments: [{runnerId: 'r1'}],
+		});
+		await Promise.resolve();
+
+		expect(reconcileChannels).toHaveBeenCalledTimes(1);
+		expect(reloadGatewayChannels).not.toHaveBeenCalled();
+
+		await daemon.stop('test');
+	});
+
 	it('writes the local attachment mirror when an attachments.changed frame arrives', async () => {
 		const fake = makeFakeSocket();
 		const writeMirror = vi.fn();
@@ -166,6 +246,202 @@ describe('runDashboardRuntimeDaemon', () => {
 		fake.emitFrame({type: 'cancel', runId: 'run_cancel'});
 		expect(seenSignal?.aborted).toBe(true);
 		resolveExecutor();
+		await daemon.stop('test');
+	});
+
+	it('runs assignments for different runners concurrently with cap=1 per runner', async () => {
+		const fake = makeFakeSocket();
+		const resolvers = new Map<string, () => void>();
+		const executor = vi.fn(async (input: {frame: {runId: string}}) => {
+			await new Promise<void>(resolve => {
+				resolvers.set(input.frame.runId, resolve);
+			});
+		});
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
+			reconnectDelaysMs: [],
+			maxConcurrentRuns: 1,
+		});
+
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_a',
+			runnerId: 'r1',
+			runSpec: {prompt: 'a'},
+		});
+		await Promise.resolve();
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_b',
+			runnerId: 'r2',
+			runSpec: {prompt: 'b'},
+		});
+		await Promise.resolve();
+
+		expect(executor).toHaveBeenCalledTimes(2);
+		const runs = daemon.listRuns();
+		expect(runs.find(r => r.runId === 'run_a')?.status).toBe('running');
+		expect(runs.find(r => r.runId === 'run_b')?.status).toBe('running');
+
+		for (const resolve of resolvers.values()) resolve();
+		await daemon.stop('test');
+	});
+
+	it('cancel finds the right run regardless of which runner bucket it is in', async () => {
+		const fake = makeFakeSocket();
+		const seenSignals = new Map<string, AbortSignal>();
+		const resolvers = new Map<string, () => void>();
+		const executor = vi.fn(
+			async (input: {frame: {runId: string}; abortSignal?: AbortSignal}) => {
+				if (input.abortSignal) {
+					seenSignals.set(input.frame.runId, input.abortSignal);
+				}
+				await new Promise<void>(resolve => {
+					resolvers.set(input.frame.runId, resolve);
+				});
+			},
+		);
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
+			reconnectDelaysMs: [],
+			maxConcurrentRuns: 1,
+		});
+
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_a',
+			runnerId: 'r1',
+			runSpec: {prompt: 'a'},
+		});
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_b',
+			runnerId: 'r2',
+			runSpec: {prompt: 'b'},
+		});
+		await Promise.resolve();
+
+		fake.emitFrame({type: 'cancel', runId: 'run_b'});
+		expect(seenSignals.get('run_b')?.aborted).toBe(true);
+		expect(seenSignals.get('run_a')?.aborted).toBe(false);
+
+		for (const resolve of resolvers.values()) resolve();
+		await daemon.stop('test');
+	});
+
+	it("legacy assignments (no runnerId) share their own bucket and don't block runner buckets", async () => {
+		const fake = makeFakeSocket();
+		const resolvers = new Map<string, () => void>();
+		const executor = vi.fn(async (input: {frame: {runId: string}}) => {
+			await new Promise<void>(resolve => {
+				resolvers.set(input.frame.runId, resolve);
+			});
+		});
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
+			reconnectDelaysMs: [],
+			maxConcurrentRuns: 1,
+		});
+
+		// Legacy frame fills the legacy bucket.
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_legacy',
+			runSpec: {prompt: 'legacy'},
+		});
+		await Promise.resolve();
+		// Runner-keyed frame goes to its own bucket — runs concurrently.
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_r1',
+			runnerId: 'r1',
+			runSpec: {prompt: 'r1'},
+		});
+		await Promise.resolve();
+		// A second legacy frame hits the legacy bucket cap — rejected.
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_legacy_2',
+			runSpec: {prompt: 'legacy 2'},
+		});
+		await Promise.resolve();
+
+		expect(executor).toHaveBeenCalledTimes(2);
+		const runs = daemon.listRuns();
+		expect(runs.find(r => r.runId === 'run_legacy')?.status).toBe('running');
+		expect(runs.find(r => r.runId === 'run_r1')?.status).toBe('running');
+		expect(runs.find(r => r.runId === 'run_legacy_2')?.status).toBe('rejected');
+
+		for (const resolve of resolvers.values()) resolve();
+		await daemon.stop('test');
+	});
+
+	it('rejects a second assignment for the same runner when its cap is full', async () => {
+		const fake = makeFakeSocket();
+		let resolveFirst: () => void = () => {};
+		const executor = vi.fn(async () => {
+			await new Promise<void>(resolve => {
+				resolveFirst = resolve;
+			});
+		});
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
+			reconnectDelaysMs: [],
+			maxConcurrentRuns: 1,
+		});
+
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_a1',
+			runnerId: 'r1',
+			runSpec: {prompt: 'a'},
+		});
+		await Promise.resolve();
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_a2',
+			runnerId: 'r1',
+			runSpec: {prompt: 'b'},
+		});
+		await Promise.resolve();
+
+		expect(executor).toHaveBeenCalledTimes(1);
+		const runs = daemon.listRuns();
+		expect(runs.find(r => r.runId === 'run_a2')?.status).toBe('rejected');
+
+		resolveFirst();
 		await daemon.stop('test');
 	});
 

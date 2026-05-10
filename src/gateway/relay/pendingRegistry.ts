@@ -27,7 +27,8 @@ export type PendingEntry = {
 	fingerprint: string;
 	runtimeId: string | undefined;
 	controllers: AbortController[];
-	timer: NodeJS.Timeout;
+	// undefined when ttlMs was null (no broadcast timeout, e.g. AskUserQuestion).
+	timer: NodeJS.Timeout | undefined;
 	resolve: (result: AnyRelayResult) => void;
 	result: Promise<AnyRelayResult>;
 	settled: boolean;

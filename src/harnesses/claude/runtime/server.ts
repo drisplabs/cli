@@ -30,6 +30,7 @@ import {mapEnvelopeToRuntimeEvent} from './mapper';
 import {mapDecisionToResult} from './decisionMapper';
 import {BoundedLineParser} from './boundedLineParser';
 import {getInteractionHints} from './interactionRules';
+import {resolveAdapterTimeoutMs} from './timeoutResolution';
 import {createStreamJsonToolParser} from './streamJsonToolParser';
 
 type PendingRequest = {
@@ -257,21 +258,30 @@ export function createServer(opts: ServerOptions) {
 							}
 							const runtimeEvent = mapEnvelopeToRuntimeEvent(envelope);
 
-							// Set up timeout — use event-specific or global TTL
-							const timeoutMs =
-								runtimeEvent.interaction.defaultTimeoutMs ?? PENDING_TTL_MS;
-							const timer = setTimeout(() => {
-								const timeoutDecision: RuntimeDecision = {
-									type: 'passthrough',
-									source: 'timeout',
-								};
-								const result = mapDecisionToResult(
-									runtimeEvent,
-									timeoutDecision,
-								);
-								respondToForwarder(runtimeEvent.id, result);
-								notifyDecision(runtimeEvent.id, timeoutDecision);
-							}, timeoutMs);
+							// Resolve adapter-side auto-decision timeout. null means
+							// "wait indefinitely" — used for human-in-the-loop events
+							// like AskUserQuestion, where firing a passthrough on a
+							// 5-minute timer caused Claude to exit and the workflow
+							// loop to tick a fresh iteration that lost the question.
+							const timeoutMs = resolveAdapterTimeoutMs(
+								runtimeEvent.interaction,
+								PENDING_TTL_MS,
+							);
+							const timer =
+								timeoutMs === null
+									? undefined
+									: setTimeout(() => {
+											const timeoutDecision: RuntimeDecision = {
+												type: 'passthrough',
+												source: 'timeout',
+											};
+											const result = mapDecisionToResult(
+												runtimeEvent,
+												timeoutDecision,
+											);
+											respondToForwarder(runtimeEvent.id, result);
+											notifyDecision(runtimeEvent.id, timeoutDecision);
+										}, timeoutMs);
 
 							pending.set(runtimeEvent.id, {
 								event: runtimeEvent,

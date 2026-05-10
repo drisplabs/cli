@@ -314,6 +314,16 @@ describe('DispatchPipeline', () => {
 			expect(s.pipeline.getCurrentRuntime()?.runtimeId).toBe('r1');
 			expect(s.observers.onRuntimeConnectionLost).not.toHaveBeenCalled();
 		});
+
+		it('graceful unregisterRuntime notifies onRuntimeConnectionLost so pending relays can dispose', () => {
+			registerR1(s);
+			s.pipeline.unregisterRuntime('r1');
+			expect(s.pipeline.getCurrentRuntime()).toBeNull();
+			expect(s.observers.onRuntimeConnectionLost).toHaveBeenCalledWith({
+				runtimeId: 'r1',
+				graceful: true,
+			});
+		});
 	});
 
 	describe('connection lifecycle (grace>0)', () => {
@@ -385,6 +395,219 @@ describe('DispatchPipeline', () => {
 			expect(s.pipeline.getBinding()).toBeNull();
 			expect(s.pipeline.getCurrentRuntime()).toBeNull();
 			expect(s.pipeline.hasActiveBinding()).toBe(false);
+		});
+	});
+
+	describe('multi-runtime by attachmentId', () => {
+		it('hosts two runtimes concurrently when each registers under a distinct attachmentId', () => {
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: vi.fn(),
+				attachmentId: 'a2',
+			});
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a1')?.runtimeId).toBe(
+				'r1',
+			);
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a2')?.runtimeId).toBe(
+				'r2',
+			);
+		});
+
+		it('handleTurnComplete accepts replies from a runtime registered under any attachment slot', async () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+			s.send.mockResolvedValue({providerMessageId: 'msg', deliveredAt: 1});
+
+			const dispatched = s.pipeline.handleInbound(inbound, {
+				attachmentId: 'a2',
+			});
+			const dispatchId =
+				dispatched.kind === 'dispatched' ? dispatched.dispatchId : '';
+
+			const reply = await s.pipeline.handleTurnComplete({
+				runtimeId: 'r2',
+				dispatchId,
+				location: inbound.location,
+				text: 'pong',
+				idempotencyKey: 'reply:1',
+			});
+
+			expect(reply).toEqual({delivered: true, providerMessageId: 'msg'});
+		});
+
+		it('unregisterRuntime on one slot leaves the other slot fully functional', () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+
+			s.pipeline.unregisterRuntime('r1');
+
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a1')).toBeNull();
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a2')?.runtimeId).toBe(
+				'r2',
+			);
+			s.pipeline.handleInbound(inbound, {attachmentId: 'a2'});
+			expect(push2).toHaveBeenCalledOnce();
+			expect(s.push).not.toHaveBeenCalled();
+		});
+
+		it('legacy registration (no attachmentId) coexists with an attachment-keyed registration', () => {
+			const push2 = vi.fn();
+			// Legacy slot
+			s.pipeline.registerRuntime({
+				runtimeId: 'r-legacy',
+				defaultAgentId: 'main',
+				pid: 1,
+				connectionId: 'c-legacy',
+				push: s.push,
+			});
+			// Attachment slot
+			s.pipeline.registerRuntime({
+				runtimeId: 'r-a1',
+				defaultAgentId: 'main',
+				pid: 2,
+				connectionId: 'c-a1',
+				push: push2,
+				attachmentId: 'a1',
+			});
+
+			expect(s.pipeline.getCurrentRuntime()?.runtimeId).toBe('r-legacy');
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a1')?.runtimeId).toBe(
+				'r-a1',
+			);
+
+			s.pipeline.handleInbound(inbound); // no attachment → legacy slot
+			expect(s.push).toHaveBeenCalledOnce();
+			expect(push2).not.toHaveBeenCalled();
+
+			s.pipeline.handleInbound(
+				{...inbound, idempotencyKey: 'tg:2'},
+				{attachmentId: 'a1'},
+			);
+			expect(push2).toHaveBeenCalledOnce();
+			expect(s.push).toHaveBeenCalledOnce();
+		});
+
+		it('notifyConnectionClosed on one slot leaves the other slot fully functional', () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+
+			s.pipeline.notifyConnectionClosed('c1');
+
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a1')).toBeNull();
+			expect(s.pipeline.getCurrentRuntimeByAttachment('a2')?.runtimeId).toBe(
+				'r2',
+			);
+			s.pipeline.handleInbound(inbound, {attachmentId: 'a2'});
+			expect(push2).toHaveBeenCalledOnce();
+		});
+
+		it('handleTurnComplete throws when runtimeId matches no slot', async () => {
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+
+			await expect(
+				s.pipeline.handleTurnComplete({
+					runtimeId: 'rZ',
+					dispatchId: 'd',
+					location: inbound.location,
+					text: 'x',
+					idempotencyKey: 'k',
+				}),
+			).rejects.toThrow('runtime mismatch');
+		});
+
+		it('handleInbound routes the dispatch to the push for the matching attachmentId', () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+
+			s.pipeline.handleInbound(inbound, {attachmentId: 'a2'});
+
+			expect(push2).toHaveBeenCalledOnce();
+			expect(s.push).not.toHaveBeenCalled();
+
+			s.pipeline.handleInbound(
+				{...inbound, idempotencyKey: 'tg:2'},
+				{attachmentId: 'a1'},
+			);
+			expect(s.push).toHaveBeenCalledOnce();
+			expect(push2).toHaveBeenCalledOnce();
 		});
 	});
 });

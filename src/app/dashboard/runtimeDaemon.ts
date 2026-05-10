@@ -19,6 +19,12 @@ import {
 	type AttachmentMirror,
 	writeAttachmentMirror,
 } from '../../infra/config/attachmentMirror';
+import {
+	reconcileConsoleSidecars,
+	type ReconcileInput,
+	type ReconcileResult,
+} from './consoleSidecarReconciler';
+import {channelSidecarDir} from '../../infra/config/channels';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -106,6 +112,20 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 * sync without requiring a re-pair.
 	 */
 	writeMirror?: (mirror: AttachmentMirror) => void;
+	/**
+	 * Test seam. Production uses `reconcileConsoleSidecars`. Called whenever
+	 * `attachments.changed` arrives so the local channels directory stays in
+	 * sync with the dashboard's runner list without manual `console link`.
+	 */
+	reconcileChannels?: (input: ReconcileInput) => ReconcileResult;
+	/**
+	 * Production reaches the gateway daemon over its UDS socket. Tests inject
+	 * a mock so the runtime daemon can be exercised without a live gateway.
+	 * Called only when reconciliation actually changed the channels directory.
+	 */
+	reloadGatewayChannels?: () => Promise<{ok: boolean; message: string}>;
+	/** Override channel sidecar directory; defaults to `channelSidecarDir()`. */
+	channelDir?: () => string;
 };
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -119,7 +139,7 @@ const DEFAULT_RUN_HISTORY_LIMIT = 100;
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => {
 		const timer = setTimeout(resolve, ms);
-		timer.unref?.();
+		timer.unref();
 	});
 }
 
@@ -155,6 +175,10 @@ export async function runDashboardRuntimeDaemon(
 	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
 	const now = options.now ?? (() => Date.now());
 	const writeMirror = options.writeMirror ?? writeAttachmentMirror;
+	const reconcileChannels =
+		options.reconcileChannels ?? reconcileConsoleSidecars;
+	const reloadGatewayChannels = options.reloadGatewayChannels;
+	const getChannelDir = options.channelDir ?? channelSidecarDir;
 
 	const startedAt = now();
 	let stopped = false;
@@ -174,8 +198,13 @@ export async function runDashboardRuntimeDaemon(
 			controller: AbortController;
 			promise: Promise<void>;
 			record: RuntimeDaemonRunRecord;
+			runnerKey: string | undefined;
 		}
 	>();
+	// Per-runner active-run buckets. A `runnerId` of undefined shares one
+	// fallback bucket — preserves single-runtime semantics for dashboards
+	// predating phase-1 of the supervisor work.
+	const activeByRunner = new Map<string | undefined, Set<string>>();
 	const runHistory: RuntimeDaemonRunRecord[] = [];
 
 	function recordRun(record: RuntimeDaemonRunRecord): void {
@@ -210,7 +239,7 @@ export async function runDashboardRuntimeDaemon(
 		const timer = setTimeout(() => {
 			void proactiveRefresh();
 		}, ms);
-		timer.unref?.();
+		timer.unref();
 		refreshTimer = timer;
 	}
 
@@ -349,6 +378,35 @@ export async function runDashboardRuntimeDaemon(
 						}`,
 					);
 				}
+				let reconciled: ReconcileResult | null = null;
+				try {
+					reconciled = reconcileChannels({
+						channelDir: getChannelDir(),
+						dashboardUrl: config.dashboardUrl,
+						desired: frame.attachments.map(a => ({runnerId: a.runnerId})),
+					});
+				} catch (err) {
+					log(
+						'warn',
+						`runtime daemon: failed to reconcile console sidecars: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+				if (
+					reconciled &&
+					(reconciled.written.length > 0 || reconciled.removed.length > 0) &&
+					reloadGatewayChannels
+				) {
+					void reloadGatewayChannels().catch(err => {
+						log(
+							'warn',
+							`runtime daemon: failed to reload gateway channels: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+						);
+					});
+				}
 				return;
 			}
 			if (frame.type === 'cancel') {
@@ -361,11 +419,13 @@ export async function runDashboardRuntimeDaemon(
 			}
 			if (frame.type !== 'job_assignment') return;
 			if (active.has(frame.runId)) return;
-			if (active.size >= maxConcurrentRuns) {
+			const runnerKey = frame.runnerId;
+			const bucket = activeByRunner.get(runnerKey) ?? new Set<string>();
+			if (bucket.size >= maxConcurrentRuns) {
 				rejectAssignment(
 					next,
 					frame.runId,
-					`runtime daemon at concurrency cap (${maxConcurrentRuns})`,
+					`runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
 				);
 				return;
 			}
@@ -376,6 +436,8 @@ export async function runDashboardRuntimeDaemon(
 				status: 'running',
 			};
 			recordRun(record);
+			bucket.add(frame.runId);
+			activeByRunner.set(runnerKey, bucket);
 			const promise = executor({
 				frame,
 				client: next,
@@ -402,8 +464,13 @@ export async function runDashboardRuntimeDaemon(
 					record.endedAt = now();
 					completedRuns += 1;
 					active.delete(frame.runId);
+					const remaining = activeByRunner.get(runnerKey);
+					if (remaining) {
+						remaining.delete(frame.runId);
+						if (remaining.size === 0) activeByRunner.delete(runnerKey);
+					}
 				});
-			active.set(frame.runId, {controller, promise, record});
+			active.set(frame.runId, {controller, promise, record, runnerKey});
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;
@@ -426,6 +493,7 @@ export async function runDashboardRuntimeDaemon(
 		while (!stopped && client === null) {
 			const waitMs = nextReconnectDelay();
 			if (waitMs > 0) await delay(waitMs);
+			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- values may change during await
 			if (stopped || client !== null) return;
 			try {
 				await connectOnce();
