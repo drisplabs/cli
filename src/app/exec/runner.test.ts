@@ -386,6 +386,63 @@ describe('runExec', () => {
 		);
 	});
 
+	it('applies pending dashboard decisions for the active Athena session', async () => {
+		const runtime = new MockRuntime();
+		const dashboardDecisionInbox = {
+			pendingForSession: vi.fn(() => [
+				{
+					id: 1,
+					athenaSessionId: 'athena-1',
+					requestId: 'req-dashboard',
+					decision: {
+						type: 'json' as const,
+						source: 'user' as const,
+						intent: {kind: 'permission_allow' as const},
+					},
+					receivedAt: 123,
+				},
+			]),
+			markConsumed: vi.fn(),
+			enqueue: vi.fn(),
+			close: vi.fn(),
+		};
+
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			setImmediate(() => {
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			athenaSessionId: 'athena-1',
+			isolationConfig: {},
+			ephemeral: true,
+			runtimeFactory: () => runtime,
+			spawnProcess,
+			dashboardDecisionInbox,
+			dashboardDecisionPollIntervalMs: 5,
+		});
+
+		expect(dashboardDecisionInbox.pendingForSession).toHaveBeenCalledWith({
+			athenaSessionId: 'athena-1',
+			limit: 25,
+		});
+		expect(runtime.decisions).toContainEqual({
+			eventId: 'req-dashboard',
+			decision: {
+				type: 'json',
+				source: 'user',
+				intent: {kind: 'permission_allow'},
+			},
+		});
+		expect(dashboardDecisionInbox.markConsumed).toHaveBeenCalledWith({id: 1});
+	});
+
 	it('returns timeout exit code when execution exceeds timeout', async () => {
 		vi.useFakeTimers();
 		const runtime = new MockRuntime();

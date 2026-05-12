@@ -13,6 +13,7 @@ import type {
 	DashboardFeedOrigin,
 	DashboardFeedPublisher,
 } from '../dashboard/dashboardFeedPublisher';
+import type {DashboardDecisionInbox} from '../dashboard/dashboardDecisionInbox';
 
 export const EXEC_EXIT_CODE = {
 	SUCCESS: 0,
@@ -66,6 +67,8 @@ export type ExecRunOptions = {
 	}) => SessionStore;
 	dashboardFeedPublisher?: DashboardFeedPublisher;
 	dashboardOrigin?: DashboardFeedOrigin;
+	dashboardDecisionInbox?: DashboardDecisionInbox;
+	dashboardDecisionPollIntervalMs?: number;
 	/** Test seam: override the gateway connect step. */
 	bridgeFactory?: (
 		opts: StartSessionBridgeOptions,

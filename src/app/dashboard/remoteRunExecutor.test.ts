@@ -172,6 +172,226 @@ describe('executeRemoteAssignment', () => {
 		);
 	});
 
+	it('passes runSpec env through workflow env without mutating process.env', async () => {
+		const original = process.env['ATHENA_REMOTE_ENV_TEST'];
+		delete process.env['ATHENA_REMOTE_ENV_TEST'];
+		let processEnvSeen: string | undefined;
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			processEnvSeen = process.env['ATHENA_REMOTE_ENV_TEST'];
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		try {
+			await executeRemoteAssignment({
+				frame: {
+					type: 'job_assignment',
+					runId: 'run_env',
+					runSpec: {
+						prompt: 'env',
+						env: {ATHENA_REMOTE_ENV_TEST: 'from-run'},
+					},
+				},
+				client: {sendRunEvent: vi.fn()},
+				runExecFn,
+				bootstrapRuntimeConfigFn: () => ({
+					globalConfig: {
+						plugins: [],
+						additionalDirectories: [],
+						workflowMarketplaceSources: [],
+						workflowSelections: {},
+					},
+					projectConfig: {
+						plugins: [],
+						additionalDirectories: [],
+						workflowMarketplaceSources: [],
+						workflowSelections: {},
+					},
+					harness: 'openai-codex',
+					isolationConfig: {preset: 'minimal', additionalDirectories: []},
+					workflowRef: undefined,
+					workflow: undefined,
+					workflowPlan: undefined,
+					modelName: null,
+					warnings: [],
+				}),
+			});
+			expect(processEnvSeen).toBeUndefined();
+			expect(runExecFn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					workflow: expect.objectContaining({
+						env: {ATHENA_REMOTE_ENV_TEST: 'from-run'},
+					}),
+				}),
+			);
+		} finally {
+			if (original === undefined) {
+				delete process.env['ATHENA_REMOTE_ENV_TEST'];
+			} else {
+				process.env['ATHENA_REMOTE_ENV_TEST'] = original;
+			}
+		}
+	});
+
+	it('keeps concurrent runSpec env overlays separate', async () => {
+		const seen: Array<Record<string, string> | undefined> = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			seen.push(options.workflow?.env);
+			await Promise.resolve();
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+		const runtimeConfig = {
+			globalConfig: {
+				plugins: [],
+				additionalDirectories: [],
+				workflowMarketplaceSources: [],
+				workflowSelections: {},
+			},
+			projectConfig: {
+				plugins: [],
+				additionalDirectories: [],
+				workflowMarketplaceSources: [],
+				workflowSelections: {},
+			},
+			harness: 'openai-codex' as const,
+			isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+			workflowRef: 'base',
+			workflow: {
+				name: 'base',
+				plugins: [],
+				promptTemplate: '{input}',
+				env: {BASE: '1'},
+			},
+			workflowPlan: undefined,
+			modelName: null,
+			warnings: [],
+		};
+
+		await Promise.all([
+			executeRemoteAssignment({
+				frame: {
+					type: 'job_assignment',
+					runId: 'run_env_1',
+					runSpec: {prompt: 'one', env: {RUN: 'one'}},
+				},
+				client: {sendRunEvent: vi.fn()},
+				runExecFn,
+				bootstrapRuntimeConfigFn: () => runtimeConfig,
+			}),
+			executeRemoteAssignment({
+				frame: {
+					type: 'job_assignment',
+					runId: 'run_env_2',
+					runSpec: {prompt: 'two', env: {RUN: 'two'}},
+				},
+				client: {sendRunEvent: vi.fn()},
+				runExecFn,
+				bootstrapRuntimeConfigFn: () => runtimeConfig,
+			}),
+		]);
+
+		expect(seen).toEqual(
+			expect.arrayContaining([
+				{BASE: '1', RUN: 'one'},
+				{BASE: '1', RUN: 'two'},
+			]),
+		);
+		expect(runtimeConfig.workflow.env).toEqual({BASE: '1'});
+	});
+
+	it('passes the dashboard decision inbox to runExec', async () => {
+		const decisionInbox = {
+			enqueue: vi.fn(),
+			pendingForSession: vi.fn(() => []),
+			markConsumed: vi.fn(),
+			close: vi.fn(),
+		};
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => ({
+			success: true,
+			exitCode: 0,
+			athenaSessionId: options.athenaSessionId ?? null,
+			adapterSessionId: null,
+			finalMessage: 'done',
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		}));
+
+		await executeRemoteAssignment({
+			frame: {
+				type: 'job_assignment',
+				runId: 'run_decisions',
+				runSpec: {prompt: 'needs approval'},
+			},
+			client: {sendRunEvent: vi.fn()},
+			runExecFn,
+			decisionInbox,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'openai-codex',
+				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+		});
+
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({dashboardDecisionInbox: decisionInbox}),
+		);
+	});
+
 	it('installs a missing marketplace workflow from the remote run spec before bootstrapping', async () => {
 		const sent: unknown[] = [];
 		const runExecFn = vi.fn(async () => ({

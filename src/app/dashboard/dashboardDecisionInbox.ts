@@ -33,6 +33,49 @@ function dashboardDecisionInboxPath(): string {
 	return `${ensureDaemonStateDir().dir}/dashboard-decision-inbox.db`;
 }
 
+function hasLegacyUniqueConstraint(db: Database.Database): boolean {
+	const rows = db
+		.prepare(`PRAGMA index_list('dashboard_decision_inbox')`)
+		.all() as Array<{unique: number; origin: string}>;
+	return rows.some(row => row.unique === 1 && row.origin === 'u');
+}
+
+function migrateLegacyUniqueConstraint(db: Database.Database): void {
+	if (!hasLegacyUniqueConstraint(db)) return;
+	db.exec(`
+		ALTER TABLE dashboard_decision_inbox
+			RENAME TO dashboard_decision_inbox_legacy;
+
+		CREATE TABLE dashboard_decision_inbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			athena_session_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			decision_json TEXT NOT NULL,
+			received_at INTEGER NOT NULL,
+			consumed_at INTEGER
+		);
+
+		INSERT INTO dashboard_decision_inbox (
+			id,
+			athena_session_id,
+			request_id,
+			decision_json,
+			received_at,
+			consumed_at
+		)
+		SELECT
+			id,
+			athena_session_id,
+			request_id,
+			decision_json,
+			received_at,
+			consumed_at
+		FROM dashboard_decision_inbox_legacy;
+
+		DROP TABLE dashboard_decision_inbox_legacy;
+	`);
+}
+
 function initInboxSchema(db: Database.Database): void {
 	db.exec(`
 		PRAGMA journal_mode = WAL;
@@ -43,9 +86,17 @@ function initInboxSchema(db: Database.Database): void {
 			request_id TEXT NOT NULL,
 			decision_json TEXT NOT NULL,
 			received_at INTEGER NOT NULL,
-			consumed_at INTEGER,
-			UNIQUE(athena_session_id, request_id)
+			consumed_at INTEGER
 		);
+	`);
+
+	migrateLegacyUniqueConstraint(db);
+
+	db.exec(`
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_decision_unconsumed
+			ON dashboard_decision_inbox(athena_session_id, request_id)
+			WHERE consumed_at IS NULL;
 
 		CREATE INDEX IF NOT EXISTS idx_dashboard_decision_pending
 			ON dashboard_decision_inbox(athena_session_id, consumed_at, id);
@@ -58,14 +109,18 @@ export function createDashboardDecisionInbox(
 	const db = new Database(options.dbPath ?? dashboardDecisionInboxPath());
 	initInboxSchema(db);
 
-	const insert = db.prepare(`
-		INSERT OR IGNORE INTO dashboard_decision_inbox (
+	const upsertUnconsumed = db.prepare(`
+		INSERT INTO dashboard_decision_inbox (
 			athena_session_id,
 			request_id,
 			decision_json,
 			received_at
 		)
 		VALUES (?, ?, ?, ?)
+		ON CONFLICT(athena_session_id, request_id) WHERE consumed_at IS NULL
+		DO UPDATE SET
+			decision_json = excluded.decision_json,
+			received_at = excluded.received_at
 	`);
 	const selectPending = db.prepare(`
 		SELECT id, athena_session_id, request_id, decision_json, received_at
@@ -82,7 +137,7 @@ export function createDashboardDecisionInbox(
 
 	return {
 		enqueue(input) {
-			insert.run(
+			upsertUnconsumed.run(
 				input.athenaSessionId,
 				input.requestId,
 				JSON.stringify(input.decision),

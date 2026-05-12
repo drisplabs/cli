@@ -27,18 +27,16 @@ import {
 	createDashboardDecisionInbox,
 	type DashboardDecisionInbox,
 } from './dashboardDecisionInbox';
+import {
+	createDashboardPairedExecution,
+	type DashboardPairedExecutionRunRecord,
+} from './dashboardPairedExecution';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
 ) => Promise<void>;
 
-export type RuntimeDaemonRunRecord = {
-	runId: string;
-	startedAt: number;
-	endedAt?: number;
-	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
-	error?: string;
-};
+export type RuntimeDaemonRunRecord = DashboardPairedExecutionRunRecord;
 
 export type RuntimeDaemonSnapshot = {
 	startedAt: number;
@@ -182,36 +180,37 @@ export async function runDashboardRuntimeDaemon(
 	let stopped = false;
 	let reconnectAttempt = 0;
 	let client: InstanceSocketClient | null = null;
+	let lastSocketClient: InstanceSocketClient | null = null;
 	let currentInstanceId: string | undefined;
 	let currentDashboardUrl: string | undefined;
 	let lastFrameAt: number | undefined;
-	let completedRuns = 0;
 	let refreshTimer: NodeJS.Timeout | null = null;
 	let feedDrainTimer: NodeJS.Timeout | null = null;
 	const refreshFailures: number[] = [];
 	let cooldownUntil = 0;
-
-	const active = new Map<
-		string,
-		{
-			controller: AbortController;
-			promise: Promise<void>;
-			record: RuntimeDaemonRunRecord;
-			runnerKey: string | undefined;
-		}
-	>();
-	// Per-runner active-run buckets. A `runnerId` of undefined shares one
-	// fallback bucket — preserves single-runtime semantics for dashboards
-	// predating phase-1 of the supervisor work.
-	const activeByRunner = new Map<string | undefined, Set<string>>();
-	const runHistory: RuntimeDaemonRunRecord[] = [];
-
-	function recordRun(record: RuntimeDaemonRunRecord): void {
-		runHistory.push(record);
-		while (runHistory.length > runHistoryLimit) {
-			runHistory.shift();
-		}
-	}
+	const executionClient: Pick<InstanceSocketClient, 'sendRunEvent'> = {
+		sendRunEvent(event) {
+			const current = client ?? lastSocketClient;
+			if (!current) {
+				log(
+					'warn',
+					`instance socket dropped run_event (socket not connected): runId=${event.runId} kind=${event.kind}`,
+				);
+				return;
+			}
+			current.sendRunEvent(event);
+		},
+	};
+	const pairedExecution = createDashboardPairedExecution({
+		client: executionClient,
+		executor,
+		projectDir,
+		decisionInbox,
+		log,
+		maxConcurrentRuns,
+		now,
+		runHistoryLimit,
+	});
 
 	function nextReconnectDelay(): number {
 		if (reconnectDelays.length === 0) return 0;
@@ -313,40 +312,6 @@ export async function runDashboardRuntimeDaemon(
 		}
 	}
 
-	function rejectAssignment(
-		client_: InstanceSocketClient,
-		runId: string,
-		reason: string,
-	): void {
-		try {
-			client_.sendRunEvent({
-				runId,
-				seq: 0,
-				ts: now(),
-				kind: 'rejected',
-				payload: {reason},
-			});
-		} catch (err) {
-			// The dashboard will time the lease out anyway, but a silent failure
-			// makes debugging "why is my run still showing as running?" much
-			// harder. Log so an operator can correlate.
-			log(
-				'warn',
-				`runtime daemon: failed to send rejected for ${runId}: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-		}
-		recordRun({
-			runId,
-			startedAt: now(),
-			endedAt: now(),
-			status: 'rejected',
-			error: reason,
-		});
-		log('warn', `run ${runId} rejected: ${reason}`);
-	}
-
 	async function connectOnce(): Promise<void> {
 		const config = readConfig();
 		if (!config) {
@@ -422,77 +387,7 @@ export async function runDashboardRuntimeDaemon(
 				});
 				return;
 			}
-			if (frame.type === 'dashboard_decision') {
-				decisionInbox.enqueue({
-					athenaSessionId: frame.athenaSessionId,
-					requestId: frame.requestId,
-					decision: frame.decision,
-					receivedAt: now(),
-				});
-				return;
-			}
-			if (frame.type === 'cancel') {
-				const entry = active.get(frame.runId);
-				if (entry) {
-					entry.record.status = 'cancelled';
-					entry.controller.abort();
-				}
-				return;
-			}
-			if (frame.type !== 'job_assignment') return;
-			if (active.has(frame.runId)) return;
-			const runnerKey = frame.runnerId;
-			const bucket = activeByRunner.get(runnerKey) ?? new Set<string>();
-			if (bucket.size >= maxConcurrentRuns) {
-				rejectAssignment(
-					next,
-					frame.runId,
-					`runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
-				);
-				return;
-			}
-			const controller = new AbortController();
-			const record: RuntimeDaemonRunRecord = {
-				runId: frame.runId,
-				startedAt: now(),
-				status: 'running',
-			};
-			recordRun(record);
-			bucket.add(frame.runId);
-			activeByRunner.set(runnerKey, bucket);
-			const promise = executor({
-				frame,
-				client: next,
-				projectDir,
-				log,
-				abortSignal: controller.signal,
-			})
-				.then(() => {
-					if (record.status === 'running') record.status = 'completed';
-				})
-				.catch(err => {
-					if (record.status === 'running') {
-						record.status = 'failed';
-					}
-					record.error = err instanceof Error ? err.message : String(err);
-					log(
-						'error',
-						`run ${frame.runId} failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				})
-				.finally(() => {
-					record.endedAt = now();
-					completedRuns += 1;
-					active.delete(frame.runId);
-					const remaining = activeByRunner.get(runnerKey);
-					if (remaining) {
-						remaining.delete(frame.runId);
-						if (remaining.size === 0) activeByRunner.delete(runnerKey);
-					}
-				});
-			active.set(frame.runId, {controller, promise, record, runnerKey});
+			pairedExecution.handleFrame(frame);
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;
@@ -505,6 +400,7 @@ export async function runDashboardRuntimeDaemon(
 		});
 		await next.connect();
 		client = next;
+		lastSocketClient = next;
 		currentInstanceId = token.instanceId;
 		currentDashboardUrl = config.dashboardUrl;
 		reconnectAttempt = 0;
@@ -537,6 +433,7 @@ export async function runDashboardRuntimeDaemon(
 
 	return {
 		snapshot(): RuntimeDaemonSnapshot {
+			const executionSnapshot = pairedExecution.snapshot();
 			const refreshState =
 				refreshFailures.length > 0 || cooldownUntil > now()
 					? {
@@ -550,38 +447,24 @@ export async function runDashboardRuntimeDaemon(
 				startedAt,
 				socketConnected: client !== null,
 				...(lastFrameAt !== undefined ? {lastFrameAt} : {}),
-				activeRuns: active.size,
-				completedRuns,
+				activeRuns: executionSnapshot.activeRuns,
+				completedRuns: executionSnapshot.completedRuns,
 				...(currentInstanceId ? {instanceId: currentInstanceId} : {}),
 				...(currentDashboardUrl ? {dashboardUrl: currentDashboardUrl} : {}),
 				...(refreshState ? {refreshState} : {}),
 			};
 		},
 		listRuns(opts = {}): RuntimeDaemonRunRecord[] {
-			// Limit applies to the most recent N runs; the active filter then
-			// narrows that window. This matches the user's intuition for
-			// `dashboard runs --active --limit 5`: "show running runs from the
-			// last 5", not "last 5 from the entire history of running runs".
-			let out = runHistory.slice();
-			if (typeof opts.limit === 'number' && opts.limit > 0) {
-				out = out.slice(-opts.limit);
-			}
-			if (opts.active) {
-				out = out.filter(r => r.status === 'running');
-			}
-			return out;
+			return pairedExecution.listRuns(opts);
 		},
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
 			clearFeedDrainTimer();
-			for (const run of active.values()) {
-				run.controller.abort();
-			}
 			const current = client;
 			client = null;
 			current?.close(reason);
-			await Promise.allSettled([...active.values()].map(run => run.promise));
+			await pairedExecution.stop();
 		},
 	};
 }

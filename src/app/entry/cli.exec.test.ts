@@ -243,6 +243,29 @@ describe('cli exec mode', () => {
 		}
 	});
 
+	it('keeps top-level help focused on supported user-facing commands', async () => {
+		const cli = await runCli(['--help']);
+		try {
+			const help = cli.logSpy.mock.calls
+				.map(call => String(call[0]))
+				.join('\n');
+
+			expect(help).toContain('dashboard <sub>');
+			expect(help).not.toContain('gateway');
+			expect(help).not.toContain('Gateway');
+			expect(help).not.toContain('--token');
+			expect(help).not.toContain('--tls-ca');
+			expect(help).not.toContain('--tls-cert');
+			expect(help).not.toContain('--tls-key');
+			expect(help).not.toContain('--bind');
+			expect(help).not.toContain('--insecure');
+			expect(help).not.toContain('--grace-period-ms');
+			expect(help).not.toContain('connect');
+		} finally {
+			cli.restore();
+		}
+	});
+
 	it('fails fast when exec prompt is missing', async () => {
 		const cli = await runCli(['exec']);
 		try {

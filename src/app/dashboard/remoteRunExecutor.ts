@@ -1,7 +1,11 @@
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
 import {runExec} from '../exec';
 import type {ExecRunOptions, ExecRunResult} from '../exec/types';
-import {installWorkflowFromSource, resolveWorkflow} from '../../core/workflows';
+import {
+	installWorkflowFromSource,
+	resolveWorkflow,
+	type WorkflowConfig,
+} from '../../core/workflows';
 import {readGlobalConfig} from '../../infra/plugins/config';
 import {
 	resolveWorkflowInstall,
@@ -17,6 +21,7 @@ import {
 	type RunStreamClient,
 	type RunStreamClientOptions,
 } from './runStreamClient';
+import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
@@ -52,6 +57,7 @@ export type ExecuteRemoteAssignmentInput = {
 	projectDir?: string;
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
+	decisionInbox?: DashboardDecisionInbox;
 	bootstrapRuntimeConfigFn?: typeof bootstrapRuntimeConfig;
 	now?: () => number;
 	abortSignal?: AbortSignal;
@@ -244,25 +250,21 @@ function eventPayload(event: JsonExecEvent): unknown {
 	return event.data ?? null;
 }
 
-function withEnv<T>(
+function mergeRunSpecEnvIntoWorkflow(
+	workflow: WorkflowConfig | undefined,
 	env: Record<string, string> | undefined,
-	fn: () => Promise<T>,
-): Promise<T> {
-	if (!env || Object.keys(env).length === 0) return fn();
-	const previous = new Map<string, string | undefined>();
-	for (const [key, value] of Object.entries(env)) {
-		previous.set(key, process.env[key]);
-		process.env[key] = value;
+): WorkflowConfig | undefined {
+	if (!env || Object.keys(env).length === 0) return workflow;
+	const mergedEnv = {...(workflow?.env ?? {}), ...env};
+	if (workflow) {
+		return {...workflow, env: mergedEnv};
 	}
-	return fn().finally(() => {
-		for (const [key, value] of previous) {
-			if (value === undefined) {
-				delete process.env[key];
-			} else {
-				process.env[key] = value;
-			}
-		}
-	});
+	return {
+		name: 'dashboard-remote',
+		plugins: [],
+		promptTemplate: '{input}',
+		env: mergedEnv,
+	};
 }
 
 export async function executeRemoteAssignment({
@@ -271,6 +273,7 @@ export async function executeRemoteAssignment({
 	projectDir: fallbackProjectDir = process.cwd(),
 	log = () => {},
 	runExecFn = runExec,
+	decisionInbox,
 	bootstrapRuntimeConfigFn = bootstrapRuntimeConfig,
 	now = Date.now,
 	abortSignal,
@@ -281,8 +284,10 @@ export async function executeRemoteAssignment({
 	readGlobalConfigFn = readGlobalConfig,
 	runStreamConnectTimeoutMs = 5_000,
 }: ExecuteRemoteAssignmentInput): Promise<void> {
-	let lastTerminalFailureMessage: string | null = null;
-	let deferredFailedCompletion: JsonExecEvent | null = null;
+	const lastTerminalFailureMessage: {current: string | null} = {current: null};
+	const deferredFailedCompletion: {current: JsonExecEvent | null} = {
+		current: null,
+	};
 
 	// Pre-parse so we know whether to open the per-run channel before the
 	// first frame. parseRunSpec is cheap and side-effect-free.
@@ -342,7 +347,9 @@ export async function executeRemoteAssignment({
 			payload !== null &&
 			typeof (payload as {message?: unknown}).message === 'string'
 		) {
-			lastTerminalFailureMessage = (payload as {message: string}).message;
+			lastTerminalFailureMessage.current = (
+				payload as {message: string}
+			).message;
 		}
 		if (runStream) {
 			runStream.sendEvent({ts, kind, payload});
@@ -405,7 +412,7 @@ export async function executeRemoteAssignment({
 							const event = JSON.parse(line) as JsonExecEvent;
 							const data = event.data as {success?: unknown} | null;
 							if (event.type === 'exec.completed' && data?.success === false) {
-								deferredFailedCompletion = event;
+								deferredFailedCompletion.current = event;
 								continue;
 							}
 							send(eventKind(event), eventPayload(event), now());
@@ -433,61 +440,42 @@ export async function executeRemoteAssignment({
 		};
 
 		try {
-			await withEnv(spec.env, async () => {
-				const result = await runExecFn({
-					prompt: spec.prompt,
-					projectDir,
-					harness: runtimeConfig.harness,
-					athenaSessionId:
-						spec.athenaSessionId ?? spec.sessionId ?? `athena-${frame.runId}`,
-					adapterResumeSessionId: spec.adapterResumeSessionId,
-					isolationConfig: runtimeConfig.isolationConfig,
-					pluginMcpConfig: runtimeConfig.pluginMcpConfig,
-					workflow: runtimeConfig.workflow,
-					workflowPlan: runtimeConfig.workflowPlan,
-					dashboardOrigin: 'dashboard',
-					json: true,
-					verbose: false,
-					ephemeral: false,
-					timeoutMs: spec.timeoutSec ? spec.timeoutSec * 1000 : undefined,
-					signal: abortSignal,
-					stdout,
-					stderr,
-				});
-				if (deferredFailedCompletion) {
-					const data =
-						typeof deferredFailedCompletion.data === 'object' &&
-						deferredFailedCompletion.data !== null
-							? deferredFailedCompletion.data
-							: {};
-					send(
-						'error',
-						{
-							...data,
-							success: result.success,
-							exitCode: result.exitCode,
-							athenaSessionId: result.athenaSessionId,
-							adapterSessionId: result.adapterSessionId,
-							finalMessage: result.finalMessage,
-							tokens: result.tokens,
-							durationMs: result.durationMs,
-							message:
-								result.failure?.message ??
-								(eventPayload(deferredFailedCompletion) as {message?: string})
-									.message ??
-								'remote execution failed',
-						},
-						typeof deferredFailedCompletion.ts === 'number'
-							? deferredFailedCompletion.ts
-							: now(),
-					);
-					return;
-				}
-				if (
-					result.failure &&
-					result.failure.message !== lastTerminalFailureMessage
-				) {
-					send('error', {
+			const workflow = mergeRunSpecEnvIntoWorkflow(
+				runtimeConfig.workflow,
+				spec.env,
+			);
+			const result = await runExecFn({
+				prompt: spec.prompt,
+				projectDir,
+				harness: runtimeConfig.harness,
+				athenaSessionId:
+					spec.athenaSessionId ?? spec.sessionId ?? `athena-${frame.runId}`,
+				adapterResumeSessionId: spec.adapterResumeSessionId,
+				isolationConfig: runtimeConfig.isolationConfig,
+				pluginMcpConfig: runtimeConfig.pluginMcpConfig,
+				workflow,
+				workflowPlan: runtimeConfig.workflowPlan,
+				dashboardOrigin: 'dashboard',
+				json: true,
+				verbose: false,
+				ephemeral: false,
+				timeoutMs: spec.timeoutSec ? spec.timeoutSec * 1000 : undefined,
+				signal: abortSignal,
+				stdout,
+				stderr,
+				...(decisionInbox ? {dashboardDecisionInbox: decisionInbox} : {}),
+			});
+			const failedCompletion = deferredFailedCompletion.current;
+			if (failedCompletion) {
+				const data =
+					typeof failedCompletion.data === 'object' &&
+					failedCompletion.data !== null
+						? failedCompletion.data
+						: {};
+				send(
+					'error',
+					{
+						...data,
 						success: result.success,
 						exitCode: result.exitCode,
 						athenaSessionId: result.athenaSessionId,
@@ -495,10 +483,30 @@ export async function executeRemoteAssignment({
 						finalMessage: result.finalMessage,
 						tokens: result.tokens,
 						durationMs: result.durationMs,
-						message: result.failure.message,
-					});
-				}
-			});
+						message:
+							result.failure?.message ??
+							(eventPayload(failedCompletion) as {message?: string}).message ??
+							'remote execution failed',
+					},
+					typeof failedCompletion.ts === 'number' ? failedCompletion.ts : now(),
+				);
+				return;
+			}
+			if (
+				result.failure &&
+				result.failure.message !== lastTerminalFailureMessage.current
+			) {
+				send('error', {
+					success: result.success,
+					exitCode: result.exitCode,
+					athenaSessionId: result.athenaSessionId,
+					adapterSessionId: result.adapterSessionId,
+					finalMessage: result.finalMessage,
+					tokens: result.tokens,
+					durationMs: result.durationMs,
+					message: result.failure.message,
+				});
+			}
 		} catch (err) {
 			send('error', {
 				message: err instanceof Error ? err.message : String(err),

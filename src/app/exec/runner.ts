@@ -242,6 +242,27 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		...(options.signal ? {signal: options.signal} : {}),
 	};
 
+	const dashboardDecisionInbox = options.dashboardDecisionInbox;
+	const applyPendingDashboardDecisions = (): void => {
+		if (!dashboardDecisionInbox) return;
+		const rows = dashboardDecisionInbox.pendingForSession({
+			athenaSessionId,
+			limit: 25,
+		});
+		for (const row of rows) {
+			try {
+				runtime.sendDecision(row.requestId, row.decision);
+				dashboardDecisionInbox.markConsumed({id: row.id});
+			} catch (error) {
+				output.warn(
+					`dashboard decision failed: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		}
+	};
+
 	const linkedAdapterSessions = new Set<string>();
 
 	function publishFeedEvents(feedEvents: readonly FeedEvent[]): void {
@@ -317,6 +338,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	);
 
 	let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+	let dashboardDecisionTimer: ReturnType<typeof setInterval> | undefined;
 	if (typeof options.timeoutMs === 'number' && options.timeoutMs > 0) {
 		timeoutTimer = setTimeout(() => {
 			latch.register({
@@ -338,6 +360,14 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		output.emitJsonEvent('runtime.started', {
 			status: runtime.getStatus(),
 		});
+		if (dashboardDecisionInbox) {
+			applyPendingDashboardDecisions();
+			dashboardDecisionTimer = setInterval(
+				applyPendingDashboardDecisions,
+				options.dashboardDecisionPollIntervalMs ?? 1_000,
+			);
+			dashboardDecisionTimer.unref();
+		}
 
 		const workflow = options.workflow;
 
@@ -440,6 +470,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		options.signal?.removeEventListener('abort', abortListener);
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
+		}
+		if (dashboardDecisionTimer) {
+			clearInterval(dashboardDecisionTimer);
 		}
 		await sessionController.kill();
 		unsubscribeEvent();

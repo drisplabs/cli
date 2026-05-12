@@ -359,6 +359,52 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
+	it('does not fail an active legacy assignment when output is emitted during socket reconnect', async () => {
+		const fake = makeFakeSocket();
+		let releaseOutput: () => void = () => {};
+		const executor = vi.fn(async input => {
+			await new Promise<void>(resolve => {
+				releaseOutput = resolve;
+			});
+			input.client.sendRunEvent({
+				runId: input.frame.runId,
+				seq: 1,
+				ts: 123,
+				kind: 'progress',
+				payload: {message: 'still running'},
+			});
+		});
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
+			reconnectDelaysMs: [10_000],
+		});
+
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_disconnect',
+			runSpec: {prompt: 'legacy'},
+		});
+		await Promise.resolve();
+		fake.emitClose('network');
+		releaseOutput();
+
+		await vi.waitFor(() => {
+			expect(daemon.listRuns().find(r => r.runId === 'run_disconnect')).toEqual(
+				expect.objectContaining({status: 'completed'}),
+			);
+		});
+
+		await daemon.stop('test');
+	});
+
 	it('runs assignments for different runners concurrently with cap=1 per runner', async () => {
 		const fake = makeFakeSocket();
 		const resolvers = new Map<string, () => void>();
