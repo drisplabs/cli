@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.7](https://github.com/drisplabs/cli/compare/cli-v0.4.6...cli-v0.4.7) (2026-05-12)
+
+
+### Features
+
+* consolidate dashboard paired execution ([42baf30](https://github.com/drisplabs/cli/commit/42baf308d8b7d34b084f4f8ffc50fa50fca0d572))
+* sync paired dashboard feed events ([fc3ec9e](https://github.com/drisplabs/cli/commit/fc3ec9e845937157bc032185afa0cdca5518da17))
+
 ## [0.4.6](https://github.com/drisplabs/cli/compare/cli-v0.4.5...cli-v0.4.6) (2026-05-10)
 
 
