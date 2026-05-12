@@ -1,5 +1,5 @@
 import {describe, it, expect, vi} from 'vitest';
-import {buildHeaderModel} from './model';
+import {buildHeaderModel, countDistinctTurnIds} from './model';
 
 vi.mock('../../shared/utils/detectHarness', () => ({
 	detectHarness: () => 'Claude Code',
@@ -168,5 +168,32 @@ describe('buildHeaderModel', () => {
 		});
 		expect(model.total_tokens).toBe(45200);
 		expect(model.run_count).toBe(3);
+	});
+
+	it('uses Codex turn semantics and billable token labeling', () => {
+		const model = buildHeaderModel({
+			...baseInput,
+			harness: 'codex',
+			totalTokens: 18_112_115,
+			runCount: 2,
+			turnCount: 6,
+		});
+
+		expect(model.token_label).toBe('Billable');
+		expect(model.run_label).toBe('Turns');
+		expect(model.total_tokens).toBe(18_112_115);
+		expect(model.run_count).toBe(6);
+	});
+
+	it('counts distinct Codex turn ids from feed events', () => {
+		expect(
+			countDistinctTurnIds([
+				{data: {turn_id: 'turn-1'}},
+				{data: {turn_id: 'turn-1'}},
+				{data: {turn_id: 'turn-2'}},
+				{data: {turn_id: undefined}},
+				{data: {}},
+			]),
+		).toBe(2);
 	});
 });

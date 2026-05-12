@@ -12,7 +12,9 @@ export interface HeaderModel {
 	model_name: string | null;
 	context: {used: number | null; max: number | null};
 	total_tokens: number | null;
+	token_label: string;
 	run_count: number;
+	run_label: string;
 	engine?: string;
 	progress?: {done: number; total: number};
 	status: HeaderStatus;
@@ -43,6 +45,7 @@ export interface HeaderModelInput {
 	contextMax?: number | null;
 	totalTokens?: number | null;
 	runCount?: number;
+	turnCount?: number;
 	sessionIndex?: number | null;
 	sessionTotal?: number;
 	errorReason?: string;
@@ -61,6 +64,29 @@ function deriveStatus(
 	if (last.status === 'CANCELLED') return 'stopped';
 	if (last.status === 'SUCCEEDED') return 'idle';
 	return 'idle';
+}
+
+function isCodexHarness(input: HeaderModelInput): boolean {
+	const rawHarness = input.harness?.toLowerCase() ?? '';
+	const rawAgentType = input.session?.agent_type?.toLowerCase() ?? '';
+	return rawHarness.includes('codex') || rawAgentType.includes('codex');
+}
+
+export function countDistinctTurnIds(
+	events: ReadonlyArray<{data?: unknown}>,
+): number {
+	const turnIds = new Set<string>();
+	for (const event of events) {
+		const data =
+			typeof event.data === 'object' && event.data !== null
+				? (event.data as Record<string, unknown>)
+				: {};
+		const turnId = data['turn_id'];
+		if (typeof turnId === 'string' && turnId.length > 0) {
+			turnIds.add(turnId);
+		}
+	}
+	return turnIds.size;
 }
 
 export function buildHeaderModel(input: HeaderModelInput): HeaderModel {
@@ -85,6 +111,7 @@ export function buildHeaderModel(input: HeaderModelInput): HeaderModel {
 					sessionTotal,
 				)
 			: null;
+	const codexHarness = isCodexHarness(input);
 
 	return {
 		session_id: session?.session_id ?? '–',
@@ -95,7 +122,11 @@ export function buildHeaderModel(input: HeaderModelInput): HeaderModel {
 		model_name: input.modelName ?? null,
 		context: {used: input.contextUsed ?? null, max: input.contextMax ?? null},
 		total_tokens: input.totalTokens ?? null,
-		run_count: input.runCount ?? 0,
+		token_label: codexHarness ? 'Billable' : 'Tokens',
+		run_count: codexHarness
+			? (input.turnCount ?? input.runCount ?? 0)
+			: (input.runCount ?? 0),
+		run_label: codexHarness ? 'Turns' : 'Runs',
 		engine: session?.agent_type,
 		progress:
 			todoPanel.todoItems.length > 0

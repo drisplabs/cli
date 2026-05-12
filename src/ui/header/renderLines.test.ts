@@ -11,7 +11,9 @@ const model: HeaderModel = {
 	harness: 'Claude Code',
 	context: {used: 50000, max: 200000},
 	total_tokens: null,
+	token_label: 'Tokens',
 	run_count: 0,
+	run_label: 'Runs',
 	model_name: null,
 	status: 'idle',
 	tail_mode: false,
@@ -79,5 +81,20 @@ describe('renderHeaderLines', () => {
 		const [line] = renderHeaderLines(m, 160, false);
 		expect(line).toContain('Tokens: 1.5k');
 		expect(line).toContain('Runs: 7');
+	});
+
+	it('uses semantic labels supplied by the header model', () => {
+		const m: HeaderModel = {
+			...model,
+			total_tokens: 18_112_115,
+			run_count: 6,
+			token_label: 'Billable',
+			run_label: 'Turns',
+		};
+		const [line] = renderHeaderLines(m, 160, false);
+		expect(line).toContain('Billable: 18.1m');
+		expect(line).toContain('Turns: 6');
+		expect(line).not.toContain('Tokens:');
+		expect(line).not.toContain('Runs:');
 	});
 });

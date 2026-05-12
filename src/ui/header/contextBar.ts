@@ -4,6 +4,11 @@ import {progressGlyphs} from '../glyphs/index';
 export function formatTokenCount(value: number | null): string {
 	if (value === null) return '--';
 	if (value < 1000) return String(value);
+	if (value >= 1_000_000) {
+		const m = value / 1_000_000;
+		if (Number.isInteger(m)) return `${m}m`;
+		return `${parseFloat(m.toFixed(1))}m`;
+	}
 	const k = value / 1000;
 	if (Number.isInteger(k)) return `${k}k`;
 	return `${parseFloat(k.toFixed(1))}k`;

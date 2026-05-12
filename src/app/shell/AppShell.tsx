@@ -56,7 +56,7 @@ import {useFeedColumns} from '../../ui/hooks/useFeedColumns';
 import {useFilteredPanels} from '../../ui/hooks/useFilteredPanels';
 import {classifyEntry, messageText} from '../../core/feed/panelFilter';
 import {todoGlyphs} from '../../core/feed/todoPanel';
-import {buildHeaderModel} from '../../ui/header/model';
+import {buildHeaderModel, countDistinctTurnIds} from '../../ui/header/model';
 import {renderHeaderLines} from '../../ui/header/renderLines';
 import type {Message as MessageType} from '../../shared/types/common';
 import {generateId} from '../../shared/utils/id';
@@ -670,6 +670,10 @@ function AppContent({
 	});
 	const {runSummaries, filteredEntries, searchMatches, getEntrySearchText} =
 		timeline;
+	const codexTurnCount = useMemo(
+		() => countDistinctTurnIds(feedEvents),
+		[feedEvents],
+	);
 
 	const todoPanel = useTodoPanel({
 		tasks,
@@ -1506,6 +1510,7 @@ function AppContent({
 			contextMax: tokenUsage.contextWindowSize,
 			totalTokens: tokenUsage.total,
 			runCount: runSummaries.length,
+			turnCount: codexTurnCount,
 			sessionIndex: sessionScope.current,
 			sessionTotal: sessionScope.total,
 			harness,
@@ -1519,6 +1524,7 @@ function AppContent({
 		sessionAgentType,
 		timelineCurrentRun,
 		runSummaries,
+		codexTurnCount,
 		metrics.failures,
 		metrics.blocks,
 		todoPanel.doneCount,

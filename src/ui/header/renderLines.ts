@@ -59,6 +59,8 @@ export function renderHeaderLines(
 	const wfText = `${style('Workflow: ', palette.label)}${style(model.workflow, palette.value)}`;
 	const harnessText = `${style('Harness: ', palette.label)}${style(model.harness, palette.value)}`;
 	const modelText = `${style('Model: ', palette.label)}${style(formatModelName(model.model_name), palette.value)}`;
+	const tokenLabel = model.token_label ?? 'Tokens';
+	const runLabel = model.run_label ?? 'Runs';
 
 	type Token = {text: string; priority: number};
 	const leftTokens: Token[] = [
@@ -72,7 +74,7 @@ export function renderHeaderLines(
 		...(model.total_tokens !== null
 			? [
 					{
-						text: `${style('Tokens: ', palette.label)}${style(formatTokenCount(model.total_tokens), palette.value)}`,
+						text: `${style(`${tokenLabel}: `, palette.label)}${style(formatTokenCount(model.total_tokens), palette.value)}`,
 						priority: 40,
 					},
 				]
@@ -81,7 +83,7 @@ export function renderHeaderLines(
 		...(model.run_count > 0
 			? [
 					{
-						text: `${style('Runs: ', palette.label)}${style(String(model.run_count), palette.value)}`,
+						text: `${style(`${runLabel}: `, palette.label)}${style(String(model.run_count), palette.value)}`,
 						priority: 50,
 					},
 				]
