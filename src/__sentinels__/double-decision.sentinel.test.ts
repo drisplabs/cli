@@ -44,7 +44,7 @@ describe('Sentinel: double-decision race', () => {
 		const permReq = makeEvent('PermissionRequest');
 		mapper.mapEvent(permReq);
 
-		// End run (correlation indexes clear per CLAUDE.md)
+		// End run (correlation indexes clear per DecisionCorrelation invariants)
 		mapper.mapEvent(makeEvent('Stop'));
 
 		// New run
