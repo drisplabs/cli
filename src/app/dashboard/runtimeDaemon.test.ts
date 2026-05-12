@@ -15,6 +15,7 @@ import {
 
 const tmpDirs: string[] = [];
 const originalXdgStateHome = process.env['XDG_STATE_HOME'];
+const originalHome = process.env['HOME'];
 
 function tempDbPath(): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-daemon-outbox-'));
@@ -28,6 +29,11 @@ afterEach(() => {
 	} else {
 		process.env['XDG_STATE_HOME'] = originalXdgStateHome;
 	}
+	if (originalHome === undefined) {
+		delete process.env['HOME'];
+	} else {
+		process.env['HOME'] = originalHome;
+	}
 	for (const dir of tmpDirs.splice(0)) {
 		fs.rmSync(dir, {recursive: true, force: true});
 	}
@@ -35,8 +41,10 @@ afterEach(() => {
 
 beforeEach(() => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-daemon-state-'));
-	tmpDirs.push(dir);
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-daemon-home-'));
+	tmpDirs.push(dir, home);
 	process.env['XDG_STATE_HOME'] = dir;
+	process.env['HOME'] = home;
 });
 
 function makeFakeSocket() {
@@ -236,16 +244,10 @@ describe('runDashboardRuntimeDaemon', () => {
 		await stop.stop('test');
 	});
 
-	it('reconciles console sidecars and reloads the gateway when an attachments.changed frame arrives', async () => {
+	it('does not reconcile console sidecars or reload the gateway when attachments change', async () => {
 		const fake = makeFakeSocket();
-		const reconcileChannels = vi.fn(() => ({
-			written: ['r1'],
-			removed: [] as string[],
-		}));
-		const reloadGatewayChannels = vi.fn(async () => ({
-			ok: true,
-			message: 'reloaded',
-		}));
+		const home = process.env['HOME']!;
+		const channelDir = path.join(home, '.config', 'athena', 'channels');
 
 		const daemon = await runDashboardRuntimeDaemon({
 			readConfig: () => stored,
@@ -258,8 +260,6 @@ describe('runDashboardRuntimeDaemon', () => {
 			executeRemoteAssignment: vi.fn(async () => {}),
 			reconnectDelaysMs: [],
 			writeMirror: vi.fn(),
-			reconcileChannels,
-			reloadGatewayChannels,
 		});
 
 		fake.emitFrame({
@@ -268,50 +268,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 		await Promise.resolve();
 
-		expect(reconcileChannels).toHaveBeenCalledTimes(1);
-		expect(reconcileChannels.mock.calls[0]![0]).toMatchObject({
-			dashboardUrl: 'https://example.com',
-			desired: [{runnerId: 'r1'}],
-		});
-		expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
-
-		await daemon.stop('test');
-	});
-
-	it('does not reload the gateway when reconcile reports no changes', async () => {
-		const fake = makeFakeSocket();
-		const reconcileChannels = vi.fn(() => ({
-			written: [] as string[],
-			removed: [] as string[],
-		}));
-		const reloadGatewayChannels = vi.fn(async () => ({
-			ok: true,
-			message: 'reloaded',
-		}));
-
-		const daemon = await runDashboardRuntimeDaemon({
-			readConfig: () => stored,
-			refreshAccessToken: async () => ({
-				instanceId: 'inst_1',
-				accessToken: 'a',
-				expiresInSec: 900,
-			}),
-			makeInstanceSocketClient: () => fake.client,
-			executeRemoteAssignment: vi.fn(async () => {}),
-			reconnectDelaysMs: [],
-			writeMirror: vi.fn(),
-			reconcileChannels,
-			reloadGatewayChannels,
-		});
-
-		fake.emitFrame({
-			type: 'attachments.changed',
-			attachments: [{runnerId: 'r1'}],
-		});
-		await Promise.resolve();
-
-		expect(reconcileChannels).toHaveBeenCalledTimes(1);
-		expect(reloadGatewayChannels).not.toHaveBeenCalled();
+		expect(fs.existsSync(path.join(channelDir, 'console-r1.json'))).toBe(false);
 
 		await daemon.stop('test');
 	});

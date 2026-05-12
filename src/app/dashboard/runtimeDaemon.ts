@@ -20,12 +20,6 @@ import {
 	writeAttachmentMirror,
 } from '../../infra/config/attachmentMirror';
 import {
-	reconcileConsoleSidecars,
-	type ReconcileInput,
-	type ReconcileResult,
-} from './consoleSidecarReconciler';
-import {channelSidecarDir} from '../../infra/config/channels';
-import {
 	createDashboardFeedOutbox,
 	type DashboardFeedOutbox,
 } from './dashboardFeedPublisher';
@@ -121,20 +115,6 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 */
 	writeMirror?: (mirror: AttachmentMirror) => void;
 	/**
-	 * Test seam. Production uses `reconcileConsoleSidecars`. Called whenever
-	 * `attachments.changed` arrives so the local channels directory stays in
-	 * sync with the dashboard's runner list without manual `console link`.
-	 */
-	reconcileChannels?: (input: ReconcileInput) => ReconcileResult;
-	/**
-	 * Production reaches the gateway daemon over its UDS socket. Tests inject
-	 * a mock so the runtime daemon can be exercised without a live gateway.
-	 * Called only when reconciliation actually changed the channels directory.
-	 */
-	reloadGatewayChannels?: () => Promise<{ok: boolean; message: string}>;
-	/** Override channel sidecar directory; defaults to `channelSidecarDir()`. */
-	channelDir?: () => string;
-	/**
 	 * Durable queue of local feed events waiting for dashboard ACK. Production
 	 * uses the dashboard state dir; tests inject a temp database.
 	 */
@@ -193,10 +173,6 @@ export async function runDashboardRuntimeDaemon(
 	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
 	const now = options.now ?? (() => Date.now());
 	const writeMirror = options.writeMirror ?? writeAttachmentMirror;
-	const reconcileChannels =
-		options.reconcileChannels ?? reconcileConsoleSidecars;
-	const reloadGatewayChannels = options.reloadGatewayChannels;
-	const getChannelDir = options.channelDir ?? channelSidecarDir;
 	const feedOutbox = options.feedOutbox ?? createDashboardFeedOutbox();
 	const decisionInbox = options.decisionInbox ?? createDashboardDecisionInbox();
 	const feedDrainIntervalMs =
@@ -432,35 +408,6 @@ export async function runDashboardRuntimeDaemon(
 							err instanceof Error ? err.message : String(err)
 						}`,
 					);
-				}
-				let reconciled: ReconcileResult | null = null;
-				try {
-					reconciled = reconcileChannels({
-						channelDir: getChannelDir(),
-						dashboardUrl: config.dashboardUrl,
-						desired: frame.attachments.map(a => ({runnerId: a.runnerId})),
-					});
-				} catch (err) {
-					log(
-						'warn',
-						`runtime daemon: failed to reconcile console sidecars: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				}
-				if (
-					reconciled &&
-					(reconciled.written.length > 0 || reconciled.removed.length > 0) &&
-					reloadGatewayChannels
-				) {
-					void reloadGatewayChannels().catch(err => {
-						log(
-							'warn',
-							`runtime daemon: failed to reload gateway channels: ${
-								err instanceof Error ? err.message : String(err)
-							}`,
-						);
-					});
 				}
 				return;
 			}

@@ -4,7 +4,6 @@ import {readDashboardClientConfig} from '../../infra/config/dashboardClient';
 import {acquirePidLock} from '../../infra/daemon/pidLock';
 import {openDaemonLog} from '../../infra/daemon/logFile';
 import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
-import {runGatewayCommand} from './gatewayCommand';
 import {
 	startUdsServer,
 	type UdsHandler,
@@ -59,29 +58,6 @@ export async function runDashboardDaemonEntry(): Promise<number> {
 		daemonHandle = await runDashboardRuntimeDaemon({
 			log,
 			refreshAccessToken: async () => refreshDashboardAccessToken({}),
-			reloadGatewayChannels: async () => {
-				// Reach the gateway daemon over its UDS socket so freshly-written
-				// console sidecars become live adapters without a manual reload.
-				// Failures here are non-fatal — the runtime daemon keeps running
-				// even if the gateway isn't reachable; the user will see logs.
-				const out: string[] = [];
-				const err: string[] = [];
-				const code = await runGatewayCommand(
-					{subcommand: 'reload-channels', subcommandArgs: []},
-					{
-						logOut: m => out.push(m),
-						logError: m => err.push(m),
-					},
-				);
-				return {
-					ok: code === 0,
-					message:
-						(code === 0 ? out.join('\n') : err.join('\n')) ||
-						(code === 0
-							? 'gateway channels reloaded'
-							: 'gateway not reachable'),
-				};
-			},
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

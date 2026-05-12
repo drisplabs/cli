@@ -29,12 +29,18 @@ function jsonResponse(status: number, body: unknown): Response {
 const STATIC_FINGERPRINT = 'fp-static';
 const tmpDirs: string[] = [];
 const originalXdgStateHome = process.env['XDG_STATE_HOME'];
+const originalHome = process.env['HOME'];
 
 afterEach(() => {
 	if (originalXdgStateHome === undefined) {
 		delete process.env['XDG_STATE_HOME'];
 	} else {
 		process.env['XDG_STATE_HOME'] = originalXdgStateHome;
+	}
+	if (originalHome === undefined) {
+		delete process.env['HOME'];
+	} else {
+		process.env['HOME'] = originalHome;
 	}
 	for (const dir of tmpDirs.splice(0)) {
 		fs.rmSync(dir, {recursive: true, force: true});
@@ -52,19 +58,14 @@ function makeDeps(overrides: {
 	const stored = {value: overrides.stored ?? null};
 	const removed = overrides.removed ?? {count: 0};
 	const cap = captureLogs();
-	// Per-test isolated channel dir so reconciler runs don't touch the
-	// user's ~/.config/athena/channels. Mocked reloadGatewayChannels keeps
-	// pair tests off the real UDS socket.
-	const channelDirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-test-'));
 	const stateDirPath = fs.mkdtempSync(path.join(os.tmpdir(), 'dash-state-'));
-	tmpDirs.push(channelDirPath, stateDirPath);
+	tmpDirs.push(stateDirPath);
 	process.env['XDG_STATE_HOME'] = stateDirPath;
 	return {
 		cap,
 		writes,
 		stored,
 		removed,
-		channelDirPath,
 		deps: {
 			fetch: overrides.fetchMock as unknown as typeof fetch,
 			now: () => overrides.now ?? 1_700_000_000_000,
@@ -91,11 +92,6 @@ function makeDeps(overrides: {
 				message: 'connected',
 			})),
 			configPath: () => '/tmp/athena/dashboard.json',
-			channelDir: () => channelDirPath,
-			reloadGatewayChannels: vi.fn(async () => ({
-				ok: true,
-				message: 'reloaded (test mock)',
-			})),
 			logOut: cap.logOut,
 			logError: cap.logError,
 		},
@@ -111,6 +107,8 @@ describe('runDashboardCommand: usage', () => {
 		);
 		expect(code).toBe(0);
 		expect(cap.out.join('\n')).toContain('Usage: athena dashboard');
+		expect(cap.out.join('\n')).not.toContain('console link');
+		expect(cap.out.join('\n')).not.toContain('console enable');
 	});
 
 	it('prints usage on help', async () => {
@@ -203,7 +201,6 @@ describe('runDashboardCommand: pair', () => {
 			hostInfo: {hostname: 'test-host'},
 			capabilities: {
 				instanceSocket: true,
-				consoleAdapter: true,
 				runtimeDaemon: true,
 				version: '9.9.9-test',
 			},
@@ -256,8 +253,11 @@ describe('runDashboardCommand: pair', () => {
 		expect(cap.out.join('\n')).toContain('bound runner Nightly QA (runner_1)');
 	});
 
-	it('reconciles per-runner console sidecars and reloads the gateway after pairing', async () => {
-		const channelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-side-'));
+	it('does not reconcile console sidecars or reload the gateway after pairing', async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-home-'));
+		tmpDirs.push(home);
+		process.env['HOME'] = home;
+		const channelDir = path.join(home, '.config', 'athena', 'channels');
 		try {
 			const fetchMock = vi.fn().mockResolvedValue(
 				jsonResponse(200, {
@@ -270,6 +270,7 @@ describe('runDashboardCommand: pair', () => {
 				}),
 			);
 			// Stale dashboard-managed sidecar for a runner no longer attached.
+			fs.mkdirSync(channelDir, {recursive: true});
 			fs.writeFileSync(
 				path.join(channelDir, 'console-rOld.json'),
 				JSON.stringify({
@@ -280,10 +281,6 @@ describe('runDashboardCommand: pair', () => {
 					dashboard_config: true,
 				}),
 			);
-			const reloadGatewayChannels = vi.fn(async () => ({
-				ok: true,
-				message: 'reloaded',
-			}));
 			const {deps} = makeDeps({fetchMock});
 
 			const code = await runDashboardCommand(
@@ -292,22 +289,21 @@ describe('runDashboardCommand: pair', () => {
 					subcommandArgs: ['tok_1'],
 					flags: {url: 'http://localhost:5173'},
 				},
-				{...deps, channelDir: () => channelDir, reloadGatewayChannels},
+				deps,
 			);
 
 			expect(code).toBe(0);
 			expect(fs.existsSync(path.join(channelDir, 'console-r1.json'))).toBe(
-				true,
-			);
-			expect(fs.existsSync(path.join(channelDir, 'console-r2.json'))).toBe(
-				true,
-			);
-			expect(fs.existsSync(path.join(channelDir, 'console-rOld.json'))).toBe(
 				false,
 			);
-			expect(reloadGatewayChannels).toHaveBeenCalledTimes(1);
+			expect(fs.existsSync(path.join(channelDir, 'console-r2.json'))).toBe(
+				false,
+			);
+			expect(fs.existsSync(path.join(channelDir, 'console-rOld.json'))).toBe(
+				true,
+			);
 		} finally {
-			fs.rmSync(channelDir, {recursive: true, force: true});
+			fs.rmSync(home, {recursive: true, force: true});
 		}
 	});
 
@@ -1156,7 +1152,7 @@ describe('runDashboardCommand: doctor', () => {
 	});
 });
 
-describe('runDashboardCommand: console link', () => {
+describe('runDashboardCommand: console migration stubs', () => {
 	const stored: DashboardClientConfig = {
 		dashboardUrl: 'http://localhost:3000',
 		instanceId: 'inst_1',
@@ -1165,165 +1161,51 @@ describe('runDashboardCommand: console link', () => {
 		pairedAt: 1,
 	};
 
-	function makeChannelDir() {
-		return fs.mkdtempSync(path.join(os.tmpdir(), 'drisp-channels-'));
-	}
-
-	it('errors when not paired', async () => {
-		const {deps, cap} = makeDeps({});
+	it('returns a migration message for console link without writing sidecars', async () => {
+		const home = fs.mkdtempSync(path.join(os.tmpdir(), 'console-stub-home-'));
+		tmpDirs.push(home);
+		process.env['HOME'] = home;
+		const channelDir = path.join(home, '.config', 'athena', 'channels');
+		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
 			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
 			deps,
 		);
 		expect(code).toBe(1);
-		expect(cap.err.join('\n')).toContain('not paired');
+		expect(fs.existsSync(channelDir)).toBe(false);
+		expect(cap.err.join('\n')).toContain('dashboard console is deprecated');
+		expect(cap.err.join('\n')).toContain('paired dashboard feed sync');
 	});
 
-	it('rejects "console" without subcommand', async () => {
+	it('returns the same migration message for console enable without probing runner health', async () => {
+		const fetchMock = vi.fn();
 		const {deps, cap} = makeDeps({stored});
 		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: [], flags: {}},
+			{subcommand: 'console', subcommandArgs: ['enable', 'r1'], flags: {}},
+			{...deps, fetch: fetchMock as unknown as typeof fetch},
+		);
+		expect(code).toBe(1);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(cap.err.join('\n')).toContain('dashboard console is deprecated');
+	});
+
+	it('emits structured migration JSON for console commands', async () => {
+		const {deps, cap} = makeDeps({stored});
+		const code = await runDashboardCommand(
+			{
+				subcommand: 'console',
+				subcommandArgs: ['link', 'r1'],
+				flags: {json: true},
+			},
 			deps,
 		);
-		expect(code).toBe(2);
-		expect(cap.err.join('\n')).toContain('unknown subcommand');
-	});
-
-	it('requires <runnerId>', async () => {
-		const {deps, cap} = makeDeps({stored});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link'], flags: {}},
-			deps,
-		);
-		expect(code).toBe(2);
-		expect(cap.err.join('\n')).toContain('missing <runnerId>');
-	});
-
-	it('writes a per-runner sidecar with kind/instance_id and ws broker_url for http dashboard', async () => {
-		const dir = makeChannelDir();
-		const {deps, cap} = makeDeps({stored});
-		const reload = vi.fn().mockResolvedValue({ok: true, message: 'reloaded'});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
-			{...deps, channelDir: () => dir, reloadGatewayChannels: reload},
-		);
-		expect(reload).toHaveBeenCalledTimes(1);
-		expect(code).toBe(0);
-		const target = path.join(dir, 'console-r1.json');
-		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
-		expect(content).toEqual({
-			kind: 'console',
-			instance_id: 'console:r1',
-			broker_url: 'ws://localhost:3000/api/runners/r1/console/adapter',
-			runner_id: 'r1',
-			dashboard_config: true,
+		expect(code).toBe(1);
+		expect(JSON.parse(cap.out.join('\n'))).toEqual({
+			ok: false,
+			deprecated: true,
+			message:
+				'dashboard console is deprecated; paired dashboard feed sync now routes dashboard UI and channel decisions.',
 		});
-		if (process.platform !== 'win32') {
-			const mode = fs.statSync(target).mode & 0o777;
-			expect(mode).toBe(0o600);
-		}
-		expect(cap.out.join('\n')).toContain('linked runner r1');
-	});
-
-	it('uses wss for https dashboard', async () => {
-		const dir = makeChannelDir();
-		const httpsStored = {...stored, dashboardUrl: 'https://app.drisp.dev'};
-		const {deps} = makeDeps({stored: httpsStored});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
-			{
-				...deps,
-				channelDir: () => dir,
-				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
-			},
-		);
-		expect(code).toBe(0);
-		const target = path.join(dir, 'console-r1.json');
-		const content = JSON.parse(fs.readFileSync(target, 'utf-8'));
-		expect(content.broker_url).toBe(
-			'wss://app.drisp.dev/api/runners/r1/console/adapter',
-		);
-	});
-
-	it('replaces an existing per-runner sidecar and reports the previous broker_url', async () => {
-		const dir = makeChannelDir();
-		fs.writeFileSync(
-			path.join(dir, 'console-r1.json'),
-			JSON.stringify({
-				kind: 'console',
-				instance_id: 'console:r1',
-				broker_url: 'ws://old.example/runners/r1/console/adapter',
-				runner_id: 'r1',
-				dashboard_config: true,
-			}),
-			{mode: 0o600},
-		);
-		const {deps, cap} = makeDeps({stored});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
-			{
-				...deps,
-				channelDir: () => dir,
-				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
-			},
-		);
-		expect(code).toBe(0);
-		expect(cap.out.join('\n')).toContain('replaced existing config');
-		expect(cap.out.join('\n')).toContain('old.example');
-	});
-
-	it('migrates legacy console.json pointing at the same runner', async () => {
-		const dir = makeChannelDir();
-		const legacy = path.join(dir, 'console.json');
-		fs.writeFileSync(
-			legacy,
-			JSON.stringify({
-				broker_url: 'ws://legacy.example/runners/r1/console/adapter',
-				runner_id: 'r1',
-				dashboard_config: true,
-			}),
-			{mode: 0o600},
-		);
-		const {deps, cap} = makeDeps({stored});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
-			{
-				...deps,
-				channelDir: () => dir,
-				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
-			},
-		);
-		expect(code).toBe(0);
-		expect(fs.existsSync(legacy)).toBe(false);
-		expect(fs.existsSync(path.join(dir, 'console-r1.json'))).toBe(true);
-		expect(cap.out.join('\n')).toContain('replaced existing config');
-		expect(cap.out.join('\n')).toContain('legacy.example');
-	});
-
-	it('preserves legacy console.json bound to a different runner', async () => {
-		const dir = makeChannelDir();
-		const legacy = path.join(dir, 'console.json');
-		fs.writeFileSync(
-			legacy,
-			JSON.stringify({
-				broker_url: 'ws://other.example/runners/other/console/adapter',
-				runner_id: 'other',
-				dashboard_config: true,
-			}),
-			{mode: 0o600},
-		);
-		const {deps} = makeDeps({stored});
-		const code = await runDashboardCommand(
-			{subcommand: 'console', subcommandArgs: ['link', 'r1'], flags: {}},
-			{
-				...deps,
-				channelDir: () => dir,
-				reloadGatewayChannels: async () => ({ok: true, message: 'reloaded'}),
-			},
-		);
-		expect(code).toBe(0);
-		expect(fs.existsSync(legacy)).toBe(true);
-		expect(fs.existsSync(path.join(dir, 'console-r1.json'))).toBe(true);
 	});
 });
 

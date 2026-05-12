@@ -10,14 +10,11 @@ import {
 	type InstanceSocketLogger,
 } from '../dashboard/instanceSocketClient';
 import {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
-import {reconcileConsoleSidecars} from '../dashboard/consoleSidecarReconciler';
 import {runDashboardRuntimeDaemon} from '../dashboard/runtimeDaemon';
-import {runGatewayCommand} from './gatewayCommand';
 import {
 	refreshDashboardAccessToken,
 	type DashboardAccessToken,
 } from '../../infra/config/dashboardAuth';
-import {channelSidecarDir} from '../../infra/config/channels';
 import {
 	type DashboardClientConfig,
 	dashboardClientConfigPath,
@@ -73,20 +70,13 @@ Subcommands:
             runner is bound to this instance.
   list      Print the local attachment mirror (the runners the dashboard
             reported as bound to this instance at the last pair/refresh).
-  console enable <runnerId>
-            Configure the console channel for a runner (opinionated;
-            writes the sidecar and reloads the gateway).
-  console link <runnerId>
-            Primitive: write ~/.config/athena/channels/console.json for
-            the given runner. Prefer "console enable".
   connect   Deprecated alias for "daemon foreground".
   unpair    Stop the daemon, revoke the refresh token, and remove the
             local config.
 
 Options:
   --url <origin>      Dashboard origin (required for pair)
-  --runner <id>       Runner id (required for "console enable"/"console
-                      link", optional for "doctor")
+  --runner <id>       Runner id (optional for "doctor")
   --name <name>       Friendly machine name (optional, defaults to hostname)
   --tail N            Number of trailing log lines (default 20)
   --follow            Stream new log lines until interrupted
@@ -158,8 +148,6 @@ export type DashboardCommandDeps = {
 		log: InstanceSocketLogger;
 	}) => InstanceSocketClient;
 	executeRemoteAssignment?: typeof executeRemoteAssignment;
-	channelDir?: () => string;
-	reloadGatewayChannels?: () => Promise<{ok: boolean; message: string}>;
 	waitForShutdown?: () => Promise<string>;
 	startRuntimeDaemon?: (opts: {
 		log: (msg: string) => void;
@@ -203,7 +191,6 @@ type PairedRunner = {
 
 type CapabilityAck = {
 	runtimeDaemon?: boolean;
-	consoleAdapter?: boolean;
 	instanceSocket?: boolean;
 };
 
@@ -300,7 +287,6 @@ export async function runDashboardCommand(
 			hostInfo: (deps.hostInfo ?? (() => defaultHostInfo(flags.name)))(),
 			capabilities: {
 				instanceSocket: true,
-				consoleAdapter: true,
 				runtimeDaemon: true,
 				cliVersion: packageVersion,
 				// Legacy field — older dashboards read `version`. Drop in a
@@ -398,39 +384,6 @@ export async function runDashboardCommand(
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
-		}
-
-		// Reconcile per-runner console sidecars to match the freshly-paired
-		// runner list, then nudge the gateway to load the new adapters. The
-		// dashboard owns the attachment list; we just project it onto the
-		// channels directory.
-		const reconcileDir = (deps.channelDir ?? channelSidecarDir)();
-		let reconcileChanged = false;
-		try {
-			const reconciled = reconcileConsoleSidecars({
-				channelDir: reconcileDir,
-				dashboardUrl: origin,
-				desired: (parsed.runners ?? []).map(r => ({runnerId: r.runnerId})),
-			});
-			reconcileChanged =
-				reconciled.written.length > 0 || reconciled.removed.length > 0;
-		} catch (err) {
-			logError(
-				`dashboard pair: failed to reconcile console sidecars: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-		}
-		if (reconcileChanged) {
-			try {
-				await (deps.reloadGatewayChannels ?? defaultReloadGatewayChannels)();
-			} catch (err) {
-				logError(
-					`dashboard pair: failed to reload gateway channels: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-			}
 		}
 
 		const daemonStart = await (
@@ -1207,204 +1160,14 @@ export async function runDashboardCommand(
 	}
 
 	if (subcommand === 'console') {
-		const sub = subcommandArgs[0];
-		if (sub === 'enable') {
-			const runnerId = subcommandArgs[1];
-			if (!runnerId) {
-				logError('dashboard console enable: missing <runnerId>');
-				return 2;
-			}
-			if (subcommandArgs.length > 2) {
-				logError(
-					`dashboard console enable: unexpected argument ${subcommandArgs[2]}`,
-				);
-				return 2;
-			}
-			// Opinionated wrapper around `console link`: extra preflight that
-			// the runner is bound to *this* instance, then delegate to link.
-			const config = readConfig();
-			if (!config) {
-				logError(
-					'dashboard console enable: not paired. Run "drisp dashboard pair" first.',
-				);
-				return 1;
-			}
-			const refreshResult = await tryRefresh('refresh');
-			if (!refreshResult.ok) return refreshResult.code;
-			const health = await fetchRunnerHealth(
-				fetchImpl,
-				config.dashboardUrl,
-				runnerId,
-				refreshResult.token,
-			);
-			if (!health.matches) {
-				logError(
-					`dashboard console enable: runner ${runnerId} is not bound to this instance${
-						health.error ? ` (${health.error})` : ''
-					}`,
-				);
-				return 1;
-			}
-			return await runDashboardCommand(
-				{
-					subcommand: 'console',
-					subcommandArgs: ['link', runnerId],
-					flags: input.flags,
-				},
-				deps,
-			);
+		const message =
+			'dashboard console is deprecated; paired dashboard feed sync now routes dashboard UI and channel decisions.';
+		if (flags.json) {
+			logOut(JSON.stringify({ok: false, deprecated: true, message}));
+		} else {
+			logError(message);
 		}
-		if (sub === 'link') {
-			const runnerId = subcommandArgs[1];
-			if (!runnerId) {
-				logError('dashboard console link: missing <runnerId>');
-				return 2;
-			}
-			if (subcommandArgs.length > 2) {
-				logError(
-					`dashboard console link: unexpected argument ${subcommandArgs[2]}`,
-				);
-				return 2;
-			}
-			const config = readConfig();
-			if (!config) {
-				logError(
-					'dashboard console link: not paired. Run "drisp dashboard pair" first.',
-				);
-				return 1;
-			}
-			let brokerUrl: string;
-			try {
-				brokerUrl = consoleBrokerUrl(config.dashboardUrl, runnerId);
-			} catch (err) {
-				logError(
-					`dashboard console link: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-				return 1;
-			}
-			const dir = (deps.channelDir ?? channelSidecarDir)();
-			// Per-runner sidecar so multiple runners can be linked without
-			// overwriting each other. The legacy `console.json` (single-instance)
-			// continues to load via backward-compat in channels.ts; we also clean
-			// it up if it points at this same runner, since it would now collide
-			// with the per-runner instance after a future kind-aware reload.
-			const target = path.join(dir, `console-${runnerId}.json`);
-			const legacyTarget = path.join(dir, 'console.json');
-			let previousBroker: string | undefined;
-			try {
-				const existing = JSON.parse(fs.readFileSync(target, 'utf-8')) as {
-					broker_url?: unknown;
-				};
-				if (typeof existing.broker_url === 'string') {
-					previousBroker = existing.broker_url;
-				}
-			} catch {
-				// no existing per-runner file — also check legacy
-				try {
-					const legacy = JSON.parse(fs.readFileSync(legacyTarget, 'utf-8')) as {
-						broker_url?: unknown;
-						runner_id?: unknown;
-					};
-					if (
-						typeof legacy.broker_url === 'string' &&
-						legacy.runner_id === runnerId
-					) {
-						previousBroker = legacy.broker_url;
-					}
-				} catch {
-					// no legacy file either — treated as fresh write
-				}
-			}
-			try {
-				fs.mkdirSync(dir, {recursive: true, mode: 0o700});
-			} catch (err) {
-				logError(
-					`dashboard console link: failed to create ${dir}: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-				return 1;
-			}
-			const payload = {
-				kind: 'console',
-				instance_id: `console:${runnerId}`,
-				broker_url: brokerUrl,
-				runner_id: runnerId,
-				dashboard_config: true,
-			};
-			const tmp = `${target}.tmp`;
-			try {
-				fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', {
-					mode: 0o600,
-				});
-				fs.renameSync(tmp, target);
-			} catch (err) {
-				try {
-					fs.unlinkSync(tmp);
-				} catch {
-					// best-effort
-				}
-				logError(
-					`dashboard console link: failed to write ${target}: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-				return 1;
-			}
-			// If a legacy console.json points at THIS same runner, retire it so
-			// the gateway doesn't try to register two adapters with the same
-			// instance id (the new per-runner sidecar uses console:<runnerId>;
-			// the legacy bare 'console' id would collide on any reload that
-			// bumps the legacy file's instance id to match).
-			try {
-				const legacy = JSON.parse(fs.readFileSync(legacyTarget, 'utf-8')) as {
-					runner_id?: unknown;
-				};
-				if (legacy.runner_id === runnerId) {
-					fs.unlinkSync(legacyTarget);
-				}
-			} catch {
-				// no legacy file or unreadable — nothing to clean up
-			}
-			const reload = await (
-				deps.reloadGatewayChannels ?? defaultReloadGatewayChannels
-			)();
-			if (flags.json) {
-				logOut(
-					JSON.stringify({
-						ok: true,
-						runnerId,
-						brokerUrl,
-						path: target,
-						...(previousBroker ? {previousBrokerUrl: previousBroker} : {}),
-						gatewayReload: reload,
-					}),
-				);
-			} else {
-				if (previousBroker && previousBroker !== brokerUrl) {
-					logOut(`console: replaced existing config (was: ${previousBroker})`);
-				}
-				logOut(`console: linked runner ${runnerId} at ${brokerUrl}`);
-				logOut(`console: wrote ${target}`);
-				if (reload.ok) {
-					logOut(`console: gateway channels reloaded (${reload.message})`);
-				} else {
-					logError(`console: gateway reload skipped: ${reload.message}`);
-					logOut(
-						'console: start or reload the gateway before using the Console tab.',
-					);
-				}
-			}
-			return 0;
-		}
-		logError(
-			`dashboard console: unknown subcommand ${
-				sub ? sub : '(missing)'
-			}. Expected "enable <runnerId>" or "link <runnerId>".`,
-		);
-		return 2;
+		return 1;
 	}
 
 	if (subcommand === 'list') {
@@ -1600,27 +1363,6 @@ function defaultWaitForShutdown(): Promise<string> {
 		process.once('SIGINT', onSignal);
 		process.once('SIGTERM', onSignal);
 	});
-}
-
-async function defaultReloadGatewayChannels(): Promise<{
-	ok: boolean;
-	message: string;
-}> {
-	const out: string[] = [];
-	const err: string[] = [];
-	const code = await runGatewayCommand(
-		{subcommand: 'reload-channels', subcommandArgs: []},
-		{
-			logOut: m => out.push(m),
-			logError: m => err.push(m),
-		},
-	);
-	return {
-		ok: code === 0,
-		message:
-			(code === 0 ? out.join('\n') : err.join('\n')) ||
-			(code === 0 ? 'gateway channels reloaded' : 'gateway not reachable'),
-	};
 }
 
 function resolveDaemonEntry(): string | null {
@@ -2121,17 +1863,6 @@ function compareSemver(a: string, b: string): number {
 	return 0;
 }
 
-function consoleBrokerUrl(dashboardUrl: string, runnerId: string): string {
-	const url = new URL(dashboardUrl);
-	if (url.protocol === 'https:') url.protocol = 'wss:';
-	else if (url.protocol === 'http:') url.protocol = 'ws:';
-	else throw new Error(`unsupported dashboard protocol: ${url.protocol}`);
-	url.pathname = `/api/runners/${encodeURIComponent(runnerId)}/console/adapter`;
-	url.search = '';
-	url.hash = '';
-	return url.toString();
-}
-
 async function safeReadError(response: Response): Promise<string> {
 	try {
 		const text = await response.text();
@@ -2200,9 +1931,6 @@ function parseCapabilityAck(raw: unknown): CapabilityAck {
 	const ack: CapabilityAck = {};
 	if (typeof obj['runtimeDaemon'] === 'boolean') {
 		ack.runtimeDaemon = obj['runtimeDaemon'] as boolean;
-	}
-	if (typeof obj['consoleAdapter'] === 'boolean') {
-		ack.consoleAdapter = obj['consoleAdapter'] as boolean;
 	}
 	if (typeof obj['instanceSocket'] === 'boolean') {
 		ack.instanceSocket = obj['instanceSocket'] as boolean;
