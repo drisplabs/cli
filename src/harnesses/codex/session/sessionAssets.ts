@@ -160,14 +160,17 @@ export function resolveCodexWorkflowPlugins(
 	marketplacePath: string;
 	version?: string;
 }> {
-	return (
+	const resolvedTargets =
 		workflowPlan?.resolvedPlugins.map(plugin => ({
 			ref: plugin.ref,
 			pluginName: plugin.pluginName,
 			marketplacePath: plugin.codexMarketplacePath,
 			...(plugin.version !== undefined && {version: plugin.version}),
-		})) ??
-		workflowPlan?.codexPlugins ??
-		[]
+		})) ?? [];
+	const directTargets = workflowPlan?.codexPlugins ?? [];
+
+	return [...resolvedTargets, ...directTargets].filter(
+		(plugin, index, array) =>
+			array.findIndex(candidate => candidate.ref === plugin.ref) === index,
 	);
 }
