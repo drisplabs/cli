@@ -374,4 +374,34 @@ describe('resolveCodexMcpConfig', () => {
 			},
 		]);
 	});
+
+	it('includes Codex-native workflow plugin refs when no resolved plugins exist', () => {
+		const result = resolveCodexWorkflowPlugins({
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+			},
+			resolvedPlugins: [],
+			localPlugins: [],
+			agentRoots: [],
+			codexPlugins: [
+				{
+					ref: 'codex-plugin@owner/repo',
+					pluginName: 'codex-plugin',
+					marketplacePath: '/cache/repo/.agents/plugins/marketplace.json',
+					version: '2.0.0',
+				},
+			],
+		});
+
+		expect(result).toEqual([
+			{
+				ref: 'codex-plugin@owner/repo',
+				pluginName: 'codex-plugin',
+				marketplacePath: '/cache/repo/.agents/plugins/marketplace.json',
+				version: '2.0.0',
+			},
+		]);
+	});
 });
