@@ -27,9 +27,8 @@ export type InstanceSocketFrame =
 			/**
 			 * The runner this assignment is bound to. Top-level so the CLI can
 			 * route to the right Attachment without inspecting `runSpec`.
-			 * Optional: dashboards predating phase-1 of the supervisor work
-			 * don't emit it. The CLI falls back to single-runtime semantics
-			 * when absent.
+			 * Optional: dashboards that do not emit it use the runtime daemon's
+			 * single-runtime semantics.
 			 */
 			runnerId?: string;
 	  }

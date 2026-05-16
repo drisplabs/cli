@@ -81,7 +81,7 @@ export type RegisterRuntimeInput = {
 	 * Optional dashboard-side **Attachment** key. When set, the runtime
 	 * occupies the slot keyed by `attachmentId`; otherwise it occupies the
 	 * single fallback slot used by frames that arrive without an attachmentId.
-	 * See `docs/adr/0001-attachment-supervisor.md` (phase 4).
+	 * See `docs/adr/0001-attachment-supervisor.md`.
 	 */
 	attachmentId?: string;
 };
@@ -297,11 +297,9 @@ export class DispatchPipeline {
 	}
 
 	/**
-	 * Streaming run-event from a runner harness child to its outbound
-	 * adapter. Independent of dispatch state — `runId`/`seq` are the runner
-	 * protocol's own correlation, not the gateway's `dispatchId`. The
-	 * outbound text is the wire envelope shape RunnerAdapter expects on
-	 * `OutboundMessage.text`.
+	 * Streaming run-event from a registered runtime to its outbound channel
+	 * adapter. Independent of dispatch state: `runId`/`seq` are the caller's
+	 * own correlation, not the gateway's `dispatchId`.
 	 */
 	async handleRunEvent(
 		payload: SessionRunEventRequestPayload,

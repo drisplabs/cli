@@ -68,8 +68,6 @@ import type {
 import {type PermissionDecision} from '../../core/controller/permission';
 import {parseInput} from '../commands/parser';
 import {executeCommand} from '../commands/executor';
-import {createRunnerSession} from '../runner/runnerSession';
-import {makeDispatchRouter} from '../runner/dispatchRouter';
 import {
 	ThemeProvider,
 	useTheme,
@@ -157,7 +155,7 @@ type Props = {
 	ascii?: boolean;
 	showSetup?: boolean;
 	athenaSessionId: string;
-	/** Optional supervisor-provided Attachment key. Threads to SessionBridge. */
+	/** Optional Attachment key for gateway runtime registration. */
 	attachmentId?: string;
 	initialTelemetryDiagnosticsConsent?: boolean;
 };
@@ -956,33 +954,21 @@ function AppContent({
 	);
 	submitDispatchAsTurnRef.current = submitDispatchAsTurn;
 
-	const runnerSession = useMemo(
-		() =>
-			sessionBridge
-				? createRunnerSession({bridge: sessionBridge, projectDir})
-				: null,
-		[sessionBridge, projectDir],
-	);
-
 	// Subscribe with stable deps so we don't churn the SessionBridge handler on
 	// every render. Each churn briefly empties the bridge's handler set; while
 	// SessionBridge buffers pushes that arrive in those gaps, avoiding the
 	// churn keeps us out of that path entirely.
 	useEffect(() => {
 		if (!sessionBridge) return;
-		const router = makeDispatchRouter({
-			runnerSession,
-			fallback: payload => {
-				if (isHarnessRunningRef.current || pendingDispatchRef.current) {
-					queuedDispatchRef.current = payload;
-					return;
-				}
-				submitDispatchAsTurnRef.current?.(payload);
-			},
+		const off = sessionBridge.onTurnDispatch(payload => {
+			if (isHarnessRunningRef.current || pendingDispatchRef.current) {
+				queuedDispatchRef.current = payload;
+				return;
+			}
+			submitDispatchAsTurnRef.current?.(payload);
 		});
-		const off = sessionBridge.onTurnDispatch(router);
 		return off;
-	}, [sessionBridge, runnerSession]);
+	}, [sessionBridge]);
 
 	// Drain queued dispatch when the harness finishes.
 	useEffect(() => {

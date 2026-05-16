@@ -58,9 +58,10 @@ _Avoid_: agent stack, subagent state.
 The binding between a paired CLI instance and one dashboard-side **runner**.
 Owned by the dashboard (the CLI never creates or deletes one — it only
 mirrors). Surfaced locally in `~/.config/athena/attachments.json`. Each
-Attachment receives runner-runs and a console transport in parallel with
-others. Long-term — see `docs/adr/0001-attachment-supervisor.md` — each
-Attachment will own its own harness child process and its own Session.
+Attachment may receive dashboard assignments through the dashboard runtime
+daemon and console traffic through a gateway sidecar. The Attachment does not
+own a local harness process; dashboard assignment execution is owned by the
+dashboard runtime daemon. See `docs/adr/0001-attachment-supervisor.md`.
 _Avoid_: pairing (overloaded with the auth handshake), runner binding (verb
 phrase, not a noun for the resulting state).
 

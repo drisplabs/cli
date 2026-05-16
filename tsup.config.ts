@@ -20,7 +20,6 @@ export default defineConfig({
 		'hook-forwarder': 'src/harnesses/claude/hook-forwarder.ts',
 		'athena-gateway': 'src/gateway/entry.ts',
 		'dashboard-daemon': 'src/app/entry/dashboardDaemon.ts',
-		supervisor: 'src/app/entry/supervisor.tsx',
 	},
 	format: ['esm'],
 	target: 'node18',
