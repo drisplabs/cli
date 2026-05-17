@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 
-export const GATEWAY_STATE_VERSION = 1;
+export const GATEWAY_STATE_VERSION = 2;
 
 export type GatewayStateDb = Database.Database;
 
@@ -47,6 +47,7 @@ export function initGatewayStateSchema(db: GatewayStateDb): void {
 		-- same provider message from being parked twice if an adapter retries.
 		CREATE TABLE IF NOT EXISTS inbound_queue (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			attachment_id TEXT,
 			channel_id TEXT NOT NULL,
 			account_id TEXT NOT NULL,
 			idempotency_key TEXT NOT NULL,
@@ -83,6 +84,18 @@ export function initGatewayStateSchema(db: GatewayStateDb): void {
 	}
 	if (!existing) {
 		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+			GATEWAY_STATE_VERSION,
+		);
+		return;
+	}
+	const inboundColumns = db
+		.prepare('PRAGMA table_info(inbound_queue)')
+		.all() as Array<{name: string}>;
+	if (!inboundColumns.some(column => column.name === 'attachment_id')) {
+		db.prepare('ALTER TABLE inbound_queue ADD COLUMN attachment_id TEXT').run();
+	}
+	if (existing.version < GATEWAY_STATE_VERSION) {
+		db.prepare('UPDATE schema_version SET version = ?').run(
 			GATEWAY_STATE_VERSION,
 		);
 	}

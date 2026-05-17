@@ -170,7 +170,7 @@ export class DispatchPipeline {
 		const key: AttachmentKey = options.attachmentId;
 		const current = this.bindingStore.getCurrentByAttachment(key);
 		if (!current || !this.bindingStore.hasActiveBindingForAttachment(key)) {
-			const result = this.inboundQueue.enqueue(inbound);
+			const result = this.inboundQueue.enqueue(inbound, key);
 			if (result.kind === 'queued') {
 				this.log?.(
 					'info',
@@ -386,9 +386,9 @@ export class DispatchPipeline {
 
 	private drainPending(key: AttachmentKey): void {
 		const current = this.bindingStore.getCurrentByAttachment(key);
-		if (!current || !this.bindingStore.hasActiveBinding(current.runtimeId))
+		if (!current || !this.bindingStore.hasActiveBindingForAttachment(key))
 			return;
-		const parked = this.inboundQueue.drain();
+		const parked = this.inboundQueue.drain(key);
 		let dispatched = 0;
 		let dropped = 0;
 		for (const {inbound} of parked) {

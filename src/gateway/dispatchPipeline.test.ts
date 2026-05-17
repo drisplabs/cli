@@ -424,6 +424,58 @@ describe('DispatchPipeline', () => {
 			);
 		});
 
+		it('drains parked attachment-keyed inbound when that attachment registers', () => {
+			const queued = s.pipeline.handleInbound(inbound, {attachmentId: 'a1'});
+			expect(queued.kind).toBe('queued');
+			expect(s.pipeline.pendingInboundCount()).toBe(1);
+			expect(s.push).not.toHaveBeenCalled();
+
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+
+			expect(s.pipeline.pendingInboundCount()).toBe(0);
+			expect(s.push).toHaveBeenCalledOnce();
+			const env = s.push.mock.calls[0]?.[0] as ControlPushEnvelope;
+			expect(env.kind).toBe('session.dispatch.turn');
+			expect(
+				(env.payload as SessionDispatchTurnPushPayload).inbound.idempotencyKey,
+			).toBe(inbound.idempotencyKey);
+		});
+
+		it('does not drain parked inbound for other attachment slots', () => {
+			const push2 = vi.fn();
+			s.pipeline.handleInbound(inbound, {attachmentId: 'a1'});
+			s.pipeline.handleInbound({...inbound, idempotencyKey: 'tg:2'});
+			s.pipeline.handleInbound(
+				{...inbound, idempotencyKey: 'tg:3'},
+				{attachmentId: 'a2'},
+			);
+			expect(s.pipeline.pendingInboundCount()).toBe(3);
+
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+
+			expect(push2).toHaveBeenCalledOnce();
+			const env = push2.mock.calls[0]?.[0] as ControlPushEnvelope;
+			expect(
+				(env.payload as SessionDispatchTurnPushPayload).inbound.idempotencyKey,
+			).toBe('tg:3');
+			expect(s.pipeline.pendingInboundCount()).toBe(2);
+			expect(s.push).not.toHaveBeenCalled();
+		});
+
 		it('handleTurnComplete accepts replies from a runtime registered under any attachment slot', async () => {
 			const push2 = vi.fn();
 			s.pipeline.registerRuntime({
