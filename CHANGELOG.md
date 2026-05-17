@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.8](https://github.com/drisplabs/cli/compare/cli-v0.5.7...cli-v0.5.8) (2026-05-17)
+
+
+### Bug Fixes
+
+* preserve codex approval item ids ([e3e62a6](https://github.com/drisplabs/cli/commit/e3e62a6a37bdf61e226e864807f43e8044e50848))
+
 ## [0.5.7](https://github.com/drisplabs/cli/compare/cli-v0.5.6...cli-v0.5.7) (2026-05-17)
 
 
