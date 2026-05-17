@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.7](https://github.com/drisplabs/cli/compare/cli-v0.5.6...cli-v0.5.7) (2026-05-17)
+
+
+### Bug Fixes
+
+* enforce remote artifact capture ordering ([e558d65](https://github.com/drisplabs/cli/commit/e558d65542027a5dcefa066b7358031e1407f058))
+
 ## [0.5.6](https://github.com/drisplabs/cli/compare/cli-v0.5.5...cli-v0.5.6) (2026-05-17)
 
 
