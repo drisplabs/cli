@@ -17,6 +17,18 @@ export type FeedEventFrame = {
 	envelope: DashboardFeedEnvelope;
 };
 
+export type AssignmentRejectedReason =
+	| 'local_capacity'
+	| 'duplicate'
+	| 'malformed_assignment';
+
+export type AssignmentRejectedFrame = {
+	type: 'assignment_rejected';
+	runId: string;
+	reason: AssignmentRejectedReason;
+	message?: string;
+};
+
 export type InstanceSocketFrame =
 	| {type: 'ping'; ts: number}
 	| {type: 'pong'; ts: number}
@@ -33,6 +45,7 @@ export type InstanceSocketFrame =
 			runnerId?: string;
 	  }
 	| {type: 'assignment_accepted'; runId: string}
+	| AssignmentRejectedFrame
 	| {
 			type: 'decision_ack';
 			athenaSessionId: string;
@@ -96,6 +109,7 @@ export type InstanceSocketClient = {
 	onFrame(handler: (frame: InstanceSocketFrame) => void): void;
 	onClose(handler: (reason: string) => void): void;
 	sendAssignmentAccepted(runId: string): void;
+	sendAssignmentRejected(input: Omit<AssignmentRejectedFrame, 'type'>): void;
 	sendRunEvent(event: Omit<RunEventFrame, 'type'>): void;
 	sendFeedEvent(event: Omit<FeedEventFrame, 'type'>): void;
 	sendDecisionAck(input: {athenaSessionId: string; requestId: string}): void;
@@ -307,6 +321,16 @@ export function createInstanceSocketClient(
 		log('info', `instance socket: assignment accepted runId=${runId}`);
 	}
 
+	function sendAssignmentRejected(
+		input: Omit<AssignmentRejectedFrame, 'type'>,
+	): void {
+		send({type: 'assignment_rejected', ...input});
+		log(
+			'info',
+			`instance socket: assignment rejected runId=${input.runId} reason=${input.reason}`,
+		);
+	}
+
 	function sendRunEvent(event: Omit<RunEventFrame, 'type'>): void {
 		send({type: 'run_event', ...event});
 	}
@@ -328,6 +352,7 @@ export function createInstanceSocketClient(
 		onFrame,
 		onClose,
 		sendAssignmentAccepted,
+		sendAssignmentRejected,
 		sendRunEvent,
 		sendFeedEvent,
 		sendDecisionAck,

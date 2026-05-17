@@ -20,6 +20,7 @@ import type {
 } from './instanceSocketClient';
 import {
 	createRunStreamClient,
+	type RunStreamClient,
 	type RunStreamClientOptions,
 } from './runStreamClient';
 import type {DashboardDecisionInbox} from './dashboardDecisionInbox';

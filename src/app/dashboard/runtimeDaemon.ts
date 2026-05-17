@@ -251,6 +251,11 @@ export async function runDashboardRuntimeDaemon(
 				if (!current) return;
 				current.sendAssignmentAccepted(runId);
 			},
+			sendAssignmentRejected(input) {
+				const current = client;
+				if (!current) return;
+				current.sendAssignmentRejected(input);
+			},
 		},
 		execution: pairedExecution,
 		log,

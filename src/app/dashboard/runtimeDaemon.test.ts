@@ -57,6 +57,11 @@ function makeFakeSocket() {
 		connect: 0,
 		close: [] as string[],
 		assignmentAccepted: [] as string[],
+		assignmentRejected: [] as Array<{
+			runId: string;
+			reason: string;
+			message?: string;
+		}>,
 		feedEvents: [] as unknown[],
 		decisionAcks: [] as unknown[],
 	};
@@ -73,6 +78,9 @@ function makeFakeSocket() {
 		},
 		sendAssignmentAccepted: runId => {
 			calls.assignmentAccepted.push(runId);
+		},
+		sendAssignmentRejected: input => {
+			calls.assignmentRejected.push(input);
 		},
 		sendRunEvent: () => {},
 		sendFeedEvent: frame => {
@@ -639,6 +647,11 @@ describe('runDashboardRuntimeDaemon', () => {
 		expect(runs.find(r => r.runId === 'run_legacy')?.status).toBe('running');
 		expect(runs.find(r => r.runId === 'run_r1')?.status).toBe('running');
 		expect(runs.find(r => r.runId === 'run_legacy_2')?.status).toBe('rejected');
+		expect(fake.calls.assignmentRejected).toContainEqual({
+			runId: 'run_legacy_2',
+			reason: 'local_capacity',
+			message: expect.stringContaining('concurrency cap'),
+		});
 
 		for (const resolve of resolvers.values()) resolve();
 		await daemon.stop('test');
@@ -684,6 +697,11 @@ describe('runDashboardRuntimeDaemon', () => {
 		expect(executor).toHaveBeenCalledTimes(1);
 		const runs = daemon.listRuns();
 		expect(runs.find(r => r.runId === 'run_a2')?.status).toBe('rejected');
+		expect(fake.calls.assignmentRejected).toContainEqual({
+			runId: 'run_a2',
+			reason: 'local_capacity',
+			message: expect.stringContaining('concurrency cap'),
+		});
 
 		resolveFirst();
 		await daemon.stop('test');
@@ -724,11 +742,16 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 		await Promise.resolve();
 
-		// Only the first ran; second was rejected via run_event.
+		// Only the first ran; second was rejected via assignment_rejected.
 		expect(executor).toHaveBeenCalledTimes(1);
 
 		const runs = daemon.listRuns();
 		expect(runs.find(r => r.runId === 'run_2')?.status).toBe('rejected');
+		expect(fake.calls.assignmentRejected).toContainEqual({
+			runId: 'run_2',
+			reason: 'local_capacity',
+			message: expect.stringContaining('concurrency cap'),
+		});
 
 		resolveFirst();
 		await daemon.stop('test');
@@ -838,13 +861,8 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
-	it('logs a warning when sendRunEvent fails during rejection', async () => {
+	it('sends assignment_rejected when local capacity rejects a dashboard assignment', async () => {
 		const fake = makeFakeSocket();
-		// Patch the shared client factory's sendRunEvent to throw.
-		fake.client.sendRunEvent = (() => {
-			throw new Error('send failed');
-		}) as InstanceSocketClient['sendRunEvent'];
-
 		const logs: Array<{level: string; message: string}> = [];
 		const daemon = await runDashboardRuntimeDaemon({
 			readConfig: () => stored,
@@ -873,7 +891,7 @@ describe('runDashboardRuntimeDaemon', () => {
 			runSpec: {prompt: 'first'},
 		});
 		await Promise.resolve();
-		// Second is rejected — sendRunEvent throws and must be logged.
+		// Second is rejected through the assignment admission protocol.
 		fake.emitFrame({
 			type: 'job_assignment',
 			runId: 'run_2',
@@ -881,13 +899,16 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 		await Promise.resolve();
 
-		expect(
-			logs.some(
-				l =>
-					l.level === 'warn' &&
-					l.message.includes('failed to send rejected for run_2'),
-			),
-		).toBe(true);
+		expect(logs).not.toContainEqual(
+			expect.objectContaining({
+				message: expect.stringContaining('failed to send rejected for run_2'),
+			}),
+		);
+		expect(fake.calls.assignmentRejected).toContainEqual({
+			runId: 'run_2',
+			reason: 'local_capacity',
+			message: expect.stringContaining('concurrency cap'),
+		});
 
 		await daemon.stop('test');
 	});

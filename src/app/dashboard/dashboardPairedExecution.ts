@@ -1,4 +1,5 @@
 import type {
+	AssignmentRejectedReason,
 	InstanceSocketClient,
 	InstanceSocketFrame,
 	InstanceSocketLogger,
@@ -10,6 +11,15 @@ type JobAssignmentFrame = Extract<
 	InstanceSocketFrame,
 	{type: 'job_assignment'}
 >;
+
+export type DashboardAssignmentRejection = {
+	reason: AssignmentRejectedReason;
+	message: string;
+};
+
+export type DashboardAssignmentAdmission =
+	| {kind: 'accepted'}
+	| {kind: 'rejected'; rejection: DashboardAssignmentRejection};
 
 export type DashboardPairedExecutionExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -36,8 +46,11 @@ export type DashboardPairedExecutionOptions = {
 
 export type DashboardPairedExecution = {
 	handleFrame(frame: InstanceSocketFrame): boolean;
-	admitAssignment(frame: JobAssignmentFrame): 'accepted' | 'rejected';
-	rejectAssignment(runId: string, reason: string): void;
+	admitAssignment(frame: JobAssignmentFrame): DashboardAssignmentAdmission;
+	rejectAssignment(
+		runId: string,
+		rejection: DashboardAssignmentRejection,
+	): void;
 	snapshot(): {activeRuns: number; completedRuns: number};
 	listRuns(options?: {
 		active?: boolean;
@@ -82,31 +95,18 @@ export function createDashboardPairedExecution(
 		}
 	}
 
-	function rejectAssignment(runId: string, reason: string): void {
-		try {
-			client.sendRunEvent({
-				runId,
-				seq: 0,
-				ts: now(),
-				kind: 'rejected',
-				payload: {reason},
-			});
-		} catch (err) {
-			log(
-				'warn',
-				`runtime daemon: failed to send rejected for ${runId}: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-		}
+	function rejectAssignment(
+		runId: string,
+		rejection: DashboardAssignmentRejection,
+	): void {
 		recordRun({
 			runId,
 			startedAt: now(),
 			endedAt: now(),
 			status: 'rejected',
-			error: reason,
+			error: rejection.message,
 		});
-		log('warn', `run ${runId} rejected: ${reason}`);
+		log('warn', `run ${runId} rejected: ${rejection.message}`);
 	}
 
 	function handleDecision(
@@ -133,22 +133,24 @@ export function createDashboardPairedExecution(
 
 	function handleAssignment(
 		frame: JobAssignmentFrame,
-	): 'accepted' | 'rejected' {
+	): DashboardAssignmentAdmission {
 		if (active.has(frame.runId)) {
-			rejectAssignment(
-				frame.runId,
-				`duplicate active assignment ${frame.runId}`,
-			);
-			return 'rejected';
+			const rejection = {
+				reason: 'duplicate',
+				message: `duplicate active assignment ${frame.runId}`,
+			} satisfies DashboardAssignmentRejection;
+			rejectAssignment(frame.runId, rejection);
+			return {kind: 'rejected', rejection};
 		}
 		const runnerKey = frame.runnerId;
 		const bucket = activeByRunner.get(runnerKey) ?? new Set<string>();
 		if (bucket.size >= maxConcurrentRuns) {
-			rejectAssignment(
-				frame.runId,
-				`runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
-			);
-			return 'rejected';
+			const rejection = {
+				reason: 'local_capacity',
+				message: `runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
+			} satisfies DashboardAssignmentRejection;
+			rejectAssignment(frame.runId, rejection);
+			return {kind: 'rejected', rejection};
 		}
 
 		const controller = new AbortController();
@@ -195,7 +197,7 @@ export function createDashboardPairedExecution(
 				}
 			});
 		active.set(frame.runId, {controller, promise, record, runnerKey});
-		return 'accepted';
+		return {kind: 'accepted'};
 	}
 
 	return {

@@ -12,7 +12,10 @@ type JobAssignmentFrame = Extract<
 >;
 
 export type DashboardAssignmentIntakeOptions = {
-	client: Pick<InstanceSocketClient, 'sendAssignmentAccepted'>;
+	client: Pick<
+		InstanceSocketClient,
+		'sendAssignmentAccepted' | 'sendAssignmentRejected'
+	>;
 	execution: Pick<
 		DashboardPairedExecution,
 		'admitAssignment' | 'rejectAssignment'
@@ -35,16 +38,26 @@ export function createDashboardAssignmentIntake(
 
 	function handle(frame: JobAssignmentFrame): void {
 		if (!isRemoteAssignmentAdmissible(frame)) {
-			options.execution.rejectAssignment(
-				frame.runId,
-				'remote assignment missing prompt',
-			);
+			const rejection = {
+				reason: 'malformed_assignment' as const,
+				message: 'remote assignment missing prompt',
+			};
+			options.execution.rejectAssignment(frame.runId, rejection);
+			options.client.sendAssignmentRejected({
+				runId: frame.runId,
+				...rejection,
+			});
 			return;
 		}
 		const outcome = options.execution.admitAssignment(frame);
-		if (outcome === 'accepted') {
+		if (outcome.kind === 'accepted') {
 			options.client.sendAssignmentAccepted(frame.runId);
+			return;
 		}
+		options.client.sendAssignmentRejected({
+			runId: frame.runId,
+			...outcome.rejection,
+		});
 	}
 
 	function drain(): void {

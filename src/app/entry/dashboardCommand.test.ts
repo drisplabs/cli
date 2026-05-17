@@ -81,6 +81,8 @@ function makeDeps(overrides: {
 				stored.value = c;
 				writes.push(c);
 			},
+			writeMirror: vi.fn(),
+			fetchAttachments: vi.fn(async () => []),
 			removeConfig: () => {
 				stored.value = null;
 				removed.count += 1;
@@ -771,6 +773,12 @@ function makeFakeSocket(connectFn?: () => Promise<void>) {
 	const closeHandlers: Array<(reason: string) => void> = [];
 	const frameHandlers: Array<(frame: FakeFrame) => void> = [];
 	const runEvents: FakeRunEvent[] = [];
+	const assignmentAccepted: string[] = [];
+	const assignmentRejected: Array<{
+		runId: string;
+		reason: string;
+		message?: string;
+	}> = [];
 	let lastOpts: {
 		dashboardUrl: string;
 		instanceId: string;
@@ -794,14 +802,27 @@ function makeFakeSocket(connectFn?: () => Promise<void>) {
 			onClose: (h: (reason: string) => void) => {
 				closeHandlers.push(h);
 			},
+			sendAssignmentAccepted: (runId: string) => {
+				assignmentAccepted.push(runId);
+			},
+			sendAssignmentRejected: (input: {
+				runId: string;
+				reason: string;
+				message?: string;
+			}) => {
+				assignmentRejected.push(input);
+			},
 			sendRunEvent: (event: FakeRunEvent) => runEvents.push(event),
 			sendFeedEvent: () => {},
+			sendDecisionAck: () => {},
 		};
 	};
 	return {
 		factory,
 		calls,
 		runEvents,
+		assignmentAccepted,
+		assignmentRejected,
 		lastOpts: () => lastOpts,
 		emitClose: (reason: string) => {
 			for (const h of closeHandlers) h(reason);
@@ -897,8 +918,11 @@ describe('runDashboardCommand: connect (deprecation alias)', () => {
 					close: () => {},
 					onFrame: () => {},
 					onClose: () => {},
+					sendAssignmentAccepted: () => {},
+					sendAssignmentRejected: () => {},
 					sendRunEvent: () => {},
 					sendFeedEvent: () => {},
+					sendDecisionAck: () => {},
 				}),
 				waitForShutdown: async () => 'SIGINT',
 			},

@@ -4,10 +4,11 @@ import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
 describe('DashboardAssignmentIntake', () => {
 	it('buffers assignments until admission is allowed, then truthfully accepts them', () => {
 		const sendAssignmentAccepted = vi.fn();
-		const admitAssignment = vi.fn(() => 'accepted' as const);
+		const sendAssignmentRejected = vi.fn();
+		const admitAssignment = vi.fn(() => ({kind: 'accepted' as const}));
 		const rejectAssignment = vi.fn();
 		const intake = createDashboardAssignmentIntake({
-			client: {sendAssignmentAccepted},
+			client: {sendAssignmentAccepted, sendAssignmentRejected},
 			execution: {admitAssignment, rejectAssignment},
 		});
 
@@ -23,14 +24,16 @@ describe('DashboardAssignmentIntake', () => {
 		intake.markReady();
 		expect(admitAssignment).toHaveBeenCalledWith(frame);
 		expect(sendAssignmentAccepted).toHaveBeenCalledWith('run_1');
+		expect(sendAssignmentRejected).not.toHaveBeenCalled();
 	});
 
-	it('rejects malformed assignments without acknowledging them', () => {
+	it('rejects malformed assignments with a first-class rejection frame', () => {
 		const sendAssignmentAccepted = vi.fn();
-		const admitAssignment = vi.fn(() => 'accepted' as const);
+		const sendAssignmentRejected = vi.fn();
+		const admitAssignment = vi.fn(() => ({kind: 'accepted' as const}));
 		const rejectAssignment = vi.fn();
 		const intake = createDashboardAssignmentIntake({
-			client: {sendAssignmentAccepted},
+			client: {sendAssignmentAccepted, sendAssignmentRejected},
 			execution: {admitAssignment, rejectAssignment},
 		});
 		intake.markReady();
@@ -42,9 +45,43 @@ describe('DashboardAssignmentIntake', () => {
 
 		expect(admitAssignment).not.toHaveBeenCalled();
 		expect(sendAssignmentAccepted).not.toHaveBeenCalled();
-		expect(rejectAssignment).toHaveBeenCalledWith(
-			'run_bad',
-			'remote assignment missing prompt',
-		);
+		expect(rejectAssignment).toHaveBeenCalledWith('run_bad', {
+			reason: 'malformed_assignment',
+			message: 'remote assignment missing prompt',
+		});
+		expect(sendAssignmentRejected).toHaveBeenCalledWith({
+			runId: 'run_bad',
+			reason: 'malformed_assignment',
+			message: 'remote assignment missing prompt',
+		});
+	});
+
+	it('sends local admission rejections without sending assignment_accepted', () => {
+		const sendAssignmentAccepted = vi.fn();
+		const sendAssignmentRejected = vi.fn();
+		const admitAssignment = vi.fn(() => ({
+			kind: 'rejected' as const,
+			rejection: {
+				reason: 'local_capacity' as const,
+				message: 'runtime daemon at concurrency cap',
+			},
+		}));
+		const intake = createDashboardAssignmentIntake({
+			client: {sendAssignmentAccepted, sendAssignmentRejected},
+			execution: {admitAssignment, rejectAssignment: vi.fn()},
+		});
+		intake.markReady();
+		intake.receive({
+			type: 'job_assignment',
+			runId: 'run_full',
+			runSpec: {prompt: 'go'},
+		});
+
+		expect(sendAssignmentAccepted).not.toHaveBeenCalled();
+		expect(sendAssignmentRejected).toHaveBeenCalledWith({
+			runId: 'run_full',
+			reason: 'local_capacity',
+			message: 'runtime daemon at concurrency cap',
+		});
 	});
 });

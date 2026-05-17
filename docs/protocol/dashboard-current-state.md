@@ -184,7 +184,8 @@ The Worker verifies the access token and instance match, then upgrades through `
 | Frame                 | Current dashboard meaning                                         |
 | --------------------- | ----------------------------------------------------------------- |
 | `ping`                | Heartbeat; triggers best-effort Convex heartbeat write.           |
-| `assignment_accepted` | Receipt only; currently no state transition or timeout clearing.  |
+| `assignment_accepted` | Local runtime admission accepted execution for a dispatched run.  |
+| `assignment_rejected` | Local runtime admission rejected execution with a typed reason.   |
 | `decision_ack`        | Allows queued decision removal and Convex delivered-state update. |
 | `feed_event`          | Canonical paired-session feed ingestion path.                     |
 | `run_event`           | Legacy compatibility path forwarded into `RunStreamDO`.           |
@@ -310,6 +311,7 @@ The dashboard still mints `callbackWsUrl` and `callbackToken` for remote dispatc
 
 - Pairing creates a fresh instance row rather than reusing by fingerprint.
 - There is no explicit server-side upper bound on number of paired instances per org or per user in this code.
-- `assignment_accepted` is informational only.
+- `assignment_accepted` is local admission, not proof of eventual workflow success.
+- `assignment_rejected` can requeue retryable local-capacity failures or fail unretryable malformed assignments.
 - `runnerConcurrencyCap` and the CLI daemon's local cap are not negotiated as one contract.
 - Remote run specs still carry callback stream credentials even though canonical session state now flows through `feed_event`.

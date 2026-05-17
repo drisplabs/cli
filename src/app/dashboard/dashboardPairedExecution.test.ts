@@ -87,13 +87,12 @@ describe('DashboardPairedExecution', () => {
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledTimes(1);
-		expect(runEvents).toContainEqual(
+		expect(runEvents).toEqual([]);
+		expect(execution.listRuns({active: false})).toContainEqual(
 			expect.objectContaining({
 				runId: 'run_dup',
-				kind: 'rejected',
-				payload: expect.objectContaining({
-					reason: expect.stringContaining('duplicate'),
-				}),
+				status: 'rejected',
+				error: expect.stringContaining('duplicate'),
 			}),
 		);
 		resolveFirst();
@@ -133,13 +132,12 @@ describe('DashboardPairedExecution', () => {
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledTimes(1);
-		expect(runEvents).toContainEqual(
+		expect(runEvents).toEqual([]);
+		expect(execution.listRuns({active: false})).toContainEqual(
 			expect.objectContaining({
 				runId: 'run_b',
-				kind: 'rejected',
-				payload: expect.objectContaining({
-					reason: expect.stringContaining('concurrency cap'),
-				}),
+				status: 'rejected',
+				error: expect.stringContaining('concurrency cap'),
 			}),
 		);
 		resolveFirst();

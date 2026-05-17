@@ -29,6 +29,7 @@ import {
 	removeAttachmentMirror,
 	writeAttachmentMirror,
 } from '../../infra/config/attachmentMirror';
+import type {AttachmentReconcilerFetchInput} from '../dashboard/attachmentReconciler';
 import {
 	daemonStatePaths,
 	type DaemonStatePaths,
@@ -139,6 +140,9 @@ export type DashboardCommandDeps = {
 	readMirror?: () => AttachmentMirror | null;
 	writeMirror?: (mirror: AttachmentMirror) => void;
 	removeMirror?: () => void;
+	fetchAttachments?: (
+		input: AttachmentReconcilerFetchInput,
+	) => Promise<AttachmentMirror['attachments']>;
 	logOut?: (message: string) => void;
 	logError?: (message: string) => void;
 	makeInstanceSocketClient?: (opts: {
@@ -773,6 +777,8 @@ export async function runDashboardCommand(
 					refreshAccessToken: async () => performRefreshImpl('connect'),
 					makeInstanceSocketClient: deps.makeInstanceSocketClient,
 					executeRemoteAssignment: deps.executeRemoteAssignment,
+					fetchAttachments: deps.fetchAttachments,
+					writeMirror,
 					retryInitialConnect: false,
 					log: (level, message) => {
 						if (level === 'error' || level === 'warn') {

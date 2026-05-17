@@ -262,6 +262,41 @@ describe('createInstanceSocketClient', () => {
 		client.close('done');
 	});
 
+	it('sendAssignmentRejected writes an assignment_rejected frame to the wire', async () => {
+		const received: unknown[] = [];
+		server.once('connection', ws => {
+			ws.on('message', data => {
+				received.push(JSON.parse(String(data)));
+			});
+		});
+
+		const client = createInstanceSocketClient({
+			dashboardUrl: `http://127.0.0.1:${port}`,
+			instanceId: 'inst_1',
+			accessToken: 'access-1',
+			heartbeatIntervalMs: 60_000,
+		});
+		await client.connect();
+		client.sendAssignmentRejected({
+			runId: 'run_42',
+			reason: 'local_capacity',
+			message: 'runtime daemon at concurrency cap',
+		});
+
+		await vi.waitFor(
+			() => {
+				expect(received).toContainEqual({
+					type: 'assignment_rejected',
+					runId: 'run_42',
+					reason: 'local_capacity',
+					message: 'runtime daemon at concurrency cap',
+				});
+			},
+			{timeout: 1_000},
+		);
+		client.close('done');
+	});
+
 	it('sendDecisionAck writes a decision_ack frame to the wire', async () => {
 		const received: unknown[] = [];
 		server.once('connection', ws => {

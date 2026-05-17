@@ -199,7 +199,7 @@ Current remote dispatch does not yet apply secrets; that is a known implementati
 3. Until negotiation exists, dashboard and CLI local caps must be treated as two different controls:
    - dashboard cap protects global policy;
    - CLI cap protects the machine.
-4. A CLI-local capacity rejection must be visible as a protocol outcome that returns the run to a defined dashboard state.
+4. A CLI-local capacity rejection is reported with `assignment_rejected` and returns the run to a defined dashboard state.
 
 ## 11. Event Streaming
 
@@ -333,7 +333,7 @@ Every failure should map to:
 
 The following are current-state realities, not the target shape:
 
-1. Existing code uses `assignment_accepted` for receipt only.
+1. `assignment_accepted` means local admission accepted execution; receipt-only handling is a retired compatibility behavior.
 2. Existing code uses a single `queued` dashboard state for both capacity and offline-instance waiting.
 3. Existing code still carries per-run callback stream credentials.
 4. Existing code uses Athena-named identifiers throughout the wire contract.

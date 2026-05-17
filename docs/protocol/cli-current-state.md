@@ -107,22 +107,23 @@ This gateway is not the canonical dashboard assignment scheduler in the current 
 
 ### Server-to-CLI frames consumed
 
-| Frame                 | Current CLI behavior                                                     |
-| --------------------- | ------------------------------------------------------------------------ |
-| `job_assignment`      | Immediately sends `assignment_accepted`, then schedules local execution. |
-| `cancel`              | Aborts an active local assignment when `runId` matches.                  |
-| `dashboard_decision`  | Enqueues into durable SQLite inbox, then sends `decision_ack`.           |
-| `attachments.changed` | Rewrites local attachment mirror.                                        |
-| `feed_ack`            | Marks durable feed outbox row acked by `deliverySeq` and/or `eventId`.   |
-| `pong`                | No special logic beyond socket liveness.                                 |
-| `error`               | Exposed to handlers/logging only.                                        |
+| Frame                 | Current CLI behavior                                                   |
+| --------------------- | ---------------------------------------------------------------------- |
+| `job_assignment`      | Buffers until attachments are current, then admits or rejects locally. |
+| `cancel`              | Aborts an active local assignment when `runId` matches.                |
+| `dashboard_decision`  | Enqueues into durable SQLite inbox, then sends `decision_ack`.         |
+| `attachments.changed` | Rewrites local attachment mirror.                                      |
+| `feed_ack`            | Marks durable feed outbox row acked by `deliverySeq` and/or `eventId`. |
+| `pong`                | No special logic beyond socket liveness.                               |
+| `error`               | Exposed to handlers/logging only.                                      |
 
 ### CLI-to-server frames emitted
 
 | Frame                 | Current CLI behavior                                                                    |
 | --------------------- | --------------------------------------------------------------------------------------- |
 | `ping`                | Heartbeat.                                                                              |
-| `assignment_accepted` | Sent eagerly when an assignment frame arrives, before execution starts.                 |
+| `assignment_accepted` | Sent only after local admission accepts the assignment for execution.                   |
+| `assignment_rejected` | Sent when local admission rejects duplicate, saturated, or malformed assignments.       |
 | `decision_ack`        | Sent after local inbox enqueue, not after the runtime consumes the decision.            |
 | `feed_event`          | Canonical paired-session event transport; durable and retried from local SQLite outbox. |
 | `run_event`           | Legacy/fallback remote-run event transport when no per-run stream is available.         |
@@ -252,12 +253,12 @@ Behavior:
 | State     | Meaning                            |
 | --------- | ---------------------------------- |
 | received  | `job_assignment` arrived           |
-| accepted  | `assignment_accepted` sent         |
+| accepted  | local admission accepted execution |
 | running   | executor promise active            |
 | completed | executor resolved                  |
 | failed    | executor rejected                  |
 | cancelled | `cancel` aborted active controller |
-| rejected  | duplicate or over local cap        |
+| rejected  | `assignment_rejected` sent         |
 
 ## Implementation Boundaries
 
@@ -267,7 +268,6 @@ Behavior:
 
 ## Notable Current-State Ambiguities
 
-- `assignment_accepted` confirms frame receipt, not dispatch start or capacity acceptance.
-- Local daemon concurrency and dashboard runner concurrency are separate limits with separate rejection behavior.
+- Local daemon concurrency and dashboard runner concurrency are separate limits connected by explicit assignment rejection.
 - `run_event` and `feed_event` coexist, but only `feed_event` is the canonical paired-session stream.
 - Token names still use legacy Athena terminology in several files and data fields.
