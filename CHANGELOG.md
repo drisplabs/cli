@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/drisplabs/cli/compare/cli-v0.5.4...cli-v0.5.5) (2026-05-17)
+
+
+### Bug Fixes
+
+* **gateway:** drain inbound queue by attachment ([20a0f1b](https://github.com/drisplabs/cli/commit/20a0f1b2c6d5c37088617bc9559ff93a1401b4d1))
+
 ## [0.5.4](https://github.com/drisplabs/cli/compare/cli-v0.5.3...cli-v0.5.4) (2026-05-17)
 
 
