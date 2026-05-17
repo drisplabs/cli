@@ -445,15 +445,36 @@ export function createCodexServer(opts: CodexServerOptions): CodexRuntime {
 		stop(): void {
 			clearPendingApprovals();
 
-			if (loadedAgentConfig) {
-				cleanupAgentConfig(loadedAgentConfig.tempDir);
-				loadedAgentConfig = null;
-			}
+			const managerToStop = manager;
+			const agentConfigToCleanup = loadedAgentConfig;
+			manager = null;
+			loadedAgentConfig = null;
 
-			if (manager) {
-				manager.removeAllListeners();
-				manager.stop().catch(() => {});
-				manager = null;
+			if (managerToStop) {
+				managerToStop.removeAllListeners();
+				void (async () => {
+					if (agentConfigToCleanup) {
+						const removalEdits = buildAgentRemovalEdits(
+							agentConfigToCleanup.agentNames,
+						);
+						if (removalEdits.length > 0) {
+							try {
+								await managerToStop.sendRequest(M.CONFIG_BATCH_WRITE, {
+									filePath: `${projectDir}/.codex/config.toml`,
+									edits: removalEdits,
+								});
+							} catch (error) {
+								console.error(
+									`[athena:codex] failed to remove agents on stop: ${
+										error instanceof Error ? error.message : String(error)
+									}`,
+								);
+							}
+						}
+						cleanupAgentConfig(agentConfigToCleanup.tempDir);
+					}
+					await managerToStop.stop().catch(() => {});
+				})();
 			}
 			status = 'stopped';
 			lastError = null;

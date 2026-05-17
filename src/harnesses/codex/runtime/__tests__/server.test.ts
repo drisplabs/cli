@@ -987,4 +987,58 @@ describe('createCodexServer', () => {
 		);
 		expect(batchWrites).toHaveLength(0);
 	});
+
+	it('removes loaded agent config when the runtime stops', async () => {
+		mockAgentResult.current = {
+			agentConfigEdits: [
+				{
+					keyPath: 'features.multi_agent',
+					value: true,
+					mergeStrategy: 'replace',
+				},
+				{
+					keyPath: 'agents.reviewer',
+					value: {
+						description: 'Reviews code',
+						config_file: '/tmp/athena-agents-stop/reviewer.toml',
+					},
+					mergeStrategy: 'upsert',
+				},
+			],
+			tempDir: '/tmp/athena-agents-stop',
+			agentNames: ['reviewer'],
+			errors: [],
+		};
+
+		const runtime = createCodexServer({
+			projectDir: '/project',
+			instanceId: 1,
+			binaryPath: 'codex',
+		});
+
+		await runtime.start();
+		await runtime.sendPrompt('Load workflow agent', {
+			agentRoots: ['/workflow/plugins/plugin-a/agents'],
+		});
+
+		runtime.stop();
+
+		const manager = mockState.current;
+		expect(manager).not.toBeNull();
+
+		const batchWrites = manager!.requests.filter(
+			r => r.method === 'config/batchWrite',
+		);
+		expect(batchWrites).toHaveLength(2);
+		expect(batchWrites[1]!.params).toEqual({
+			filePath: '/project/.codex/config.toml',
+			edits: [
+				{
+					keyPath: 'agents.reviewer',
+					value: null,
+					mergeStrategy: 'replace',
+				},
+			],
+		});
+	});
 });
