@@ -207,5 +207,7 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return truncate(
 				`Cloud fn ✗ ${event.data.function_name}: ${event.data.error_message}`,
 			);
+		case 'artifacts.manifest':
+			return 'Artifacts manifest';
 	}
 }

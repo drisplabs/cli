@@ -1043,6 +1043,7 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'gateway.function.invoked':
 		case 'gateway.function.completed':
 		case 'gateway.function.failed':
+		case 'artifacts.manifest':
 			return {toolColumn: '', segments: []};
 	}
 }
@@ -1139,6 +1140,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'gateway.function.invoked':
 		case 'gateway.function.completed':
 		case 'gateway.function.failed':
+		case 'artifacts.manifest':
 			return '';
 	}
 }

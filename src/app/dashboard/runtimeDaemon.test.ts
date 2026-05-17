@@ -229,6 +229,13 @@ describe('runDashboardRuntimeDaemon', () => {
 	it('connects with a refreshed token and executes each assignment once', async () => {
 		const fake = makeFakeSocket();
 		const executor = vi.fn(async () => {});
+		const pairedFeedPublisher = {
+			publish: vi.fn(),
+			attachTransport: vi.fn(),
+			detachTransport: vi.fn(),
+			handleAck: vi.fn(),
+			close: vi.fn(),
+		};
 
 		const stop = await runDashboardRuntimeDaemon({
 			readConfig: () => stored,
@@ -246,6 +253,7 @@ describe('runDashboardRuntimeDaemon', () => {
 				return fake.client;
 			},
 			executeRemoteAssignment: executor,
+			pairedFeedPublisher,
 			reconnectDelaysMs: [],
 		});
 
@@ -261,7 +269,10 @@ describe('runDashboardRuntimeDaemon', () => {
 		expect(fake.calls.connect).toBe(1);
 		expect(fake.calls.assignmentAccepted).toEqual(['run_1']);
 		expect(executor).toHaveBeenCalledTimes(1);
-		expect(executor.mock.calls[0]![0]).toMatchObject({frame});
+		expect(executor.mock.calls[0]![0]).toMatchObject({
+			frame,
+			dashboardFeedPublisher: pairedFeedPublisher,
+		});
 
 		await stop.stop('test');
 	});

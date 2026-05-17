@@ -222,6 +222,191 @@ describe('runExec', () => {
 		);
 	});
 
+	it('publishes pre-completion artifact manifest feed events', async () => {
+		const runtime = new MockRuntime();
+		const dashboardFeedPublisher = {
+			publish: vi.fn(),
+		};
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			setImmediate(() => {
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+
+		const result = await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			athenaSessionId: 'athena-1',
+			isolationConfig: {},
+			ephemeral: true,
+			runtimeFactory: () => runtime,
+			spawnProcess,
+			dashboardFeedPublisher,
+			beforeTerminalCompletion: async ({result: hookResult}) => [
+				{
+					event_id: 'artifacts-1',
+					seq: 99,
+					ts: 100,
+					session_id: hookResult.athenaSessionId ?? 'missing',
+					run_id: 'run-1',
+					kind: 'artifacts.manifest',
+					level: 'info',
+					actor_id: 'system',
+					title: 'Artifacts manifest',
+					data: {manifest: {entries: []}},
+				},
+			],
+		});
+
+		expect(result.success).toBe(true);
+		expect(dashboardFeedPublisher.publish).toHaveBeenCalledWith(
+			expect.objectContaining({
+				origin: 'local',
+				athenaSessionId: 'athena-1',
+				feedEvents: [
+					expect.objectContaining({
+						kind: 'artifacts.manifest',
+						data: {manifest: {entries: []}},
+					}),
+				],
+			}),
+		);
+	});
+
+	it('publishes pre-completion artifact manifests before terminal session feed events', async () => {
+		const order: string[] = [];
+		const runtime = Object.assign(new MockRuntime(), {
+			sendPrompt: vi.fn(async () => {}),
+			sendInterrupt: vi.fn(() => {
+				order.push('kill');
+			}),
+		});
+		const dashboardFeedPublisher = {
+			publish: vi.fn(),
+		};
+
+		const result = await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'openai-codex',
+			athenaSessionId: 'athena-1',
+			isolationConfig: {},
+			ephemeral: true,
+			runtimeFactory: () => runtime,
+			dashboardFeedPublisher,
+			beforeTerminalCompletion: async ({result: hookResult}) => {
+				order.push('artifact');
+				return [
+					{
+						event_id: 'artifacts-1',
+						seq: 99,
+						ts: 100,
+						session_id: hookResult.athenaSessionId ?? 'missing',
+						run_id: 'run-1',
+						kind: 'artifacts.manifest',
+						level: 'info',
+						actor_id: 'system',
+						title: 'Artifacts manifest',
+						data: {manifest: {entries: []}},
+					},
+				];
+			},
+		});
+
+		expect(result.success).toBe(true);
+		expect(order).toEqual(['artifact', 'kill']);
+	});
+
+	it('fails execution when pre-completion artifact upload fails', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			setImmediate(() => {
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+
+		const result = await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess,
+			beforeTerminalCompletion: async () => {
+				throw new Error('upload denied');
+			},
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.exitCode).toBe(EXEC_EXIT_CODE.OUTPUT);
+		expect(result.failure?.message).toContain('upload denied');
+		expect(stdout.read()).not.toContain('done');
+		expect(stderr.read()).toContain('Artifact upload failed');
+	});
+
+	it('does not publish artifact manifests when writing the final message fails', async () => {
+		const runtime = new MockRuntime();
+		const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-output-'));
+		const beforeTerminalCompletion = vi.fn(async () => []);
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			setImmediate(() => {
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+
+		const result = await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			runtimeFactory: () => runtime,
+			spawnProcess,
+			outputLastMessagePath: outputDir,
+			beforeTerminalCompletion,
+		});
+
+		expect(result.success).toBe(false);
+		expect(result.exitCode).toBe(EXEC_EXIT_CODE.OUTPUT);
+		expect(result.failure?.message).toContain(
+			'Failed writing --output-last-message',
+		);
+		expect(beforeTerminalCompletion).not.toHaveBeenCalled();
+	});
+
 	it('cancels via abort signal while a permission request is pending and returns runtime exit code', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();

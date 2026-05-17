@@ -12,6 +12,7 @@ import type {StartSessionBridgeOptions} from '../channels/sessionBridgeLifecycle
 import type {DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
 import type {PairedFeedPublisher} from '../dashboard/pairedFeedPublisher';
 import type {DashboardDecisionInbox} from '../dashboard/dashboardDecisionInbox';
+import type {FeedEvent} from '../../core/feed/types';
 
 export const EXEC_EXIT_CODE = {
 	SUCCESS: 0,
@@ -67,6 +68,10 @@ export type ExecRunOptions = {
 	dashboardOrigin?: DashboardFeedOrigin;
 	dashboardDecisionInbox?: DashboardDecisionInbox;
 	dashboardDecisionPollIntervalMs?: number;
+	beforeTerminalCompletion?: (input: {
+		result: ExecRunResult;
+		runId: string | null;
+	}) => Promise<readonly FeedEvent[] | void>;
 	/** Test seam: override the gateway connect step. */
 	bridgeFactory?: (
 		opts: StartSessionBridgeOptions,

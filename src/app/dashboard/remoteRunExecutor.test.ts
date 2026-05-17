@@ -1,7 +1,27 @@
 import {describe, expect, it, vi} from 'vitest';
+import {execFileSync} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {executeRemoteAssignment} from './remoteRunExecutor';
 import type {ExecRunOptions} from '../exec/types';
 import type {RunStreamClient, RunStreamFrameInput} from './runStreamClient';
+import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
+import {createPairedFeedPublisher} from './pairedFeedPublisher';
+
+function makeArtifactRepo(): string {
+	const dir = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-remote-artifacts-'),
+	);
+	execFileSync('git', ['init'], {cwd: dir});
+	execFileSync('git', ['config', 'user.email', 'test@example.com'], {cwd: dir});
+	execFileSync('git', ['config', 'user.name', 'Test'], {cwd: dir});
+	fs.writeFileSync(path.join(dir, 'base.txt'), 'base\n');
+	execFileSync('git', ['add', 'base.txt'], {cwd: dir});
+	execFileSync('git', ['commit', '-m', 'base'], {cwd: dir});
+	fs.writeFileSync(path.join(dir, 'artifact.txt'), 'payload\n');
+	return dir;
+}
 
 describe('executeRemoteAssignment', () => {
 	it('runs the assigned prompt and streams exec events back to the dashboard', async () => {
@@ -1111,6 +1131,297 @@ describe('executeRemoteAssignment', () => {
 			expect(sentToInstanceSocket[0]).toEqual({kind: 'progress', seq: 1});
 			expect(sentToInstanceSocket.length).toBeGreaterThan(0);
 		});
+	});
+
+	it('captures and publishes artifact manifests before exec completion', async () => {
+		const projectDir = makeArtifactRepo();
+		const uploaded: string[] = [];
+		const sent: Array<{kind: string; payload?: unknown}> = [];
+		let hookFeedEvents: unknown;
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			const result = {
+				success: true,
+				exitCode: 0 as const,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: 'adapter-1',
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+			hookFeedEvents = await options.beforeTerminalCompletion?.({
+				result,
+				runId: 'local-run-1',
+			});
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					data: result,
+				}) + '\n',
+			);
+			return result;
+		});
+
+		await executeRemoteAssignment({
+			frame: {
+				type: 'job_assignment',
+				runId: 'run_artifacts',
+				runSpec: {
+					prompt: 'hello',
+					sessionId: 'athena-artifacts',
+					artifactUpload: {
+						bucket: 'bucket-1',
+						prefix: 'runs/run_artifacts',
+						accessToken: 'token',
+					},
+				},
+			},
+			client: {
+				sendRunEvent: frame => sent.push(frame),
+			},
+			projectDir,
+			runExecFn,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'openai-codex',
+				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+			now: () => 1_700_000_000_000,
+			uploadArtifactObjectFn: async input => {
+				uploaded.push(input.objectName);
+			},
+		});
+
+		expect(uploaded).toEqual([
+			expect.stringMatching(/^runs\/run_artifacts\/payloads\//),
+			'runs/run_artifacts/manifest.json',
+		]);
+		expect(sent.at(-1)).toEqual(
+			expect.objectContaining({
+				kind: 'completion',
+				payload: expect.objectContaining({success: true}),
+			}),
+		);
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				beforeTerminalCompletion: expect.any(Function),
+			}),
+		);
+		expect(hookFeedEvents).toEqual([
+			expect.objectContaining({
+				kind: 'artifacts.manifest',
+				data: expect.objectContaining({
+					manifest: expect.objectContaining({
+						objects: expect.objectContaining({
+							manifest: 'runs/run_artifacts/manifest.json',
+						}),
+					}),
+				}),
+			}),
+		]);
+	});
+
+	it('persists remote artifact manifest feed events through the paired feed outbox', async () => {
+		const projectDir = makeArtifactRepo();
+		const outbox = createDashboardFeedOutbox({
+			dbPath: path.join(
+				fs.mkdtempSync(path.join(os.tmpdir(), 'athena-feed-outbox-')),
+				'outbox.db',
+			),
+		});
+		const dashboardFeedPublisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-1',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox,
+			now: () => 1_700_000_000_000,
+		});
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			const result = {
+				success: true,
+				exitCode: 0 as const,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: 'adapter-1',
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+			const feedEvents = await options.beforeTerminalCompletion?.({
+				result,
+				runId: 'local-run-1',
+			});
+			if (feedEvents) {
+				options.dashboardFeedPublisher?.publish({
+					origin: options.dashboardOrigin ?? 'local',
+					athenaSessionId: options.athenaSessionId ?? 'athena-missing',
+					feedEvents,
+				});
+			}
+			return result;
+		});
+
+		await executeRemoteAssignment({
+			frame: {
+				type: 'job_assignment',
+				runId: 'run_artifacts_feed',
+				runSpec: {
+					prompt: 'hello',
+					sessionId: 'athena-artifacts-feed',
+					artifactUpload: {
+						bucket: 'bucket-1',
+						prefix: 'runs/run_artifacts_feed',
+						accessToken: 'token',
+					},
+				},
+			},
+			client: {
+				sendRunEvent: vi.fn(),
+			},
+			projectDir,
+			runExecFn,
+			dashboardFeedPublisher,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'openai-codex',
+				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+			now: () => 1_700_000_000_000,
+			uploadArtifactObjectFn: vi.fn(async () => {}),
+		});
+
+		const pending = outbox.pendingBatch({limit: 10, now: 1_700_000_000_000});
+		expect(pending).toHaveLength(1);
+		expect(pending[0]!.envelope).toMatchObject({
+			instanceId: 'inst-1',
+			athenaSessionId: 'athena-artifacts-feed',
+			origin: 'dashboard',
+			feedEvent: expect.objectContaining({
+				kind: 'artifacts.manifest',
+			}),
+		});
+		dashboardFeedPublisher.close();
+		outbox.close();
+	});
+
+	it('reports malformed artifact upload specs as terminal assignment errors', async () => {
+		const sent: Array<{kind: string; payload?: unknown}> = [];
+		const runExecFn = vi.fn(async () => ({
+			success: true,
+			exitCode: 0 as const,
+			athenaSessionId: 'athena-bad-artifacts',
+			adapterSessionId: null,
+			finalMessage: 'done',
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		}));
+
+		await executeRemoteAssignment({
+			frame: {
+				type: 'job_assignment',
+				runId: 'run_bad_artifacts',
+				runSpec: {
+					prompt: 'hello',
+					artifactUpload: {
+						bucket: 'bucket-1',
+					},
+				},
+			},
+			client: {
+				sendRunEvent: frame => sent.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'openai-codex',
+				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+		});
+
+		expect(runExecFn).not.toHaveBeenCalled();
+		expect(sent.at(-1)).toEqual(
+			expect.objectContaining({
+				kind: 'error',
+				payload: expect.objectContaining({
+					message: expect.stringMatching(/artifact upload spec/i),
+				}),
+			}),
+		);
 	});
 
 	it('passes cancellation through to exec and reports a terminal error', async () => {

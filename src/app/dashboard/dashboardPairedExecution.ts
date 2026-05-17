@@ -6,6 +6,7 @@ import type {
 } from './instanceSocketClient';
 import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
 import type {ExecuteRemoteAssignmentInput} from './remoteRunExecutor';
+import type {PairedFeedPublisher} from './pairedFeedPublisher';
 
 type JobAssignmentFrame = Extract<
 	InstanceSocketFrame,
@@ -42,6 +43,7 @@ export type DashboardPairedExecutionOptions = {
 	maxConcurrentRuns?: number;
 	now?: () => number;
 	runHistoryLimit?: number;
+	pairedFeedPublisher?: PairedFeedPublisher;
 };
 
 export type DashboardPairedExecution = {
@@ -76,6 +78,7 @@ export function createDashboardPairedExecution(
 	const maxConcurrentRuns =
 		options.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
 	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
+	const pairedFeedPublisher = options.pairedFeedPublisher;
 	const now = options.now ?? (() => Date.now());
 
 	let completedRuns = 0;
@@ -174,6 +177,9 @@ export function createDashboardPairedExecution(
 			log,
 			abortSignal: controller.signal,
 			decisionInbox,
+			...(pairedFeedPublisher
+				? {dashboardFeedPublisher: pairedFeedPublisher}
+				: {}),
 		})
 			.then(() => {
 				if (record.status === 'running') record.status = 'completed';

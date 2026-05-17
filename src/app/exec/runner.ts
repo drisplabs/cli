@@ -128,6 +128,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let mappedFinalMessage: string | null = null;
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
+	let beforeTerminalCompletionRan = false;
 
 	let store: SessionStore;
 	try {
@@ -273,6 +274,65 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			feedEvents,
 		});
 	}
+
+	const runBeforeTerminalCompletion = async (): Promise<void> => {
+		if (
+			beforeTerminalCompletionRan ||
+			latch.hasFailure() ||
+			!options.beforeTerminalCompletion
+		) {
+			return;
+		}
+		beforeTerminalCompletionRan = true;
+		const resolved = resolveFinalMessage({
+			streamMessage: streamFinalMessage,
+			mappedMessage: mappedFinalMessage,
+		});
+		const provisionalResult: ExecRunResult = {
+			success: true,
+			exitCode: EXEC_EXIT_CODE.SUCCESS,
+			athenaSessionId: options.ephemeral ? null : athenaSessionId,
+			adapterSessionId,
+			finalMessage: resolved.message,
+			tokens: cumulativeTokens,
+			durationMs: Math.max(0, now() - startTs),
+		};
+		try {
+			const feedEvents = await options.beforeTerminalCompletion({
+				result: provisionalResult,
+				runId: activeRunId,
+			});
+			if (feedEvents && feedEvents.length > 0) {
+				publishFeedEvents(feedEvents);
+			}
+		} catch (error) {
+			latch.register({
+				kind: 'output',
+				message: `Artifact upload failed: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			});
+		}
+	};
+
+	const writeLastMessageBeforeTerminalCompletion = async (): Promise<void> => {
+		if (latch.hasFailure() || !options.outputLastMessagePath) return;
+		const resolved = resolveFinalMessage({
+			streamMessage: streamFinalMessage,
+			mappedMessage: mappedFinalMessage,
+		});
+		try {
+			await output.writeLastMessage(
+				options.outputLastMessagePath,
+				resolved.message,
+			);
+		} catch (error) {
+			latch.register({
+				kind: 'output',
+				message: `Failed writing --output-last-message: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		}
+	};
 
 	const unsubscribeEvent = runtime.onEvent((runtimeEvent: RuntimeEvent) => {
 		adapterSessionId = runtimeEvent.sessionId;
@@ -474,6 +534,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (dashboardDecisionTimer) {
 			clearInterval(dashboardDecisionTimer);
 		}
+		await writeLastMessageBeforeTerminalCompletion();
+		await runBeforeTerminalCompletion();
 		await sessionController.kill();
 		unsubscribeEvent();
 		unsubscribeDecision();
@@ -493,20 +555,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			'No assistant message found in stream or hook events; writing empty output.';
 		output.warn(warning);
 		output.emitJsonEvent('exec.warning', {message: warning});
-	}
-
-	if (!latch.hasFailure() && options.outputLastMessagePath) {
-		try {
-			await output.writeLastMessage(
-				options.outputLastMessagePath,
-				resolvedFinalMessage.message,
-			);
-		} catch (error) {
-			latch.register({
-				kind: 'output',
-				message: `Failed writing --output-last-message: ${error instanceof Error ? error.message : String(error)}`,
-			});
-		}
 	}
 
 	const failure = latch.current();

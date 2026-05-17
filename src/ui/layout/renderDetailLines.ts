@@ -577,7 +577,8 @@ export function renderDetailLines(
 		case 'channel.chat.outbound':
 		case 'gateway.function.invoked':
 		case 'gateway.function.completed':
-		case 'gateway.function.failed': {
+		case 'gateway.function.failed':
+		case 'artifacts.manifest': {
 			const header = buildCompactHeader(event, width, {theme});
 			const json = JSON.stringify(event.raw ?? event.data, null, 2);
 			const content = highlightCode(json, cw, 'json');

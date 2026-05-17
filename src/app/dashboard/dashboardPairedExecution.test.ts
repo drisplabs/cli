@@ -31,12 +31,20 @@ describe('DashboardPairedExecution', () => {
 	it('accepts an assignment and forwards env plus the decision inbox to the executor', async () => {
 		const {client} = makeClient();
 		const decisionInbox = makeDecisionInbox();
+		const pairedFeedPublisher = {
+			publish: vi.fn(),
+			attachTransport: vi.fn(),
+			detachTransport: vi.fn(),
+			handleAck: vi.fn(),
+			close: vi.fn(),
+		};
 		const executor = vi.fn(async () => {}) as DashboardPairedExecutionExecutor;
 		const execution = createDashboardPairedExecution({
 			client,
 			executor,
 			projectDir: '/tmp/project',
 			decisionInbox,
+			pairedFeedPublisher,
 			now: () => 100,
 		});
 
@@ -53,6 +61,7 @@ describe('DashboardPairedExecution', () => {
 				frame,
 				projectDir: '/tmp/project',
 				decisionInbox,
+				dashboardFeedPublisher: pairedFeedPublisher,
 			}),
 		);
 		expect(execution.listRuns()).toEqual([

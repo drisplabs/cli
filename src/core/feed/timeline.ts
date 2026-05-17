@@ -875,6 +875,14 @@ const gatewayFunctionFailed: EventRenderer<'gateway.function.failed'> =
 			`fn ${event.data.reason}: ${event.data.function_name} — ${event.data.error_message}`,
 	);
 
+const artifactsManifest: EventRenderer<'artifacts.manifest'> = defaultRenderer(
+	event => {
+		const manifest = event.data.manifest as {entries?: unknown};
+		const count = Array.isArray(manifest.entries) ? manifest.entries.length : 0;
+		return `artifacts manifest (${count} item${count === 1 ? '' : 's'})`;
+	},
+);
+
 // ── Registry ──────────────────────────────────────────────
 
 const RENDERERS = {
@@ -936,6 +944,7 @@ const RENDERERS = {
 	'gateway.function.invoked': gatewayFunctionInvoked,
 	'gateway.function.completed': gatewayFunctionCompleted,
 	'gateway.function.failed': gatewayFunctionFailed,
+	'artifacts.manifest': artifactsManifest,
 } as const satisfies RendererRegistry;
 
 /** Lookup helper: dispatches an event to its renderer with proper type narrowing. */

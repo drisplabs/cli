@@ -28,6 +28,12 @@ import {
 	createRemoteRunEventPublisher,
 	type RemoteRunEventPublisher,
 } from './remoteRunEventPublisher';
+import {
+	captureAndUploadArtifacts,
+	parseArtifactUploadSpec,
+	type UploadObjectFn,
+} from './artifactCapture';
+import type {PairedFeedPublisher} from './pairedFeedPublisher';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
@@ -74,6 +80,8 @@ export type ExecuteRemoteAssignmentInput = {
 	resolveWorkflowInstallFn?: typeof resolveWorkflowInstall;
 	installWorkflowFromSourceFn?: typeof installWorkflowFromSource;
 	readGlobalConfigFn?: typeof readGlobalConfig;
+	uploadArtifactObjectFn?: UploadObjectFn;
+	dashboardFeedPublisher?: PairedFeedPublisher;
 	/**
 	 * Bound on how long to wait for the per-run WebSocket to come up before
 	 * falling back to the instance-socket relay. Default 5s — short enough
@@ -296,6 +304,8 @@ export async function executeRemoteAssignment({
 	resolveWorkflowInstallFn = resolveWorkflowInstall,
 	installWorkflowFromSourceFn = installWorkflowFromSource,
 	readGlobalConfigFn = readGlobalConfig,
+	uploadArtifactObjectFn,
+	dashboardFeedPublisher,
 	runStreamConnectTimeoutMs = 5_000,
 }: ExecuteRemoteAssignmentInput): Promise<void> {
 	const lastTerminalFailureMessage: {current: string | null} = {current: null};
@@ -338,6 +348,15 @@ export async function executeRemoteAssignment({
 	try {
 		if (!spec) {
 			send('error', {message: 'remote assignment missing prompt'});
+			return;
+		}
+		let artifactUploadSpec;
+		try {
+			artifactUploadSpec = parseArtifactUploadSpec(frame.runSpec);
+		} catch (err) {
+			send('error', {
+				message: err instanceof Error ? err.message : String(err),
+			});
 			return;
 		}
 
@@ -432,6 +451,25 @@ export async function executeRemoteAssignment({
 				stdout,
 				stderr,
 				...(decisionInbox ? {dashboardDecisionInbox: decisionInbox} : {}),
+				...(dashboardFeedPublisher ? {dashboardFeedPublisher} : {}),
+				...(artifactUploadSpec
+					? {
+							beforeTerminalCompletion: async ({result, runId}) => {
+								const artifactRunId = runId ?? frame.runId;
+								const {feedEvent} = await captureAndUploadArtifacts({
+									spec: artifactUploadSpec,
+									projectDir,
+									runId: artifactRunId,
+									result,
+									now,
+									...(uploadArtifactObjectFn
+										? {uploadObject: uploadArtifactObjectFn}
+										: {}),
+								});
+								return [feedEvent];
+							},
+						}
+					: {}),
 			});
 			const failedCompletion = deferredFailedCompletion.current;
 			if (failedCompletion) {

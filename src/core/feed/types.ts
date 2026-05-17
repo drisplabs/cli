@@ -63,7 +63,8 @@ export type FeedEventKind =
 	| 'channel.chat.outbound'
 	| 'gateway.function.invoked'
 	| 'gateway.function.completed'
-	| 'gateway.function.failed';
+	| 'gateway.function.failed'
+	| 'artifacts.manifest';
 
 export type FeedEventLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -467,6 +468,10 @@ export type GatewayFunctionFailedData = {
 	error_message: string;
 };
 
+export type ArtifactsManifestData = {
+	manifest: unknown;
+};
+
 // Phase 2 stubs
 export type TodoPriority = 'p0' | 'p1' | 'p2';
 export type TodoFeedStatus = 'open' | 'doing' | 'blocked' | 'done';
@@ -598,6 +603,10 @@ export type FeedEvent =
 	| (FeedEventBase & {
 			kind: 'gateway.function.failed';
 			data: GatewayFunctionFailedData;
+	  })
+	| (FeedEventBase & {
+			kind: 'artifacts.manifest';
+			data: ArtifactsManifestData;
 	  });
 
 // ── Compile-time drift checks ────────────────────────────

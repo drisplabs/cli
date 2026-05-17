@@ -233,6 +233,7 @@ export async function runDashboardRuntimeDaemon(
 		executor,
 		projectDir,
 		decisionInbox,
+		pairedFeedPublisher,
 		log,
 		maxConcurrentRuns,
 		now,
