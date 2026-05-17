@@ -656,12 +656,7 @@ describe('updateWorkflow', () => {
 		});
 	});
 
-	it('still upgrades when the recorded remote marketplace is not cached locally yet', () => {
-		pullMarketplaceRepoMock.mockImplementation(() => {
-			throw new Error(
-				'Marketplace repo owner/repo is not cached. It will be cloned on first use.',
-			);
-		});
+	it('refreshes a missing recorded remote marketplace before resolving it', () => {
 		files['/tmp/resolved-workflow.json'] = JSON.stringify({
 			name: 'update-me',
 			plugins: [],
@@ -685,6 +680,7 @@ describe('updateWorkflow', () => {
 			});
 
 		expect(updateWorkflow('update-me')).toBe('update-me');
+		expect(pullMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
 		expect(resolveWorkflowInstallMock).toHaveBeenCalledWith(
 			'update-me@owner/repo',
 			[],
@@ -987,6 +983,7 @@ describe('updateWorkflow (canonical source)', () => {
 
 		updateWorkflow('w');
 
+		expect(pullMarketplaceRepoMock).not.toHaveBeenCalled();
 		expect(
 			JSON.parse(
 				files['/home/testuser/.config/athena/workflows/w/workflow.json']!,

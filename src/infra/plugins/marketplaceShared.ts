@@ -336,15 +336,6 @@ export function ensureRepo(owner: string, repo: string): string {
 				`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
 			);
 		}
-	} else {
-		try {
-			execFileSync('git', ['pull', '--ff-only'], {
-				cwd: repoDir,
-				stdio: 'ignore',
-			});
-		} catch {
-			// offline or upstream diverged; fall back to the cached repo
-		}
 	}
 
 	return repoDir;
