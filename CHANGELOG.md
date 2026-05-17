@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.4](https://github.com/drisplabs/cli/compare/cli-v0.5.3...cli-v0.5.4) (2026-05-17)
+
+
+### Features
+
+* deepen dashboard runtime intake ([6bbe8c3](https://github.com/drisplabs/cli/commit/6bbe8c3fe68b13fe12354b59f5a7eaf2c318c1d4))
+* emit runtime assignment rejection ([178327f](https://github.com/drisplabs/cli/commit/178327f8b4482a335167bbbff3817ddec713cdaf))
+
 ## [0.5.3](https://github.com/drisplabs/cli/compare/cli-v0.5.2...cli-v0.5.3) (2026-05-17)
 
 
