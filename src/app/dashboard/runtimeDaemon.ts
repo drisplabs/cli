@@ -20,9 +20,13 @@ import {
 	writeAttachmentMirror,
 } from '../../infra/config/attachmentMirror';
 import {
-	createDashboardFeedOutbox,
-	type DashboardFeedOutbox,
-} from './dashboardFeedPublisher';
+	createAttachmentReconciler,
+	type AttachmentReconcilerFetchInput,
+} from './attachmentReconciler';
+import {
+	createPairedFeedPublisher,
+	type PairedFeedPublisher,
+} from './pairedFeedPublisher';
 import {
 	createDashboardDecisionInbox,
 	type DashboardDecisionInbox,
@@ -31,6 +35,7 @@ import {
 	createDashboardPairedExecution,
 	type DashboardPairedExecutionRunRecord,
 } from './dashboardPairedExecution';
+import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -112,11 +117,14 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 * sync without requiring a re-pair.
 	 */
 	writeMirror?: (mirror: AttachmentMirror) => void;
+	fetchAttachments?: (
+		input: AttachmentReconcilerFetchInput,
+	) => Promise<AttachmentMirror['attachments']>;
 	/**
 	 * Durable queue of local feed events waiting for dashboard ACK. Production
 	 * uses the dashboard state dir; tests inject a temp database.
 	 */
-	feedOutbox?: DashboardFeedOutbox;
+	pairedFeedPublisher?: PairedFeedPublisher;
 	/** Poll interval for queued feed events. Default 1000ms. */
 	feedDrainIntervalMs?: number;
 	/** Durable local inbox for dashboard permission/question decisions. */
@@ -137,7 +145,6 @@ const DEFAULT_REFRESH_FAILURE_LIMIT = 5;
 const DEFAULT_REFRESH_FAILURE_WINDOW_MS = 5 * 60_000;
 const DEFAULT_REFRESH_COOLDOWN_MS = 5 * 60_000;
 const DEFAULT_RUN_HISTORY_LIMIT = 100;
-const DEFAULT_FEED_DRAIN_INTERVAL_MS = 1_000;
 
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => {
@@ -178,10 +185,14 @@ export async function runDashboardRuntimeDaemon(
 	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
 	const now = options.now ?? (() => Date.now());
 	const writeMirror = options.writeMirror ?? writeAttachmentMirror;
-	const feedOutbox = options.feedOutbox ?? createDashboardFeedOutbox();
+	const pairedFeedPublisher =
+		options.pairedFeedPublisher ??
+		createPairedFeedPublisher({
+			readConfig,
+			now,
+			drainIntervalMs: options.feedDrainIntervalMs,
+		});
 	const decisionInbox = options.decisionInbox ?? createDashboardDecisionInbox();
-	const feedDrainIntervalMs =
-		options.feedDrainIntervalMs ?? DEFAULT_FEED_DRAIN_INTERVAL_MS;
 	const retryInitialConnect = options.retryInitialConnect ?? true;
 
 	const startedAt = now();
@@ -193,7 +204,6 @@ export async function runDashboardRuntimeDaemon(
 	let currentDashboardUrl: string | undefined;
 	let lastFrameAt: number | undefined;
 	let refreshTimer: NodeJS.Timeout | null = null;
-	let feedDrainTimer: NodeJS.Timeout | null = null;
 	const refreshFailures: number[] = [];
 	let cooldownUntil = 0;
 	const executionClient: Pick<
@@ -227,6 +237,24 @@ export async function runDashboardRuntimeDaemon(
 		now,
 		runHistoryLimit,
 	});
+	const attachmentReconciler = createAttachmentReconciler({
+		writeMirror,
+		...(options.fetchAttachments
+			? {fetchAttachments: options.fetchAttachments}
+			: {}),
+		now,
+	});
+	const assignmentIntake = createDashboardAssignmentIntake({
+		client: {
+			sendAssignmentAccepted(runId) {
+				const current = client;
+				if (!current) return;
+				current.sendAssignmentAccepted(runId);
+			},
+		},
+		execution: pairedExecution,
+		log,
+	});
 
 	function nextReconnectDelay(): number {
 		if (reconnectDelays.length === 0) return 0;
@@ -242,38 +270,6 @@ export async function runDashboardRuntimeDaemon(
 			clearTimeout(refreshTimer);
 			refreshTimer = null;
 		}
-	}
-
-	function clearFeedDrainTimer(): void {
-		if (feedDrainTimer) {
-			clearInterval(feedDrainTimer);
-			feedDrainTimer = null;
-		}
-	}
-
-	function drainFeedOutbox(): void {
-		const current = client;
-		if (!current) return;
-		const rows = feedOutbox.pendingBatch({limit: 100, now: now()});
-		for (const row of rows) {
-			current.sendFeedEvent({
-				deliverySeq: row.deliverySeq,
-				envelope: row.envelope,
-			});
-			const retryDelayMs = Math.min(30_000, (row.attempt + 1) * 1_000);
-			feedOutbox.markAttempted({
-				deliverySeq: row.deliverySeq,
-				nextAttemptAt: now() + retryDelayMs,
-			});
-		}
-	}
-
-	function startFeedDrainTimer(): void {
-		clearFeedDrainTimer();
-		const timer = setInterval(drainFeedOutbox, feedDrainIntervalMs);
-		timer.unref();
-		feedDrainTimer = timer;
-		drainFeedOutbox();
 	}
 
 	function scheduleRefresh(expiresInSec: number): void {
@@ -368,9 +364,8 @@ export async function runDashboardRuntimeDaemon(
 			lastFrameAt = now();
 			if (frame.type === 'attachments.changed') {
 				try {
-					writeMirror({
+					attachmentReconciler.applyPush({
 						instanceId: token.instanceId,
-						fetchedAt: now(),
 						attachments: frame.attachments.map(a => ({
 							runnerId: a.runnerId,
 							...(a.name !== undefined ? {name: a.name} : {}),
@@ -393,14 +388,11 @@ export async function runDashboardRuntimeDaemon(
 				return;
 			}
 			if (frame.type === 'feed_ack') {
-				feedOutbox.markAcked({
-					...(typeof frame.deliverySeq === 'number'
-						? {deliverySeq: frame.deliverySeq}
-						: {}),
-					...(typeof frame.eventId === 'string'
-						? {eventId: frame.eventId}
-						: {}),
-				});
+				pairedFeedPublisher.handleAck(frame);
+				return;
+			}
+			if (frame.type === 'job_assignment') {
+				assignmentIntake.receive(frame);
 				return;
 			}
 			pairedExecution.handleFrame(frame);
@@ -409,19 +401,35 @@ export async function runDashboardRuntimeDaemon(
 			if (stopped || client !== next) return;
 			log('warn', `instance socket closed: ${reason}`);
 			client = null;
+			assignmentIntake.markNotReady();
+			attachmentReconciler.markStale(token.instanceId);
 			currentInstanceId = undefined;
 			clearRefreshTimer();
-			clearFeedDrainTimer();
+			pairedFeedPublisher.detachTransport();
 			void reconnectLoop();
 		});
 		await next.connect();
 		client = next;
 		lastSocketClient = next;
+		try {
+			await attachmentReconciler.reconcileNow({
+				dashboardUrl: config.dashboardUrl,
+				instanceId: token.instanceId,
+				accessToken: token.accessToken,
+			});
+		} catch (err) {
+			client = null;
+			assignmentIntake.markNotReady();
+			attachmentReconciler.markStale(token.instanceId);
+			next.close('attachment reconciliation failed');
+			throw err;
+		}
+		assignmentIntake.markReady();
 		currentInstanceId = token.instanceId;
 		currentDashboardUrl = config.dashboardUrl;
 		reconnectAttempt = 0;
 		scheduleRefresh(token.expiresInSec);
-		startFeedDrainTimer();
+		pairedFeedPublisher.attachTransport(next);
 		log('info', `dashboard runtime daemon connected as ${token.instanceId}`);
 	}
 
@@ -489,7 +497,7 @@ export async function runDashboardRuntimeDaemon(
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
-			clearFeedDrainTimer();
+			pairedFeedPublisher.close();
 			const current = client;
 			client = null;
 			current?.close(reason);
