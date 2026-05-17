@@ -1419,16 +1419,21 @@ export function translateServerRequest(
 									protocol: params.networkApprovalContext.protocol,
 								}
 							: undefined,
+					toolUseId: params.itemId,
 				},
 			);
 		}
 
 		case M.FILE_CHANGE_REQUEST_APPROVAL: {
 			const params = msg.params as CodexFileChangeRequestApprovalParams;
-			return permissionRequestEvent('Edit', {
-				reason: params.reason,
-				grantRoot: params.grantRoot,
-			});
+			return permissionRequestEvent(
+				'Edit',
+				{
+					reason: params.reason,
+					grantRoot: params.grantRoot,
+				},
+				{toolUseId: params.itemId},
+			);
 		}
 
 		case M.PERMISSIONS_REQUEST_APPROVAL: {

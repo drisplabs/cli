@@ -766,6 +766,7 @@ describe('translateServerRequest', () => {
 		expect(result.kind).toBe('permission.request');
 		expect(result.expectsDecision).toBe(true);
 		expect(result.toolName).toBe('Bash');
+		expect(result.toolUseId).toBe('i1');
 	});
 
 	it('preserves network approval context on command approvals', () => {
@@ -810,6 +811,7 @@ describe('translateServerRequest', () => {
 		expect(result.kind).toBe('permission.request');
 		expect(result.expectsDecision).toBe(true);
 		expect(result.toolName).toBe('Edit');
+		expect(result.toolUseId).toBe('i1');
 		expect(result.data).toEqual(
 			expect.objectContaining({
 				tool_input: {
