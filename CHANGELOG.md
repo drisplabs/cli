@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.6](https://github.com/drisplabs/cli/compare/cli-v0.5.5...cli-v0.5.6) (2026-05-17)
+
+
+### Bug Fixes
+
+* resolve remote execution workspaces ([aab8aae](https://github.com/drisplabs/cli/commit/aab8aaea335b42a9e78545e94e7e2b6c3b918cb8))
+
 ## [0.5.5](https://github.com/drisplabs/cli/compare/cli-v0.5.4...cli-v0.5.5) (2026-05-17)
 
 
