@@ -216,6 +216,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: vi.fn(),
 			},
+			projectDir: '/tmp/project',
 			runExecFn,
 			bootstrapRuntimeConfigFn: () => ({
 				globalConfig: {
@@ -285,6 +286,7 @@ describe('executeRemoteAssignment', () => {
 					},
 				},
 				client: {sendRunEvent: vi.fn()},
+				projectDir: '/tmp/project',
 				runExecFn,
 				bootstrapRuntimeConfigFn: () => ({
 					globalConfig: {
@@ -383,6 +385,7 @@ describe('executeRemoteAssignment', () => {
 					runSpec: {prompt: 'one', env: {RUN: 'one'}},
 				},
 				client: {sendRunEvent: vi.fn()},
+				projectDir: '/tmp/project',
 				runExecFn,
 				bootstrapRuntimeConfigFn: () => runtimeConfig,
 			}),
@@ -393,6 +396,7 @@ describe('executeRemoteAssignment', () => {
 					runSpec: {prompt: 'two', env: {RUN: 'two'}},
 				},
 				client: {sendRunEvent: vi.fn()},
+				projectDir: '/tmp/project',
 				runExecFn,
 				bootstrapRuntimeConfigFn: () => runtimeConfig,
 			}),
@@ -439,6 +443,7 @@ describe('executeRemoteAssignment', () => {
 				runSpec: {prompt: 'needs approval'},
 			},
 			client: {sendRunEvent: vi.fn()},
+			projectDir: '/tmp/project',
 			runExecFn,
 			decisionInbox,
 			bootstrapRuntimeConfigFn: () => ({
@@ -544,6 +549,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			runExecFn,
 			bootstrapRuntimeConfigFn,
 			resolveWorkflowFn,
@@ -626,6 +632,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: vi.fn(),
 			},
+			projectDir: '/tmp/project',
 			runExecFn,
 			bootstrapRuntimeConfigFn: () => ({
 				globalConfig: {
@@ -677,6 +684,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			runExecFn: vi.fn(),
 		});
 
@@ -709,6 +717,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			bootstrapRuntimeConfigFn: () => {
 				throw new Error('workflow not installed');
 			},
@@ -777,6 +786,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			runExecFn,
 			bootstrapRuntimeConfigFn: () => ({
 				globalConfig: {
@@ -832,6 +842,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			runExecFn: vi.fn(async () => {
 				throw new Error('exec crashed');
 			}),
@@ -972,6 +983,7 @@ describe('executeRemoteAssignment', () => {
 				client: {
 					sendRunEvent: frame => sentToInstanceSocket.push(frame),
 				},
+				projectDir: '/tmp/project',
 				runExecFn,
 				bootstrapRuntimeConfigFn: () => ({
 					globalConfig: {
@@ -1049,6 +1061,7 @@ describe('executeRemoteAssignment', () => {
 					sendRunEvent: frame =>
 						sentToInstanceSocket.push({kind: frame.kind, seq: frame.seq}),
 				},
+				projectDir: '/tmp/project',
 				runExecFn: vi.fn(async () => ({
 					success: true,
 					exitCode: 0,
@@ -1146,6 +1159,7 @@ describe('executeRemoteAssignment', () => {
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
+			projectDir: '/tmp/project',
 			runExecFn,
 			bootstrapRuntimeConfigFn: () => ({
 				globalConfig: {

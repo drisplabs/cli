@@ -61,7 +61,7 @@ type RemoteRunSpec = {
 export type ExecuteRemoteAssignmentInput = {
 	frame: JobAssignmentFrame;
 	client: Pick<InstanceSocketClient, 'sendRunEvent'>;
-	projectDir?: string;
+	projectDir: string;
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
 	decisionInbox?: DashboardDecisionInbox;
@@ -284,7 +284,7 @@ function mergeRunSpecEnvIntoWorkflow(
 export async function executeRemoteAssignment({
 	frame,
 	client,
-	projectDir: fallbackProjectDir = process.cwd(),
+	projectDir,
 	log = () => {},
 	runExecFn = runExec,
 	decisionInbox,
@@ -341,7 +341,6 @@ export async function executeRemoteAssignment({
 			return;
 		}
 
-		const projectDir = spec.projectDir ?? fallbackProjectDir;
 		let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 		try {
 			const workflowOverride = ensureRemoteWorkflowInstalled({

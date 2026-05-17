@@ -36,6 +36,7 @@ import {
 	type DashboardPairedExecutionRunRecord,
 } from './dashboardPairedExecution';
 import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
+import {resolveRemoteWorkspace} from './remoteWorkspaceResolver';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -259,6 +260,8 @@ export async function runDashboardRuntimeDaemon(
 		},
 		execution: pairedExecution,
 		log,
+		resolveWorkspace: frame =>
+			resolveRemoteWorkspace(frame, {dashboardUrl: currentDashboardUrl}),
 	});
 
 	function nextReconnectDelay(): number {
@@ -429,9 +432,9 @@ export async function runDashboardRuntimeDaemon(
 			next.close('attachment reconciliation failed');
 			throw err;
 		}
-		assignmentIntake.markReady();
 		currentInstanceId = token.instanceId;
 		currentDashboardUrl = config.dashboardUrl;
+		assignmentIntake.markReady();
 		reconnectAttempt = 0;
 		scheduleRefresh(token.expiresInSec);
 		pairedFeedPublisher.attachTransport(next);

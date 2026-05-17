@@ -5,6 +5,10 @@ import type {
 } from './instanceSocketClient';
 import type {DashboardPairedExecution} from './dashboardPairedExecution';
 import {isRemoteAssignmentAdmissible} from './remoteRunExecutor';
+import {
+	resolveRemoteWorkspace,
+	type RemoteWorkspaceResolution,
+} from './remoteWorkspaceResolver';
 
 type JobAssignmentFrame = Extract<
 	InstanceSocketFrame,
@@ -21,6 +25,7 @@ export type DashboardAssignmentIntakeOptions = {
 		'admitAssignment' | 'rejectAssignment'
 	>;
 	log?: InstanceSocketLogger;
+	resolveWorkspace?: (frame: JobAssignmentFrame) => RemoteWorkspaceResolution;
 };
 
 export type DashboardAssignmentIntake = {
@@ -33,6 +38,8 @@ export function createDashboardAssignmentIntake(
 	options: DashboardAssignmentIntakeOptions,
 ): DashboardAssignmentIntake {
 	const log = options.log ?? (() => {});
+	const resolveWorkspace =
+		options.resolveWorkspace ?? (frame => resolveRemoteWorkspace(frame));
 	const pending: JobAssignmentFrame[] = [];
 	let ready = false;
 
@@ -49,7 +56,18 @@ export function createDashboardAssignmentIntake(
 			});
 			return;
 		}
-		const outcome = options.execution.admitAssignment(frame);
+		const workspace = resolveWorkspace(frame);
+		if (workspace.kind === 'rejected') {
+			options.execution.rejectAssignment(frame.runId, workspace.rejection);
+			options.client.sendAssignmentRejected({
+				runId: frame.runId,
+				...workspace.rejection,
+			});
+			return;
+		}
+		const outcome = options.execution.admitAssignment(frame, {
+			projectDir: workspace.projectDir,
+		});
 		if (outcome.kind === 'accepted') {
 			options.client.sendAssignmentAccepted(frame.runId);
 			return;

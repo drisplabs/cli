@@ -46,7 +46,10 @@ export type DashboardPairedExecutionOptions = {
 
 export type DashboardPairedExecution = {
 	handleFrame(frame: InstanceSocketFrame): boolean;
-	admitAssignment(frame: JobAssignmentFrame): DashboardAssignmentAdmission;
+	admitAssignment(
+		frame: JobAssignmentFrame,
+		options?: {projectDir?: string},
+	): DashboardAssignmentAdmission;
 	rejectAssignment(
 		runId: string,
 		rejection: DashboardAssignmentRejection,
@@ -133,6 +136,7 @@ export function createDashboardPairedExecution(
 
 	function handleAssignment(
 		frame: JobAssignmentFrame,
+		input: {projectDir?: string} = {},
 	): DashboardAssignmentAdmission {
 		if (active.has(frame.runId)) {
 			const rejection = {
@@ -166,7 +170,7 @@ export function createDashboardPairedExecution(
 		const promise = executor({
 			frame,
 			client,
-			projectDir,
+			projectDir: input.projectDir ?? projectDir,
 			log,
 			abortSignal: controller.signal,
 			decisionInbox,
@@ -216,8 +220,8 @@ export function createDashboardPairedExecution(
 			}
 			return false;
 		},
-		admitAssignment(frame) {
-			return handleAssignment(frame);
+		admitAssignment(frame, input) {
+			return handleAssignment(frame, input);
 		},
 		rejectAssignment,
 		snapshot() {

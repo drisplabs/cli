@@ -144,6 +144,18 @@ This gateway is not the canonical dashboard assignment scheduler in the current 
 
 The cap is local and per runner key. It is separate from dashboard-side queue leases.
 
+Before accepting a `job_assignment`, the runtime daemon resolves a concrete
+workspace:
+
+- if `runSpec.projectDir` is present, it must be an absolute existing directory
+  and must not be the user home directory;
+- otherwise the daemon creates a managed workspace under
+  `~/.local/state/drisp/remote-workspaces/<deployment>/<runner>/sessions/<athenaSessionId>`;
+- if no Athena session id is present, the managed workspace falls back to
+  `.../<runner>/runs/<runId>`;
+- if resolution or validation fails, the assignment is rejected before
+  `assignment_accepted` is sent.
+
 ### Run spec handling
 
 `remoteRunExecutor` accepts an opaque `runSpec` but currently expects:
@@ -163,6 +175,8 @@ The cap is local and per runner key. It is separate from dashboard-side queue le
 Behavior:
 
 - missing/empty prompt is a terminal error;
+- missing `projectDir` is valid; execution uses the managed workspace resolved
+  during assignment admission;
 - remote env is merged over workflow env without mutating `process.env`;
 - missing workflows can be installed from the requested marketplace/source;
 - local execution uses the same `runExec` path as local CLI execution;

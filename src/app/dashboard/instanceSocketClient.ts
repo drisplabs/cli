@@ -20,7 +20,9 @@ export type FeedEventFrame = {
 export type AssignmentRejectedReason =
 	| 'local_capacity'
 	| 'duplicate'
-	| 'malformed_assignment';
+	| 'malformed_assignment'
+	| 'workspace_unresolved'
+	| 'workspace_invalid';
 
 export type AssignmentRejectedFrame = {
 	type: 'assignment_rejected';
