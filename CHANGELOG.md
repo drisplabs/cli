@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.9](https://github.com/drisplabs/cli/compare/cli-v0.5.8...cli-v0.5.9) (2026-05-20)
+
+
+### Bug Fixes
+
+* **codex:** remove workflow agents on stop ([72f28f7](https://github.com/drisplabs/cli/commit/72f28f72ecc0c04518fbf21823bf43adcfb63ac6))
+* **feed:** track Claude task lifecycle in TUI ([e1a209b](https://github.com/drisplabs/cli/commit/e1a209b960aa7720f13eabfb3b61e8ef9e297df6))
+
 ## [0.5.8](https://github.com/drisplabs/cli/compare/cli-v0.5.7...cli-v0.5.8) (2026-05-17)
 
 
