@@ -565,6 +565,9 @@ export function renderDetailLines(
 		case 'compact.post':
 		case 'cwd.changed':
 		case 'file.changed':
+		case 'instructions.loaded':
+		case 'worktree.create':
+		case 'worktree.remove':
 		case 'stop.failure':
 		case 'permission.denied':
 		case 'elicitation.request':

@@ -51,6 +51,9 @@ export type FeedEventKind =
 	| 'config.change'
 	| 'cwd.changed'
 	| 'file.changed'
+	| 'instructions.loaded'
+	| 'worktree.create'
+	| 'worktree.remove'
 	| 'stop.failure'
 	| 'permission.denied'
 	| 'elicitation.request'
@@ -370,6 +373,23 @@ export type FileChangedData = {
 	file_path: string;
 };
 
+export type InstructionsLoadedData = {
+	file_path: string;
+	memory_type?: string;
+	load_reason?: string;
+	globs?: string[];
+	trigger_file_path?: string;
+	parent_file_path?: string;
+};
+
+export type WorktreeCreateData = {
+	worktree_path: string;
+};
+
+export type WorktreeRemoveData = {
+	worktree_path: string;
+};
+
 export type StopFailureData = {
 	error_type: string;
 	error_message?: string;
@@ -558,6 +578,12 @@ export type FeedEvent =
 	| (FeedEventBase & {kind: 'config.change'; data: ConfigChangeData})
 	| (FeedEventBase & {kind: 'cwd.changed'; data: CwdChangedData})
 	| (FeedEventBase & {kind: 'file.changed'; data: FileChangedData})
+	| (FeedEventBase & {
+			kind: 'instructions.loaded';
+			data: InstructionsLoadedData;
+	  })
+	| (FeedEventBase & {kind: 'worktree.create'; data: WorktreeCreateData})
+	| (FeedEventBase & {kind: 'worktree.remove'; data: WorktreeRemoveData})
 	| (FeedEventBase & {kind: 'stop.failure'; data: StopFailureData})
 	| (FeedEventBase & {kind: 'permission.denied'; data: PermissionDeniedData})
 	| (FeedEventBase & {
@@ -675,6 +701,18 @@ export type _RuntimeFeedCompatibility = {
 	'config.change': AssertFeedExtendsRuntime<ConfigChangeData, 'config.change'>;
 	'cwd.changed': AssertFeedExtendsRuntime<CwdChangedData, 'cwd.changed'>;
 	'file.changed': AssertFeedExtendsRuntime<FileChangedData, 'file.changed'>;
+	'instructions.loaded': AssertFeedExtendsRuntime<
+		InstructionsLoadedData,
+		'instructions.loaded'
+	>;
+	'worktree.create': AssertFeedExtendsRuntime<
+		WorktreeCreateData,
+		'worktree.create'
+	>;
+	'worktree.remove': AssertFeedExtendsRuntime<
+		WorktreeRemoveData,
+		'worktree.remove'
+	>;
 	'elicitation.request': AssertFeedExtendsRuntime<
 		ElicitationRequestData,
 		'elicitation.request'

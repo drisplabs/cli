@@ -163,6 +163,21 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: false,
 	},
+	'instructions.loaded': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
+	},
+	'worktree.create': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
+	},
+	'worktree.remove': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
+	},
 	'elicitation.request': {
 		expectsDecision: true,
 		defaultTimeoutMs: PERMISSION_TIMEOUT_MS,

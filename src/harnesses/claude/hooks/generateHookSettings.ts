@@ -13,7 +13,7 @@ import {fileURLToPath} from 'node:url';
 /**
  * Hook events that require a matcher (tool-related events).
  */
-const TOOL_HOOK_EVENTS = [
+export const TOOL_HOOK_EVENTS = [
 	'PreToolUse',
 	'PostToolUse',
 	'PostToolUseFailure',
@@ -29,7 +29,7 @@ const TOOL_HOOK_EVENTS = [
  * FileChanged is intentionally NOT registered here: it requires explicit
  * literal file patterns rather than a wildcard matcher.
  */
-const NON_TOOL_HOOK_EVENTS = [
+export const NON_TOOL_HOOK_EVENTS = [
 	'Notification',
 	'Stop',
 	'StopFailure',

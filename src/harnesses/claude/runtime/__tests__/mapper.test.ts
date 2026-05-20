@@ -1,6 +1,10 @@
 import {describe, it, expect} from 'vitest';
 import {mapEnvelopeToRuntimeEvent} from '../mapper';
 import type {HookEventEnvelope} from '../../protocol/envelope';
+import {
+	NON_TOOL_HOOK_EVENTS,
+	TOOL_HOOK_EVENTS,
+} from '../../hooks/generateHookSettings';
 
 function makeEnvelope(
 	overrides: Partial<Omit<HookEventEnvelope, 'payload'>> & {
@@ -25,6 +29,75 @@ function makeEnvelope(
 			...payloadOverrides,
 		} as HookEventEnvelope['payload'],
 	};
+}
+
+function payloadForHook(hookName: string): Record<string, unknown> {
+	const base = {
+		hook_event_name: hookName,
+		session_id: 'sess-1',
+		transcript_path: '/tmp/t.jsonl',
+		cwd: '/project',
+	};
+	switch (hookName) {
+		case 'PreToolUse':
+		case 'PostToolUse':
+		case 'PostToolUseFailure':
+		case 'PermissionRequest':
+		case 'PermissionDenied':
+			return {
+				...base,
+				tool_name: 'Bash',
+				tool_input: {command: 'pwd'},
+				tool_use_id: 'tu-1',
+				tool_response: {ok: true},
+				error: 'failed',
+				reason: 'denied',
+			};
+		case 'Elicitation':
+			return {...base, mcp_server: 'server', form: {fields: []}};
+		case 'ElicitationResult':
+			return {...base, mcp_server: 'server', action: 'accept', content: {}};
+		case 'SessionStart':
+			return {...base, source: 'startup'};
+		case 'SessionEnd':
+			return {...base, reason: 'other'};
+		case 'UserPromptSubmit':
+			return {...base, prompt: 'hello'};
+		case 'PreCompact':
+		case 'PostCompact':
+			return {...base, trigger: 'manual'};
+		case 'Setup':
+			return {...base, trigger: 'init'};
+		case 'SubagentStart':
+		case 'SubagentStop':
+			return {
+				...base,
+				agent_id: 'agent-1',
+				agent_type: 'Explore',
+				stop_hook_active: false,
+			};
+		case 'TeammateIdle':
+			return {...base, teammate_name: 'researcher', team_name: 'team'};
+		case 'TaskCreated':
+		case 'TaskCompleted':
+			return {...base, task_id: 'task-1', task_subject: 'Do work'};
+		case 'ConfigChange':
+			return {...base, source: 'project_settings'};
+		case 'CwdChanged':
+			return {...base, cwd: '/project/subdir'};
+		case 'InstructionsLoaded':
+			return {
+				...base,
+				file_path: '/project/CLAUDE.md',
+				memory_type: 'Project',
+				load_reason: 'session_start',
+			};
+		case 'WorktreeCreate':
+		case 'WorktreeRemove':
+			return {...base, worktree_path: '/project/.worktrees/a'};
+		default:
+			return base;
+	}
 }
 
 describe('mapEnvelopeToRuntimeEvent', () => {
@@ -156,5 +229,29 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		});
 		expect(event.interaction.expectsDecision).toBe(false);
 		expect(event.interaction.canBlock).toBe(false);
+	});
+
+	it('maps every registered Claude hook to a first-class runtime kind', () => {
+		const registeredHooks = [...TOOL_HOOK_EVENTS, ...NON_TOOL_HOOK_EVENTS];
+		const seenRuntimeKinds = new Map<string, string>();
+
+		for (const hookName of registeredHooks) {
+			const envelope = makeEnvelope({
+				hook_event_name: hookName as HookEventEnvelope['hook_event_name'],
+				payload: payloadForHook(hookName),
+			});
+			const event = mapEnvelopeToRuntimeEvent(envelope);
+			seenRuntimeKinds.set(hookName, event.kind);
+			expect(event.kind, hookName).not.toBe('unknown');
+		}
+
+		expect(seenRuntimeKinds.get('InstructionsLoaded')).toBe(
+			'instructions.loaded',
+		);
+		expect(seenRuntimeKinds.get('WorktreeCreate')).toBe('worktree.create');
+		expect(seenRuntimeKinds.get('WorktreeRemove')).toBe('worktree.remove');
+		expect(seenRuntimeKinds.get('WorktreeCreate')).not.toBe(
+			seenRuntimeKinds.get('WorktreeRemove'),
+		);
 	});
 });

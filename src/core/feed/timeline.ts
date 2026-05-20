@@ -808,6 +808,20 @@ const fileChanged: EventRenderer<'file.changed'> = defaultRenderer(
 	event => `changed ${event.data.file_path}`,
 );
 
+const instructionsLoaded: EventRenderer<'instructions.loaded'> =
+	defaultRenderer(
+		event =>
+			`${event.data.memory_type ?? 'instructions'} ${event.data.file_path}`,
+	);
+
+const worktreeCreate: EventRenderer<'worktree.create'> = defaultRenderer(
+	event => `created ${event.data.worktree_path}`,
+);
+
+const worktreeRemove: EventRenderer<'worktree.remove'> = defaultRenderer(
+	event => `removed ${event.data.worktree_path}`,
+);
+
 const stopFailure: EventRenderer<'stop.failure'> = defaultRenderer(
 	event =>
 		`${event.data.error_type}${event.data.error_message ? `: ${event.data.error_message}` : ''}`,
@@ -931,6 +945,9 @@ const RENDERERS = {
 	'config.change': configChange,
 	'cwd.changed': cwdChanged,
 	'file.changed': fileChanged,
+	'instructions.loaded': instructionsLoaded,
+	'worktree.create': worktreeCreate,
+	'worktree.remove': worktreeRemove,
 	'stop.failure': stopFailure,
 	'permission.denied': permissionDenied,
 	'elicitation.request': elicitationRequest,
@@ -1184,6 +1201,9 @@ export const VERBOSE_ONLY_KINDS: ReadonlySet<FeedEventKind> = new Set([
 	'unknown.hook',
 	'compact.pre',
 	'config.change',
+	'instructions.loaded',
+	'worktree.create',
+	'worktree.remove',
 	'turn.diff',
 	'usage.update',
 	'reasoning.summary',

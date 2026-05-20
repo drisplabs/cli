@@ -32,6 +32,9 @@ export type RuntimeEventKind =
 	| 'config.change'
 	| 'cwd.changed'
 	| 'file.changed'
+	| 'instructions.loaded'
+	| 'worktree.create'
+	| 'worktree.remove'
 	| 'elicitation.request'
 	| 'elicitation.result'
 	| 'unknown';
@@ -271,6 +274,23 @@ export type FileChangedRuntimeData = {
 	file_path?: string;
 };
 
+export type InstructionsLoadedRuntimeData = {
+	file_path?: string;
+	memory_type?: string;
+	load_reason?: string;
+	globs?: string[];
+	trigger_file_path?: string;
+	parent_file_path?: string;
+};
+
+export type WorktreeCreateRuntimeData = {
+	worktree_path?: string;
+};
+
+export type WorktreeRemoveRuntimeData = {
+	worktree_path?: string;
+};
+
 export type ElicitationRequestRuntimeData = {
 	mcp_server?: string;
 	form?: unknown;
@@ -324,6 +344,9 @@ export type RuntimeEventDataMap = {
 	'config.change': ConfigChangeRuntimeData;
 	'cwd.changed': CwdChangedRuntimeData;
 	'file.changed': FileChangedRuntimeData;
+	'instructions.loaded': InstructionsLoadedRuntimeData;
+	'worktree.create': WorktreeCreateRuntimeData;
+	'worktree.remove': WorktreeRemoveRuntimeData;
 	'elicitation.request': ElicitationRequestRuntimeData;
 	'elicitation.result': ElicitationResultRuntimeData;
 	unknown: UnknownRuntimeData;
@@ -402,6 +425,12 @@ export function mapLegacyHookNameToRuntimeKind(
 			return 'cwd.changed';
 		case 'FileChanged':
 			return 'file.changed';
+		case 'InstructionsLoaded':
+			return 'instructions.loaded';
+		case 'WorktreeCreate':
+			return 'worktree.create';
+		case 'WorktreeRemove':
+			return 'worktree.remove';
 		case 'Elicitation':
 			return 'elicitation.request';
 		case 'ElicitationResult':

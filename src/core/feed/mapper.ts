@@ -98,6 +98,9 @@ const FILE_CONFIG_EVENT_KINDS = new Set<RuntimeEventKind>([
 	'compact.post',
 	'cwd.changed',
 	'file.changed',
+	'instructions.loaded',
+	'worktree.create',
+	'worktree.remove',
 ]);
 
 const STATUS_EVENT_KINDS = new Set<RuntimeEventKind>([

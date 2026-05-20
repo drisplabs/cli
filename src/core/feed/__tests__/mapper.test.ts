@@ -1462,6 +1462,114 @@ describe('FeedMapper', () => {
 			expect(evt!.data.source).toBe('policy_settings');
 			expect(evt!.ui?.badge).toBeUndefined();
 		});
+
+		it('maps InstructionsLoaded to instructions.loaded', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('InstructionsLoaded', {
+					payload: {
+						hook_event_name: 'InstructionsLoaded',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						file_path: '/project/CLAUDE.md',
+						memory_type: 'Project',
+						load_reason: 'session_start',
+						globs: ['**/*.md'],
+					},
+				}),
+			);
+			const evt = results.find(r => r.kind === 'instructions.loaded');
+			expect(evt).toBeDefined();
+			expect(evt!.data.file_path).toBe('/project/CLAUDE.md');
+			expect(evt!.data.memory_type).toBe('Project');
+			expect(evt!.data.load_reason).toBe('session_start');
+			expect(evt!.data.globs).toEqual(['**/*.md']);
+			expect(evt!.ui?.collapsed_default).toBe(true);
+			expect(results.some(r => r.kind === 'unknown.hook')).toBe(false);
+		});
+
+		it('maps worktree hooks to distinct feed event kinds', () => {
+			const mapper = createFeedMapper();
+			const createResults = mapper.mapEvent(
+				makeRuntimeEvent('WorktreeCreate', {
+					payload: {
+						hook_event_name: 'WorktreeCreate',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						worktree_path: '/project/.worktrees/a',
+					},
+				}),
+			);
+			const removeResults = mapper.mapEvent(
+				makeRuntimeEvent('WorktreeRemove', {
+					payload: {
+						hook_event_name: 'WorktreeRemove',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						worktree_path: '/project/.worktrees/a',
+					},
+				}),
+			);
+
+			const created = createResults.find(r => r.kind === 'worktree.create');
+			const removed = removeResults.find(r => r.kind === 'worktree.remove');
+			expect(created).toBeDefined();
+			expect(removed).toBeDefined();
+			expect(created!.kind).not.toBe(removed!.kind);
+			expect(created!.data.worktree_path).toBe('/project/.worktrees/a');
+			expect(removed!.data.worktree_path).toBe('/project/.worktrees/a');
+			expect(
+				[...createResults, ...removeResults].some(
+					r => r.kind === 'unknown.hook',
+				),
+			).toBe(false);
+		});
+
+		it('keeps newly first-class hook mappings distinct from existing feed kinds', () => {
+			const mapper = createFeedMapper();
+			const cases = [
+				{
+					hookName: 'InstructionsLoaded',
+					payload: {
+						file_path: '/project/CLAUDE.md',
+						memory_type: 'Project',
+						load_reason: 'session_start',
+					},
+					expectedKind: 'instructions.loaded',
+				},
+				{
+					hookName: 'WorktreeCreate',
+					payload: {worktree_path: '/project/.worktrees/a'},
+					expectedKind: 'worktree.create',
+				},
+				{
+					hookName: 'WorktreeRemove',
+					payload: {worktree_path: '/project/.worktrees/a'},
+					expectedKind: 'worktree.remove',
+				},
+			] as const;
+
+			const emittedKinds = cases.map(({hookName, payload, expectedKind}) => {
+				const results = mapper.mapEvent(
+					makeRuntimeEvent(hookName, {
+						payload: {
+							hook_event_name: hookName,
+							session_id: 'sess-1',
+							transcript_path: '/tmp/t.jsonl',
+							cwd: '/project',
+							...payload,
+						},
+					}),
+				);
+				expect(results.some(r => r.kind === expectedKind)).toBe(true);
+				return expectedKind;
+			});
+
+			expect(new Set(emittedKinds).size).toBe(emittedKinds.length);
+		});
 	});
 
 	describe('subagent tool attribution', () => {

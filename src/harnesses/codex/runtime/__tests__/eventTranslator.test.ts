@@ -5,6 +5,65 @@ import {
 } from '../eventTranslator';
 
 describe('translateNotification', () => {
+	it('does not emit Claude-only hook lifecycle kinds from Codex notifications', () => {
+		const claudeOnlyKinds = new Set([
+			'instructions.loaded',
+			'worktree.create',
+			'worktree.remove',
+		]);
+		const results = [
+			translateNotification({
+				method: 'thread/started',
+				params: {
+					thread: {
+						id: 'th1',
+						preview: 'hello',
+						ephemeral: false,
+						modelProvider: 'openai',
+						createdAt: 0,
+						updatedAt: 0,
+						status: 'idle',
+						path: null,
+						cwd: '/tmp',
+						cliVersion: '0.0.0',
+						source: {type: 'appServer'},
+						agentNickname: null,
+						agentRole: null,
+						gitInfo: null,
+						name: null,
+						turns: [],
+					},
+				},
+			}),
+			translateNotification({
+				method: 'fs/changed',
+				params: {watchId: 1, changedPaths: ['/tmp/file.ts']},
+			}),
+			translateNotification({
+				method: 'hook/started',
+				params: {
+					threadId: 'th1',
+					run: {
+						id: 'hook-1',
+						eventName: 'preToolUse',
+						scope: 'turn',
+						handlerType: 'command',
+						executionMode: 'sync',
+						sourcePath: '/tmp/hook.sh',
+						status: 'running',
+						startedAt: 0,
+						displayOrder: 0,
+						entries: [],
+					},
+				},
+			}),
+		];
+
+		for (const result of results) {
+			expect(claudeOnlyKinds.has(result.kind)).toBe(false);
+		}
+	});
+
 	it('maps thread/started to session.start without inventing a model id', () => {
 		const result = translateNotification({
 			method: 'thread/started',

@@ -161,6 +161,12 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return truncate(`${g['config.icon']} cwd → ${event.data.cwd}`);
 		case 'file.changed':
 			return truncate(`File changed: ${event.data.file_path}`);
+		case 'instructions.loaded':
+			return truncate(`Instructions loaded: ${event.data.file_path}`);
+		case 'worktree.create':
+			return truncate(`Worktree created: ${event.data.worktree_path}`);
+		case 'worktree.remove':
+			return truncate(`Worktree removed: ${event.data.worktree_path}`);
 		case 'stop.failure':
 			return truncate(
 				`${g['status.blocked']} Stop failure: ${event.data.error_type}`,

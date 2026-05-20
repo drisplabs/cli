@@ -1032,6 +1032,9 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'config.change':
 		case 'cwd.changed':
 		case 'file.changed':
+		case 'instructions.loaded':
+		case 'worktree.create':
+		case 'worktree.remove':
 		case 'elicitation.request':
 		case 'elicitation.result':
 		case 'channel.permission.relayed':
@@ -1129,6 +1132,9 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'config.change':
 		case 'cwd.changed':
 		case 'file.changed':
+		case 'instructions.loaded':
+		case 'worktree.create':
+		case 'worktree.remove':
 		case 'elicitation.request':
 		case 'elicitation.result':
 		case 'channel.permission.relayed':

@@ -286,6 +286,34 @@ export function translateClaudeEnvelope(
 					file_path: payload['file_path'] as string | undefined,
 				},
 			};
+		case 'InstructionsLoaded':
+			return {
+				kind: 'instructions.loaded',
+				data: {
+					file_path: payload['file_path'] as string | undefined,
+					memory_type: payload['memory_type'] as string | undefined,
+					load_reason: payload['load_reason'] as string | undefined,
+					globs: Array.isArray(payload['globs'])
+						? (payload['globs'] as string[])
+						: undefined,
+					trigger_file_path: payload['trigger_file_path'] as string | undefined,
+					parent_file_path: payload['parent_file_path'] as string | undefined,
+				},
+			};
+		case 'WorktreeCreate':
+			return {
+				kind: 'worktree.create',
+				data: {
+					worktree_path: payload['worktree_path'] as string | undefined,
+				},
+			};
+		case 'WorktreeRemove':
+			return {
+				kind: 'worktree.remove',
+				data: {
+					worktree_path: payload['worktree_path'] as string | undefined,
+				},
+			};
 		case 'Elicitation':
 			return {
 				kind: 'elicitation.request',

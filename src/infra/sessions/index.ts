@@ -7,9 +7,11 @@ export type {
 	PersistedWorkflowRun,
 } from './types';
 export type {SessionStore} from './store';
+export type {HookAuditReport} from './hookAudit';
 
 // Factories
 export {createSessionStore} from './store';
+export {auditHookPipelineSnapshot, auditSessionHookPipeline} from './hookAudit';
 
 // Registry
 export {

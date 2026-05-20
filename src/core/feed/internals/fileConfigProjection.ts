@@ -138,6 +138,64 @@ export function createFileConfigProjection(args: {
 				return results;
 			}
 
+			if (event.kind === 'instructions.loaded') {
+				results.push(
+					collapsed(
+						makeEvent(
+							'instructions.loaded',
+							'info',
+							'system',
+							{
+								file_path: readString(data['file_path']) ?? '',
+								memory_type: readString(data['memory_type']),
+								load_reason: readString(data['load_reason']),
+								globs: Array.isArray(data['globs'])
+									? (data['globs'] as string[])
+									: undefined,
+								trigger_file_path: readString(data['trigger_file_path']),
+								parent_file_path: readString(data['parent_file_path']),
+							} satisfies import('../types').InstructionsLoadedData,
+							event,
+						),
+					),
+				);
+				return results;
+			}
+
+			if (event.kind === 'worktree.create') {
+				results.push(
+					collapsed(
+						makeEvent(
+							'worktree.create',
+							'info',
+							'system',
+							{
+								worktree_path: readString(data['worktree_path']) ?? '',
+							} satisfies import('../types').WorktreeCreateData,
+							event,
+						),
+					),
+				);
+				return results;
+			}
+
+			if (event.kind === 'worktree.remove') {
+				results.push(
+					collapsed(
+						makeEvent(
+							'worktree.remove',
+							'info',
+							'system',
+							{
+								worktree_path: readString(data['worktree_path']) ?? '',
+							} satisfies import('../types').WorktreeRemoveData,
+							event,
+						),
+					),
+				);
+				return results;
+			}
+
 			return results;
 		},
 	};
