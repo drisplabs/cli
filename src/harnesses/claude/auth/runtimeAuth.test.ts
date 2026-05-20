@@ -65,6 +65,7 @@ describe('resolveRuntimeAuthOverlay', () => {
 			cwd: '/repo',
 			homeDir: '/home/test',
 			platform: 'darwin',
+			env: {},
 			readFileFn: () => {
 				throw new Error('missing');
 			},
@@ -122,6 +123,7 @@ describe('resolveRuntimeAuthOverlay', () => {
 		const result = resolveRuntimeAuthOverlay({
 			cwd: '/repo',
 			homeDir: '/home/test',
+			env: {},
 			readFileFn: () => {
 				throw new Error('missing');
 			},
