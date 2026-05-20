@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.10](https://github.com/drisplabs/cli/compare/cli-v0.5.9...cli-v0.5.10) (2026-05-20)
+
+
+### Bug Fixes
+
+* map missing Claude hook events ([5af7bb8](https://github.com/drisplabs/cli/commit/5af7bb8ec13548fdb81af8929fe22048f2a6efaa))
+
 ## [0.5.9](https://github.com/drisplabs/cli/compare/cli-v0.5.8...cli-v0.5.9) (2026-05-20)
 
 
