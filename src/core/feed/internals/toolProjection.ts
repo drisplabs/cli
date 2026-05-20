@@ -3,6 +3,10 @@ import type {FeedEvent, FeedEventCause} from '../types';
 import type {RunLifecycle} from './runLifecycle';
 import type {ToolCorrelation} from './toolCorrelation';
 import type {RootPlanTracker} from './rootPlanTracker';
+import {
+	type TaskLifecycleTracker,
+	coerceTaskStatus,
+} from './taskLifecycleTracker';
 import type {SubagentTracker} from './subagentTracker';
 import {type TodoItem, type TodoWriteInput, isSubagentTool} from '../todo';
 import {
@@ -45,6 +49,7 @@ export function createToolProjection(args: {
 	runLifecycle: RunLifecycle;
 	toolCorrelation: ToolCorrelation;
 	rootPlan: RootPlanTracker;
+	taskLifecycle: TaskLifecycleTracker;
 	subagents: SubagentTracker;
 	resolveToolActor: () => string;
 }): ToolProjection {
@@ -54,6 +59,7 @@ export function createToolProjection(args: {
 		runLifecycle,
 		toolCorrelation,
 		rootPlan,
+		taskLifecycle,
 		subagents,
 		resolveToolActor,
 	} = args;
@@ -192,6 +198,13 @@ export function createToolProjection(args: {
 				if (toolName === 'TodoWrite' && preEvent.actor_id === 'agent:root') {
 					rootPlan.set(extractTodoItems(toolInput));
 				}
+				if (toolName === 'TaskUpdate') {
+					const taskId = readString(toolInput['taskId'], toolInput['task_id']);
+					const status = coerceTaskStatus(toolInput['status']);
+					if (taskId && status) {
+						taskLifecycle.updateStatus({taskId, status});
+					}
+				}
 				if (isSubagentTool(toolName)) {
 					if (typeof toolInput['description'] === 'string') {
 						subagents.recordPendingDescription(toolInput['description']);
@@ -219,6 +232,35 @@ export function createToolProjection(args: {
 					toolUseCause(toolUseId, parentId),
 				);
 				results.push(postEvent);
+				if (toolName === 'TaskCreate') {
+					const response = readObject(data['tool_response']);
+					const task = readObject(response['task']);
+					const taskId = readString(task['id'], task['task_id']);
+					const subject = readString(task['subject'], toolInput['subject']);
+					if (taskId && subject) {
+						taskLifecycle.upsertCreated({
+							taskId,
+							subject,
+							description: readString(toolInput['description']),
+							activeForm: readString(toolInput['activeForm']),
+						});
+					}
+				}
+				if (toolName === 'TaskUpdate') {
+					const response = readObject(data['tool_response']);
+					const taskId = readString(
+						response['taskId'],
+						response['task_id'],
+						toolInput['taskId'],
+						toolInput['task_id'],
+					);
+					const status = coerceTaskStatus(
+						readObject(response['statusChange'])['to'] ?? toolInput['status'],
+					);
+					if (taskId && status) {
+						taskLifecycle.updateStatus({taskId, status});
+					}
+				}
 				if (toolName === 'WebSearch') {
 					results.push(
 						webSearchCompleted(event, data, toolUseId, postEvent.event_id),

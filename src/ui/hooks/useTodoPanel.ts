@@ -74,7 +74,9 @@ export function useTodoPanel({
 
 	const nextTodoItems = (() => {
 		const fromTasks = tasks.map((task, index) => ({
-			id: `task-${index}-${task.content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
+			id:
+				(task.taskId ? `task-${task.taskId}` : undefined) ??
+				`task-${index}-${task.content.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16)}`,
 			text: task.content,
 			priority: 'P1' as const,
 			status: toTodoStatus(task.status),

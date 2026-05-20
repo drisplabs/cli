@@ -273,5 +273,245 @@ describe('createFeedMapper', () => {
 				{content: 'Deploy', status: 'pending'},
 			]);
 		});
+
+		it('captures Claude TaskCreated events as pending tasks', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-created',
+					kind: 'task.created',
+					hookName: 'TaskCreated',
+					payload: {
+						hook_event_name: 'TaskCreated',
+						task_id: '2',
+						task_subject: 'Fix XPath locator in beneficiary.ts',
+						task_description: 'Replace fixed div locator with drawer container',
+					},
+				}),
+			);
+
+			expect(mapper.getTasks()).toEqual([
+				{
+					taskId: '2',
+					content: 'Fix XPath locator in beneficiary.ts',
+					status: 'pending',
+					activeForm: 'Replace fixed div locator with drawer container',
+				},
+			]);
+		});
+
+		it('updates Claude lifecycle task status from TaskUpdate tool events', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-created',
+					kind: 'task.created',
+					hookName: 'TaskCreated',
+					payload: {
+						hook_event_name: 'TaskCreated',
+						task_id: '3',
+						task_subject: 'Fix deprecated text= selectors in business-ops.ts',
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-update',
+					kind: 'tool.pre',
+					hookName: 'PreToolUse',
+					toolName: 'TaskUpdate',
+					payload: {
+						tool_name: 'TaskUpdate',
+						tool_input: {
+							taskId: '3',
+							status: 'in_progress',
+						},
+					},
+				}),
+			);
+
+			expect(mapper.getTasks()).toEqual([
+				{
+					taskId: '3',
+					content: 'Fix deprecated text= selectors in business-ops.ts',
+					status: 'in_progress',
+					activeForm: undefined,
+				},
+			]);
+		});
+
+		it('marks Claude task lifecycle items completed', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-created',
+					kind: 'task.created',
+					hookName: 'TaskCreated',
+					payload: {
+						hook_event_name: 'TaskCreated',
+						task_id: '2',
+						task_subject: 'Fix XPath locator',
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-completed',
+					kind: 'task.completed',
+					hookName: 'TaskCompleted',
+					payload: {
+						hook_event_name: 'TaskCompleted',
+						task_id: '2',
+						task_subject: 'Fix XPath locator',
+					},
+				}),
+			);
+
+			expect(mapper.getTasks()).toEqual([
+				{
+					taskId: '2',
+					content: 'Fix XPath locator',
+					status: 'completed',
+					activeForm: undefined,
+				},
+			]);
+		});
+
+		it('keeps Codex plan replacement independent from Claude lifecycle tasks', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-plan-1',
+					kind: 'plan.delta',
+					hookName: undefined as unknown as string,
+					payload: {
+						plan: [
+							{step: 'Search codebase', status: 'completed'},
+							{step: 'Implement fix', status: 'inProgress'},
+						],
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-task-created',
+					kind: 'task.created',
+					hookName: 'TaskCreated',
+					payload: {
+						hook_event_name: 'TaskCreated',
+						task_id: '2',
+						task_subject: 'Fix XPath locator',
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent({
+					id: 'rt-plan-2',
+					kind: 'plan.delta',
+					hookName: undefined as unknown as string,
+					payload: {
+						plan: [{step: 'Run tests', status: 'pending'}],
+					},
+				}),
+			);
+
+			expect(mapper.getTasks()).toEqual([
+				{content: 'Run tests', status: 'pending'},
+				{
+					taskId: '2',
+					content: 'Fix XPath locator',
+					status: 'pending',
+					activeForm: undefined,
+				},
+			]);
+		});
+
+		it('restores Claude lifecycle tasks from bootstrap feed events', () => {
+			const bootstrap: MapperBootstrap = {
+				adapterSessionIds: ['cs-1'],
+				createdAt: 1000,
+				feedEvents: [
+					makeFeedEvent({
+						event_id: 'cs-1:R1:E1',
+						seq: 1,
+						run_id: 'cs-1:R1',
+						kind: 'task.created',
+						data: {
+							task_id: '2',
+							task_subject: 'Fix XPath locator',
+							task_description: 'Use drawer container',
+						},
+					}),
+					makeFeedEvent({
+						event_id: 'cs-1:R1:E2',
+						seq: 2,
+						run_id: 'cs-1:R1',
+						kind: 'task.completed',
+						data: {
+							task_id: '2',
+							task_subject: 'Fix XPath locator',
+						},
+					}),
+				],
+			};
+
+			const mapper = createFeedMapper(bootstrap);
+
+			expect(mapper.getTasks()).toEqual([
+				{
+					taskId: '2',
+					content: 'Fix XPath locator',
+					status: 'completed',
+					activeForm: 'Use drawer container',
+				},
+			]);
+		});
+
+		it('restores Claude lifecycle status from bootstrap TaskUpdate tool events', () => {
+			const bootstrap: MapperBootstrap = {
+				adapterSessionIds: ['cs-1'],
+				createdAt: 1000,
+				feedEvents: [
+					makeFeedEvent({
+						event_id: 'cs-1:R1:E1',
+						seq: 1,
+						run_id: 'cs-1:R1',
+						kind: 'task.created',
+						data: {
+							task_id: '6',
+							task_subject: 'Verify TypeScript types compile clean',
+							task_description: 'Run tsc --noEmit',
+						},
+					}),
+					makeFeedEvent({
+						event_id: 'cs-1:R1:E2',
+						seq: 2,
+						run_id: 'cs-1:R1',
+						kind: 'tool.post',
+						data: {
+							tool_name: 'TaskUpdate',
+							tool_input: {taskId: '6', status: 'completed'},
+							tool_response: {
+								success: true,
+								taskId: '6',
+								updatedFields: ['status'],
+								statusChange: {from: 'in_progress', to: 'completed'},
+							},
+						},
+					}),
+				],
+			};
+
+			const mapper = createFeedMapper(bootstrap);
+
+			expect(mapper.getTasks()).toEqual([
+				{
+					taskId: '6',
+					content: 'Verify TypeScript types compile clean',
+					status: 'completed',
+					activeForm: 'Run tsc --noEmit',
+				},
+			]);
+		});
 	});
 });

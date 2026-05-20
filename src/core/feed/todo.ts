@@ -4,6 +4,7 @@ export type TodoItem = {
 	content: string;
 	status: TodoStatus;
 	activeForm?: string;
+	taskId?: string;
 };
 
 export type TodoWriteInput = {
