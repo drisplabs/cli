@@ -165,6 +165,36 @@ describe('startDaemon', () => {
 		await handle.stop();
 	});
 
+	it('loads channel sidecars during startup', async () => {
+		const home = path.join(path.dirname(paths.runDir), 'home');
+		const channelDir = path.join(home, '.config', 'athena', 'channels');
+		fs.mkdirSync(channelDir, {recursive: true, mode: 0o700});
+		const sidecarPath = path.join(channelDir, 'unknown.json');
+		fs.writeFileSync(sidecarPath, JSON.stringify({enabled: true}), {
+			mode: 0o600,
+		});
+		const stderrWrite = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(() => true);
+		let handle: Awaited<ReturnType<typeof startDaemon>> | undefined;
+		try {
+			handle = await startDaemon({
+				foreground: true,
+				silent: true,
+				paths,
+				env: {HOME: home},
+				skipSignalHandlers: true,
+			});
+
+			expect(stderrWrite).toHaveBeenCalledWith(
+				'athena-gateway: unknown: unknown channel kind: unknown\n',
+			);
+		} finally {
+			await handle?.stop();
+			stderrWrite.mockRestore();
+		}
+	});
+
 	it('reloads channel sidecars through the control plane', async () => {
 		const home = path.join(path.dirname(paths.runDir), 'home');
 		const channelDir = path.join(home, '.config', 'athena', 'channels');

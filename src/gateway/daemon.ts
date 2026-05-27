@@ -10,10 +10,9 @@
  */
 
 import fs from 'node:fs';
-import {loadChannelSidecars} from '../infra/config/channels';
-import {instantiateAdapter} from './adapters/factory';
 import {loadOrCreateToken, requireTokenForBind} from './auth';
 import {ChannelManager} from './channelManager';
+import {ChannelSidecarReconciler} from './channelSidecarReconciler';
 import {createDispatcher} from './control/handlers';
 import {startControlServer, type ControlServer} from './control/server';
 import {DispatchPipeline} from './dispatchPipeline';
@@ -58,11 +57,6 @@ function buildListenerStatus(
 		insecure: spec.insecure,
 		loopback: isLoopbackHost(spec.host),
 	};
-}
-
-function pathIdFromSidecarPath(filePath: string): string {
-	const base = filePath.split(/[\\/]/).pop() ?? filePath;
-	return base.endsWith('.json') ? base.slice(0, -'.json'.length) : base;
 }
 
 export type DaemonOptions = {
@@ -170,134 +164,24 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		pipeline.handleInbound(inbound, ctx);
 	});
 
-	const channelConfigHome = opts.env?.HOME;
+	const channelSidecarReconciler = new ChannelSidecarReconciler({
+		channelManager,
+		home: opts.env?.HOME,
+	});
 	const reloadChannels = async (): Promise<{
 		results: ChannelReloadResult[];
-	}> => {
-		const results: ChannelReloadResult[] = [];
-		const {sidecars, errors} = loadChannelSidecars(channelConfigHome);
-		for (const err of errors) {
-			const id = pathIdFromSidecarPath(err.path);
-			results.push({
-				id,
-				ok: false,
-				action: 'failed',
-				reason: err.reason,
-			});
-		}
-
-		const sidecarIds = new Set(sidecars.map(s => s.instanceId));
-		for (const channel of channelManager.listChannels()) {
-			if (sidecarIds.has(channel.id)) continue;
-			try {
-				await channelManager.unregister(channel.id, 'shutdown');
-				results.push({
-					id: channel.id,
-					ok: true,
-					action: 'unregistered',
-				});
-			} catch (err) {
-				results.push({
-					id: channel.id,
-					ok: false,
-					action: 'failed',
-					reason: err instanceof Error ? err.message : String(err),
-				});
-			}
-		}
-
-		for (const sidecar of sidecars) {
-			const existed = channelManager
-				.listChannels()
-				.some(channel => channel.id === sidecar.instanceId);
-			if (existed) {
-				try {
-					await channelManager.unregister(sidecar.instanceId, 'shutdown');
-				} catch (err) {
-					results.push({
-						id: sidecar.instanceId,
-						ok: false,
-						action: 'failed',
-						reason: err instanceof Error ? err.message : String(err),
-					});
-					continue;
-				}
-			}
-			const built = instantiateAdapter(sidecar);
-			if (!built.ok) {
-				results.push({
-					id: sidecar.instanceId,
-					ok: false,
-					action: 'failed',
-					reason: built.reason,
-				});
-				continue;
-			}
-			try {
-				await channelManager.register(
-					built.adapter,
-					sidecar.attachmentId !== undefined
-						? {attachmentId: sidecar.attachmentId}
-						: {},
-				);
-				results.push({
-					id: sidecar.instanceId,
-					ok: true,
-					action: existed ? 'replaced' : 'registered',
-				});
-				if (!opts.silent) {
-					process.stdout.write(
-						`athena-gateway: registered ${sidecar.instanceId}\n`,
-					);
-				}
-			} catch (err) {
-				results.push({
-					id: sidecar.instanceId,
-					ok: false,
-					action: 'failed',
-					reason: err instanceof Error ? err.message : String(err),
-				});
-			}
-		}
-
-		return {results};
-	};
+	}> =>
+		channelSidecarReconciler.reconcile({
+			unregisterStale: true,
+			logRegistrations: !opts.silent,
+		});
 
 	if (!opts.skipChannelLoad) {
-		const {sidecars, errors} = loadChannelSidecars(channelConfigHome);
-		for (const err of errors) {
-			process.stderr.write(
-				`athena-gateway: skipping ${err.path}: ${err.reason}\n`,
-			);
-		}
-		for (const sidecar of sidecars) {
-			const built = instantiateAdapter(sidecar);
-			if (!built.ok) {
-				process.stderr.write(
-					`athena-gateway: ${sidecar.instanceId}: ${built.reason}\n`,
-				);
-				continue;
-			}
-			try {
-				await channelManager.register(
-					built.adapter,
-					sidecar.attachmentId !== undefined
-						? {attachmentId: sidecar.attachmentId}
-						: {},
-				);
-				if (!opts.silent) {
-					process.stdout.write(
-						`athena-gateway: registered ${sidecar.instanceId}\n`,
-					);
-				}
-			} catch (err) {
-				process.stderr.write(
-					`athena-gateway: register ${sidecar.instanceId} failed: ${
-						err instanceof Error ? err.message : String(err)
-					}\n`,
-				);
-			}
-		}
+		await channelSidecarReconciler.reconcile({
+			unregisterStale: false,
+			logFailures: true,
+			logRegistrations: !opts.silent,
+		});
 	}
 
 	const handler = createDispatcher({
