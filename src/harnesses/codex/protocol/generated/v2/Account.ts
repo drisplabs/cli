@@ -5,4 +5,5 @@ import type {PlanType} from '../PlanType';
 
 export type Account =
 	| {type: 'apiKey'}
-	| {type: 'chatgpt'; email: string; planType: PlanType};
+	| {type: 'chatgpt'; email: string; planType: PlanType}
+	| {type: 'amazonBedrock'};

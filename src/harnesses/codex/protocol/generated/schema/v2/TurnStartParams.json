@@ -52,6 +52,9 @@
 				}
 			]
 		},
+		"threadId": {
+			"type": "string"
+		},
 		"input": {
 			"type": "array",
 			"items": {
@@ -65,20 +68,6 @@
 		"outputSchema": {
 			"description": "Optional JSON Schema used to constrain the final assistant message for this turn."
 		},
-		"personality": {
-			"description": "Override the personality for this turn and subsequent turns.",
-			"anyOf": [
-				{
-					"$ref": "#/definitions/Personality"
-				},
-				{
-					"type": "null"
-				}
-			]
-		},
-		"threadId": {
-			"type": "string"
-		},
 		"sandboxPolicy": {
 			"description": "Override the sandbox policy for this turn and subsequent turns.",
 			"anyOf": [
@@ -90,23 +79,20 @@
 				}
 			]
 		},
-		"serviceTier": {
-			"description": "Override the service tier for this turn and subsequent turns.",
+		"personality": {
+			"description": "Override the personality for this turn and subsequent turns.",
 			"anyOf": [
 				{
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ServiceTier"
-						},
-						{
-							"type": "null"
-						}
-					]
+					"$ref": "#/definitions/Personality"
 				},
 				{
 					"type": "null"
 				}
 			]
+		},
+		"serviceTier": {
+			"description": "Override the service tier for this turn and subsequent turns.",
+			"type": ["string", "null"]
 		}
 	},
 	"definitions": {
@@ -115,9 +101,9 @@
 			"type": "string"
 		},
 		"ApprovalsReviewer": {
-			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
 			"type": "string",
-			"enum": ["user", "guardian_subagent"]
+			"enum": ["user", "auto_review", "guardian_subagent"]
 		},
 		"AskForApproval": {
 			"oneOf": [
@@ -187,6 +173,10 @@
 				}
 			}
 		},
+		"ImageDetail": {
+			"type": "string",
+			"enum": ["high", "original"]
+		},
 		"ModeKind": {
 			"description": "Initial collaboration mode to use when the TUI starts.",
 			"type": "string",
@@ -199,45 +189,6 @@
 		"Personality": {
 			"type": "string",
 			"enum": ["none", "friendly", "pragmatic"]
-		},
-		"ReadOnlyAccess": {
-			"oneOf": [
-				{
-					"type": "object",
-					"required": ["type"],
-					"properties": {
-						"includePlatformDefaults": {
-							"default": true,
-							"type": "boolean"
-						},
-						"readableRoots": {
-							"default": [],
-							"type": "array",
-							"items": {
-								"$ref": "#/definitions/AbsolutePathBuf"
-							}
-						},
-						"type": {
-							"type": "string",
-							"enum": ["restricted"],
-							"title": "RestrictedReadOnlyAccessType"
-						}
-					},
-					"title": "RestrictedReadOnlyAccess"
-				},
-				{
-					"type": "object",
-					"required": ["type"],
-					"properties": {
-						"type": {
-							"type": "string",
-							"enum": ["fullAccess"],
-							"title": "FullAccessReadOnlyAccessType"
-						}
-					},
-					"title": "FullAccessReadOnlyAccess"
-				}
-			]
 		},
 		"ReasoningEffort": {
 			"description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
@@ -276,16 +227,6 @@
 					"type": "object",
 					"required": ["type"],
 					"properties": {
-						"access": {
-							"default": {
-								"type": "fullAccess"
-							},
-							"allOf": [
-								{
-									"$ref": "#/definitions/ReadOnlyAccess"
-								}
-							]
-						},
 						"networkAccess": {
 							"default": false,
 							"type": "boolean"
@@ -334,16 +275,6 @@
 							"default": false,
 							"type": "boolean"
 						},
-						"readOnlyAccess": {
-							"default": {
-								"type": "fullAccess"
-							},
-							"allOf": [
-								{
-									"$ref": "#/definitions/ReadOnlyAccess"
-								}
-							]
-						},
 						"type": {
 							"type": "string",
 							"enum": ["workspaceWrite"],
@@ -360,10 +291,6 @@
 					"title": "WorkspaceWriteSandboxPolicy"
 				}
 			]
-		},
-		"ServiceTier": {
-			"type": "string",
-			"enum": ["fast", "flex"]
 		},
 		"Settings": {
 			"description": "Settings for a collaboration mode.",
@@ -406,6 +333,18 @@
 				}
 			}
 		},
+		"TurnEnvironmentParams": {
+			"type": "object",
+			"required": ["cwd", "environmentId"],
+			"properties": {
+				"cwd": {
+					"$ref": "#/definitions/AbsolutePathBuf"
+				},
+				"environmentId": {
+					"type": "string"
+				}
+			}
+		},
 		"UserInput": {
 			"oneOf": [
 				{
@@ -435,6 +374,17 @@
 					"type": "object",
 					"required": ["type", "url"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"type": {
 							"type": "string",
 							"enum": ["image"],
@@ -450,6 +400,17 @@
 					"type": "object",
 					"required": ["path", "type"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"path": {
 							"type": "string"
 						},

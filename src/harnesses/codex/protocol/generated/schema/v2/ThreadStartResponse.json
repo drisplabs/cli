@@ -12,6 +12,9 @@
 		"thread"
 	],
 	"properties": {
+		"serviceTier": {
+			"type": ["string", "null"]
+		},
 		"approvalPolicy": {
 			"$ref": "#/definitions/AskForApproval"
 		},
@@ -50,21 +53,16 @@
 				}
 			]
 		},
-		"sandbox": {
-			"$ref": "#/definitions/SandboxPolicy"
-		},
-		"serviceTier": {
-			"anyOf": [
-				{
-					"$ref": "#/definitions/ServiceTier"
-				},
-				{
-					"type": "null"
-				}
-			]
-		},
 		"thread": {
 			"$ref": "#/definitions/Thread"
+		},
+		"sandbox": {
+			"description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance.",
+			"allOf": [
+				{
+					"$ref": "#/definitions/SandboxPolicy"
+				}
+			]
 		}
 	},
 	"definitions": {
@@ -72,13 +70,28 @@
 			"description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
 			"type": "string"
 		},
+		"ActivePermissionProfile": {
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"extends": {
+					"description": "Parent profile identifier from the selected permissions profile's `extends` setting, when present.",
+					"default": null,
+					"type": ["string", "null"]
+				},
+				"id": {
+					"description": "Identifier from `default_permissions` or the implicit built-in default, such as `:workspace` or a user-defined `[permissions.<id>]` profile.",
+					"type": "string"
+				}
+			}
+		},
 		"AgentPath": {
 			"type": "string"
 		},
 		"ApprovalsReviewer": {
-			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
 			"type": "string",
-			"enum": ["user", "guardian_subagent"]
+			"enum": ["user", "auto_review", "guardian_subagent"]
 		},
 		"AskForApproval": {
 			"oneOf": [
@@ -144,6 +157,7 @@
 						"contextWindowExceeded",
 						"usageLimitExceeded",
 						"serverOverloaded",
+						"cyberPolicy",
 						"internalServerError",
 						"unauthorized",
 						"badRequest",
@@ -450,6 +464,10 @@
 				}
 			}
 		},
+		"ImageDetail": {
+			"type": "string",
+			"enum": ["high", "original"]
+		},
 		"McpToolCallError": {
 			"type": "object",
 			"required": ["message"],
@@ -585,45 +603,6 @@
 				}
 			]
 		},
-		"ReadOnlyAccess": {
-			"oneOf": [
-				{
-					"type": "object",
-					"required": ["type"],
-					"properties": {
-						"includePlatformDefaults": {
-							"default": true,
-							"type": "boolean"
-						},
-						"readableRoots": {
-							"default": [],
-							"type": "array",
-							"items": {
-								"$ref": "#/definitions/AbsolutePathBuf"
-							}
-						},
-						"type": {
-							"type": "string",
-							"enum": ["restricted"],
-							"title": "RestrictedReadOnlyAccessType"
-						}
-					},
-					"title": "RestrictedReadOnlyAccess"
-				},
-				{
-					"type": "object",
-					"required": ["type"],
-					"properties": {
-						"type": {
-							"type": "string",
-							"enum": ["fullAccess"],
-							"title": "FullAccessReadOnlyAccessType"
-						}
-					},
-					"title": "FullAccessReadOnlyAccess"
-				}
-			]
-		},
 		"ReasoningEffort": {
 			"description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
 			"type": "string",
@@ -647,16 +626,6 @@
 					"type": "object",
 					"required": ["type"],
 					"properties": {
-						"access": {
-							"default": {
-								"type": "fullAccess"
-							},
-							"allOf": [
-								{
-									"$ref": "#/definitions/ReadOnlyAccess"
-								}
-							]
-						},
 						"networkAccess": {
 							"default": false,
 							"type": "boolean"
@@ -705,16 +674,6 @@
 							"default": false,
 							"type": "boolean"
 						},
-						"readOnlyAccess": {
-							"default": {
-								"type": "fullAccess"
-							},
-							"allOf": [
-								{
-									"$ref": "#/definitions/ReadOnlyAccess"
-								}
-							]
-						},
 						"type": {
 							"type": "string",
 							"enum": ["workspaceWrite"],
@@ -731,10 +690,6 @@
 					"title": "WorkspaceWriteSandboxPolicy"
 				}
 			]
-		},
-		"ServiceTier": {
-			"type": "string",
-			"enum": ["fast", "flex"]
 		},
 		"SessionSource": {
 			"oneOf": [
@@ -853,6 +808,7 @@
 				"id",
 				"modelProvider",
 				"preview",
+				"sessionId",
 				"source",
 				"status",
 				"turns",
@@ -922,6 +878,10 @@
 					"description": "Usually the first user message in the thread, if available.",
 					"type": "string"
 				},
+				"sessionId": {
+					"description": "Session id shared by threads that belong to the same session tree.",
+					"type": "string"
+				},
 				"source": {
 					"description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).",
 					"allOf": [
@@ -935,6 +895,17 @@
 					"allOf": [
 						{
 							"$ref": "#/definitions/ThreadStatus"
+						}
+					]
+				},
+				"threadSource": {
+					"description": "Optional analytics source classification for this thread.",
+					"anyOf": [
+						{
+							"$ref": "#/definitions/ThreadSource"
+						},
+						{
+							"type": "null"
 						}
 					]
 				},
@@ -1208,6 +1179,12 @@
 						"id": {
 							"type": "string"
 						},
+						"mcpAppResourceUri": {
+							"type": ["string", "null"]
+						},
+						"pluginId": {
+							"type": ["string", "null"]
+						},
 						"result": {
 							"anyOf": [
 								{
@@ -1253,6 +1230,9 @@
 						},
 						"id": {
 							"type": "string"
+						},
+						"namespace": {
+							"type": ["string", "null"]
 						},
 						"status": {
 							"$ref": "#/definitions/DynamicToolCallStatus"
@@ -1481,6 +1461,10 @@
 				}
 			]
 		},
+		"ThreadSource": {
+			"type": "string",
+			"enum": ["user", "subagent", "memory_consolidation"]
+		},
 		"ThreadStatus": {
 			"oneOf": [
 				{
@@ -1568,11 +1552,20 @@
 					"type": "string"
 				},
 				"items": {
-					"description": "Only populated on a `thread/resume` or `thread/fork` response. For all other responses and notifications returning a Turn, the items field will be an empty list.",
+					"description": "Thread items currently included in this turn payload.",
 					"type": "array",
 					"items": {
 						"$ref": "#/definitions/ThreadItem"
 					}
+				},
+				"itemsView": {
+					"description": "Describes how much of `items` has been loaded for this turn.",
+					"default": "full",
+					"allOf": [
+						{
+							"$ref": "#/definitions/TurnItemsView"
+						}
+					]
 				},
 				"startedAt": {
 					"description": "Unix timestamp (in seconds) when the turn started.",
@@ -1607,6 +1600,25 @@
 				}
 			}
 		},
+		"TurnItemsView": {
+			"oneOf": [
+				{
+					"description": "`items` was not loaded for this turn. The field is intentionally empty.",
+					"type": "string",
+					"enum": ["notLoaded"]
+				},
+				{
+					"description": "`items` contains only a display summary for this turn.",
+					"type": "string",
+					"enum": ["summary"]
+				},
+				{
+					"description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+					"type": "string",
+					"enum": ["full"]
+				}
+			]
+		},
 		"TurnStatus": {
 			"type": "string",
 			"enum": ["completed", "interrupted", "failed", "inProgress"]
@@ -1640,6 +1652,17 @@
 					"type": "object",
 					"required": ["type", "url"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"type": {
 							"type": "string",
 							"enum": ["image"],
@@ -1655,6 +1678,17 @@
 					"type": "object",
 					"required": ["path", "type"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"path": {
 							"type": "string"
 						},

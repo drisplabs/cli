@@ -2,7 +2,7 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "FileChangeRequestApprovalParams",
 	"type": "object",
-	"required": ["itemId", "threadId", "turnId"],
+	"required": ["itemId", "startedAtMs", "threadId", "turnId"],
 	"properties": {
 		"grantRoot": {
 			"description": "[UNSTABLE] When set, the agent is asking the user to allow writes under this root for the remainder of the session (unclear if this is honored today).",
@@ -14,6 +14,11 @@
 		"reason": {
 			"description": "Optional explanatory reason (e.g. request for extra write access).",
 			"type": ["string", "null"]
+		},
+		"startedAtMs": {
+			"description": "Unix timestamp (in milliseconds) when this approval request started.",
+			"type": "integer",
+			"format": "int64"
 		},
 		"threadId": {
 			"type": "string"

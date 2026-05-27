@@ -9,6 +9,6 @@ export type SkillSummary = {
 	description: string;
 	shortDescription: string | null;
 	interface: SkillInterface | null;
-	path: AbsolutePathBuf;
+	path: AbsolutePathBuf | null;
 	enabled: boolean;
 };

@@ -5,7 +5,7 @@
 	"type": "object",
 	"required": ["threadId", "version"],
 	"properties": {
-		"sessionId": {
+		"realtimeSessionId": {
 			"type": ["string", "null"]
 		},
 		"threadId": {

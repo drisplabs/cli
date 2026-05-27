@@ -5,11 +5,11 @@ import type {CollaborationMode} from '../CollaborationMode';
 import type {Personality} from '../Personality';
 import type {ReasoningEffort} from '../ReasoningEffort';
 import type {ReasoningSummary} from '../ReasoningSummary';
-import type {ServiceTier} from '../ServiceTier';
 import type {JsonValue} from '../serde_json/JsonValue';
 import type {ApprovalsReviewer} from './ApprovalsReviewer';
 import type {AskForApproval} from './AskForApproval';
 import type {SandboxPolicy} from './SandboxPolicy';
+import type {TurnEnvironmentParams} from './TurnEnvironmentParams';
 import type {UserInput} from './UserInput';
 
 export type TurnStartParams = {
@@ -20,9 +20,23 @@ export type TurnStartParams = {
 	 */
 	responsesapiClientMetadata?: {[key in string]?: string} | null;
 	/**
+	 * Optional turn-scoped environments.
+	 *
+	 * Omitted uses the thread sticky environments. Empty disables
+	 * environment access for this turn. Non-empty selects the first
+	 * environment as the current turn environment for this turn.
+	 */
+	environments?: Array<TurnEnvironmentParams> | null;
+	/**
 	 * Override the working directory for this turn and subsequent turns.
 	 */
 	cwd?: string | null;
+	/**
+	 * Replace the thread's runtime workspace roots for this turn and
+	 * subsequent turns. Relative paths are resolved against the effective
+	 * cwd for the turn.
+	 */
+	runtimeWorkspaceRoots?: Array<string> | null;
 	/**
 	 * Override the approval policy for this turn and subsequent turns.
 	 */
@@ -37,13 +51,18 @@ export type TurnStartParams = {
 	 */
 	sandboxPolicy?: SandboxPolicy | null;
 	/**
+	 * Select a named permissions profile id for this turn and subsequent
+	 * turns. Cannot be combined with `sandboxPolicy`.
+	 */
+	permissions?: string | null;
+	/**
 	 * Override the model for this turn and subsequent turns.
 	 */
 	model?: string | null;
 	/**
 	 * Override the service tier for this turn and subsequent turns.
 	 */
-	serviceTier?: ServiceTier | null | null;
+	serviceTier?: string | null | null;
 	/**
 	 * Override the reasoning effort for this turn and subsequent turns.
 	 */

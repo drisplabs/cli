@@ -50,6 +50,18 @@
 						}
 					},
 					"title": "ChatgptAccount"
+				},
+				{
+					"type": "object",
+					"required": ["type"],
+					"properties": {
+						"type": {
+							"type": "string",
+							"enum": ["amazonBedrock"],
+							"title": "AmazonBedrockAccountType"
+						}
+					},
+					"title": "AmazonBedrockAccount"
 				}
 			]
 		},

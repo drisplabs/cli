@@ -98,9 +98,9 @@
 			"type": "object"
 		},
 		"ApprovalsReviewer": {
-			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request.",
+			"description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
 			"type": "string",
-			"enum": ["user", "guardian_subagent"]
+			"enum": ["user", "auto_review", "guardian_subagent"]
 		},
 		"AppsConfig": {
 			"type": "object",
@@ -174,6 +174,21 @@
 				}
 			]
 		},
+		"AutoCompactTokenLimitScope": {
+			"description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
+			"oneOf": [
+				{
+					"description": "Count the full active context against the limit.",
+					"type": "string",
+					"enum": ["total"]
+				},
+				{
+					"description": "Count sampled output and later growth after the carried window prefix.",
+					"type": "string",
+					"enum": ["body_after_prefix"]
+				}
+			]
+		},
 		"Config": {
 			"type": "object",
 			"properties": {
@@ -221,11 +236,22 @@
 				"compact_prompt": {
 					"type": ["string", "null"]
 				},
+				"desktop": {
+					"type": ["object", "null"],
+					"additionalProperties": true
+				},
 				"developer_instructions": {
 					"type": ["string", "null"]
 				},
 				"forced_chatgpt_workspace_id": {
-					"type": ["string", "null"]
+					"anyOf": [
+						{
+							"$ref": "#/definitions/ForcedChatgptWorkspaceIds"
+						},
+						{
+							"type": "null"
+						}
+					]
 				},
 				"forced_login_method": {
 					"anyOf": [
@@ -246,6 +272,16 @@
 				"model_auto_compact_token_limit": {
 					"type": ["integer", "null"],
 					"format": "int64"
+				},
+				"model_auto_compact_token_limit_scope": {
+					"anyOf": [
+						{
+							"$ref": "#/definitions/AutoCompactTokenLimitScope"
+						},
+						{
+							"type": "null"
+						}
+					]
 				},
 				"model_context_window": {
 					"type": ["integer", "null"],
@@ -284,16 +320,6 @@
 						}
 					]
 				},
-				"profile": {
-					"type": ["string", "null"]
-				},
-				"profiles": {
-					"default": {},
-					"type": "object",
-					"additionalProperties": {
-						"$ref": "#/definitions/ProfileV2"
-					}
-				},
 				"review_model": {
 					"type": ["string", "null"]
 				},
@@ -318,14 +344,7 @@
 					]
 				},
 				"service_tier": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ServiceTier"
-						},
-						{
-							"type": "null"
-						}
-					]
+					"type": ["string", "null"]
 				},
 				"tools": {
 					"anyOf": [
@@ -423,6 +442,10 @@
 								}
 							]
 						},
+						"profile": {
+							"description": "Name of the selected profile-v2 config layered on top of the base user config, when this layer represents one.",
+							"type": ["string", "null"]
+						},
 						"type": {
 							"type": "string",
 							"enum": ["user"],
@@ -490,105 +513,23 @@
 				}
 			]
 		},
+		"ForcedChatgptWorkspaceIds": {
+			"description": "Backward-compatible API shape for ChatGPT workspace login restrictions.",
+			"anyOf": [
+				{
+					"type": "string"
+				},
+				{
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			]
+		},
 		"ForcedLoginMethod": {
 			"type": "string",
 			"enum": ["chatgpt", "api"]
-		},
-		"ProfileV2": {
-			"type": "object",
-			"properties": {
-				"approval_policy": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/AskForApproval"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"approvals_reviewer": {
-					"description": "[UNSTABLE] Optional profile-level override for where approval requests are routed for review. If omitted, the enclosing config default is used.",
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ApprovalsReviewer"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"chatgpt_base_url": {
-					"type": ["string", "null"]
-				},
-				"model": {
-					"type": ["string", "null"]
-				},
-				"model_provider": {
-					"type": ["string", "null"]
-				},
-				"model_reasoning_effort": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ReasoningEffort"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"model_reasoning_summary": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ReasoningSummary"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"model_verbosity": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/Verbosity"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"service_tier": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ServiceTier"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"tools": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/ToolsV2"
-						},
-						{
-							"type": "null"
-						}
-					]
-				},
-				"web_search": {
-					"anyOf": [
-						{
-							"$ref": "#/definitions/WebSearchMode"
-						},
-						{
-							"type": "null"
-						}
-					]
-				}
-			},
-			"additionalProperties": true
 		},
 		"ReasoningEffort": {
 			"description": "See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning",
@@ -637,16 +578,9 @@
 				}
 			}
 		},
-		"ServiceTier": {
-			"type": "string",
-			"enum": ["fast", "flex"]
-		},
 		"ToolsV2": {
 			"type": "object",
 			"properties": {
-				"view_image": {
-					"type": ["boolean", "null"]
-				},
 				"web_search": {
 					"anyOf": [
 						{

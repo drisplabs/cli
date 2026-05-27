@@ -92,7 +92,15 @@ export type CommandExecParams = {
 	 * Optional sandbox policy for this command.
 	 *
 	 * Uses the same shape as thread/turn execution sandbox configuration and
-	 * defaults to the user's configured policy when omitted.
+	 * defaults to the user's configured policy when omitted. Cannot be
+	 * combined with `permissionProfile`.
 	 */
 	sandboxPolicy?: SandboxPolicy | null;
+	/**
+	 * Optional active permissions profile id for this command.
+	 *
+	 * Defaults to the user's configured permissions when omitted. Cannot be
+	 * combined with `sandboxPolicy`.
+	 */
+	permissionProfile?: string | null;
 };

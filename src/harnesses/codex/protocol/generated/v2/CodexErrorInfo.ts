@@ -13,6 +13,7 @@ export type CodexErrorInfo =
 	| 'contextWindowExceeded'
 	| 'usageLimitExceeded'
 	| 'serverOverloaded'
+	| 'cyberPolicy'
 	| {httpConnectionFailed: {httpStatusCode: number | null}}
 	| {responseStreamConnectionFailed: {httpStatusCode: number | null}}
 	| 'internalServerError'

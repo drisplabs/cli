@@ -8,6 +8,7 @@ import type {HookHandlerType} from './HookHandlerType';
 import type {HookOutputEntry} from './HookOutputEntry';
 import type {HookRunStatus} from './HookRunStatus';
 import type {HookScope} from './HookScope';
+import type {HookSource} from './HookSource';
 
 export type HookRunSummary = {
 	id: string;
@@ -16,6 +17,7 @@ export type HookRunSummary = {
 	executionMode: HookExecutionMode;
 	scope: HookScope;
 	sourcePath: AbsolutePathBuf;
+	source: HookSource;
 	displayOrder: bigint;
 	status: HookRunStatus;
 	statusMessage: string | null;

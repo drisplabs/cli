@@ -41,6 +41,7 @@
 						"contextWindowExceeded",
 						"usageLimitExceeded",
 						"serverOverloaded",
+						"cyberPolicy",
 						"internalServerError",
 						"unauthorized",
 						"badRequest",
@@ -332,6 +333,10 @@
 					"type": "string"
 				}
 			}
+		},
+		"ImageDetail": {
+			"type": "string",
+			"enum": ["high", "original"]
 		},
 		"McpToolCallError": {
 			"type": "object",
@@ -736,6 +741,12 @@
 						"id": {
 							"type": "string"
 						},
+						"mcpAppResourceUri": {
+							"type": ["string", "null"]
+						},
+						"pluginId": {
+							"type": ["string", "null"]
+						},
 						"result": {
 							"anyOf": [
 								{
@@ -781,6 +792,9 @@
 						},
 						"id": {
 							"type": "string"
+						},
+						"namespace": {
+							"type": ["string", "null"]
 						},
 						"status": {
 							"$ref": "#/definitions/DynamicToolCallStatus"
@@ -1038,11 +1052,20 @@
 					"type": "string"
 				},
 				"items": {
-					"description": "Only populated on a `thread/resume` or `thread/fork` response. For all other responses and notifications returning a Turn, the items field will be an empty list.",
+					"description": "Thread items currently included in this turn payload.",
 					"type": "array",
 					"items": {
 						"$ref": "#/definitions/ThreadItem"
 					}
+				},
+				"itemsView": {
+					"description": "Describes how much of `items` has been loaded for this turn.",
+					"default": "full",
+					"allOf": [
+						{
+							"$ref": "#/definitions/TurnItemsView"
+						}
+					]
 				},
 				"startedAt": {
 					"description": "Unix timestamp (in seconds) when the turn started.",
@@ -1077,6 +1100,25 @@
 				}
 			}
 		},
+		"TurnItemsView": {
+			"oneOf": [
+				{
+					"description": "`items` was not loaded for this turn. The field is intentionally empty.",
+					"type": "string",
+					"enum": ["notLoaded"]
+				},
+				{
+					"description": "`items` contains only a display summary for this turn.",
+					"type": "string",
+					"enum": ["summary"]
+				},
+				{
+					"description": "`items` contains every ThreadItem available from persisted app-server history for this turn.",
+					"type": "string",
+					"enum": ["full"]
+				}
+			]
+		},
 		"TurnStatus": {
 			"type": "string",
 			"enum": ["completed", "interrupted", "failed", "inProgress"]
@@ -1110,6 +1152,17 @@
 					"type": "object",
 					"required": ["type", "url"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"type": {
 							"type": "string",
 							"enum": ["image"],
@@ -1125,6 +1178,17 @@
 					"type": "object",
 					"required": ["path", "type"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"path": {
 							"type": "string"
 						},

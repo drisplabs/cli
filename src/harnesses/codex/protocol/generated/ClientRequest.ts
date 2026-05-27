@@ -20,6 +20,7 @@ import type {CommandExecWriteParams} from './v2/CommandExecWriteParams';
 import type {ConfigBatchWriteParams} from './v2/ConfigBatchWriteParams';
 import type {ConfigReadParams} from './v2/ConfigReadParams';
 import type {ConfigValueWriteParams} from './v2/ConfigValueWriteParams';
+import type {EnvironmentAddParams} from './v2/EnvironmentAddParams';
 import type {ExperimentalFeatureEnablementSetParams} from './v2/ExperimentalFeatureEnablementSetParams';
 import type {ExperimentalFeatureListParams} from './v2/ExperimentalFeatureListParams';
 import type {ExternalAgentConfigDetectParams} from './v2/ExternalAgentConfigDetectParams';
@@ -35,26 +36,47 @@ import type {FsUnwatchParams} from './v2/FsUnwatchParams';
 import type {FsWatchParams} from './v2/FsWatchParams';
 import type {FsWriteFileParams} from './v2/FsWriteFileParams';
 import type {GetAccountParams} from './v2/GetAccountParams';
+import type {HooksListParams} from './v2/HooksListParams';
 import type {ListMcpServerStatusParams} from './v2/ListMcpServerStatusParams';
 import type {LoginAccountParams} from './v2/LoginAccountParams';
 import type {MarketplaceAddParams} from './v2/MarketplaceAddParams';
+import type {MarketplaceRemoveParams} from './v2/MarketplaceRemoveParams';
+import type {MarketplaceUpgradeParams} from './v2/MarketplaceUpgradeParams';
 import type {McpResourceReadParams} from './v2/McpResourceReadParams';
 import type {McpServerOauthLoginParams} from './v2/McpServerOauthLoginParams';
 import type {McpServerToolCallParams} from './v2/McpServerToolCallParams';
 import type {MockExperimentalMethodParams} from './v2/MockExperimentalMethodParams';
 import type {ModelListParams} from './v2/ModelListParams';
+import type {ModelProviderCapabilitiesReadParams} from './v2/ModelProviderCapabilitiesReadParams';
+import type {PermissionProfileListParams} from './v2/PermissionProfileListParams';
 import type {PluginInstallParams} from './v2/PluginInstallParams';
+import type {PluginInstalledParams} from './v2/PluginInstalledParams';
 import type {PluginListParams} from './v2/PluginListParams';
 import type {PluginReadParams} from './v2/PluginReadParams';
+import type {PluginShareCheckoutParams} from './v2/PluginShareCheckoutParams';
+import type {PluginShareDeleteParams} from './v2/PluginShareDeleteParams';
+import type {PluginShareListParams} from './v2/PluginShareListParams';
+import type {PluginShareSaveParams} from './v2/PluginShareSaveParams';
+import type {PluginShareUpdateTargetsParams} from './v2/PluginShareUpdateTargetsParams';
+import type {PluginSkillReadParams} from './v2/PluginSkillReadParams';
 import type {PluginUninstallParams} from './v2/PluginUninstallParams';
+import type {ProcessKillParams} from './v2/ProcessKillParams';
+import type {ProcessResizePtyParams} from './v2/ProcessResizePtyParams';
+import type {ProcessSpawnParams} from './v2/ProcessSpawnParams';
+import type {ProcessWriteStdinParams} from './v2/ProcessWriteStdinParams';
 import type {ReviewStartParams} from './v2/ReviewStartParams';
+import type {SendAddCreditsNudgeEmailParams} from './v2/SendAddCreditsNudgeEmailParams';
 import type {SkillsConfigWriteParams} from './v2/SkillsConfigWriteParams';
 import type {SkillsListParams} from './v2/SkillsListParams';
+import type {ThreadApproveGuardianDeniedActionParams} from './v2/ThreadApproveGuardianDeniedActionParams';
 import type {ThreadArchiveParams} from './v2/ThreadArchiveParams';
 import type {ThreadBackgroundTerminalsCleanParams} from './v2/ThreadBackgroundTerminalsCleanParams';
 import type {ThreadCompactStartParams} from './v2/ThreadCompactStartParams';
 import type {ThreadDecrementElicitationParams} from './v2/ThreadDecrementElicitationParams';
 import type {ThreadForkParams} from './v2/ThreadForkParams';
+import type {ThreadGoalClearParams} from './v2/ThreadGoalClearParams';
+import type {ThreadGoalGetParams} from './v2/ThreadGoalGetParams';
+import type {ThreadGoalSetParams} from './v2/ThreadGoalSetParams';
 import type {ThreadIncrementElicitationParams} from './v2/ThreadIncrementElicitationParams';
 import type {ThreadInjectItemsParams} from './v2/ThreadInjectItemsParams';
 import type {ThreadListParams} from './v2/ThreadListParams';
@@ -69,9 +91,13 @@ import type {ThreadRealtimeStartParams} from './v2/ThreadRealtimeStartParams';
 import type {ThreadRealtimeStopParams} from './v2/ThreadRealtimeStopParams';
 import type {ThreadResumeParams} from './v2/ThreadResumeParams';
 import type {ThreadRollbackParams} from './v2/ThreadRollbackParams';
+import type {ThreadSearchParams} from './v2/ThreadSearchParams';
 import type {ThreadSetNameParams} from './v2/ThreadSetNameParams';
+import type {ThreadSettingsUpdateParams} from './v2/ThreadSettingsUpdateParams';
 import type {ThreadShellCommandParams} from './v2/ThreadShellCommandParams';
 import type {ThreadStartParams} from './v2/ThreadStartParams';
+import type {ThreadTurnsItemsListParams} from './v2/ThreadTurnsItemsListParams';
+import type {ThreadTurnsListParams} from './v2/ThreadTurnsListParams';
 import type {ThreadUnarchiveParams} from './v2/ThreadUnarchiveParams';
 import type {ThreadUnsubscribeParams} from './v2/ThreadUnsubscribeParams';
 import type {TurnInterruptParams} from './v2/TurnInterruptParams';
@@ -104,10 +130,18 @@ export type ClientRequest =
 			params: ThreadDecrementElicitationParams;
 	  }
 	| {method: 'thread/name/set'; id: RequestId; params: ThreadSetNameParams}
+	| {method: 'thread/goal/set'; id: RequestId; params: ThreadGoalSetParams}
+	| {method: 'thread/goal/get'; id: RequestId; params: ThreadGoalGetParams}
+	| {method: 'thread/goal/clear'; id: RequestId; params: ThreadGoalClearParams}
 	| {
 			method: 'thread/metadata/update';
 			id: RequestId;
 			params: ThreadMetadataUpdateParams;
+	  }
+	| {
+			method: 'thread/settings/update';
+			id: RequestId;
+			params: ThreadSettingsUpdateParams;
 	  }
 	| {
 			method: 'thread/memoryMode/set';
@@ -127,27 +161,69 @@ export type ClientRequest =
 			params: ThreadShellCommandParams;
 	  }
 	| {
+			method: 'thread/approveGuardianDeniedAction';
+			id: RequestId;
+			params: ThreadApproveGuardianDeniedActionParams;
+	  }
+	| {
 			method: 'thread/backgroundTerminals/clean';
 			id: RequestId;
 			params: ThreadBackgroundTerminalsCleanParams;
 	  }
 	| {method: 'thread/rollback'; id: RequestId; params: ThreadRollbackParams}
 	| {method: 'thread/list'; id: RequestId; params: ThreadListParams}
+	| {method: 'thread/search'; id: RequestId; params: ThreadSearchParams}
 	| {
 			method: 'thread/loaded/list';
 			id: RequestId;
 			params: ThreadLoadedListParams;
 	  }
 	| {method: 'thread/read'; id: RequestId; params: ThreadReadParams}
+	| {method: 'thread/turns/list'; id: RequestId; params: ThreadTurnsListParams}
+	| {
+			method: 'thread/turns/items/list';
+			id: RequestId;
+			params: ThreadTurnsItemsListParams;
+	  }
 	| {
 			method: 'thread/inject_items';
 			id: RequestId;
 			params: ThreadInjectItemsParams;
 	  }
 	| {method: 'skills/list'; id: RequestId; params: SkillsListParams}
+	| {method: 'hooks/list'; id: RequestId; params: HooksListParams}
 	| {method: 'marketplace/add'; id: RequestId; params: MarketplaceAddParams}
+	| {
+			method: 'marketplace/remove';
+			id: RequestId;
+			params: MarketplaceRemoveParams;
+	  }
+	| {
+			method: 'marketplace/upgrade';
+			id: RequestId;
+			params: MarketplaceUpgradeParams;
+	  }
 	| {method: 'plugin/list'; id: RequestId; params: PluginListParams}
+	| {method: 'plugin/installed'; id: RequestId; params: PluginInstalledParams}
 	| {method: 'plugin/read'; id: RequestId; params: PluginReadParams}
+	| {method: 'plugin/skill/read'; id: RequestId; params: PluginSkillReadParams}
+	| {method: 'plugin/share/save'; id: RequestId; params: PluginShareSaveParams}
+	| {
+			method: 'plugin/share/updateTargets';
+			id: RequestId;
+			params: PluginShareUpdateTargetsParams;
+	  }
+	| {method: 'plugin/share/list'; id: RequestId; params: PluginShareListParams}
+	| {
+			method: 'plugin/share/checkout';
+			id: RequestId;
+			params: PluginShareCheckoutParams;
+	  }
+	| {
+			method: 'plugin/share/delete';
+			id: RequestId;
+			params: PluginShareDeleteParams;
+	  }
 	| {method: 'app/list'; id: RequestId; params: AppsListParams}
 	| {method: 'fs/readFile'; id: RequestId; params: FsReadFileParams}
 	| {method: 'fs/writeFile'; id: RequestId; params: FsWriteFileParams}
@@ -200,15 +276,28 @@ export type ClientRequest =
 	| {method: 'review/start'; id: RequestId; params: ReviewStartParams}
 	| {method: 'model/list'; id: RequestId; params: ModelListParams}
 	| {
+			method: 'modelProvider/capabilities/read';
+			id: RequestId;
+			params: ModelProviderCapabilitiesReadParams;
+	  }
+	| {
 			method: 'experimentalFeature/list';
 			id: RequestId;
 			params: ExperimentalFeatureListParams;
+	  }
+	| {
+			method: 'permissionProfile/list';
+			id: RequestId;
+			params: PermissionProfileListParams;
 	  }
 	| {
 			method: 'experimentalFeature/enablement/set';
 			id: RequestId;
 			params: ExperimentalFeatureEnablementSetParams;
 	  }
+	| {method: 'remoteControl/enable'; id: RequestId; params: undefined}
+	| {method: 'remoteControl/disable'; id: RequestId; params: undefined}
+	| {method: 'remoteControl/status/read'; id: RequestId; params: undefined}
 	| {
 			method: 'collaborationMode/list';
 			id: RequestId;
@@ -219,6 +308,7 @@ export type ClientRequest =
 			id: RequestId;
 			params: MockExperimentalMethodParams;
 	  }
+	| {method: 'environment/add'; id: RequestId; params: EnvironmentAddParams}
 	| {
 			method: 'mcpServer/oauth/login';
 			id: RequestId;
@@ -245,6 +335,7 @@ export type ClientRequest =
 			id: RequestId;
 			params: WindowsSandboxSetupStartParams;
 	  }
+	| {method: 'windowsSandbox/readiness'; id: RequestId; params: undefined}
 	| {method: 'account/login/start'; id: RequestId; params: LoginAccountParams}
 	| {
 			method: 'account/login/cancel';
@@ -253,6 +344,11 @@ export type ClientRequest =
 	  }
 	| {method: 'account/logout'; id: RequestId; params: undefined}
 	| {method: 'account/rateLimits/read'; id: RequestId; params: undefined}
+	| {
+			method: 'account/sendAddCreditsNudgeEmail';
+			id: RequestId;
+			params: SendAddCreditsNudgeEmailParams;
+	  }
 	| {method: 'feedback/upload'; id: RequestId; params: FeedbackUploadParams}
 	| {method: 'command/exec'; id: RequestId; params: CommandExecParams}
 	| {
@@ -270,6 +366,14 @@ export type ClientRequest =
 			id: RequestId;
 			params: CommandExecResizeParams;
 	  }
+	| {method: 'process/spawn'; id: RequestId; params: ProcessSpawnParams}
+	| {
+			method: 'process/writeStdin';
+			id: RequestId;
+			params: ProcessWriteStdinParams;
+	  }
+	| {method: 'process/kill'; id: RequestId; params: ProcessKillParams}
+	| {method: 'process/resizePty'; id: RequestId; params: ProcessResizePtyParams}
 	| {method: 'config/read'; id: RequestId; params: ConfigReadParams}
 	| {
 			method: 'externalAgentConfig/detect';

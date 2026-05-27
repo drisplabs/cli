@@ -89,6 +89,8 @@ export type ThreadItem =
 			tool: string;
 			status: McpToolCallStatus;
 			arguments: JsonValue;
+			mcpAppResourceUri?: string;
+			pluginId: string | null;
 			result: McpToolCallResult | null;
 			error: McpToolCallError | null;
 			/**
@@ -99,6 +101,7 @@ export type ThreadItem =
 	| {
 			type: 'dynamicToolCall';
 			id: string;
+			namespace: string | null;
 			tool: string;
 			arguments: JsonValue;
 			status: DynamicToolCallStatus;

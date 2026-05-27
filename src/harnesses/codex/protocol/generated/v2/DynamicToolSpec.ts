@@ -4,6 +4,7 @@
 import type {JsonValue} from '../serde_json/JsonValue';
 
 export type DynamicToolSpec = {
+	namespace?: string;
 	name: string;
 	description: string;
 	inputSchema: JsonValue;

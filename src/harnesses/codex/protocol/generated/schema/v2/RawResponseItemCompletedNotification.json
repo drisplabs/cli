@@ -36,6 +36,16 @@
 					"type": "object",
 					"required": ["image_url", "type"],
 					"properties": {
+						"detail": {
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"image_url": {
 							"type": "string"
 						},
@@ -119,41 +129,27 @@
 						}
 					},
 					"title": "InputImageFunctionCallOutputContentItem"
+				},
+				{
+					"type": "object",
+					"required": ["encrypted_content", "type"],
+					"properties": {
+						"encrypted_content": {
+							"type": "string"
+						},
+						"type": {
+							"type": "string",
+							"enum": ["encrypted_content"],
+							"title": "EncryptedContentFunctionCallOutputContentItemType"
+						}
+					},
+					"title": "EncryptedContentFunctionCallOutputContentItem"
 				}
 			]
 		},
-		"GhostCommit": {
-			"description": "Details of a ghost commit created from a repository state.",
-			"type": "object",
-			"required": [
-				"id",
-				"preexisting_untracked_dirs",
-				"preexisting_untracked_files"
-			],
-			"properties": {
-				"id": {
-					"type": "string"
-				},
-				"parent": {
-					"type": ["string", "null"]
-				},
-				"preexisting_untracked_dirs": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				},
-				"preexisting_untracked_files": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					}
-				}
-			}
-		},
 		"ImageDetail": {
 			"type": "string",
-			"enum": ["auto", "low", "high", "original"]
+			"enum": ["high", "original"]
 		},
 		"LocalShellAction": {
 			"oneOf": [
@@ -277,9 +273,6 @@
 							"items": {
 								"$ref": "#/definitions/ContentItem"
 							}
-						},
-						"end_turn": {
-							"type": ["boolean", "null"]
 						},
 						"id": {
 							"writeOnly": true,
@@ -562,21 +555,6 @@
 				},
 				{
 					"type": "object",
-					"required": ["ghost_commit", "type"],
-					"properties": {
-						"ghost_commit": {
-							"$ref": "#/definitions/GhostCommit"
-						},
-						"type": {
-							"type": "string",
-							"enum": ["ghost_snapshot"],
-							"title": "GhostSnapshotResponseItemType"
-						}
-					},
-					"title": "GhostSnapshotResponseItem"
-				},
-				{
-					"type": "object",
 					"required": ["encrypted_content", "type"],
 					"properties": {
 						"encrypted_content": {
@@ -589,6 +567,33 @@
 						}
 					},
 					"title": "CompactionResponseItem"
+				},
+				{
+					"type": "object",
+					"required": ["type"],
+					"properties": {
+						"type": {
+							"type": "string",
+							"enum": ["compaction_trigger"],
+							"title": "CompactionTriggerResponseItemType"
+						}
+					},
+					"title": "CompactionTriggerResponseItem"
+				},
+				{
+					"type": "object",
+					"required": ["type"],
+					"properties": {
+						"encrypted_content": {
+							"type": ["string", "null"]
+						},
+						"type": {
+							"type": "string",
+							"enum": ["context_compaction"],
+							"title": "ContextCompactionResponseItemType"
+						}
+					},
+					"title": "ContextCompactionResponseItem"
 				},
 				{
 					"type": "object",

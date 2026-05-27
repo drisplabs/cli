@@ -4,6 +4,7 @@
 import type {AbsolutePathBuf} from '../AbsolutePathBuf';
 import type {GuardianCommandSource} from './GuardianCommandSource';
 import type {NetworkApprovalProtocol} from './NetworkApprovalProtocol';
+import type {RequestPermissionProfile} from './RequestPermissionProfile';
 
 export type GuardianApprovalReviewAction =
 	| {
@@ -34,4 +35,9 @@ export type GuardianApprovalReviewAction =
 			connectorId: string | null;
 			connectorName: string | null;
 			toolTitle: string | null;
+	  }
+	| {
+			type: 'requestPermissions';
+			reason: string | null;
+			permissions: RequestPermissionProfile;
 	  };

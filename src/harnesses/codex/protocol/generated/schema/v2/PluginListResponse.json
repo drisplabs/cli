@@ -23,9 +23,6 @@
 			"items": {
 				"$ref": "#/definitions/PluginMarketplaceEntry"
 			}
-		},
-		"remoteSyncError": {
-			"type": ["string", "null"]
 		}
 	},
 	"definitions": {
@@ -57,13 +54,26 @@
 			"type": "string",
 			"enum": ["ON_INSTALL", "ON_USE"]
 		},
+		"PluginAvailability": {
+			"oneOf": [
+				{
+					"type": "string",
+					"enum": ["DISABLED_BY_ADMIN"]
+				},
+				{
+					"description": "Plugin-service currently sends `\"ENABLED\"` for available remote plugins. Codex app-server exposes `\"AVAILABLE\"` in its API; the alias keeps decoding compatible with that upstream response.",
+					"type": "string",
+					"enum": ["AVAILABLE"]
+				}
+			]
+		},
 		"PluginInstallPolicy": {
 			"type": "string",
 			"enum": ["NOT_AVAILABLE", "AVAILABLE", "INSTALLED_BY_DEFAULT"]
 		},
 		"PluginInterface": {
 			"type": "object",
-			"required": ["capabilities", "screenshots"],
+			"required": ["capabilities", "screenshotUrls", "screenshots"],
 			"properties": {
 				"brandColor": {
 					"type": ["string", "null"]
@@ -78,6 +88,7 @@
 					"type": ["string", "null"]
 				},
 				"composerIcon": {
+					"description": "Local composer icon path, resolved from the installed plugin package.",
 					"anyOf": [
 						{
 							"$ref": "#/definitions/AbsolutePathBuf"
@@ -86,6 +97,10 @@
 							"type": "null"
 						}
 					]
+				},
+				"composerIconUrl": {
+					"description": "Remote composer icon URL from the plugin catalog.",
+					"type": ["string", "null"]
 				},
 				"defaultPrompt": {
 					"description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 128 characters per entry.",
@@ -101,6 +116,7 @@
 					"type": ["string", "null"]
 				},
 				"logo": {
+					"description": "Local logo path, resolved from the installed plugin package.",
 					"anyOf": [
 						{
 							"$ref": "#/definitions/AbsolutePathBuf"
@@ -110,13 +126,25 @@
 						}
 					]
 				},
+				"logoUrl": {
+					"description": "Remote logo URL from the plugin catalog.",
+					"type": ["string", "null"]
+				},
 				"longDescription": {
 					"type": ["string", "null"]
 				},
 				"privacyPolicyUrl": {
 					"type": ["string", "null"]
 				},
+				"screenshotUrls": {
+					"description": "Remote screenshot URLs from the plugin catalog.",
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
 				"screenshots": {
+					"description": "Local screenshot paths, resolved from the installed plugin package.",
 					"type": "array",
 					"items": {
 						"$ref": "#/definitions/AbsolutePathBuf"
@@ -135,7 +163,7 @@
 		},
 		"PluginMarketplaceEntry": {
 			"type": "object",
-			"required": ["name", "path", "plugins"],
+			"required": ["name", "plugins"],
 			"properties": {
 				"interface": {
 					"anyOf": [
@@ -151,7 +179,15 @@
 					"type": "string"
 				},
 				"path": {
-					"$ref": "#/definitions/AbsolutePathBuf"
+					"description": "Local marketplace file path when the marketplace is backed by a local file. Remote-only catalog marketplaces do not have a local path.",
+					"anyOf": [
+						{
+							"$ref": "#/definitions/AbsolutePathBuf"
+						},
+						{
+							"type": "null"
+						}
+					]
 				},
 				"plugins": {
 					"type": "array",
@@ -160,6 +196,75 @@
 					}
 				}
 			}
+		},
+		"PluginShareContext": {
+			"type": "object",
+			"required": ["remotePluginId"],
+			"properties": {
+				"creatorAccountUserId": {
+					"type": ["string", "null"]
+				},
+				"creatorName": {
+					"type": ["string", "null"]
+				},
+				"discoverability": {
+					"anyOf": [
+						{
+							"$ref": "#/definitions/PluginShareDiscoverability"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"remotePluginId": {
+					"type": "string"
+				},
+				"remoteVersion": {
+					"description": "Version of the remote shared plugin release when available.",
+					"default": null,
+					"type": ["string", "null"]
+				},
+				"sharePrincipals": {
+					"type": ["array", "null"],
+					"items": {
+						"$ref": "#/definitions/PluginSharePrincipal"
+					}
+				},
+				"shareUrl": {
+					"type": ["string", "null"]
+				}
+			}
+		},
+		"PluginShareDiscoverability": {
+			"type": "string",
+			"enum": ["LISTED", "UNLISTED", "PRIVATE"]
+		},
+		"PluginSharePrincipal": {
+			"type": "object",
+			"required": ["name", "principalId", "principalType", "role"],
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"principalId": {
+					"type": "string"
+				},
+				"principalType": {
+					"$ref": "#/definitions/PluginSharePrincipalType"
+				},
+				"role": {
+					"$ref": "#/definitions/PluginSharePrincipalRole"
+				}
+			}
+		},
+		"PluginSharePrincipalRole": {
+			"type": "string",
+			"enum": ["reader", "editor", "owner"]
+		},
+		"PluginSharePrincipalType": {
+			"type": "string",
+			"enum": ["user", "group", "workspace"]
 		},
 		"PluginSource": {
 			"oneOf": [
@@ -177,6 +282,43 @@
 						}
 					},
 					"title": "LocalPluginSource"
+				},
+				{
+					"type": "object",
+					"required": ["type", "url"],
+					"properties": {
+						"path": {
+							"type": ["string", "null"]
+						},
+						"refName": {
+							"type": ["string", "null"]
+						},
+						"sha": {
+							"type": ["string", "null"]
+						},
+						"type": {
+							"type": "string",
+							"enum": ["git"],
+							"title": "GitPluginSourceType"
+						},
+						"url": {
+							"type": "string"
+						}
+					},
+					"title": "GitPluginSource"
+				},
+				{
+					"description": "The plugin is available in the remote catalog. Download metadata is kept server-side and is not exposed through the app-server API.",
+					"type": "object",
+					"required": ["type"],
+					"properties": {
+						"type": {
+							"type": "string",
+							"enum": ["remote"],
+							"title": "RemotePluginSourceType"
+						}
+					},
+					"title": "RemotePluginSource"
 				}
 			]
 		},
@@ -194,6 +336,15 @@
 			"properties": {
 				"authPolicy": {
 					"$ref": "#/definitions/PluginAuthPolicy"
+				},
+				"availability": {
+					"description": "Availability state for installing and using the plugin.",
+					"default": "AVAILABLE",
+					"allOf": [
+						{
+							"$ref": "#/definitions/PluginAvailability"
+						}
+					]
 				},
 				"enabled": {
 					"type": "boolean"
@@ -217,8 +368,35 @@
 						}
 					]
 				},
+				"keywords": {
+					"default": [],
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"localVersion": {
+					"description": "Version of the locally materialized plugin package when available.",
+					"default": null,
+					"type": ["string", "null"]
+				},
 				"name": {
 					"type": "string"
+				},
+				"remotePluginId": {
+					"description": "Backend remote plugin identifier when available.",
+					"type": ["string", "null"]
+				},
+				"shareContext": {
+					"description": "Remote sharing context associated with this plugin when available.",
+					"anyOf": [
+						{
+							"$ref": "#/definitions/PluginShareContext"
+						},
+						{
+							"type": "null"
+						}
+					]
 				},
 				"source": {
 					"$ref": "#/definitions/PluginSource"

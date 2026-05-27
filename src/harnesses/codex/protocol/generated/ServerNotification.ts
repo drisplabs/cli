@@ -14,8 +14,11 @@ import type {ConfigWarningNotification} from './v2/ConfigWarningNotification';
 import type {ContextCompactedNotification} from './v2/ContextCompactedNotification';
 import type {DeprecationNoticeNotification} from './v2/DeprecationNoticeNotification';
 import type {ErrorNotification} from './v2/ErrorNotification';
+import type {ExternalAgentConfigImportCompletedNotification} from './v2/ExternalAgentConfigImportCompletedNotification';
 import type {FileChangeOutputDeltaNotification} from './v2/FileChangeOutputDeltaNotification';
+import type {FileChangePatchUpdatedNotification} from './v2/FileChangePatchUpdatedNotification';
 import type {FsChangedNotification} from './v2/FsChangedNotification';
+import type {GuardianWarningNotification} from './v2/GuardianWarningNotification';
 import type {HookCompletedNotification} from './v2/HookCompletedNotification';
 import type {HookStartedNotification} from './v2/HookStartedNotification';
 import type {ItemCompletedNotification} from './v2/ItemCompletedNotification';
@@ -26,16 +29,22 @@ import type {McpServerOauthLoginCompletedNotification} from './v2/McpServerOauth
 import type {McpServerStatusUpdatedNotification} from './v2/McpServerStatusUpdatedNotification';
 import type {McpToolCallProgressNotification} from './v2/McpToolCallProgressNotification';
 import type {ModelReroutedNotification} from './v2/ModelReroutedNotification';
+import type {ModelVerificationNotification} from './v2/ModelVerificationNotification';
 import type {PlanDeltaNotification} from './v2/PlanDeltaNotification';
+import type {ProcessExitedNotification} from './v2/ProcessExitedNotification';
+import type {ProcessOutputDeltaNotification} from './v2/ProcessOutputDeltaNotification';
 import type {RawResponseItemCompletedNotification} from './v2/RawResponseItemCompletedNotification';
 import type {ReasoningSummaryPartAddedNotification} from './v2/ReasoningSummaryPartAddedNotification';
 import type {ReasoningSummaryTextDeltaNotification} from './v2/ReasoningSummaryTextDeltaNotification';
 import type {ReasoningTextDeltaNotification} from './v2/ReasoningTextDeltaNotification';
+import type {RemoteControlStatusChangedNotification} from './v2/RemoteControlStatusChangedNotification';
 import type {ServerRequestResolvedNotification} from './v2/ServerRequestResolvedNotification';
 import type {SkillsChangedNotification} from './v2/SkillsChangedNotification';
 import type {TerminalInteractionNotification} from './v2/TerminalInteractionNotification';
 import type {ThreadArchivedNotification} from './v2/ThreadArchivedNotification';
 import type {ThreadClosedNotification} from './v2/ThreadClosedNotification';
+import type {ThreadGoalClearedNotification} from './v2/ThreadGoalClearedNotification';
+import type {ThreadGoalUpdatedNotification} from './v2/ThreadGoalUpdatedNotification';
 import type {ThreadNameUpdatedNotification} from './v2/ThreadNameUpdatedNotification';
 import type {ThreadRealtimeClosedNotification} from './v2/ThreadRealtimeClosedNotification';
 import type {ThreadRealtimeErrorNotification} from './v2/ThreadRealtimeErrorNotification';
@@ -45,6 +54,7 @@ import type {ThreadRealtimeSdpNotification} from './v2/ThreadRealtimeSdpNotifica
 import type {ThreadRealtimeStartedNotification} from './v2/ThreadRealtimeStartedNotification';
 import type {ThreadRealtimeTranscriptDeltaNotification} from './v2/ThreadRealtimeTranscriptDeltaNotification';
 import type {ThreadRealtimeTranscriptDoneNotification} from './v2/ThreadRealtimeTranscriptDoneNotification';
+import type {ThreadSettingsUpdatedNotification} from './v2/ThreadSettingsUpdatedNotification';
 import type {ThreadStartedNotification} from './v2/ThreadStartedNotification';
 import type {ThreadStatusChangedNotification} from './v2/ThreadStatusChangedNotification';
 import type {ThreadTokenUsageUpdatedNotification} from './v2/ThreadTokenUsageUpdatedNotification';
@@ -53,6 +63,7 @@ import type {TurnCompletedNotification} from './v2/TurnCompletedNotification';
 import type {TurnDiffUpdatedNotification} from './v2/TurnDiffUpdatedNotification';
 import type {TurnPlanUpdatedNotification} from './v2/TurnPlanUpdatedNotification';
 import type {TurnStartedNotification} from './v2/TurnStartedNotification';
+import type {WarningNotification} from './v2/WarningNotification';
 import type {WindowsSandboxSetupCompletedNotification} from './v2/WindowsSandboxSetupCompletedNotification';
 import type {WindowsWorldWritableWarningNotification} from './v2/WindowsWorldWritableWarningNotification';
 
@@ -68,6 +79,12 @@ export type ServerNotification =
 	| {method: 'thread/closed'; params: ThreadClosedNotification}
 	| {method: 'skills/changed'; params: SkillsChangedNotification}
 	| {method: 'thread/name/updated'; params: ThreadNameUpdatedNotification}
+	| {method: 'thread/goal/updated'; params: ThreadGoalUpdatedNotification}
+	| {method: 'thread/goal/cleared'; params: ThreadGoalClearedNotification}
+	| {
+			method: 'thread/settings/updated';
+			params: ThreadSettingsUpdatedNotification;
+	  }
 	| {
 			method: 'thread/tokenUsage/updated';
 			params: ThreadTokenUsageUpdatedNotification;
@@ -98,6 +115,8 @@ export type ServerNotification =
 			method: 'command/exec/outputDelta';
 			params: CommandExecOutputDeltaNotification;
 	  }
+	| {method: 'process/outputDelta'; params: ProcessOutputDeltaNotification}
+	| {method: 'process/exited'; params: ProcessExitedNotification}
 	| {
 			method: 'item/commandExecution/outputDelta';
 			params: CommandExecutionOutputDeltaNotification;
@@ -109,6 +128,10 @@ export type ServerNotification =
 	| {
 			method: 'item/fileChange/outputDelta';
 			params: FileChangeOutputDeltaNotification;
+	  }
+	| {
+			method: 'item/fileChange/patchUpdated';
+			params: FileChangePatchUpdatedNotification;
 	  }
 	| {
 			method: 'serverRequest/resolved';
@@ -132,6 +155,14 @@ export type ServerNotification =
 			params: AccountRateLimitsUpdatedNotification;
 	  }
 	| {method: 'app/list/updated'; params: AppListUpdatedNotification}
+	| {
+			method: 'remoteControl/status/changed';
+			params: RemoteControlStatusChangedNotification;
+	  }
+	| {
+			method: 'externalAgentConfig/import/completed';
+			params: ExternalAgentConfigImportCompletedNotification;
+	  }
 	| {method: 'fs/changed'; params: FsChangedNotification}
 	| {
 			method: 'item/reasoning/summaryTextDelta';
@@ -144,6 +175,9 @@ export type ServerNotification =
 	| {method: 'item/reasoning/textDelta'; params: ReasoningTextDeltaNotification}
 	| {method: 'thread/compacted'; params: ContextCompactedNotification}
 	| {method: 'model/rerouted'; params: ModelReroutedNotification}
+	| {method: 'model/verification'; params: ModelVerificationNotification}
+	| {method: 'warning'; params: WarningNotification}
+	| {method: 'guardianWarning'; params: GuardianWarningNotification}
 	| {method: 'deprecationNotice'; params: DeprecationNoticeNotification}
 	| {method: 'configWarning'; params: ConfigWarningNotification}
 	| {

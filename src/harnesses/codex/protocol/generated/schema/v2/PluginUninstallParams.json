@@ -4,10 +4,6 @@
 	"type": "object",
 	"required": ["pluginId"],
 	"properties": {
-		"forceRemoteSync": {
-			"description": "When true, apply the remote plugin change before the local uninstall flow.",
-			"type": "boolean"
-		},
 		"pluginId": {
 			"type": "string"
 		}

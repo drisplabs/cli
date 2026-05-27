@@ -2,10 +2,15 @@
 	"$schema": "http://json-schema.org/draft-07/schema#",
 	"title": "ItemStartedNotification",
 	"type": "object",
-	"required": ["item", "threadId", "turnId"],
+	"required": ["item", "startedAtMs", "threadId", "turnId"],
 	"properties": {
 		"item": {
 			"$ref": "#/definitions/ThreadItem"
+		},
+		"startedAtMs": {
+			"description": "Unix timestamp (in milliseconds) when this item lifecycle started.",
+			"type": "integer",
+			"format": "int64"
 		},
 		"threadId": {
 			"type": "string"
@@ -223,6 +228,10 @@
 					"type": "string"
 				}
 			}
+		},
+		"ImageDetail": {
+			"type": "string",
+			"enum": ["high", "original"]
 		},
 		"McpToolCallError": {
 			"type": "object",
@@ -623,6 +632,12 @@
 						"id": {
 							"type": "string"
 						},
+						"mcpAppResourceUri": {
+							"type": ["string", "null"]
+						},
+						"pluginId": {
+							"type": ["string", "null"]
+						},
 						"result": {
 							"anyOf": [
 								{
@@ -668,6 +683,9 @@
 						},
 						"id": {
 							"type": "string"
+						},
+						"namespace": {
+							"type": ["string", "null"]
 						},
 						"status": {
 							"$ref": "#/definitions/DynamicToolCallStatus"
@@ -925,6 +943,17 @@
 					"type": "object",
 					"required": ["type", "url"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"type": {
 							"type": "string",
 							"enum": ["image"],
@@ -940,6 +969,17 @@
 					"type": "object",
 					"required": ["path", "type"],
 					"properties": {
+						"detail": {
+							"default": null,
+							"anyOf": [
+								{
+									"$ref": "#/definitions/ImageDetail"
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
 						"path": {
 							"type": "string"
 						},

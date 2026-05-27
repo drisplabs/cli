@@ -16,7 +16,7 @@ export type ThreadRealtimeStartParams = {
 	 */
 	outputModality: RealtimeOutputModality;
 	prompt?: string | null | null;
-	sessionId?: string | null;
+	realtimeSessionId?: string | null;
 	transport?: ThreadRealtimeStartTransport | null;
 	voice?: RealtimeVoice | null;
 };
