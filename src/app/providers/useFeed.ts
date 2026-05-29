@@ -195,6 +195,16 @@ export function useFeed(
 		() => options?.dashboardFeedPublisher ?? createPairedFeedPublisher(),
 		[options?.dashboardFeedPublisher],
 	);
+	// Only the internally-created publisher is ours to dispose; an injected one
+	// is owned by the caller. Closing releases the lazily-opened SQLite outbox
+	// handle on unmount.
+	const ownsFeedPublisher = !options?.dashboardFeedPublisher;
+	useEffect(() => {
+		if (!ownsFeedPublisher) return;
+		return () => {
+			dashboardFeedPublisher.close();
+		};
+	}, [ownsFeedPublisher, dashboardFeedPublisher]);
 	const dashboardDecisionInboxRef = useRef<DashboardDecisionInbox | null>(
 		options?.dashboardDecisionInbox ?? null,
 	);

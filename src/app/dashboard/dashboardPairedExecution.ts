@@ -211,6 +211,10 @@ export function createDashboardPairedExecution(
 	}
 
 	return {
+		// `job_assignment` is intentionally not handled here: the runtime daemon
+		// routes assignments through `DashboardAssignmentIntake`, which gates
+		// admission on attachment readiness and then calls `admitAssignment`
+		// directly. `handleFrame` owns only the frames that flow straight through.
 		handleFrame(frame) {
 			if (frame.type === 'dashboard_decision') {
 				handleDecision(frame);
@@ -218,10 +222,6 @@ export function createDashboardPairedExecution(
 			}
 			if (frame.type === 'cancel') {
 				handleCancel(frame);
-				return true;
-			}
-			if (frame.type === 'job_assignment') {
-				handleAssignment(frame);
 				return true;
 			}
 			return false;

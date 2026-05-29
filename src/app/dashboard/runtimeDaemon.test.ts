@@ -322,14 +322,13 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
-	it('retries the connection when attachment reconciliation fails', async () => {
-		const first = makeFakeSocket();
-		const second = makeFakeSocket();
+	it('keeps the connection and admits assignments when attachment reconciliation fails', async () => {
+		const fake = makeFakeSocket();
 		const fetchAttachments = vi
 			.fn()
-			.mockRejectedValueOnce(new Error('attachments unavailable'))
-			.mockResolvedValueOnce([]);
-		const sockets = [first.client, second.client];
+			.mockRejectedValue(new Error('attachments unavailable'));
+		const executor = vi.fn(async () => {});
+		const log = vi.fn();
 
 		const daemon = await runDashboardRuntimeDaemon({
 			readConfig: () => stored,
@@ -338,16 +337,30 @@ describe('runDashboardRuntimeDaemon', () => {
 				accessToken: 'access_1',
 				expiresInSec: 900,
 			}),
-			makeInstanceSocketClient: () => sockets.shift() ?? second.client,
-			executeRemoteAssignment: vi.fn(async () => {}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: executor,
 			reconnectDelaysMs: [],
 			fetchAttachments,
+			log,
 		});
 
-		await vi.waitFor(() => {
-			expect(first.calls.close).toContain('attachment reconciliation failed');
-			expect(second.calls.connect).toBe(1);
+		// Reconcile failure must not tear the socket down — it degrades to the
+		// push-based mirror and continues serving assignments.
+		expect(fake.calls.connect).toBe(1);
+		expect(fake.calls.close).not.toContain('attachment reconciliation failed');
+		expect(log).toHaveBeenCalledWith(
+			'warn',
+			expect.stringContaining('attachment reconciliation failed'),
+		);
+
+		fake.emitFrame({
+			type: 'job_assignment',
+			runId: 'run_degraded',
+			runSpec: {prompt: 'hi'},
 		});
+		await Promise.resolve();
+		expect(executor).toHaveBeenCalledTimes(1);
+		expect(fake.calls.assignmentAccepted).toEqual(['run_degraded']);
 		await daemon.stop('test');
 	});
 

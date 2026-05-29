@@ -106,6 +106,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	const runtimeFactory = options.runtimeFactory ?? createRuntime;
 	const sessionStoreFactory = options.sessionStoreFactory ?? createSessionStore;
 	const athenaSessionId = options.athenaSessionId ?? crypto.randomUUID();
+	// An injected publisher is owned by the caller; only close the one we create.
+	const ownsFeedPublisher = !options.dashboardFeedPublisher;
 	const dashboardFeedPublisher =
 		options.dashboardFeedPublisher ?? createPairedFeedPublisher();
 	const dashboardOrigin = options.dashboardOrigin ?? 'local';
@@ -544,6 +546,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		}
 		await bridge?.stop();
 		store.close();
+		if (ownsFeedPublisher) {
+			dashboardFeedPublisher.close();
+		}
 	}
 
 	const resolvedFinalMessage = resolveFinalMessage({

@@ -314,7 +314,11 @@ export async function executeRemoteAssignment({
 	};
 
 	// Pre-parse so we know whether to open the per-run channel before the
-	// first frame. parseRunSpec is cheap and side-effect-free.
+	// first frame. The intake admissibility gate (`isRemoteAssignmentAdmissible`)
+	// already parsed this frame once; re-parsing here is intentional and cheap —
+	// `parseRemoteRunSpec` is pure and side-effect-free, so we keep the executor
+	// self-contained rather than threading the parsed spec across the admission
+	// boundary.
 	const spec = parseRemoteRunSpec(frame.runSpec);
 
 	const runEventPublisher: RemoteRunEventPublisher =
