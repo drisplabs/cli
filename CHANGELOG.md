@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.11](https://github.com/drisplabs/cli/compare/cli-v0.5.10...cli-v0.5.11) (2026-05-29)
+
+
+### Bug Fixes
+
+* **plugins:** load skills nested under category folders ([df79cf2](https://github.com/drisplabs/cli/commit/df79cf230a9ad153f8af0fe85550ab5c95c2e146))
+
 ## [0.5.10](https://github.com/drisplabs/cli/compare/cli-v0.5.9...cli-v0.5.10) (2026-05-20)
 
 
