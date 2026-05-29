@@ -30,13 +30,13 @@ The largest remaining gaps are not missing endpoints. They are mixed generations
 
 ## Mismatched Assumptions
 
-| Area               | CLI view                                                                | Dashboard view                                                                                                    | Risk                                                                                          |
-| ------------------ | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Concurrency        | Local daemon defaults to one active run per runner key.                 | Dashboard enforces runner/org leases, then expects remote dispatch to proceed.                                    | Dashboard can deliver work the CLI rejects after queue admission.                             |
-| Assignment ACK     | CLI emits `assignment_accepted` immediately on receipt.                 | Dashboard currently treats it as informational only.                                                              | Name suggests acceptance/capacity confirmation but does not mean that.                        |
-| Run streaming      | CLI keeps per-run stream and `run_event` behind compatibility adapters. | Dashboard now treats `feed_event` as canonical paired-session transport while still minting callback credentials. | Compatibility transports remain, but transport selection is no longer spread through callers. |
-| Attachment refresh | CLI relies on push plus local mirror.                                   | Dashboard drops `attachments.changed` while offline and expects refetch on reconnect.                             | Reconnect refetch is an implied requirement, not a fully explicit handshake.                  |
-| Re-pairing         | CLI persists one local pairing config.                                  | Dashboard always creates a new instance row on successful pair.                                                   | No documented replacement/recovery semantics for the same physical machine.                   |
+| Area               | CLI view                                                                                                                                    | Dashboard view                                                                                                    | Risk                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Concurrency        | Local daemon defaults to one active run per runner key.                                                                                     | Dashboard enforces runner/org leases, then expects remote dispatch to proceed.                                    | Dashboard can deliver work the CLI rejects after queue admission.                                                                 |
+| Assignment ACK     | CLI emits `assignment_accepted` only after local admission succeeds (mirror current, not a duplicate, under the local cap, parseable spec). | Dashboard currently treats it as informational only.                                                              | ACK now signals local admission, but its absence (rejection) is not yet a distinct wire signal the dashboard acts on.             |
+| Run streaming      | CLI keeps per-run stream and `run_event` behind compatibility adapters.                                                                     | Dashboard now treats `feed_event` as canonical paired-session transport while still minting callback credentials. | Compatibility transports remain, but transport selection is no longer spread through callers.                                     |
+| Attachment refresh | CLI refetches on reconnect, then falls back to the push mirror if the refetch fails.                                                        | Dashboard drops `attachments.changed` while offline and expects refetch on reconnect.                             | Reconnect refetch is best-effort: a dashboard without the REST endpoint degrades to push-only rather than wedging the connection. |
+| Re-pairing         | CLI persists one local pairing config.                                                                                                      | Dashboard always creates a new instance row on successful pair.                                                   | No documented replacement/recovery semantics for the same physical machine.                                                       |
 
 ## Implicit Contracts
 
@@ -50,13 +50,13 @@ The largest remaining gaps are not missing endpoints. They are mixed generations
 
 ## Naming Inconsistencies
 
-| Current names                                            | Issue                                                                                  |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `athenaSessionId`, `Athena`, `Athenaflow` leftovers      | Brand/product naming is mixed with Drisp-facing protocol terminology.                  |
-| `assignment_accepted`                                    | Means "received", not "accepted for execution".                                        |
-| `remoteInstances` vs "paired instance"                   | Storage name and product name differ.                                                  |
-| `run_event` vs `feed_event`                              | Both sound canonical; only one currently is for paired sessions.                       |
-| `sessionId`, `athenaSessionId`, `adapterResumeSessionId` | Three session identifiers travel in one remote run spec without a single naming guide. |
+| Current names                                            | Issue                                                                                       |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `athenaSessionId`, `Athena`, `Athenaflow` leftovers      | Brand/product naming is mixed with Drisp-facing protocol terminology.                       |
+| `assignment_accepted`                                    | Means "admitted locally", not "execution started"; rejections are silent (no negative ACK). |
+| `remoteInstances` vs "paired instance"                   | Storage name and product name differ.                                                       |
+| `run_event` vs `feed_event`                              | Both sound canonical; only one currently is for paired sessions.                            |
+| `sessionId`, `athenaSessionId`, `adapterResumeSessionId` | Three session identifiers travel in one remote run spec without a single naming guide.      |
 
 ## Missing or Weak Lifecycle States
 
@@ -69,9 +69,8 @@ The largest remaining gaps are not missing endpoints. They are mixed generations
 
 - No distinct wire-level state for:
   - received
-  - capacity accepted
   - execution started
-- `assignment_accepted` currently collapses those distinctions.
+- `assignment_accepted` now signals local admission (capacity accepted), but still collapses "admitted" and "execution started", and rejection has no negative wire signal.
 
 ### Session/run
 

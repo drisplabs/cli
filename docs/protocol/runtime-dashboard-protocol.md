@@ -333,7 +333,7 @@ Every failure should map to:
 
 The following are current-state realities, not the target shape:
 
-1. Existing code uses `assignment_accepted` for receipt only.
+1. Existing code emits `assignment_accepted` on local admission (after the attachment mirror is current and the run spec passes capacity/duplicate checks), not merely on frame receipt; rejected assignments emit no ACK.
 2. Existing code uses a single `queued` dashboard state for both capacity and offline-instance waiting.
 3. Existing code still carries per-run callback stream credentials.
 4. Existing code uses Athena-named identifiers throughout the wire contract.

@@ -418,12 +418,23 @@ export async function runDashboardRuntimeDaemon(
 				accessToken: token.accessToken,
 			});
 		} catch (err) {
-			client = null;
-			assignmentIntake.markNotReady();
+			// Reconnect refetch is an optimization, not a precondition: the
+			// push-based `attachments.changed` stream keeps the mirror current on
+			// its own. A dashboard that lacks the REST endpoint (or a transient
+			// failure) must not wedge the control channel in a reconnect loop, so
+			// degrade to push-only instead of tearing the connection down.
 			attachmentReconciler.markStale(token.instanceId);
-			next.close('attachment reconciliation failed');
-			throw err;
+			log(
+				'warn',
+				`runtime daemon: attachment reconciliation failed; continuing with push-only mirror: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
 		}
+		// The socket may have closed while we awaited reconciliation (onClose
+		// nulls `client` and schedules a reconnect). Bail before marking ready so
+		// we never admit assignments against a dead client.
+		if (stopped || client !== next) return;
 		assignmentIntake.markReady();
 		currentInstanceId = token.instanceId;
 		currentDashboardUrl = config.dashboardUrl;

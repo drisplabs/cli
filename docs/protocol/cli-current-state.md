@@ -107,25 +107,25 @@ This gateway is not the canonical dashboard assignment scheduler in the current 
 
 ### Server-to-CLI frames consumed
 
-| Frame                 | Current CLI behavior                                                     |
-| --------------------- | ------------------------------------------------------------------------ |
-| `job_assignment`      | Immediately sends `assignment_accepted`, then schedules local execution. |
-| `cancel`              | Aborts an active local assignment when `runId` matches.                  |
-| `dashboard_decision`  | Enqueues into durable SQLite inbox, then sends `decision_ack`.           |
-| `attachments.changed` | Rewrites local attachment mirror.                                        |
-| `feed_ack`            | Marks durable feed outbox row acked by `deliverySeq` and/or `eventId`.   |
-| `pong`                | No special logic beyond socket liveness.                                 |
-| `error`               | Exposed to handlers/logging only.                                        |
+| Frame                 | Current CLI behavior                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `job_assignment`      | Buffered until the attachment mirror is current, then admitted; sends `assignment_accepted` only when admission succeeds. |
+| `cancel`              | Aborts an active local assignment when `runId` matches.                                                                   |
+| `dashboard_decision`  | Enqueues into durable SQLite inbox, then sends `decision_ack`.                                                            |
+| `attachments.changed` | Rewrites local attachment mirror.                                                                                         |
+| `feed_ack`            | Marks durable feed outbox row acked by `deliverySeq` and/or `eventId`.                                                    |
+| `pong`                | No special logic beyond socket liveness.                                                                                  |
+| `error`               | Exposed to handlers/logging only.                                                                                         |
 
 ### CLI-to-server frames emitted
 
-| Frame                 | Current CLI behavior                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| `ping`                | Heartbeat.                                                                              |
-| `assignment_accepted` | Sent eagerly when an assignment frame arrives, before execution starts.                 |
-| `decision_ack`        | Sent after local inbox enqueue, not after the runtime consumes the decision.            |
-| `feed_event`          | Canonical paired-session event transport; durable and retried from local SQLite outbox. |
-| `run_event`           | Legacy/fallback remote-run event transport when no per-run stream is available.         |
+| Frame                 | Current CLI behavior                                                                                                                                                               |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ping`                | Heartbeat.                                                                                                                                                                         |
+| `assignment_accepted` | Sent only after admission succeeds (mirror current, not a duplicate, under the runner concurrency cap, and the run spec parses). Inadmissible or rejected assignments emit no ACK. |
+| `decision_ack`        | Sent after local inbox enqueue, not after the runtime consumes the decision.                                                                                                       |
+| `feed_event`          | Canonical paired-session event transport; durable and retried from local SQLite outbox.                                                                                            |
+| `run_event`           | Legacy/fallback remote-run event transport when no per-run stream is available.                                                                                                    |
 
 ## Assignment and Execution Semantics
 
@@ -249,15 +249,15 @@ Behavior:
 
 ### Local assignment
 
-| State     | Meaning                            |
-| --------- | ---------------------------------- |
-| received  | `job_assignment` arrived           |
-| accepted  | `assignment_accepted` sent         |
-| running   | executor promise active            |
-| completed | executor resolved                  |
-| failed    | executor rejected                  |
-| cancelled | `cancel` aborted active controller |
-| rejected  | duplicate or over local cap        |
+| State     | Meaning                                                     |
+| --------- | ----------------------------------------------------------- |
+| received  | `job_assignment` arrived (may be buffered until current)    |
+| accepted  | admission succeeded; `assignment_accepted` sent             |
+| running   | executor promise active                                     |
+| completed | executor resolved                                           |
+| failed    | executor rejected                                           |
+| cancelled | `cancel` aborted active controller                          |
+| rejected  | duplicate, over local cap, or unparseable run spec (no ACK) |
 
 ## Implementation Boundaries
 
@@ -267,7 +267,7 @@ Behavior:
 
 ## Notable Current-State Ambiguities
 
-- `assignment_accepted` confirms frame receipt, not dispatch start or capacity acceptance.
+- `assignment_accepted` now confirms local admission (mirror current, not a duplicate, under the local concurrency cap, parseable spec), not just frame receipt; it still does not confirm that the executor has started.
 - Local daemon concurrency and dashboard runner concurrency are separate limits with separate rejection behavior.
 - `run_event` and `feed_event` coexist, but only `feed_event` is the canonical paired-session stream.
 - Token names still use legacy Athena terminology in several files and data fields.
