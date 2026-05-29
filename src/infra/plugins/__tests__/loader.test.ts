@@ -44,6 +44,16 @@ function addSkill(name: string, frontmatter: string, body: string) {
 		`---\n${frontmatter}\n---\n${body}`;
 }
 
+function addCategorySkill(
+	category: string,
+	name: string,
+	frontmatter: string,
+	body: string,
+) {
+	files[`/plugins/test/skills/${category}/${name}/SKILL.md`] =
+		`---\n${frontmatter}\n---\n${body}`;
+}
+
 beforeEach(() => {
 	// Clear the virtual FS
 	for (const key of Object.keys(files)) {
@@ -89,6 +99,41 @@ describe('loadPlugin', () => {
 		expect(commands[0]!.description).toBe('Explore a site');
 		expect(commands[0]!.category).toBe('prompt');
 		expect(commands[0]!.session).toBe('new');
+	});
+
+	it('loads skills nested one level under a category folder', () => {
+		// matt-pocock-skills lays skills out as skills/<category>/<skill>/SKILL.md
+		addCategorySkill(
+			'engineering',
+			'tdd',
+			'name: tdd\ndescription: Red-green-refactor\nuser-invocable: true',
+			'Body',
+		);
+
+		const commands = loadPlugin('/plugins/test');
+
+		expect(commands).toHaveLength(1);
+		expect(commands[0]!.name).toBe('tdd');
+	});
+
+	it('loads flat and category-nested skills together', () => {
+		addSkill(
+			'flat-skill',
+			'name: flat-skill\ndescription: Flat\nuser-invocable: true',
+			'Body',
+		);
+		addCategorySkill(
+			'productivity',
+			'caveman',
+			'name: caveman\ndescription: Terse\nuser-invocable: true',
+			'Body',
+		);
+
+		const names = loadPlugin('/plugins/test')
+			.map(c => c.name)
+			.sort();
+
+		expect(names).toEqual(['caveman', 'flat-skill']);
 	});
 
 	it('filters out non-invocable skills', () => {

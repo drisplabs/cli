@@ -40,20 +40,11 @@ export function loadPlugin(pluginDir: string): PromptCommand[] {
 	const mcpConfigPath = path.join(pluginDir, '.mcp.json');
 	const hasMcpConfig = fs.existsSync(mcpConfigPath);
 
-	const entries = fs.readdirSync(skillsDir, {withFileTypes: true});
 	const commands: PromptCommand[] = [];
 
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-
-		const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
-		if (!fs.existsSync(skillPath)) continue;
-
-		const content = fs.readFileSync(skillPath, 'utf-8');
-		const parsed = parseFrontmatter(content);
-
-		if (!parsed.frontmatter['user-invocable']) continue;
-
+	const loadSkillFile = (skillPath: string): void => {
+		const parsed = parseFrontmatter(fs.readFileSync(skillPath, 'utf-8'));
+		if (!parsed.frontmatter['user-invocable']) return;
 		commands.push(
 			skillToCommand(
 				parsed.frontmatter,
@@ -61,6 +52,27 @@ export function loadPlugin(pluginDir: string): PromptCommand[] {
 				hasMcpConfig ? mcpConfigPath : undefined,
 			),
 		);
+	};
+
+	for (const entry of fs.readdirSync(skillsDir, {withFileTypes: true})) {
+		if (!entry.isDirectory()) continue;
+
+		const entryDir = path.join(skillsDir, entry.name);
+		const directSkill = path.join(entryDir, 'SKILL.md');
+
+		if (fs.existsSync(directSkill)) {
+			// Flat layout: skills/<skill>/SKILL.md
+			loadSkillFile(directSkill);
+			continue;
+		}
+
+		// Category layout: skills/<category>/<skill>/SKILL.md (one level deeper).
+		// matt-pocock-skills groups skills under engineering/ and productivity/.
+		for (const nested of fs.readdirSync(entryDir, {withFileTypes: true})) {
+			if (!nested.isDirectory()) continue;
+			const nestedSkill = path.join(entryDir, nested.name, 'SKILL.md');
+			if (fs.existsSync(nestedSkill)) loadSkillFile(nestedSkill);
+		}
 	}
 
 	return commands;
