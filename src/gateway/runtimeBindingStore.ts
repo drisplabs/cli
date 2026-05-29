@@ -4,15 +4,15 @@
  * States per attachment slot: absent → active → stale → (active | absent)
  *
  * The store hosts one runtime per **attachment slot**, keyed by `attachmentId`.
- * Frames that arrive without an `attachmentId` (legacy / pre-Phase-1) hit the
- * single fallback slot keyed by `undefined`. Each slot tracks its own
- * runtime identity, connection binding, and optional grace-period timer.
+ * Frames that arrive without an `attachmentId` hit the single fallback slot
+ * keyed by `undefined`. Each slot tracks its own runtime identity, connection
+ * binding, and optional grace-period timer.
  *
  * Observer callbacks are emitted synchronously from the mutating methods so
  * the caller can update ancillary state (e.g. clearing the push handle) in
  * the same turn.
  *
- * See `docs/adr/0001-attachment-supervisor.md` (phase 4).
+ * See `docs/adr/0001-attachment-supervisor.md`.
  */
 
 export type RegisteredRuntime = {

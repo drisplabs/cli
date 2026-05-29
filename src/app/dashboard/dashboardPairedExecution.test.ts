@@ -40,12 +40,12 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		const frame: InstanceSocketFrame = {
+		const frame = {
 			type: 'job_assignment',
 			runId: 'run_1',
 			runSpec: {prompt: 'hi', env: {FOO: 'bar'}},
-		};
-		expect(execution.handleFrame(frame)).toBe(true);
+		} satisfies Extract<InstanceSocketFrame, {type: 'job_assignment'}>;
+		expect(execution.admitAssignment(frame)).toBe('accepted');
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledWith(
@@ -77,13 +77,13 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		const frame: InstanceSocketFrame = {
+		const frame = {
 			type: 'job_assignment',
 			runId: 'run_dup',
 			runSpec: {prompt: 'hi'},
-		};
-		execution.handleFrame(frame);
-		execution.handleFrame(frame);
+		} satisfies Extract<InstanceSocketFrame, {type: 'job_assignment'}>;
+		execution.admitAssignment(frame);
+		execution.admitAssignment(frame);
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledTimes(1);
@@ -118,13 +118,13 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		execution.handleFrame({
+		execution.admitAssignment({
 			type: 'job_assignment',
 			runId: 'run_a',
 			runnerId: 'runner-1',
 			runSpec: {prompt: 'a'},
 		});
-		execution.handleFrame({
+		execution.admitAssignment({
 			type: 'job_assignment',
 			runId: 'run_b',
 			runnerId: 'runner-1',
@@ -164,7 +164,7 @@ describe('DashboardPairedExecution', () => {
 			decisionInbox: makeDecisionInbox(),
 		});
 
-		execution.handleFrame({
+		execution.admitAssignment({
 			type: 'job_assignment',
 			runId: 'run_cancel',
 			runnerId: 'runner-1',

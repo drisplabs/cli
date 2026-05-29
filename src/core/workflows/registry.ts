@@ -249,16 +249,7 @@ function reResolveFromMetadata(
 		const slashIdx = slug.indexOf('/');
 		const owner = slug.slice(0, slashIdx);
 		const repo = slug.slice(slashIdx + 1);
-		try {
-			pullMarketplaceRepo(owner, repo);
-		} catch (error) {
-			if (
-				!(error instanceof Error) ||
-				!error.message.includes('is not cached')
-			) {
-				throw error;
-			}
-		}
+		pullMarketplaceRepo(owner, repo);
 		return resolveWorkflowInstall(metadata.ref, []);
 	}
 	if (metadata.kind === 'marketplace-local') {

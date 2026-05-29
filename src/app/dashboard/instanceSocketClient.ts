@@ -27,9 +27,8 @@ export type InstanceSocketFrame =
 			/**
 			 * The runner this assignment is bound to. Top-level so the CLI can
 			 * route to the right Attachment without inspecting `runSpec`.
-			 * Optional: dashboards predating phase-1 of the supervisor work
-			 * don't emit it. The CLI falls back to single-runtime semantics
-			 * when absent.
+			 * Optional: dashboards that do not emit it use the runtime daemon's
+			 * single-runtime semantics.
 			 */
 			runnerId?: string;
 	  }
@@ -96,6 +95,7 @@ export type InstanceSocketClient = {
 	close(reason?: string): void;
 	onFrame(handler: (frame: InstanceSocketFrame) => void): void;
 	onClose(handler: (reason: string) => void): void;
+	sendAssignmentAccepted(runId: string): void;
 	sendRunEvent(event: Omit<RunEventFrame, 'type'>): void;
 	sendFeedEvent(event: Omit<FeedEventFrame, 'type'>): void;
 	sendDecisionAck(input: {athenaSessionId: string; requestId: string}): void;
@@ -186,10 +186,6 @@ export function createInstanceSocketClient(
 	}
 
 	function handleFrame(parsed: InstanceSocketFrame): void {
-		if (parsed.type === 'job_assignment') {
-			send({type: 'assignment_accepted', runId: parsed.runId});
-			log('info', `instance socket: assignment accepted runId=${parsed.runId}`);
-		}
 		for (const handler of [...frameHandlers]) {
 			try {
 				handler(parsed);
@@ -306,6 +302,11 @@ export function createInstanceSocketClient(
 		closeHandlers.add(handler);
 	}
 
+	function sendAssignmentAccepted(runId: string): void {
+		send({type: 'assignment_accepted', runId});
+		log('info', `instance socket: assignment accepted runId=${runId}`);
+	}
+
 	function sendRunEvent(event: Omit<RunEventFrame, 'type'>): void {
 		send({type: 'run_event', ...event});
 	}
@@ -326,6 +327,7 @@ export function createInstanceSocketClient(
 		close,
 		onFrame,
 		onClose,
+		sendAssignmentAccepted,
 		sendRunEvent,
 		sendFeedEvent,
 		sendDecisionAck,

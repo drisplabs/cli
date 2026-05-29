@@ -47,17 +47,49 @@ import {
  */
 export function pullMarketplaceRepo(owner: string, repo: string): void {
 	const repoDir = marketplaceRepoCacheDir(owner, repo);
+	const repoUrl = `https://github.com/${owner}/${repo}.git`;
 
 	if (!fs.existsSync(repoDir)) {
-		throw new Error(
-			`Marketplace repo ${owner}/${repo} is not cached. It will be cloned on first use.`,
-		);
+		cloneMarketplaceRepo(owner, repo, repoUrl, repoDir);
+		return;
 	}
 
-	execFileSync('git', ['pull', '--ff-only'], {
-		cwd: repoDir,
-		stdio: 'ignore',
-	});
+	try {
+		execFileSync('git', ['pull', '--ff-only'], {
+			cwd: repoDir,
+			stdio: 'ignore',
+		});
+		return;
+	} catch (pullError) {
+		const backupDir = `${repoDir}.backup-${Date.now()}`;
+		try {
+			fs.renameSync(repoDir, backupDir);
+			cloneMarketplaceRepo(owner, repo, repoUrl, repoDir);
+		} catch (recoveryError) {
+			throw new Error(
+				`Failed to refresh marketplace repo ${owner}/${repo}: ${(pullError as Error).message}. Recovery clone failed: ${(recoveryError as Error).message}. Preserved previous cache at ${backupDir}.`,
+			);
+		}
+	}
+}
+
+function cloneMarketplaceRepo(
+	owner: string,
+	repo: string,
+	repoUrl: string,
+	repoDir: string,
+): void {
+	fs.mkdirSync(repoDir, {recursive: true});
+	try {
+		execFileSync('git', ['clone', '--depth', '1', repoUrl, repoDir], {
+			stdio: 'ignore',
+		});
+	} catch (error) {
+		fs.rmSync(repoDir, {recursive: true, force: true});
+		throw new Error(
+			`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
+		);
+	}
 }
 
 export function resolveMarketplacePlugin(ref: string): string {

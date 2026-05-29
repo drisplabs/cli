@@ -36,6 +36,8 @@ export type DashboardPairedExecutionOptions = {
 
 export type DashboardPairedExecution = {
 	handleFrame(frame: InstanceSocketFrame): boolean;
+	admitAssignment(frame: JobAssignmentFrame): 'accepted' | 'rejected';
+	rejectAssignment(runId: string, reason: string): void;
 	snapshot(): {activeRuns: number; completedRuns: number};
 	listRuns(options?: {
 		active?: boolean;
@@ -129,13 +131,15 @@ export function createDashboardPairedExecution(
 		entry.controller.abort();
 	}
 
-	function handleAssignment(frame: JobAssignmentFrame): void {
+	function handleAssignment(
+		frame: JobAssignmentFrame,
+	): 'accepted' | 'rejected' {
 		if (active.has(frame.runId)) {
 			rejectAssignment(
 				frame.runId,
 				`duplicate active assignment ${frame.runId}`,
 			);
-			return;
+			return 'rejected';
 		}
 		const runnerKey = frame.runnerId;
 		const bucket = activeByRunner.get(runnerKey) ?? new Set<string>();
@@ -144,7 +148,7 @@ export function createDashboardPairedExecution(
 				frame.runId,
 				`runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
 			);
-			return;
+			return 'rejected';
 		}
 
 		const controller = new AbortController();
@@ -191,9 +195,14 @@ export function createDashboardPairedExecution(
 				}
 			});
 		active.set(frame.runId, {controller, promise, record, runnerKey});
+		return 'accepted';
 	}
 
 	return {
+		// `job_assignment` is intentionally not handled here: the runtime daemon
+		// routes assignments through `DashboardAssignmentIntake`, which gates
+		// admission on attachment readiness and then calls `admitAssignment`
+		// directly. `handleFrame` owns only the frames that flow straight through.
 		handleFrame(frame) {
 			if (frame.type === 'dashboard_decision') {
 				handleDecision(frame);
@@ -203,12 +212,12 @@ export function createDashboardPairedExecution(
 				handleCancel(frame);
 				return true;
 			}
-			if (frame.type === 'job_assignment') {
-				handleAssignment(frame);
-				return true;
-			}
 			return false;
 		},
+		admitAssignment(frame) {
+			return handleAssignment(frame);
+		},
+		rejectAssignment,
 		snapshot() {
 			return {
 				activeRuns: active.size,

@@ -106,9 +106,9 @@ export type ChannelsReloadResponsePayload = {
  * `already_registered`.
  *
  * `attachmentId` is the dashboard-side runner key. Harnesses launched without
- * an attachment context omit it and occupy the legacy slot; future
- * supervisor-spawned children pass their attachmentId so the gateway can
- * route inbound by attachment. See `docs/adr/0001-attachment-supervisor.md`.
+ * an attachment context omit it and occupy the legacy slot; gateway-connected
+ * runtimes may pass their attachmentId so the gateway can route inbound by
+ * attachment. See `docs/adr/0001-attachment-supervisor.md`.
  */
 export type SessionRegisterRequestPayload = {
 	runtimeId: string;
@@ -148,13 +148,11 @@ export type SessionTurnCompleteResponsePayload = {
 };
 
 /**
- * Streaming run-event from a runner harness child to the dashboard.
+ * Streaming run-event from a registered runtime to its outbound channel.
  *
- * Routed by the gateway to the registered slot's outbound adapter (in
- * production: `RunnerAdapter`) which encodes it as a `run_event` wire frame.
- * Independent of `session.turn.complete` — turn-complete is one-shot per
- * dispatch, run events are many-per-assignment, and only the terminal one
- * coincides with a turn-complete carrying the same envelope text.
+ * Routed by the gateway to the registered slot's outbound adapter. Independent
+ * of `session.turn.complete`: turn-complete is one-shot per dispatch, while run
+ * events are many-per-run.
  */
 export type SessionRunEventRequestPayload = {
 	runtimeId: string;

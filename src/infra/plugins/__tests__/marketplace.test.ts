@@ -40,6 +40,7 @@ const {
 	listMarketplaceWorkflowsFromRepo,
 	resolveMarketplacePlugin,
 	resolveMarketplacePluginTarget,
+	pullMarketplaceRepo,
 	resolveMarketplacePluginFromRepo,
 	resolveMarketplaceWorkflow,
 	resolveVersionedMarketplacePluginTarget,
@@ -199,7 +200,7 @@ describe('resolveMarketplacePlugin', () => {
 		);
 	});
 
-	it('pulls latest when repo is already cached', () => {
+	it('uses cached repo without pulling on resolve', () => {
 		// Repo already exists
 		dirs.add(cacheBase);
 		files[manifestPath] = validManifest;
@@ -213,34 +214,16 @@ describe('resolveMarketplacePlugin', () => {
 
 		expect(result).toBe(`${cacheBase}/plugins/web-testing-toolkit`);
 
-		// Verify git --version + git pull were called (not clone)
-		expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+		// Verify git --version was called, but resolving did not refresh the repo.
+		expect(execFileSyncMock).toHaveBeenCalledTimes(1);
 		expect(execFileSyncMock).toHaveBeenCalledWith('git', ['--version'], {
 			stdio: 'ignore',
 		});
-		expect(execFileSyncMock).toHaveBeenCalledWith(
+		expect(execFileSyncMock).not.toHaveBeenCalledWith(
 			'git',
 			['pull', '--ff-only'],
-			{cwd: cacheBase, stdio: 'ignore'},
+			expect.anything(),
 		);
-	});
-
-	it('resolves plugin even if pull fails (graceful degradation)', () => {
-		dirs.add(cacheBase);
-		files[manifestPath] = validManifest;
-		dirs.add(`${cacheBase}/plugins/web-testing-toolkit`);
-
-		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
-			if (args[0] === '--version') return;
-			if (args[0] === 'pull') throw new Error('network timeout');
-		});
-
-		// Should still resolve from cached version
-		const result = resolveMarketplacePlugin(
-			'web-testing-toolkit@lespaceman/athena-workflow-marketplace',
-		);
-
-		expect(result).toBe(`${cacheBase}/plugins/web-testing-toolkit`);
 	});
 
 	it('throws when git is not installed', () => {
@@ -532,6 +515,94 @@ describe('resolveMarketplacePlugin', () => {
 		);
 
 		expect(result).toBe(`${cacheBase}/plugins/web-testing-toolkit`);
+	});
+});
+
+describe('pullMarketplaceRepo', () => {
+	const cacheBase =
+		'/home/testuser/.config/athena/marketplaces/lespaceman/athena-workflow-marketplace';
+
+	it('clones a missing cached remote marketplace', () => {
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'clone') {
+				dirs.add(cacheBase);
+				files[`${cacheBase}/clean.txt`] = 'fresh checkout';
+			}
+		});
+
+		pullMarketplaceRepo('lespaceman', 'athena-workflow-marketplace');
+
+		expect(files[`${cacheBase}/clean.txt`]).toBe('fresh checkout');
+		expect(execFileSyncMock).toHaveBeenCalledWith(
+			'git',
+			[
+				'clone',
+				'--depth',
+				'1',
+				'https://github.com/lespaceman/athena-workflow-marketplace.git',
+				cacheBase,
+			],
+			{stdio: 'ignore'},
+		);
+	});
+
+	it('preserves and replaces a cached remote marketplace when fast-forward refresh fails', () => {
+		dirs.add(cacheBase);
+		files[`${cacheBase}/local-note.txt`] = 'accidental edit';
+
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				dirs.add(cacheBase);
+				files[`${cacheBase}/clean.txt`] = 'fresh checkout';
+			}
+		});
+
+		pullMarketplaceRepo('lespaceman', 'athena-workflow-marketplace');
+
+		expect(renameSyncMock).toHaveBeenCalledTimes(1);
+		const [from, backupDir] = renameSyncMock.mock.calls[0] as [string, string];
+		expect(from).toBe(cacheBase);
+		expect(backupDir).toMatch(
+			/^\/home\/testuser\/\.config\/athena\/marketplaces\/lespaceman\/athena-workflow-marketplace\.backup-/,
+		);
+		expect(files[`${backupDir}/local-note.txt`]).toBe('accidental edit');
+		expect(files[`${cacheBase}/clean.txt`]).toBe('fresh checkout');
+		expect(execFileSyncMock).toHaveBeenCalledWith(
+			'git',
+			[
+				'clone',
+				'--depth',
+				'1',
+				'https://github.com/lespaceman/athena-workflow-marketplace.git',
+				cacheBase,
+			],
+			{stdio: 'ignore'},
+		);
+	});
+
+	it('reports the marketplace source when recovery cannot clone a replacement', () => {
+		dirs.add(cacheBase);
+		files[`${cacheBase}/local-note.txt`] = 'accidental edit';
+
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error('network unavailable');
+			}
+		});
+
+		expect(() =>
+			pullMarketplaceRepo('lespaceman', 'athena-workflow-marketplace'),
+		).toThrow(
+			/Failed to refresh marketplace repo lespaceman\/athena-workflow-marketplace/,
+		);
+		const backupDir = renameSyncMock.mock.calls[0]?.[1] as string;
+		expect(files[`${backupDir}/local-note.txt`]).toBe('accidental edit');
 	});
 });
 

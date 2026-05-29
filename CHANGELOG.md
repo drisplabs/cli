@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.3](https://github.com/drisplabs/cli/compare/cli-v0.5.2...cli-v0.5.3) (2026-05-17)
+
+
+### Bug Fixes
+
+* **codex:** preserve workflow plugin refs ([1f81c07](https://github.com/drisplabs/cli/commit/1f81c0754519d7be2e5ff4b73260926d21b85b8c))
+* refresh marketplace cache reliably ([cac9431](https://github.com/drisplabs/cli/commit/cac943184d2daaed5f50412dacb6ae5683eb9dc3))
+
+## [0.5.2](https://github.com/drisplabs/cli/compare/cli-v0.5.1...cli-v0.5.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* ack dashboard decisions after enqueue ([a9f59a0](https://github.com/drisplabs/cli/commit/a9f59a063d9e45cd49025ff9f154bdd3bdc2c499))
+
+## [0.5.1](https://github.com/drisplabs/cli/compare/cli-v0.5.0...cli-v0.5.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* clarify Codex header token counts ([b273d67](https://github.com/drisplabs/cli/commit/b273d678e8ed5d453137149dee398834259ca785))
+* retry dashboard daemon initial socket failures ([e075e49](https://github.com/drisplabs/cli/commit/e075e49876765bc77ea63f59c965a4d5edbba78f))
+
 ## [0.5.0](https://github.com/drisplabs/cli/compare/cli-v0.4.7...cli-v0.5.0) (2026-05-12)
 
 
