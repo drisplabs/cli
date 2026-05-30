@@ -2,21 +2,8 @@ import type {RuntimeEvent} from '../../runtime/types';
 import type {FeedEvent} from '../types';
 import type {RunLifecycle} from './runLifecycle';
 import type {AgentMessageStream, MessageScope} from './agentMessageStream';
-import type {RootPlanTracker} from './rootPlanTracker';
-import type {TodoItem} from '../todo';
+import type {TaskStateTracker} from './taskStateTracker';
 import {type EnsureRun, type FeedEventBuilder, readString} from './projection';
-
-function mapPlanStepStatus(status: string | undefined): TodoItem['status'] {
-	switch (status) {
-		case 'inProgress':
-			return 'in_progress';
-		case 'completed':
-			return 'completed';
-		case undefined:
-		default:
-			return 'pending';
-	}
-}
 
 export type RunSessionProjection = {
 	mapRunSessionEvent(
@@ -34,7 +21,7 @@ export function createRunSessionProjection(args: {
 	) => FeedEvent | null;
 	runLifecycle: RunLifecycle;
 	agentMessageStream: AgentMessageStream;
-	rootPlan: RootPlanTracker;
+	taskState: TaskStateTracker;
 	resolveToolActor: () => string;
 	currentScope: () => MessageScope;
 }): RunSessionProjection {
@@ -44,7 +31,7 @@ export function createRunSessionProjection(args: {
 		closeRunIntoEvent,
 		runLifecycle,
 		agentMessageStream,
-		rootPlan,
+		taskState,
 		resolveToolActor,
 		currentScope,
 	} = args;
@@ -206,28 +193,19 @@ export function createRunSessionProjection(args: {
 
 			if (event.kind === 'plan.delta') {
 				const planSteps = data['plan'];
-				if (Array.isArray(planSteps) && planSteps.length > 0) {
-					const next = planSteps.map(
-						(step: {step?: string; status?: string}) => ({
-							content: typeof step.step === 'string' ? step.step : '',
-							status: mapPlanStepStatus(step.status),
-						}),
+				if (taskState.applyPlanDelta(planSteps)) {
+					results.push(
+						makeEvent(
+							'todo.update',
+							'info',
+							'system',
+							{
+								todo_id: 'plan',
+								patch: {status: 'doing'},
+							} satisfies import('../types').TodoUpdateData,
+							event,
+						),
 					);
-					if (rootPlan.differs(next)) {
-						rootPlan.set(next);
-						results.push(
-							makeEvent(
-								'todo.update',
-								'info',
-								'system',
-								{
-									todo_id: 'plan',
-									patch: {status: 'doing'},
-								} satisfies import('../types').TodoUpdateData,
-								event,
-							),
-						);
-					}
 				}
 				results.push(
 					makeEvent(

@@ -29,17 +29,10 @@ import {createRunLifecycle} from './internals/runLifecycle';
 import {createDecisionCorrelation} from './internals/decisionCorrelation';
 import {createToolCorrelation} from './internals/toolCorrelation';
 import {createAgentMessageStream} from './internals/agentMessageStream';
-import {createRootPlanTracker} from './internals/rootPlanTracker';
-import {
-	coerceTaskStatus,
-	createTaskLifecycleTracker,
-} from './internals/taskLifecycleTracker';
+import {createTaskStateTracker} from './internals/taskStateTracker';
+import {readString} from './internals/projection';
 import {createSubagentTracker} from './internals/subagentTracker';
-import {readObject, readString} from './internals/projection';
-import {
-	createToolProjection,
-	extractTodoItems,
-} from './internals/toolProjection';
+import {createToolProjection} from './internals/toolProjection';
 import {createNotificationProjection} from './internals/notificationProjection';
 import {createDecisionProjection} from './internals/decisionProjection';
 import {createSubagentProjection} from './internals/subagentProjection';
@@ -115,8 +108,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const toolCorrelation = createToolCorrelation();
 	const transcriptReader = createTranscriptReader();
 	const actors = new ActorRegistry();
-	const rootPlan = createRootPlanTracker();
-	const taskLifecycle = createTaskLifecycleTracker();
+	const taskState = createTaskStateTracker();
 	const subagents = createSubagentTracker();
 
 	function makeEvent(
@@ -171,82 +163,9 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		transcriptReader,
 	);
 
-	function replayTaskLifecycleToolEvent(e: FeedEvent): void {
-		if (e.kind !== 'tool.pre' && e.kind !== 'tool.post') return;
-		const data = e.data as {
-			tool_name?: string;
-			tool_input?: unknown;
-			tool_response?: unknown;
-		};
-		const toolInput = readObject(data.tool_input);
-		if (data.tool_name === 'TaskCreate' && e.kind === 'tool.post') {
-			const response = readObject(data.tool_response);
-			const task = readObject(response['task']);
-			const taskId = readString(task['id'], task['task_id']);
-			const subject = readString(task['subject'], toolInput['subject']);
-			if (taskId && subject) {
-				taskLifecycle.upsertCreated({
-					taskId,
-					subject,
-					description: readString(toolInput['description']),
-					activeForm: readString(toolInput['activeForm']),
-				});
-			}
-		}
-		if (data.tool_name === 'TaskUpdate') {
-			const response = readObject(data.tool_response);
-			const status = coerceTaskStatus(
-				readObject(response['statusChange'])['to'] ?? toolInput['status'],
-			);
-			const taskId = readString(
-				response['taskId'],
-				response['task_id'],
-				toolInput['taskId'],
-				toolInput['task_id'],
-			);
-			if (taskId && status) {
-				taskLifecycle.updateStatus({taskId, status});
-			}
-		}
-	}
-
 	if (bootstrap) {
 		runLifecycle.restoreFrom(bootstrap);
-		for (const e of bootstrap.feedEvents) {
-			if (
-				e.kind === 'tool.pre' &&
-				e.actor_id === 'agent:root' &&
-				(e.data as {tool_name?: string}).tool_name === 'TodoWrite'
-			) {
-				rootPlan.set(
-					extractTodoItems((e.data as {tool_input?: unknown}).tool_input),
-				);
-			}
-			replayTaskLifecycleToolEvent(e);
-			if (e.kind === 'task.created') {
-				const data = e.data as {
-					task_id?: string;
-					task_subject?: string;
-					task_description?: string;
-				};
-				if (data.task_id && data.task_subject) {
-					taskLifecycle.upsertCreated({
-						taskId: data.task_id,
-						subject: data.task_subject,
-						description: data.task_description,
-					});
-				}
-			}
-			if (e.kind === 'task.completed') {
-				const data = e.data as {task_id?: string; task_subject?: string};
-				if (data.task_id) {
-					taskLifecycle.markCompleted({
-						taskId: data.task_id,
-						subject: data.task_subject,
-					});
-				}
-			}
-		}
+		taskState.restore(bootstrap.feedEvents);
 	}
 
 	function closeRunIntoEvent(
@@ -311,8 +230,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		makeEvent,
 		runLifecycle,
 		toolCorrelation,
-		rootPlan,
-		taskLifecycle,
+		taskState,
 		subagents,
 		resolveToolActor,
 	});
@@ -346,7 +264,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const statusProjection = createStatusProjection({
 		ensureRunArray,
 		makeEvent,
-		taskLifecycle,
+		taskState,
 	});
 
 	const currentScope = (): 'root' | 'subagent' => subagents.currentScope();
@@ -357,7 +275,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		closeRunIntoEvent,
 		runLifecycle,
 		agentMessageStream,
-		rootPlan,
+		taskState,
 		resolveToolActor,
 		currentScope,
 	});
@@ -469,7 +387,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		getSession: () => runLifecycle.getSession(),
 		getCurrentRun: () => runLifecycle.getCurrentRun(),
 		getActors: () => actors.all(),
-		getTasks: () => [...rootPlan.current(), ...taskLifecycle.current()],
+		getTasks: () => taskState.current(),
 		allocateSeq: () => runLifecycle.allocateSeq(),
 	};
 }
