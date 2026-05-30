@@ -9,6 +9,7 @@ import type {
 	AgentMessageData,
 } from '../types';
 import type {TranscriptReader} from '../transcript';
+import {readString} from './projection';
 
 export type EventBuilder = (
 	kind: FeedEventKind,
@@ -64,6 +65,34 @@ export type AgentMessageStream = {
 		actorId: string,
 		scope: MessageScope,
 	): FeedEvent[];
+	/**
+	 * Replays new transcript assistant messages that belong BEFORE this hook
+	 * event, so an emitted agent.message gets a lower seq than the event's own
+	 * FeedEvents (e.g. tool.pre). Stop events are skipped here — they drain the
+	 * transcript and fall back to last_assistant_message via {@link emitStopFallback}
+	 * to avoid flush-timing duplicates. Returns [] when there is no transcript.
+	 */
+	replayBeforeEvent(
+		runtimeEvent: RuntimeEvent,
+		actorId: string,
+		scope: MessageScope,
+	): FeedEvent[];
+	/**
+	 * Stop-event message timing: drains the transcript (advancing the byte offset
+	 * so the next event won't re-emit the same text), then emits a single fallback
+	 * assistant message from `last_assistant_message` — unless an agent.message was
+	 * already produced for this event (no duplication). The fallback is parented to
+	 * the prior event of `parentKind` when present.
+	 */
+	emitStopFallback(
+		runtimeEvent: RuntimeEvent,
+		opts: {
+			actorId: string;
+			scope: MessageScope;
+			parentKind: FeedEventKind;
+			priorResults: readonly FeedEvent[];
+		},
+	): FeedEvent[];
 	drainTranscript(transcriptPath: string): void;
 	appendReasoningSummary(
 		itemId: string | undefined,
@@ -81,6 +110,10 @@ function normalizeAgentMessage(message: string): string {
 
 function agentMessageKey(actorId: string, scope: MessageScope): string {
 	return `${actorId}\0${scope}`;
+}
+
+function isStopEvent(kind: RuntimeEvent['kind']): boolean {
+	return kind === 'stop.request' || kind === 'subagent.stop';
 }
 
 export function createAgentMessageStream(
@@ -125,6 +158,32 @@ export function createAgentMessageStream(
 		);
 		lastAgentMessageByActorScope.set(key, normalized);
 		return event;
+	}
+
+	function emitTranscriptMessages(
+		transcriptPath: string,
+		runtimeEvent: RuntimeEvent,
+		actorId: string,
+		scope: MessageScope,
+	): FeedEvent[] {
+		const msgs = transcriptReader.readNewAssistantMessages(transcriptPath);
+		const out: FeedEvent[] = [];
+		for (const msg of msgs) {
+			const ev = emit({
+				runtimeEvent,
+				actorId,
+				scope,
+				message: msg.text,
+				source: 'transcript',
+				model: msg.model,
+			});
+			if (ev) out.push(ev);
+		}
+		return out;
+	}
+
+	function drainTranscript(transcriptPath: string): void {
+		transcriptReader.readNewAssistantMessages(transcriptPath);
 	}
 
 	return {
@@ -182,25 +241,39 @@ export function createAgentMessageStream(
 			}
 			return out;
 		},
-		emitTranscriptMessages(transcriptPath, runtimeEvent, actorId, scope) {
-			const msgs = transcriptReader.readNewAssistantMessages(transcriptPath);
-			const out: FeedEvent[] = [];
-			for (const msg of msgs) {
-				const ev = emit({
-					runtimeEvent,
-					actorId,
-					scope,
-					message: msg.text,
-					source: 'transcript',
-					model: msg.model,
-				});
-				if (ev) out.push(ev);
-			}
-			return out;
+		emitTranscriptMessages,
+		replayBeforeEvent(runtimeEvent, actorId, scope) {
+			const transcriptPath = runtimeEvent.context.transcriptPath;
+			if (!transcriptPath || isStopEvent(runtimeEvent.kind)) return [];
+			return emitTranscriptMessages(
+				transcriptPath,
+				runtimeEvent,
+				actorId,
+				scope,
+			);
 		},
-		drainTranscript(transcriptPath) {
-			transcriptReader.readNewAssistantMessages(transcriptPath);
+		emitStopFallback(runtimeEvent, opts) {
+			const transcriptPath = runtimeEvent.context.transcriptPath;
+			if (transcriptPath) drainTranscript(transcriptPath);
+			if (opts.priorResults.some(r => r.kind === 'agent.message')) return [];
+			const message = readString(
+				(runtimeEvent.data as Record<string, unknown>)[
+					'last_assistant_message'
+				],
+			);
+			if (!message) return [];
+			const parent = opts.priorResults.find(r => r.kind === opts.parentKind);
+			const ev = emit({
+				runtimeEvent,
+				actorId: opts.actorId,
+				scope: opts.scope,
+				message,
+				source: 'hook',
+				cause: parent ? {parent_event_id: parent.event_id} : undefined,
+			});
+			return ev ? [ev] : [];
 		},
+		drainTranscript,
 		appendReasoningSummary(itemId, index, chunk) {
 			const key = `${itemId ?? ''}:${index ?? 0}`;
 			const next = `${reasoningSummaryByKey.get(key) ?? ''}${chunk}`;
