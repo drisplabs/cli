@@ -36,6 +36,7 @@ import {
 	type DashboardPairedExecutionRunRecord,
 } from './dashboardPairedExecution';
 import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
+import {routeDashboardRunFrame} from './dashboardFrameRouter';
 import {resolveRemoteWorkspace} from './remoteWorkspaceResolver';
 
 type RuntimeDaemonAssignmentExecutor = (
@@ -404,7 +405,7 @@ export async function runDashboardRuntimeDaemon(
 				assignmentIntake.receive(frame);
 				return;
 			}
-			pairedExecution.handleFrame(frame);
+			routeDashboardRunFrame(pairedExecution, frame);
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;

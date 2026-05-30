@@ -1,7 +1,6 @@
 import type {
 	AssignmentRejectedReason,
 	InstanceSocketClient,
-	InstanceSocketFrame,
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
@@ -10,6 +9,19 @@ import type {
 	ValidatedAssignment,
 } from './remoteRunExecutor';
 import type {PairedFeedPublisher} from './pairedFeedPublisher';
+import type {RuntimeDecision} from '../../core/runtime/types';
+
+/**
+ * A dashboard decision in Run-domain terms, decoupled from the
+ * `dashboard_decision` socket frame. The frame router translates a raw
+ * `dashboard_decision` frame into this shape before it crosses the execution
+ * boundary, so decision submission can be exercised without socket frames.
+ */
+export type DashboardDecisionSubmission = {
+	athenaSessionId: string;
+	requestId: string;
+	decision: RuntimeDecision;
+};
 
 export type DashboardAssignmentRejection = {
 	reason: AssignmentRejectedReason;
@@ -45,11 +57,12 @@ export type DashboardPairedExecutionOptions = {
 };
 
 export type DashboardPairedExecution = {
-	handleFrame(frame: InstanceSocketFrame): boolean;
 	admitAssignment(
 		assignment: ValidatedAssignment,
 		options?: {projectDir?: string},
 	): DashboardAssignmentAdmission;
+	cancelRun(runId: string): boolean;
+	submitDashboardDecision(submission: DashboardDecisionSubmission): void;
 	rejectAssignment(
 		runId: string,
 		rejection: DashboardAssignmentRejection,
@@ -113,26 +126,27 @@ export function createDashboardPairedExecution(
 		log('warn', `run ${runId} rejected: ${rejection.message}`);
 	}
 
-	function handleDecision(
-		frame: Extract<InstanceSocketFrame, {type: 'dashboard_decision'}>,
+	function submitDashboardDecision(
+		submission: DashboardDecisionSubmission,
 	): void {
 		decisionInbox.enqueue({
-			athenaSessionId: frame.athenaSessionId,
-			requestId: frame.requestId,
-			decision: frame.decision,
+			athenaSessionId: submission.athenaSessionId,
+			requestId: submission.requestId,
+			decision: submission.decision,
 			receivedAt: now(),
 		});
 		client.sendDecisionAck({
-			athenaSessionId: frame.athenaSessionId,
-			requestId: frame.requestId,
+			athenaSessionId: submission.athenaSessionId,
+			requestId: submission.requestId,
 		});
 	}
 
-	function handleCancel(frame: Extract<InstanceSocketFrame, {type: 'cancel'}>) {
-		const entry = active.get(frame.runId);
-		if (!entry) return;
+	function cancelRun(runId: string): boolean {
+		const entry = active.get(runId);
+		if (!entry) return false;
 		entry.record.status = 'cancelled';
 		entry.controller.abort();
+		return true;
 	}
 
 	function handleAssignment(
@@ -212,21 +226,14 @@ export function createDashboardPairedExecution(
 		// `job_assignment` is intentionally not handled here: the runtime daemon
 		// routes assignments through `DashboardAssignmentIntake`, which gates
 		// admission on attachment readiness and then calls `admitAssignment`
-		// directly. `handleFrame` owns only the frames that flow straight through.
-		handleFrame(frame) {
-			if (frame.type === 'dashboard_decision') {
-				handleDecision(frame);
-				return true;
-			}
-			if (frame.type === 'cancel') {
-				handleCancel(frame);
-				return true;
-			}
-			return false;
-		},
+		// directly. Run-control frames (`dashboard_decision`, `cancel`) are
+		// translated by `routeDashboardRunFrame` into `submitDashboardDecision`
+		// and `cancelRun` calls.
 		admitAssignment(assignment, input) {
 			return handleAssignment(assignment, input);
 		},
+		cancelRun,
+		submitDashboardDecision,
 		rejectAssignment,
 		snapshot() {
 			return {

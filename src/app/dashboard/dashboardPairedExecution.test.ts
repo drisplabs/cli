@@ -171,7 +171,7 @@ describe('DashboardPairedExecution', () => {
 		await execution.stop();
 	});
 
-	it('cancels an active run by runId', async () => {
+	it('cancels an active run by runId through the Run-oriented interface', async () => {
 		const {client} = makeClient();
 		let seenSignal: AbortSignal | undefined;
 		let resolveFirst: () => void = () => {};
@@ -198,7 +198,7 @@ describe('DashboardPairedExecution', () => {
 			}),
 		);
 		await Promise.resolve();
-		execution.handleFrame({type: 'cancel', runId: 'run_cancel'});
+		expect(execution.cancelRun('run_cancel')).toBe(true);
 
 		expect(seenSignal?.aborted).toBe(true);
 		expect(execution.listRuns()).toEqual([
@@ -208,7 +208,19 @@ describe('DashboardPairedExecution', () => {
 		await execution.stop();
 	});
 
-	it('forwards dashboard decisions to the inbox', () => {
+	it('returns false when cancelling an unknown run', () => {
+		const {client} = makeClient();
+		const execution = createDashboardPairedExecution({
+			client,
+			executor: vi.fn(async () => {}) as DashboardPairedExecutionExecutor,
+			projectDir: '/tmp/project',
+			decisionInbox: makeDecisionInbox(),
+		});
+
+		expect(execution.cancelRun('missing')).toBe(false);
+	});
+
+	it('submits dashboard decisions to the inbox and acks the dashboard', () => {
 		const {client, decisionAcks} = makeClient();
 		const decisionInbox = makeDecisionInbox();
 		const execution = createDashboardPairedExecution({
@@ -219,18 +231,15 @@ describe('DashboardPairedExecution', () => {
 			now: () => 555,
 		});
 
-		expect(
-			execution.handleFrame({
-				type: 'dashboard_decision',
-				athenaSessionId: 'athena-1',
-				requestId: 'req-1',
-				decision: {
-					type: 'json',
-					source: 'user',
-					intent: {kind: 'permission_allow'},
-				},
-			}),
-		).toBe(true);
+		execution.submitDashboardDecision({
+			athenaSessionId: 'athena-1',
+			requestId: 'req-1',
+			decision: {
+				type: 'json',
+				source: 'user',
+				intent: {kind: 'permission_allow'},
+			},
+		});
 
 		expect(decisionInbox.enqueue).toHaveBeenCalledWith({
 			athenaSessionId: 'athena-1',
