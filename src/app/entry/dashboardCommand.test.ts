@@ -975,7 +975,9 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 
 		await pending;
 		expect(executor).toHaveBeenCalledTimes(1);
-		expect(executor.mock.calls[0]![0]).toMatchObject({frame});
+		expect(executor.mock.calls[0]![0]).toMatchObject({
+			assignment: expect.objectContaining({runId: 'run_1', frame}),
+		});
 	});
 
 	it('aborts in-flight assignments on stop', async () => {

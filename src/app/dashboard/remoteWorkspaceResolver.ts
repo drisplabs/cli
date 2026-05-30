@@ -2,16 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {daemonStatePaths} from '../../infra/daemon/stateDir';
-import type {
-	AssignmentRejectedReason,
-	InstanceSocketFrame,
-} from './instanceSocketClient';
-import {parseRemoteRunSpec} from './remoteRunExecutor';
-
-type JobAssignmentFrame = Extract<
-	InstanceSocketFrame,
-	{type: 'job_assignment'}
->;
+import type {AssignmentRejectedReason} from './instanceSocketClient';
+import type {ValidatedAssignment} from './remoteRunExecutor';
 
 export type RemoteWorkspaceRejection = {
 	reason: Extract<
@@ -31,26 +23,16 @@ export type ResolveRemoteWorkspaceOptions = {
 };
 
 export function resolveRemoteWorkspace(
-	frame: JobAssignmentFrame,
+	assignment: ValidatedAssignment,
 	options: ResolveRemoteWorkspaceOptions = {},
 ): RemoteWorkspaceResolution {
-	const spec = parseRemoteRunSpec(frame.runSpec);
-	if (!spec) {
-		return {
-			kind: 'rejected',
-			rejection: {
-				reason: 'workspace_unresolved',
-				message: 'remote assignment missing prompt',
-			},
-		};
-	}
+	const {spec, runId, runnerId} = assignment;
 
 	if (spec.projectDir) {
 		return validateProjectDir(spec.projectDir, options.env);
 	}
 
 	const sessionId = spec.athenaSessionId ?? spec.sessionId;
-	const runnerId = frame.runnerId ?? 'legacy';
 	const deploymentSlug = deploymentSlugFromUrl(options.dashboardUrl);
 	const stateDir = daemonStatePaths(options.env).dir;
 	const projectDir = sessionId
@@ -68,7 +50,7 @@ export function resolveRemoteWorkspace(
 				deploymentSlug,
 				sanitizePathSegment(runnerId),
 				'runs',
-				sanitizePathSegment(frame.runId),
+				sanitizePathSegment(runId),
 			);
 
 	try {

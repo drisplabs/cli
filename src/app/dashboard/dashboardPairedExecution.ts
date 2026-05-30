@@ -5,13 +5,11 @@ import type {
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
-import type {ExecuteRemoteAssignmentInput} from './remoteRunExecutor';
+import type {
+	ExecuteRemoteAssignmentInput,
+	ValidatedAssignment,
+} from './remoteRunExecutor';
 import type {PairedFeedPublisher} from './pairedFeedPublisher';
-
-type JobAssignmentFrame = Extract<
-	InstanceSocketFrame,
-	{type: 'job_assignment'}
->;
 
 export type DashboardAssignmentRejection = {
 	reason: AssignmentRejectedReason;
@@ -49,7 +47,7 @@ export type DashboardPairedExecutionOptions = {
 export type DashboardPairedExecution = {
 	handleFrame(frame: InstanceSocketFrame): boolean;
 	admitAssignment(
-		frame: JobAssignmentFrame,
+		assignment: ValidatedAssignment,
 		options?: {projectDir?: string},
 	): DashboardAssignmentAdmission;
 	rejectAssignment(
@@ -88,10 +86,10 @@ export function createDashboardPairedExecution(
 			controller: AbortController;
 			promise: Promise<void>;
 			record: DashboardPairedExecutionRunRecord;
-			runnerKey: string | undefined;
+			runnerKey: string;
 		}
 	>();
-	const activeByRunner = new Map<string | undefined, Set<string>>();
+	const activeByRunner = new Map<string, Set<string>>();
 	const runHistory: DashboardPairedExecutionRunRecord[] = [];
 
 	function recordRun(record: DashboardPairedExecutionRunRecord): void {
@@ -138,40 +136,40 @@ export function createDashboardPairedExecution(
 	}
 
 	function handleAssignment(
-		frame: JobAssignmentFrame,
+		assignment: ValidatedAssignment,
 		input: {projectDir?: string} = {},
 	): DashboardAssignmentAdmission {
-		if (active.has(frame.runId)) {
+		const {runId, runnerId} = assignment;
+		if (active.has(runId)) {
 			const rejection = {
 				reason: 'duplicate',
-				message: `duplicate active assignment ${frame.runId}`,
+				message: `duplicate active assignment ${runId}`,
 			} satisfies DashboardAssignmentRejection;
-			rejectAssignment(frame.runId, rejection);
+			rejectAssignment(runId, rejection);
 			return {kind: 'rejected', rejection};
 		}
-		const runnerKey = frame.runnerId;
-		const bucket = activeByRunner.get(runnerKey) ?? new Set<string>();
+		const bucket = activeByRunner.get(runnerId) ?? new Set<string>();
 		if (bucket.size >= maxConcurrentRuns) {
 			const rejection = {
 				reason: 'local_capacity',
-				message: `runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerKey ?? '<legacy>'}`,
+				message: `runtime daemon at concurrency cap (${maxConcurrentRuns}) for runner ${runnerId}`,
 			} satisfies DashboardAssignmentRejection;
-			rejectAssignment(frame.runId, rejection);
+			rejectAssignment(runId, rejection);
 			return {kind: 'rejected', rejection};
 		}
 
 		const controller = new AbortController();
 		const record: DashboardPairedExecutionRunRecord = {
-			runId: frame.runId,
+			runId,
 			startedAt: now(),
 			status: 'running',
 		};
 		recordRun(record);
-		bucket.add(frame.runId);
-		activeByRunner.set(runnerKey, bucket);
+		bucket.add(runId);
+		activeByRunner.set(runnerId, bucket);
 
 		const promise = executor({
-			frame,
+			assignment,
 			client,
 			projectDir: input.projectDir ?? projectDir,
 			log,
@@ -191,7 +189,7 @@ export function createDashboardPairedExecution(
 				record.error = err instanceof Error ? err.message : String(err);
 				log(
 					'error',
-					`run ${frame.runId} failed: ${
+					`run ${runId} failed: ${
 						err instanceof Error ? err.message : String(err)
 					}`,
 				);
@@ -199,14 +197,14 @@ export function createDashboardPairedExecution(
 			.finally(() => {
 				record.endedAt = now();
 				completedRuns += 1;
-				active.delete(frame.runId);
-				const remaining = activeByRunner.get(runnerKey);
+				active.delete(runId);
+				const remaining = activeByRunner.get(runnerId);
 				if (remaining) {
-					remaining.delete(frame.runId);
-					if (remaining.size === 0) activeByRunner.delete(runnerKey);
+					remaining.delete(runId);
+					if (remaining.size === 0) activeByRunner.delete(runnerId);
 				}
 			});
-		active.set(frame.runId, {controller, promise, record, runnerKey});
+		active.set(runId, {controller, promise, record, runnerKey: runnerId});
 		return {kind: 'accepted'};
 	}
 
@@ -226,8 +224,8 @@ export function createDashboardPairedExecution(
 			}
 			return false;
 		},
-		admitAssignment(frame, input) {
-			return handleAssignment(frame, input);
+		admitAssignment(assignment, input) {
+			return handleAssignment(assignment, input);
 		},
 		rejectAssignment,
 		snapshot() {

@@ -3,10 +3,24 @@ import {
 	createDashboardPairedExecution,
 	type DashboardPairedExecutionExecutor,
 } from './dashboardPairedExecution';
-import type {
-	InstanceSocketClient,
-	InstanceSocketFrame,
-} from './instanceSocketClient';
+import type {InstanceSocketClient} from './instanceSocketClient';
+import {
+	validateDashboardAssignment,
+	type ValidatedAssignment,
+} from './remoteRunExecutor';
+
+function validated(frame: {
+	type: 'job_assignment';
+	runId: string;
+	runnerId?: string;
+	runSpec?: unknown;
+}): ValidatedAssignment {
+	const result = validateDashboardAssignment(frame);
+	if (result.kind !== 'valid') {
+		throw new Error(`test frame should be valid: ${result.rejection.message}`);
+	}
+	return result.assignment;
+}
 
 function makeClient() {
 	const runEvents: unknown[] = [];
@@ -48,17 +62,17 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		const frame = {
+		const assignment = validated({
 			type: 'job_assignment',
 			runId: 'run_1',
 			runSpec: {prompt: 'hi', env: {FOO: 'bar'}},
-		} satisfies Extract<InstanceSocketFrame, {type: 'job_assignment'}>;
-		expect(execution.admitAssignment(frame)).toEqual({kind: 'accepted'});
+		});
+		expect(execution.admitAssignment(assignment)).toEqual({kind: 'accepted'});
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledWith(
 			expect.objectContaining({
-				frame,
+				assignment,
 				projectDir: '/tmp/project',
 				decisionInbox,
 				dashboardFeedPublisher: pairedFeedPublisher,
@@ -86,13 +100,13 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		const frame = {
+		const assignment = validated({
 			type: 'job_assignment',
 			runId: 'run_dup',
 			runSpec: {prompt: 'hi'},
-		} satisfies Extract<InstanceSocketFrame, {type: 'job_assignment'}>;
-		execution.admitAssignment(frame);
-		execution.admitAssignment(frame);
+		});
+		execution.admitAssignment(assignment);
+		execution.admitAssignment(assignment);
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledTimes(1);
@@ -126,18 +140,22 @@ describe('DashboardPairedExecution', () => {
 			now: () => 100,
 		});
 
-		execution.admitAssignment({
-			type: 'job_assignment',
-			runId: 'run_a',
-			runnerId: 'runner-1',
-			runSpec: {prompt: 'a'},
-		});
-		execution.admitAssignment({
-			type: 'job_assignment',
-			runId: 'run_b',
-			runnerId: 'runner-1',
-			runSpec: {prompt: 'b'},
-		});
+		execution.admitAssignment(
+			validated({
+				type: 'job_assignment',
+				runId: 'run_a',
+				runnerId: 'runner-1',
+				runSpec: {prompt: 'a'},
+			}),
+		);
+		execution.admitAssignment(
+			validated({
+				type: 'job_assignment',
+				runId: 'run_b',
+				runnerId: 'runner-1',
+				runSpec: {prompt: 'b'},
+			}),
+		);
 		await Promise.resolve();
 
 		expect(executor).toHaveBeenCalledTimes(1);
@@ -171,12 +189,14 @@ describe('DashboardPairedExecution', () => {
 			decisionInbox: makeDecisionInbox(),
 		});
 
-		execution.admitAssignment({
-			type: 'job_assignment',
-			runId: 'run_cancel',
-			runnerId: 'runner-1',
-			runSpec: {prompt: 'a'},
-		});
+		execution.admitAssignment(
+			validated({
+				type: 'job_assignment',
+				runId: 'run_cancel',
+				runnerId: 'runner-1',
+				runSpec: {prompt: 'a'},
+			}),
+		);
 		await Promise.resolve();
 		execution.handleFrame({type: 'cancel', runId: 'run_cancel'});
 

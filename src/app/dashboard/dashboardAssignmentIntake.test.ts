@@ -32,8 +32,17 @@ describe('DashboardAssignmentIntake', () => {
 		expect(sendAssignmentAccepted).not.toHaveBeenCalled();
 
 		intake.markReady(connectedContext);
-		expect(resolveWorkspace).toHaveBeenCalledWith(frame, connectedContext);
-		expect(admitAssignment).toHaveBeenCalledWith(frame, {
+		const expectedAssignment = expect.objectContaining({
+			runId: 'run_1',
+			runnerId: 'legacy',
+			spec: expect.objectContaining({prompt: 'hi'}),
+			frame,
+		});
+		expect(resolveWorkspace).toHaveBeenCalledWith(
+			expectedAssignment,
+			connectedContext,
+		);
+		expect(admitAssignment).toHaveBeenCalledWith(expectedAssignment, {
 			projectDir: '/tmp/project',
 		});
 		expect(sendAssignmentAccepted).toHaveBeenCalledWith('run_1');

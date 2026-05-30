@@ -261,8 +261,8 @@ export async function runDashboardRuntimeDaemon(
 		},
 		execution: pairedExecution,
 		log,
-		resolveWorkspace: (frame, context) =>
-			resolveRemoteWorkspace(frame, {dashboardUrl: context.dashboardUrl}),
+		resolveWorkspace: (assignment, context) =>
+			resolveRemoteWorkspace(assignment, {dashboardUrl: context.dashboardUrl}),
 	});
 
 	function nextReconnectDelay(): number {

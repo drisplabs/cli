@@ -270,7 +270,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		expect(fake.calls.assignmentAccepted).toEqual(['run_1']);
 		expect(executor).toHaveBeenCalledTimes(1);
 		expect(executor.mock.calls[0]![0]).toMatchObject({
-			frame,
+			assignment: expect.objectContaining({runId: 'run_1', frame}),
 			dashboardFeedPublisher: pairedFeedPublisher,
 		});
 
@@ -498,7 +498,7 @@ describe('runDashboardRuntimeDaemon', () => {
 				releaseOutput = resolve;
 			});
 			input.client.sendRunEvent({
-				runId: input.frame.runId,
+				runId: input.assignment.runId,
 				seq: 1,
 				ts: 123,
 				kind: 'progress',
@@ -541,7 +541,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		const resolvers = new Map<string, () => void>();
 		const executor = vi.fn(async (input: {frame: {runId: string}}) => {
 			await new Promise<void>(resolve => {
-				resolvers.set(input.frame.runId, resolve);
+				resolvers.set(input.assignment.runId, resolve);
 			});
 		});
 
@@ -589,10 +589,10 @@ describe('runDashboardRuntimeDaemon', () => {
 		const executor = vi.fn(
 			async (input: {frame: {runId: string}; abortSignal?: AbortSignal}) => {
 				if (input.abortSignal) {
-					seenSignals.set(input.frame.runId, input.abortSignal);
+					seenSignals.set(input.assignment.runId, input.abortSignal);
 				}
 				await new Promise<void>(resolve => {
-					resolvers.set(input.frame.runId, resolve);
+					resolvers.set(input.assignment.runId, resolve);
 				});
 			},
 		);
@@ -637,7 +637,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		const resolvers = new Map<string, () => void>();
 		const executor = vi.fn(async (input: {frame: {runId: string}}) => {
 			await new Promise<void>(resolve => {
-				resolvers.set(input.frame.runId, resolve);
+				resolvers.set(input.assignment.runId, resolve);
 			});
 		});
 
