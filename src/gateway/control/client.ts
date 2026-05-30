@@ -51,8 +51,8 @@ export class GatewayProtocolError extends Error {
 }
 
 export type ControlRequestOptions = {
-	/** Override the per-client default timeout for this single request. */
-	timeoutMs?: number;
+	/** Override the per-client default timeout for this single request. Null disables it. */
+	timeoutMs?: number | null;
 };
 
 export type ControlClient = {
@@ -72,7 +72,7 @@ export type ControlClient = {
 type PendingResolver = {
 	resolve: (env: ControlResponseEnvelope) => void;
 	reject: (err: Error) => void;
-	timer: NodeJS.Timeout;
+	timer?: NodeJS.Timeout;
 };
 
 export async function connect(
@@ -112,7 +112,7 @@ export async function connect(
 			const entry = pending.get(requestId);
 			if (!entry) return;
 			pending.delete(requestId);
-			clearTimeout(entry.timer);
+			if (entry.timer) clearTimeout(entry.timer);
 			entry.resolve(parsed as ControlResponseEnvelope);
 			return;
 		}
@@ -139,7 +139,7 @@ export async function connect(
 			),
 		);
 		for (const [, p] of pending) {
-			clearTimeout(p.timer);
+			if (p.timer) clearTimeout(p.timer);
 			p.reject(
 				new GatewayProtocolError('connection closed', 'connection_closed'),
 			);
@@ -210,14 +210,18 @@ export async function connect(
 			kind,
 			payload,
 		};
-		const effectiveTimeoutMs = reqOpts?.timeoutMs ?? timeoutMs;
+		const effectiveTimeoutMs =
+			reqOpts?.timeoutMs === undefined ? timeoutMs : reqOpts.timeoutMs;
 		const responsePromise = new Promise<ControlResponseEnvelope>(
 			(resolve, reject) => {
-				const timer = setTimeout(() => {
-					pending.delete(requestId);
-					reject(new GatewayProtocolError(`request ${kind} timed out`));
-				}, effectiveTimeoutMs);
-				pending.set(requestId, {resolve, reject, timer});
+				const timer =
+					effectiveTimeoutMs === null
+						? undefined
+						: setTimeout(() => {
+								pending.delete(requestId);
+								reject(new GatewayProtocolError(`request ${kind} timed out`));
+							}, effectiveTimeoutMs);
+				pending.set(requestId, {resolve, reject, ...(timer ? {timer} : {})});
 			},
 		);
 		connection.send(envelope);

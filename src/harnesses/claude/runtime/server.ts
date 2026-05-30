@@ -80,7 +80,7 @@ function getSimulatedStartupFailure(): {
 	}
 }
 
-/** Global TTL for pending requests — strictly less than forwarder's 5min timeout */
+/** Fallback TTL for pending requests that do not specify their own timeout. */
 const PENDING_TTL_MS = 4 * 60 * 1000 + 30 * 1000; // 4 minutes 30 seconds
 
 export function createServer(opts: ServerOptions) {

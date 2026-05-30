@@ -26,7 +26,9 @@ import {
 } from './protocol/index';
 
 const SOCKET_TIMEOUT_MS = 5000; // 5 seconds - generous buffer for busy UI
-const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for permission decisions
+// Permission/question hooks are human-in-the-loop; once connected to Athena,
+// do not auto-passthrough just because the user takes a long time.
+const PERMISSION_TIMEOUT_MS = null;
 
 function getSocketPath(cwd: string): string {
 	const explicitSocketPath = process.env[ATHENA_HOOK_SOCKET_ENV];
@@ -63,7 +65,7 @@ type ConnectResult = {
 async function connectAndSend(
 	socketPath: string,
 	envelope: HookEventEnvelope,
-	timeoutMs: number,
+	timeoutMs: number | null,
 ): Promise<ConnectResult> {
 	return new Promise(resolve => {
 		const socket = new net.Socket();
@@ -78,8 +80,11 @@ async function connectAndSend(
 			}
 		};
 
-		// Set timeout for entire operation
-		const timeoutId = setTimeout(() => cleanup('TIMEOUT'), timeoutMs);
+		// Set timeout for entire operation unless this is a human decision.
+		const timeoutId =
+			timeoutMs === null
+				? undefined
+				: setTimeout(() => cleanup('TIMEOUT'), timeoutMs);
 
 		socket.on('connect', () => {
 			// Send the envelope as NDJSON (newline-delimited JSON)
@@ -91,7 +96,7 @@ async function connectAndSend(
 			// Check for newline (NDJSON delimiter)
 			const lines = responseData.split('\n');
 			if (lines.length > 1 && lines[0]) {
-				clearTimeout(timeoutId);
+				if (timeoutId) clearTimeout(timeoutId);
 				resolved = true;
 				socket.destroy();
 				try {
@@ -104,7 +109,7 @@ async function connectAndSend(
 		});
 
 		socket.on('error', (err: NodeJS.ErrnoException) => {
-			clearTimeout(timeoutId);
+			if (timeoutId) clearTimeout(timeoutId);
 			if (err.code === 'ENOENT') {
 				cleanup('ENOENT');
 			} else if (err.code === 'ECONNREFUSED') {
@@ -115,7 +120,7 @@ async function connectAndSend(
 		});
 
 		socket.on('close', () => {
-			clearTimeout(timeoutId);
+			if (timeoutId) clearTimeout(timeoutId);
 			if (!resolved) {
 				resolved = true;
 				resolve({envelope: null});

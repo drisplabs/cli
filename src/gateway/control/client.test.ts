@@ -160,4 +160,82 @@ describe('connect() hello handshake', () => {
 		expect(conn.sent[0]).toEqual({kind: 'connect', token: 't'});
 		client.close();
 	});
+
+	it('does not time out a request when timeoutMs is null', async () => {
+		vi.useFakeTimers();
+		try {
+			const conn = makeStubConnection();
+			const promise = connect({
+				socketPath: '/unused',
+				token: 't',
+				timeoutMs: 50,
+				transport: makeStubTransport(conn),
+			});
+			await Promise.resolve();
+			conn.emitFrame({ok: true, hello: {daemonPid: 1, startedAt: 0}});
+			const client = await promise;
+
+			const request = client.request<{value: true}, {ok: true}>(
+				'relay.question.request',
+				{value: true},
+				{timeoutMs: null},
+			);
+			let settled = false;
+			void request.then(() => {
+				settled = true;
+			});
+
+			await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+			expect(settled).toBe(false);
+
+			const sent = conn.sent[1] as {request_id: string};
+			conn.emitFrame({
+				request_id: sent.request_id,
+				ok: true,
+				payload: {ok: true},
+			});
+			await expect(request).resolves.toEqual({ok: true});
+			client.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('falls back to the client timeout when request timeoutMs is undefined', async () => {
+		vi.useFakeTimers();
+		try {
+			const conn = makeStubConnection();
+			const promise = connect({
+				socketPath: '/unused',
+				token: 't',
+				timeoutMs: 50,
+				transport: makeStubTransport(conn),
+			});
+			await Promise.resolve();
+			conn.emitFrame({ok: true, hello: {daemonPid: 1, startedAt: 0}});
+			const client = await promise;
+
+			const request = client.request<{value: true}, {ok: true}>(
+				'relay.question.request',
+				{value: true},
+				{timeoutMs: undefined},
+			);
+			let rejected = false;
+			void request.catch(() => {
+				rejected = true;
+			});
+
+			await vi.advanceTimersByTimeAsync(49);
+			expect(rejected).toBe(false);
+
+			const assertion = expect(request).rejects.toThrow(
+				/request relay.question.request timed out/,
+			);
+			await vi.advanceTimersByTimeAsync(1);
+			await assertion;
+			client.close();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

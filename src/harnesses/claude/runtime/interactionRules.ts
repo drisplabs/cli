@@ -4,7 +4,6 @@ import type {RuntimeEventKind} from '../../../core/runtime/events';
 type InteractionHints = RuntimeEvent['interaction'];
 
 const DEFAULT_TIMEOUT_MS = 4000;
-const PERMISSION_TIMEOUT_MS = 300_000;
 
 const DEFAULT_HINTS: InteractionHints = {
 	expectsDecision: false,
@@ -15,12 +14,12 @@ const DEFAULT_HINTS: InteractionHints = {
 const RULES: Record<RuntimeEventKind, InteractionHints> = {
 	'permission.request': {
 		expectsDecision: true,
-		defaultTimeoutMs: PERMISSION_TIMEOUT_MS,
+		defaultTimeoutMs: null,
 		canBlock: true,
 	},
 	'tool.pre': {
 		expectsDecision: true,
-		defaultTimeoutMs: PERMISSION_TIMEOUT_MS,
+		defaultTimeoutMs: null,
 		canBlock: true,
 	},
 	'tool.post': {
@@ -180,7 +179,7 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 	},
 	'elicitation.request': {
 		expectsDecision: true,
-		defaultTimeoutMs: PERMISSION_TIMEOUT_MS,
+		defaultTimeoutMs: null,
 		canBlock: true,
 	},
 	'elicitation.result': {
@@ -191,10 +190,8 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 	unknown: DEFAULT_HINTS,
 };
 
-// AskUserQuestion is human-in-the-loop. It must not share the permission
-// timeout — otherwise the runtime auto-passthroughs, Claude exits with the
-// question unanswered, and a workflow loop ticks a fresh iteration that has
-// no memory of the question.
+// AskUserQuestion is human-in-the-loop, as are all permission/question
+// decisions. They must not auto-passthrough while a human is deciding.
 const ASK_USER_QUESTION_HINTS: InteractionHints = {
 	expectsDecision: true,
 	defaultTimeoutMs: null,

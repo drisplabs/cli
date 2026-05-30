@@ -13,8 +13,8 @@
  *      gateway can relay the assistant reply back on the originating channel.
  *   4. Expose `relayPermission(req)` / `relayQuestion(req)` for the runtime
  *      to broadcast permission/question prompts across all gateway-resident
- *      channel adapters; relay requests use a long timeout (matching the
- *      coordinator TTL) and return a structured result.
+ *      channel adapters; relay requests wait indefinitely by default and
+ *      return a structured result.
  *   5. Expose `cancelRelayPermission(id, reason)` / `cancelRelayQuestion(id,
  *      reason)` so that a local-UI claim can race the channel.
  *
@@ -60,13 +60,6 @@ import type {
 	SessionUnregisterResponsePayload,
 	RuntimeEndpoint,
 } from '../../shared/gateway-protocol';
-
-/**
- * Long timeout used for relay requests — they wait on a human, so the
- * default 5s client timeout is irrelevant. Matches the coordinator's
- * default TTL with a small headroom so the response wins the race.
- */
-const RELAY_REQUEST_TIMEOUT_MS = 6 * 60_000;
 
 export type SessionBridgeOptions = {
 	runtimeId: string;
@@ -336,10 +329,9 @@ export class SessionBridge {
 			toolName: req.toolName,
 			description: req.description,
 			inputPreview: req.inputPreview,
-			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
+			ttlMs: req.ttlMs ?? null,
 		};
-		const overallTimeoutMs =
-			req.ttlMs === null ? null : (req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS);
+		const overallTimeoutMs = req.ttlMs ?? null;
 		return this.requestWithReconnect<
 			RelayPermissionRequestPayload,
 			RelayPermissionResponsePayload
@@ -354,10 +346,9 @@ export class SessionBridge {
 			channelRequestId,
 			title: req.title,
 			questions: req.questions,
-			...(req.ttlMs !== undefined ? {ttlMs: req.ttlMs} : {}),
+			ttlMs: req.ttlMs ?? null,
 		};
-		const overallTimeoutMs =
-			req.ttlMs === null ? null : (req.ttlMs ?? RELAY_REQUEST_TIMEOUT_MS);
+		const overallTimeoutMs = req.ttlMs ?? null;
 		return this.requestWithReconnect<
 			RelayQuestionRequestPayload,
 			RelayQuestionResponsePayload
@@ -369,8 +360,9 @@ export class SessionBridge {
 	 * survives a transient WS disconnect: on `connection closed`, wait for
 	 * the bridge's reconnect to settle, then re-issue the same payload. The
 	 * server attaches the replay to the existing pending entry by
-	 * `channelRequestId`, so adapters are not re-prompted. Bounded by the
-	 * caller-provided overall timeout so a long outage still surfaces.
+	 * `channelRequestId`, so adapters are not re-prompted. If the caller
+	 * provided an explicit TTL, reconnect retries are bounded by that deadline;
+	 * otherwise human-in-the-loop relays wait until answered or cancelled.
 	 */
 	private async requestWithReconnect<TPayload, TResponse>(
 		kind: string,
@@ -389,9 +381,7 @@ export class SessionBridge {
 			}
 			try {
 				return await client.request<TPayload, TResponse>(kind, payload, {
-					// When unbounded, pass the largest safe setTimeout value so the
-					// inner request never self-cancels in any human time scale.
-					timeoutMs: remaining ?? 2_147_483_647,
+					timeoutMs: remaining,
 				});
 			} catch (err) {
 				if (

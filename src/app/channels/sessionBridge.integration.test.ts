@@ -522,6 +522,89 @@ describe('SessionBridge integration', () => {
 		expect(res.channelRequestId).toMatch(/^[a-km-z]{5}$/);
 	}, 15_000);
 
+	it('defaults permission and question relays to no timeout', async () => {
+		const requests: Array<{
+			kind: string;
+			payload: unknown;
+			opts: {timeoutMs?: number | null} | undefined;
+		}> = [];
+		const client: ControlClient = {
+			request: vi.fn(
+				async (
+					kind: string,
+					payload: unknown,
+					opts?: {timeoutMs?: number | null},
+				) => {
+					requests.push({kind, payload, opts});
+					if (kind === 'session.register') {
+						return {registeredAt: 1, gatewayStartedAt: 1};
+					}
+					if (kind === 'relay.permission.request') {
+						const p = payload as {channelRequestId: string};
+						return {
+							channelRequestId: p.channelRequestId,
+							result: {kind: 'no_relay'},
+						};
+					}
+					if (kind === 'relay.question.request') {
+						const p = payload as {channelRequestId: string};
+						return {
+							channelRequestId: p.channelRequestId,
+							result: {kind: 'no_relay'},
+						};
+					}
+					if (kind === 'session.unregister') {
+						return {unregisteredAt: 1};
+					}
+					return {};
+				},
+			) as ControlClient['request'],
+			onPush: () => () => {},
+			onClose: () => () => {},
+			close: () => {},
+		};
+
+		bridge = new SessionBridge({
+			runtimeId: 'no-timeout-defaults',
+			defaultAgentId: 'main',
+			client,
+			paths,
+		});
+		await bridge.start();
+
+		await bridge.relayPermission({
+			toolName: 'Bash',
+			description: 'list files',
+			inputPreview: 'ls',
+		});
+		await bridge.relayQuestion({
+			title: 'Question',
+			questions: [
+				{
+					key: 'q',
+					header: 'Question',
+					question: 'Proceed?',
+					multi_select: false,
+					options: [],
+				},
+			],
+		});
+
+		expect(requests).toEqual([
+			expect.objectContaining({kind: 'session.register'}),
+			expect.objectContaining({
+				kind: 'relay.permission.request',
+				payload: expect.objectContaining({ttlMs: null}),
+				opts: {timeoutMs: null},
+			}),
+			expect.objectContaining({
+				kind: 'relay.question.request',
+				payload: expect.objectContaining({ttlMs: null}),
+				opts: {timeoutMs: null},
+			}),
+		]);
+	}, 15_000);
+
 	it('reconnect loop hitting already_registered becomes terminal and surfaces the error to callers', async () => {
 		const closeHandlers: Array<() => void> = [];
 		const requestImpls: Array<(kind: string) => Promise<unknown>> = [

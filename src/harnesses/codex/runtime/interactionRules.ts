@@ -2,7 +2,6 @@ import type {RuntimeEvent} from '../../../core/runtime/types';
 
 type InteractionHints = RuntimeEvent['interaction'];
 
-const APPROVAL_TIMEOUT_MS = 300_000;
 const DEFAULT_TIMEOUT_MS = 4_000;
 
 export function getCodexInteractionHints(
@@ -11,7 +10,7 @@ export function getCodexInteractionHints(
 	if (expectsDecision) {
 		return {
 			expectsDecision: true,
-			defaultTimeoutMs: APPROVAL_TIMEOUT_MS,
+			defaultTimeoutMs: null,
 			canBlock: true,
 		};
 	}
