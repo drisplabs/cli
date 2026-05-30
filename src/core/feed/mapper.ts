@@ -1,14 +1,15 @@
 // src/feed/mapper.ts
 //
-// Orchestrator over four internal seams:
+// Orchestrator over five internal seams:
 //   - RunLifecycle: session/run identity, sequence allocation, counters
 //   - DecisionCorrelation: request_id → originating event indexes
 //   - ToolCorrelation: tool_use_id → pre event + streamed delta state
 //   - AgentMessageStream: assistant message buffering, dedup, transcript replay
+//   - SubagentLifecycle: subagent actor-id formation, active stack (LIFO),
+//     pending-description handoff, description registry, actor-registration effects
 //
 // Bookkeeping that didn't earn its own seam stays inline here:
-//   - active subagent stack (LIFO), subagent descriptions, last task description
-//   - last root tasks (todo list)
+//   - last task description, last root tasks (todo list)
 //   - actor registry
 
 import type {RuntimeEvent, RuntimeDecision} from '../runtime/types';
@@ -31,7 +32,7 @@ import {createToolCorrelation} from './internals/toolCorrelation';
 import {createAgentMessageStream} from './internals/agentMessageStream';
 import {createTaskStateTracker} from './internals/taskStateTracker';
 import {readString} from './internals/projection';
-import {createSubagentTracker} from './internals/subagentTracker';
+import {createSubagentLifecycle} from './internals/subagentLifecycle';
 import {createToolProjection} from './internals/toolProjection';
 import {createNotificationProjection} from './internals/notificationProjection';
 import {createDecisionProjection} from './internals/decisionProjection';
@@ -121,7 +122,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const transcriptReader = createTranscriptReader();
 	const actors = new ActorRegistry();
 	const taskState = createTaskStateTracker();
-	const subagents = createSubagentTracker();
+	const subagents = createSubagentLifecycle({actors, runLifecycle});
 
 	function makeEvent(
 		kind: FeedEventKind,
@@ -186,7 +187,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const closeRunIntoEvent = runLifecycle.closeRunIntoEvent;
 
 	function resolveToolActor(): string {
-		return subagents.peek() ?? 'agent:root';
+		return subagents.currentActor();
 	}
 
 	const toolProjection = createToolProjection({
@@ -215,8 +216,6 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 	const subagentProjection = createSubagentProjection({
 		ensureRunArray,
 		makeEvent,
-		runLifecycle,
-		actors,
 		subagents,
 	});
 
@@ -310,7 +309,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 			const agentId = readString(d['agent_id']) ?? 'unknown';
 			results.push(
 				...agentMessageStream.emitStopFallback(event, {
-					actorId: `subagent:${agentId}`,
+					actorId: subagents.actorIdFor(agentId),
 					scope: 'subagent',
 					parentKind: 'subagent.stop',
 					priorResults: results,
