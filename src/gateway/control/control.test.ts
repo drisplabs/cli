@@ -167,6 +167,40 @@ describe('gateway control plane', () => {
 		client.close();
 	});
 
+	it('reports attachment-keyed runtimes in status, not just the fallback slot', async () => {
+		daemon = await startDaemon({
+			foreground: true,
+			silent: true,
+			paths,
+			skipSignalHandlers: true,
+			skipChannelLoad: true,
+		});
+		const token = fs.readFileSync(paths.tokenPath, 'utf-8').trim();
+		const legacy = await connect({socketPath: paths.socketPath, token});
+		await legacy.request('session.register', {
+			runtimeId: 'runtime-legacy',
+			defaultAgentId: 'main',
+			pid: 1,
+		});
+		const attached = await connect({socketPath: paths.socketPath, token});
+		await attached.request('session.register', {
+			runtimeId: 'runtime-a1',
+			defaultAgentId: 'main',
+			pid: 2,
+			attachmentId: 'a1',
+		});
+
+		const res = await legacy.request<
+			Record<string, never>,
+			StatusResponsePayload
+		>('status', {});
+
+		const ids = res.runtimes.map(r => r.runtimeId).sort();
+		expect(ids).toEqual(['runtime-a1', 'runtime-legacy']);
+		legacy.close();
+		attached.close();
+	});
+
 	it('rejects connect with wrong token', async () => {
 		daemon = await startDaemon({
 			foreground: true,

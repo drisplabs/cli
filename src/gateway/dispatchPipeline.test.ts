@@ -650,6 +650,50 @@ describe('DispatchPipeline', () => {
 			expect(s.push).not.toHaveBeenCalled();
 		});
 
+		it('unregisterRuntime clears only that runtime parked turns, leaving another slot in-flight', async () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+			s.send.mockResolvedValue({providerMessageId: 'm', deliveredAt: 1});
+
+			s.pipeline.handleInbound(inbound, {attachmentId: 'a1'});
+			const onA2 = s.pipeline.handleInbound(
+				{...inbound, idempotencyKey: 'tg:2'},
+				{attachmentId: 'a2'},
+			);
+			const a2DispatchId = onA2.kind === 'dispatched' ? onA2.dispatchId : '';
+			expect(s.pipeline.pendingDispatchCount()).toBe(2);
+
+			// Unregistering r1 must drop only r1's parked turn — not r2's.
+			s.pipeline.unregisterRuntime('r1');
+			expect(s.pipeline.pendingDispatchCount()).toBe(1);
+
+			// r2 can still complete its turn.
+			const reply = await s.pipeline.handleTurnComplete({
+				runtimeId: 'r2',
+				dispatchId: a2DispatchId,
+				location: inbound.location,
+				text: 'pong',
+				idempotencyKey: 'reply:a2',
+			});
+			expect(reply).toEqual({delivered: true, providerMessageId: 'm'});
+			expect(s.pipeline.pendingDispatchCount()).toBe(0);
+		});
+
 		it('legacy registration (no attachmentId) coexists with an attachment-keyed registration', () => {
 			const push2 = vi.fn();
 			// Legacy slot
