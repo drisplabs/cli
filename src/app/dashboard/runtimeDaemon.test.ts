@@ -318,6 +318,17 @@ describe('runDashboardRuntimeDaemon', () => {
 		const daemon = await daemonPromise;
 		await Promise.resolve();
 		expect(executor).toHaveBeenCalledTimes(1);
+		expect(executor.mock.calls[0]![0].projectDir).toBe(
+			path.join(
+				process.env['XDG_STATE_HOME']!,
+				'drisp',
+				'remote-workspaces',
+				'example.com',
+				'legacy',
+				'runs',
+				'run_waiting',
+			),
+		);
 		expect(fake.calls.assignmentAccepted).toEqual(['run_waiting']);
 		await daemon.stop('test');
 	});

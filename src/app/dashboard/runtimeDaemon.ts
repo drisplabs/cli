@@ -261,8 +261,8 @@ export async function runDashboardRuntimeDaemon(
 		},
 		execution: pairedExecution,
 		log,
-		resolveWorkspace: frame =>
-			resolveRemoteWorkspace(frame, {dashboardUrl: currentDashboardUrl}),
+		resolveWorkspace: (frame, context) =>
+			resolveRemoteWorkspace(frame, {dashboardUrl: context.dashboardUrl}),
 	});
 
 	function nextReconnectDelay(): number {
@@ -444,9 +444,12 @@ export async function runDashboardRuntimeDaemon(
 		// nulls `client` and schedules a reconnect). Bail before marking ready so
 		// we never admit assignments against a dead client.
 		if (stopped || client !== next) return;
-		assignmentIntake.markReady();
 		currentInstanceId = token.instanceId;
 		currentDashboardUrl = config.dashboardUrl;
+		assignmentIntake.markReady({
+			dashboardUrl: config.dashboardUrl,
+			instanceId: token.instanceId,
+		});
 		reconnectAttempt = 0;
 		scheduleRefresh(token.expiresInSec);
 		pairedFeedPublisher.attachTransport(next);

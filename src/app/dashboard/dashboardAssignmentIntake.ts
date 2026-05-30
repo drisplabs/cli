@@ -25,12 +25,20 @@ export type DashboardAssignmentIntakeOptions = {
 		'admitAssignment' | 'rejectAssignment'
 	>;
 	log?: InstanceSocketLogger;
-	resolveWorkspace?: (frame: JobAssignmentFrame) => RemoteWorkspaceResolution;
+	resolveWorkspace?: (
+		frame: JobAssignmentFrame,
+		context: DashboardConnectionContext,
+	) => RemoteWorkspaceResolution;
+};
+
+export type DashboardConnectionContext = {
+	dashboardUrl: string;
+	instanceId: string;
 };
 
 export type DashboardAssignmentIntake = {
 	receive(frame: JobAssignmentFrame): void;
-	markReady(): void;
+	markReady(context: DashboardConnectionContext): void;
 	markNotReady(): void;
 };
 
@@ -39,11 +47,16 @@ export function createDashboardAssignmentIntake(
 ): DashboardAssignmentIntake {
 	const log = options.log ?? (() => {});
 	const resolveWorkspace =
-		options.resolveWorkspace ?? (frame => resolveRemoteWorkspace(frame));
+		options.resolveWorkspace ??
+		((frame, context) =>
+			resolveRemoteWorkspace(frame, {dashboardUrl: context.dashboardUrl}));
 	const pending: JobAssignmentFrame[] = [];
-	let ready = false;
+	let context: DashboardConnectionContext | null = null;
 
-	function handle(frame: JobAssignmentFrame): void {
+	function handle(
+		frame: JobAssignmentFrame,
+		readyContext: DashboardConnectionContext,
+	): void {
 		if (!isRemoteAssignmentAdmissible(frame)) {
 			const rejection = {
 				reason: 'malformed_assignment' as const,
@@ -56,7 +69,7 @@ export function createDashboardAssignmentIntake(
 			});
 			return;
 		}
-		const workspace = resolveWorkspace(frame);
+		const workspace = resolveWorkspace(frame, readyContext);
 		if (workspace.kind === 'rejected') {
 			options.execution.rejectAssignment(frame.runId, workspace.rejection);
 			options.client.sendAssignmentRejected({
@@ -79,16 +92,16 @@ export function createDashboardAssignmentIntake(
 	}
 
 	function drain(): void {
-		if (!ready) return;
+		if (!context) return;
 		while (pending.length > 0) {
 			const frame = pending.shift();
-			if (frame) handle(frame);
+			if (frame) handle(frame, context);
 		}
 	}
 
 	return {
 		receive(frame) {
-			if (!ready) {
+			if (!context) {
 				pending.push(frame);
 				log(
 					'debug',
@@ -96,14 +109,14 @@ export function createDashboardAssignmentIntake(
 				);
 				return;
 			}
-			handle(frame);
+			handle(frame, context);
 		},
-		markReady() {
-			ready = true;
+		markReady(nextContext) {
+			context = nextContext;
 			drain();
 		},
 		markNotReady() {
-			ready = false;
+			context = null;
 		},
 	};
 }

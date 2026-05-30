@@ -1,16 +1,25 @@
 import {describe, expect, it, vi} from 'vitest';
 import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
 
+const connectedContext = {
+	dashboardUrl: 'https://example.com',
+	instanceId: 'inst_1',
+};
+
 describe('DashboardAssignmentIntake', () => {
 	it('buffers assignments until admission is allowed, then truthfully accepts them', () => {
 		const sendAssignmentAccepted = vi.fn();
 		const sendAssignmentRejected = vi.fn();
 		const admitAssignment = vi.fn(() => ({kind: 'accepted' as const}));
 		const rejectAssignment = vi.fn();
+		const resolveWorkspace = vi.fn(() => ({
+			kind: 'resolved' as const,
+			projectDir: '/tmp/project',
+		}));
 		const intake = createDashboardAssignmentIntake({
 			client: {sendAssignmentAccepted, sendAssignmentRejected},
 			execution: {admitAssignment, rejectAssignment},
-			resolveWorkspace: () => ({kind: 'resolved', projectDir: '/tmp/project'}),
+			resolveWorkspace,
 		});
 
 		const frame = {
@@ -22,7 +31,8 @@ describe('DashboardAssignmentIntake', () => {
 		expect(admitAssignment).not.toHaveBeenCalled();
 		expect(sendAssignmentAccepted).not.toHaveBeenCalled();
 
-		intake.markReady();
+		intake.markReady(connectedContext);
+		expect(resolveWorkspace).toHaveBeenCalledWith(frame, connectedContext);
 		expect(admitAssignment).toHaveBeenCalledWith(frame, {
 			projectDir: '/tmp/project',
 		});
@@ -40,7 +50,7 @@ describe('DashboardAssignmentIntake', () => {
 			execution: {admitAssignment, rejectAssignment},
 			resolveWorkspace: () => ({kind: 'resolved', projectDir: '/tmp/project'}),
 		});
-		intake.markReady();
+		intake.markReady(connectedContext);
 		intake.receive({
 			type: 'job_assignment',
 			runId: 'run_bad',
@@ -75,7 +85,7 @@ describe('DashboardAssignmentIntake', () => {
 			execution: {admitAssignment, rejectAssignment: vi.fn()},
 			resolveWorkspace: () => ({kind: 'resolved', projectDir: '/tmp/project'}),
 		});
-		intake.markReady();
+		intake.markReady(connectedContext);
 		intake.receive({
 			type: 'job_assignment',
 			runId: 'run_full',
@@ -106,7 +116,7 @@ describe('DashboardAssignmentIntake', () => {
 				},
 			}),
 		});
-		intake.markReady();
+		intake.markReady(connectedContext);
 		intake.receive({
 			type: 'job_assignment',
 			runId: 'run_home',

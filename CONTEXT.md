@@ -71,6 +71,13 @@ dashboard **Run** on behalf of a **runner**.
 _Avoid_: job assignment (wire-frame name), remote assignment (describes one
 transport path, not the domain concept).
 
+**Dashboard connection context**:
+The dashboard URL and instance id captured from the live dashboard socket
+connection. Used by the dashboard runtime daemon to admit buffered **Dashboard
+assignments** against the same connected dashboard that made the **Attachment**
+mirror current.
+_Avoid_: connection state (too broad), socket context (transport detail).
+
 **Run**:
 One agent invocation within a **Session**. Triggered by `session.start` or `user.prompt`. Has a status (`running` | `completed`), counters, and an actor tree.
 
@@ -116,6 +123,9 @@ _Avoid_: dispatcher (the historical class is now an internal collaborator), mess
 - The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
 - A **Dashboard assignment** is admitted by the dashboard runtime daemon before
   it launches the corresponding dashboard **Run** locally.
+- A **Dashboard connection context** exists only while the dashboard socket is
+  connected; buffered **Dashboard assignments** are admitted only after the
+  context is available.
 
 ## Example dialogue
 
