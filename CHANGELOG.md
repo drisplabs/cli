@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.12](https://github.com/drisplabs/cli/compare/cli-v0.5.11...cli-v0.5.12) (2026-05-31)
+
+
+### Bug Fixes
+
+* **dashboard:** bind assignment intake to connection context ([48ff986](https://github.com/drisplabs/cli/commit/48ff98682454323bb7a6ef9429a9042a37869992))
+* **gateway:** authorize dispatch turn completion and pin reply location ([#44](https://github.com/drisplabs/cli/issues/44)) ([cd47a63](https://github.com/drisplabs/cli/commit/cd47a631ccc3140543679fdb645f75e11e7445c1))
+* **runtime:** wait indefinitely for human decisions ([c252df2](https://github.com/drisplabs/cli/commit/c252df2da9458daf777716a9dce1d9f17c686080))
+
 ## [0.5.11](https://github.com/drisplabs/cli/compare/cli-v0.5.10...cli-v0.5.11) (2026-05-29)
 
 
