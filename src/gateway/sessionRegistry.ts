@@ -96,7 +96,26 @@ export class SessionRegistry {
 		return this.dispatches.size;
 	}
 
-	clearDispatches(): void {
-		this.dispatches.clear();
+	/** Number of parked turns owned by the given runtime. */
+	pendingDispatchCountFor(runtimeId: string): number {
+		let count = 0;
+		for (const entry of this.dispatches.values()) {
+			if (entry.runtimeId === runtimeId) count += 1;
+		}
+		return count;
+	}
+
+	/**
+	 * Remove only the parked turns owned by the given runtime, leaving every other
+	 * runtime's in-flight dispatches intact. Used when a single Registered runtime
+	 * unregisters or its connection is lost — clearing the correct slot's turns
+	 * without a global wipe.
+	 */
+	clearDispatchesFor(runtimeId: string): void {
+		for (const [dispatchId, entry] of this.dispatches) {
+			if (entry.runtimeId === runtimeId) {
+				this.dispatches.delete(dispatchId);
+			}
+		}
 	}
 }

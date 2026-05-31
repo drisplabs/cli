@@ -96,22 +96,54 @@ describe('SessionRegistry (dispatch correlation)', () => {
 		expect(reg.pendingDispatchCount()).toBe(0);
 	});
 
-	it('clearDispatches empties all parked entries', () => {
+	it('clearDispatchesFor removes only the given runtime, leaving other runtimes parked', () => {
 		const reg = makeRegistry();
-		reg.beginDispatch({
-			sessionKey: 'k',
+		const own = reg.beginDispatch({
+			sessionKey: 'k1',
 			agentId: 'main',
 			runtimeId: 'r1',
 			location: dmLocation,
 		});
-		reg.beginDispatch({
-			sessionKey: 'k',
+		const other = reg.beginDispatch({
+			sessionKey: 'k2',
 			agentId: 'main',
-			runtimeId: 'r1',
+			runtimeId: 'r2',
 			location: dmLocation,
 		});
 		expect(reg.pendingDispatchCount()).toBe(2);
-		reg.clearDispatches();
-		expect(reg.pendingDispatchCount()).toBe(0);
+		reg.clearDispatchesFor('r1');
+		expect(reg.pendingDispatchCount()).toBe(1);
+		// r1's turn is gone; r2's turn is untouched and still completable.
+		expect(reg.completeDispatch(own.dispatchId, {runtimeId: 'r1'}).kind).toBe(
+			'unknown',
+		);
+		expect(reg.completeDispatch(other.dispatchId, {runtimeId: 'r2'}).kind).toBe(
+			'completed',
+		);
+	});
+
+	it('pendingDispatchCountFor counts only the given runtime parked turns', () => {
+		const reg = makeRegistry();
+		reg.beginDispatch({
+			sessionKey: 'k1',
+			agentId: 'main',
+			runtimeId: 'r1',
+			location: dmLocation,
+		});
+		reg.beginDispatch({
+			sessionKey: 'k2',
+			agentId: 'main',
+			runtimeId: 'r1',
+			location: dmLocation,
+		});
+		reg.beginDispatch({
+			sessionKey: 'k3',
+			agentId: 'main',
+			runtimeId: 'r2',
+			location: dmLocation,
+		});
+		expect(reg.pendingDispatchCountFor('r1')).toBe(2);
+		expect(reg.pendingDispatchCountFor('r2')).toBe(1);
+		expect(reg.pendingDispatchCountFor('rX')).toBe(0);
 	});
 });

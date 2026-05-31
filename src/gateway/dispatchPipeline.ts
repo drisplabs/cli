@@ -30,6 +30,7 @@ import {
 	RuntimeBindingStore,
 	type RegisteredRuntime,
 	type RuntimeBindingObservers,
+	type RuntimeSlotSnapshot,
 } from './runtimeBindingStore';
 import {SessionRegistry} from './sessionRegistry';
 import type {GatewayStateDb} from './state/db';
@@ -86,11 +87,6 @@ export type RegisterRuntimeInput = {
 	attachmentId?: string;
 };
 
-type RuntimePushHandle = {
-	connectionId: string;
-	push: (env: ControlPushEnvelope) => void;
-};
-
 type AttachmentKey = string | undefined;
 
 export {
@@ -111,8 +107,6 @@ export class DispatchPipeline {
 	private readonly log: DispatchPipelineOptions['log'];
 	private readonly now: () => number;
 	private readonly idFactory: () => string;
-	private readonly pushes: Map<AttachmentKey, RuntimePushHandle> = new Map();
-	private readonly connectionToKey: Map<string, AttachmentKey> = new Map();
 
 	constructor(opts: DispatchPipelineOptions) {
 		this.bindingStore = new RuntimeBindingStore({
@@ -232,9 +226,7 @@ export class DispatchPipeline {
 		key: AttachmentKey,
 		payload: SessionDispatchTurnPushPayload,
 	): void {
-		const handle = this.pushes.get(key);
-		if (!handle) return;
-		handle.push({
+		this.bindingStore.pushTo(key, {
 			push_id: this.idFactory(),
 			ts: this.now(),
 			kind: 'session.dispatch.turn',
@@ -251,19 +243,11 @@ export class DispatchPipeline {
 			defaultAgentId: input.defaultAgentId,
 			pid: input.pid,
 			connectionId: input.connectionId,
+			push: input.push,
 			...(input.attachmentId !== undefined
 				? {attachmentId: input.attachmentId}
 				: {}),
 		});
-		const previous = this.pushes.get(key);
-		if (previous && previous.connectionId !== input.connectionId) {
-			this.connectionToKey.delete(previous.connectionId);
-		}
-		this.pushes.set(key, {
-			connectionId: input.connectionId,
-			push: input.push,
-		});
-		this.connectionToKey.set(input.connectionId, key);
 
 		writeGatewayTrace(
 			`pipeline registered runtime runtimeId=${input.runtimeId} connectionId=${input.connectionId}`,
@@ -274,28 +258,17 @@ export class DispatchPipeline {
 	}
 
 	unregisterRuntime(runtimeId: string): void {
-		const slot = this.findSlotByRuntimeId(runtimeId);
 		this.bindingStore.unbind(runtimeId);
-		this.registry.clearDispatches();
-		if (slot) {
-			const handle = this.pushes.get(slot.key);
-			this.pushes.delete(slot.key);
-			if (handle) this.connectionToKey.delete(handle.connectionId);
-		}
+		this.registry.clearDispatchesFor(runtimeId);
 		writeGatewayTrace(`pipeline unregistered runtime runtimeId=${runtimeId}`);
 	}
 
 	notifyConnectionClosed(connectionId: string): void {
-		const key = this.connectionToKey.get(connectionId);
 		const runtimeId = this.bindingStore.notifyConnectionClosed(connectionId);
 		if (runtimeId === null) return;
 		writeGatewayTrace(
 			`pipeline runtime connection closed runtimeId=${runtimeId} connectionId=${connectionId}`,
 		);
-		if (key !== undefined || this.pushes.has(key)) {
-			this.pushes.delete(key);
-			this.connectionToKey.delete(connectionId);
-		}
 	}
 
 	/**
@@ -417,6 +390,11 @@ export class DispatchPipeline {
 		return this.bindingStore.getCurrent();
 	}
 
+	/** Reportable state for every registered-runtime slot (legacy + attachment-keyed). */
+	snapshotRuntimes(): RuntimeSlotSnapshot[] {
+		return this.bindingStore.snapshot();
+	}
+
 	getCurrentRuntimeByAttachment(
 		attachmentId: string | undefined,
 	): RegisteredRuntime | null {
@@ -437,6 +415,10 @@ export class DispatchPipeline {
 
 	pendingDispatchCount(): number {
 		return this.registry.pendingDispatchCount();
+	}
+
+	pendingDispatchCountFor(runtimeId: string): number {
+		return this.registry.pendingDispatchCountFor(runtimeId);
 	}
 
 	pendingInboundCount(): number {

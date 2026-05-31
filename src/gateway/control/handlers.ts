@@ -417,34 +417,32 @@ export function createDispatcher(deps: DispatcherDeps): RequestHandler {
 function runtimeStatusEntries(
 	pipeline: DispatchPipeline | undefined,
 ): RuntimeStatusEntry[] {
-	const runtime = pipeline?.getCurrentRuntime();
-	if (!runtime || !pipeline) return [];
-	const binding = pipeline.getBinding();
-	return [
-		{
-			runtimeId: runtime.runtimeId,
-			defaultAgentId: runtime.defaultAgentId,
-			pid: runtime.pid,
-			registeredAt: runtime.registeredAt,
-			binding:
-				binding?.state === 'active'
+	if (!pipeline) return [];
+	// Report every registered-runtime slot — both attachment-keyed and the legacy
+	// fallback — not just the fallback slot.
+	return pipeline.snapshotRuntimes().map(({runtime, binding}) => ({
+		runtimeId: runtime.runtimeId,
+		defaultAgentId: runtime.defaultAgentId,
+		pid: runtime.pid,
+		registeredAt: runtime.registeredAt,
+		binding:
+			binding?.state === 'active'
+				? {
+						state: 'active',
+						boundAt: binding.boundAt,
+						epoch: binding.epoch,
+						...maybeLastRebindAt(binding.lastRebindAt),
+					}
+				: binding?.state === 'stale'
 					? {
-							state: 'active',
-							boundAt: binding.boundAt,
+							state: 'stale',
+							staleSince: binding.staleSince,
 							epoch: binding.epoch,
 							...maybeLastRebindAt(binding.lastRebindAt),
 						}
-					: binding?.state === 'stale'
-						? {
-								state: 'stale',
-								staleSince: binding.staleSince,
-								epoch: binding.epoch,
-								...maybeLastRebindAt(binding.lastRebindAt),
-							}
-						: {state: 'none'},
-			pendingDispatchCount: pipeline.pendingDispatchCount(),
-		},
-	];
+					: {state: 'none'},
+		pendingDispatchCount: pipeline.pendingDispatchCountFor(runtime.runtimeId),
+	}));
 }
 
 function ok<T>(

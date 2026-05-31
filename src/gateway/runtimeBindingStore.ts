@@ -1,19 +1,26 @@
 /**
- * RuntimeBindingStore — owns the registered-runtime binding state machine.
+ * RuntimeBindingStore — owns the registered-runtime slot state.
  *
  * States per attachment slot: absent → active → stale → (active | absent)
  *
  * The store hosts one runtime per **attachment slot**, keyed by `attachmentId`.
  * Frames that arrive without an `attachmentId` hit the single fallback slot
- * keyed by `undefined`. Each slot tracks its own runtime identity, connection
- * binding, and optional grace-period timer.
+ * keyed by `undefined`. Each slot owns its full state together: runtime
+ * identity, connection binding, the control-push handle, and an optional
+ * grace-period timer. Connection-lost side effects (dropping the push handle)
+ * are applied here so they cannot drift out of sync with the binding.
+ *
+ * `snapshot()` exposes every slot — both attachment-keyed and the legacy
+ * fallback — so status reporting can see all registered runtimes, not just the
+ * fallback slot.
  *
  * Observer callbacks are emitted synchronously from the mutating methods so
- * the caller can update ancillary state (e.g. clearing the push handle) in
- * the same turn.
+ * the caller can react in the same turn.
  *
  * See `docs/adr/0001-attachment-supervisor.md`.
  */
+
+import type {ControlPushEnvelope} from '../shared/gateway-protocol';
 
 export type RegisteredRuntime = {
 	runtimeId: string;
@@ -87,11 +94,22 @@ export type RuntimeBindingStoreOptions = {
 
 type AttachmentKey = string | undefined;
 
+type RuntimePush = (env: ControlPushEnvelope) => void;
+
 type Slot = {
 	runtime: RegisteredRuntime;
 	binding: RuntimeConnectionBinding | null;
+	/** Control-push handle for this slot; null once the connection is gone. */
+	push: RuntimePush | null;
 	staleTimer: NodeJS.Timeout | null;
 	staleSince: number | null;
+};
+
+/** One slot's reportable state — the unit `snapshot()` returns per slot. */
+export type RuntimeSlotSnapshot = {
+	key: string | undefined;
+	runtime: RegisteredRuntime;
+	binding: RuntimeConnectionBinding | null;
 };
 
 export class RuntimeBindingStore {
@@ -115,6 +133,7 @@ export class RuntimeBindingStore {
 		pid: number;
 		connectionId: string;
 		attachmentId?: string;
+		push?: RuntimePush;
 	}): {registeredAt: number} {
 		const key: AttachmentKey = input.attachmentId;
 		const existing = this.slots.get(key);
@@ -162,9 +181,16 @@ export class RuntimeBindingStore {
 			...maybeLastRebindAt(lastRebindAt),
 		};
 
+		const push = input.push ?? existing?.push ?? null;
 		const slot: Slot = existing
-			? {...existing, runtime, binding: newBinding}
-			: {runtime, binding: newBinding, staleTimer: null, staleSince: null};
+			? {...existing, runtime, binding: newBinding, push}
+			: {
+					runtime,
+					binding: newBinding,
+					push,
+					staleTimer: null,
+					staleSince: null,
+				};
 		this.clearStaleTimerForSlot(slot);
 		this.slots.set(key, slot);
 
@@ -191,9 +217,10 @@ export class RuntimeBindingStore {
 	}
 
 	/**
-	 * Called when the transport connection closes.
-	 * Returns the runtimeId if the close was for a current binding (caller should
-	 * clear the push handle); returns null if the connectionId was not recognised.
+	 * Called when the transport connection closes. Drops the slot's push handle
+	 * (immediately deleting the slot when no grace period is configured, otherwise
+	 * marking it stale). Returns the runtimeId if the close matched a current
+	 * binding; returns null if the connectionId was not recognised.
 	 */
 	notifyConnectionClosed(connectionId: string): string | null {
 		const entry = this.findSlotByConnectionId(connectionId);
@@ -217,6 +244,9 @@ export class RuntimeBindingStore {
 			return runtimeId;
 		}
 
+		// The connection is gone — the push handle is dead even though the slot is
+		// retained for the grace window. A re-bind installs a fresh handle.
+		slot.push = null;
 		slot.staleSince = now;
 		slot.staleTimer = setTimeout(() => {
 			this.expireStaleBinding(key, runtimeId);
@@ -260,6 +290,30 @@ export class RuntimeBindingStore {
 	getRuntimeIdByConnection(connectionId: string): string | null {
 		const entry = this.findSlotByConnectionId(connectionId);
 		return entry ? entry.slot.runtime.runtimeId : null;
+	}
+
+	/**
+	 * Deliver a control-push envelope to the runtime occupying `key`. Returns
+	 * false (and pushes nothing) when the slot is empty or its connection has
+	 * already been lost.
+	 */
+	pushTo(key: string | undefined, env: ControlPushEnvelope): boolean {
+		const slot = this.slots.get(key);
+		if (!slot || !slot.push) return false;
+		slot.push(env);
+		return true;
+	}
+
+	/**
+	 * Reportable state for every slot — both attachment-keyed and the legacy
+	 * fallback — so status reporting sees all registered runtimes.
+	 */
+	snapshot(): RuntimeSlotSnapshot[] {
+		const entries: RuntimeSlotSnapshot[] = [];
+		for (const [key, slot] of this.slots) {
+			entries.push({key, runtime: slot.runtime, binding: slot.binding});
+		}
+		return entries;
 	}
 
 	/**

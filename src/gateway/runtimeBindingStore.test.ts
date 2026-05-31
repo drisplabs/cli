@@ -1,9 +1,17 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import type {ControlPushEnvelope} from '../shared/gateway-protocol';
 import {
 	AlreadyRegisteredError,
 	NotRegisteredError,
 	RuntimeBindingStore,
 } from './runtimeBindingStore';
+
+const envelope: ControlPushEnvelope = {
+	push_id: 'p1',
+	ts: 1,
+	kind: 'session.dispatch.turn',
+	payload: {},
+};
 
 function makeStore(opts: {gracePeriodMs?: number; now?: () => number} = {}) {
 	const observers = {
@@ -254,6 +262,73 @@ describe('RuntimeBindingStore — connection lifecycle (grace>0)', () => {
 	});
 });
 
+describe('RuntimeBindingStore — push handle ownership', () => {
+	it('routes a push envelope to the bound slot handle', () => {
+		const {store} = makeStore();
+		const push = vi.fn();
+		store.bind({...R1, push});
+		expect(store.pushTo(undefined, envelope)).toBe(true);
+		expect(push).toHaveBeenCalledWith(envelope);
+	});
+
+	it('returns false when no slot holds the key', () => {
+		const {store} = makeStore();
+		expect(store.pushTo('a1', envelope)).toBe(false);
+	});
+
+	it('replaces the push handle on rebind', () => {
+		const {store} = makeStore();
+		const first = vi.fn();
+		const second = vi.fn();
+		store.bind({...R1, push: first});
+		store.bind({...R1, connectionId: 'c2', push: second});
+		store.pushTo(undefined, envelope);
+		expect(first).not.toHaveBeenCalled();
+		expect(second).toHaveBeenCalledWith(envelope);
+	});
+
+	it('drops the push handle when the connection closes (grace=0)', () => {
+		const {store} = makeStore();
+		const push = vi.fn();
+		store.bind({...R1, push});
+		store.notifyConnectionClosed('c1');
+		expect(store.pushTo(undefined, envelope)).toBe(false);
+		expect(push).not.toHaveBeenCalled();
+	});
+
+	it('drops the push handle while a binding is stale during grace', () => {
+		vi.useFakeTimers();
+		try {
+			const {store} = makeStore({gracePeriodMs: 30_000});
+			const push = vi.fn();
+			store.bind({...R1, push});
+			store.notifyConnectionClosed('c1'); // stale, slot retained
+			expect(store.getBinding()?.state).toBe('stale');
+			expect(store.pushTo(undefined, envelope)).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('routes pushes to the correct attachment slot independently', () => {
+		const {store} = makeStore();
+		const legacyPush = vi.fn();
+		const attachedPush = vi.fn();
+		store.bind({...R1, push: legacyPush});
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+			push: attachedPush,
+		});
+		store.pushTo('a2', envelope);
+		expect(attachedPush).toHaveBeenCalledWith(envelope);
+		expect(legacyPush).not.toHaveBeenCalled();
+	});
+});
+
 describe('RuntimeBindingStore — multi-runtime by attachmentId', () => {
 	it('hosts two runtimes concurrently when each carries a distinct attachmentId', () => {
 		const {store} = makeStore();
@@ -339,6 +414,26 @@ describe('RuntimeBindingStore — multi-runtime by attachmentId', () => {
 		expect(store.getRuntimeIdByConnection('c2')).toBe('r2');
 		expect(store.getCurrentByAttachment(undefined)?.runtimeId).toBe('r1');
 		expect(store.getCurrentByAttachment('a2')?.runtimeId).toBe('r2');
+	});
+
+	it('snapshot reports every slot, both legacy and attachment-keyed', () => {
+		const {store} = makeStore();
+		store.bind(R1); // legacy slot
+		store.bind({
+			runtimeId: 'r2',
+			defaultAgentId: 'main',
+			pid: 100,
+			connectionId: 'c2',
+			attachmentId: 'a2',
+		});
+		const snap = store.snapshot();
+		expect(snap).toHaveLength(2);
+		const legacy = snap.find(s => s.key === undefined);
+		const attached = snap.find(s => s.key === 'a2');
+		expect(legacy?.runtime.runtimeId).toBe('r1');
+		expect(legacy?.binding?.state).toBe('active');
+		expect(attached?.runtime.runtimeId).toBe('r2');
+		expect(attached?.binding?.state).toBe('active');
 	});
 
 	it('connection close on one slot does not expire the other during grace', () => {
