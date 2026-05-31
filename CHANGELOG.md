@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.13](https://github.com/drisplabs/cli/compare/cli-v0.5.12...cli-v0.5.13) (2026-05-31)
+
+
+### Features
+
+* **feed:** suppress high-frequency Codex bookkeeping from the default feed ([#19](https://github.com/drisplabs/cli/issues/19)) ([#53](https://github.com/drisplabs/cli/issues/53)) ([d7d5653](https://github.com/drisplabs/cli/commit/d7d5653d872c16d1ffa243a74043c24e6e86c19c))
+
 ## [0.5.12](https://github.com/drisplabs/cli/compare/cli-v0.5.11...cli-v0.5.12) (2026-05-31)
 
 
