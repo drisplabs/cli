@@ -173,6 +173,61 @@ describe('ChannelSidecarReconciler', () => {
 		]);
 	});
 
+	it('derives operator output from the reconciliation outcome, gated per stream', async () => {
+		const channelManager = new ChannelManager();
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const reconciler = new ChannelSidecarReconciler({
+			channelManager,
+			loadSidecars: () => ({
+				sidecars: [sidecar('console'), sidecar('broken')],
+				errors: [{path: '/tmp/channels/bad.json', reason: 'bad json'}],
+			}),
+			instantiateAdapter: loaded =>
+				loaded.instanceId === 'broken'
+					? {ok: false as const, reason: 'broken config'}
+					: {ok: true as const, adapter: new TestAdapter('console')},
+			stdout: message => stdout.push(message),
+			stderr: message => stderr.push(message),
+		});
+
+		await reconciler.reconcile({
+			unregisterStale: true,
+			logFailures: true,
+			logRegistrations: true,
+		});
+
+		expect(stderr).toEqual([
+			'athena-gateway: skipping /tmp/channels/bad.json: bad json\n',
+			'athena-gateway: broken: broken config\n',
+		]);
+		expect(stdout).toEqual(['athena-gateway: registered console\n']);
+	});
+
+	it('suppresses operator output when logging is disabled', async () => {
+		const channelManager = new ChannelManager();
+		const stdout: string[] = [];
+		const stderr: string[] = [];
+		const reconciler = new ChannelSidecarReconciler({
+			channelManager,
+			loadSidecars: () => ({
+				sidecars: [sidecar('console')],
+				errors: [{path: '/tmp/channels/bad.json', reason: 'bad json'}],
+			}),
+			instantiateAdapter: () => ({
+				ok: true,
+				adapter: new TestAdapter('console'),
+			}),
+			stdout: message => stdout.push(message),
+			stderr: message => stderr.push(message),
+		});
+
+		await reconciler.reconcile({unregisterStale: true});
+
+		expect(stdout).toEqual([]);
+		expect(stderr).toEqual([]);
+	});
+
 	it('reports register failures without leaving hidden partial state', async () => {
 		const channelManager = new ChannelManager();
 		const failing = new TestAdapter('console', {

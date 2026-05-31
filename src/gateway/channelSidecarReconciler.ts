@@ -7,6 +7,10 @@ import {instantiateAdapter as defaultInstantiateAdapter} from './adapters/factor
 import type {InstantiateResult} from './adapters/factory';
 import type {ChannelManager} from './channelManager';
 import type {ChannelReloadResult} from '../shared/gateway-protocol';
+import {
+	planChannelReconciliation,
+	type ChannelReconcileAction,
+} from './channelReconcilePlan';
 
 type ChannelSidecarLoader = (home?: string) => LoadSidecarsResult;
 type ChannelSidecarInstantiator = (
@@ -53,129 +57,139 @@ export class ChannelSidecarReconciler {
 	async reconcile(
 		opts: ChannelSidecarReconcileOptions,
 	): Promise<ChannelSidecarReconcileResult> {
-		const results: ChannelReloadResult[] = [];
 		const {sidecars, errors} = this.loadSidecars(this.home);
-
-		for (const err of errors) {
-			const id = pathIdFromSidecarPath(err.path);
-			results.push({
-				id,
-				ok: false,
-				action: 'failed',
-				reason: err.reason,
-			});
-			if (opts.logFailures) {
-				this.stderr(`athena-gateway: skipping ${err.path}: ${err.reason}\n`);
-			}
-		}
-
-		if (opts.unregisterStale) {
-			const sidecarIds = new Set(sidecars.map(sidecar => sidecar.instanceId));
-			for (const channel of this.channelManager.listChannels()) {
-				if (sidecarIds.has(channel.id)) continue;
-				try {
-					await this.channelManager.unregister(channel.id, 'shutdown');
-					results.push({
-						id: channel.id,
-						ok: true,
-						action: 'unregistered',
-					});
-				} catch (err) {
-					const reason = errorReason(err);
-					results.push({
-						id: channel.id,
-						ok: false,
-						action: 'failed',
-						reason,
-					});
-					if (opts.logFailures) {
-						this.stderr(
-							`athena-gateway: unregister ${channel.id} failed: ${reason}\n`,
-						);
-					}
-				}
-			}
-		}
-
-		for (const sidecar of sidecars) {
-			const existed = this.channelManager
+		const plan = planChannelReconciliation({
+			desired: sidecars,
+			currentChannelIds: this.channelManager
 				.listChannels()
-				.some(channel => channel.id === sidecar.instanceId);
-			if (existed) {
-				try {
-					await this.channelManager.unregister(sidecar.instanceId, 'shutdown');
-				} catch (err) {
-					const reason = errorReason(err);
-					results.push({
-						id: sidecar.instanceId,
+				.map(channel => channel.id),
+			loadErrors: errors,
+			unregisterStale: opts.unregisterStale,
+		});
+
+		const outcomes: ReconcileOutcome[] = [];
+		for (const action of plan.actions) {
+			outcomes.push(await this.executeAction(action));
+		}
+
+		// Operator-facing output is a projection of the reconciliation outcomes,
+		// emitted in plan order once execution has settled.
+		for (const outcome of outcomes) {
+			if (!outcome.log) continue;
+			const enabled =
+				outcome.log.stream === 'err' ? opts.logFailures : opts.logRegistrations;
+			if (!enabled) continue;
+			const write = outcome.log.stream === 'err' ? this.stderr : this.stdout;
+			write(outcome.log.message);
+		}
+
+		return {results: outcomes.map(outcome => outcome.result)};
+	}
+
+	private async executeAction(
+		action: ChannelReconcileAction,
+	): Promise<ReconcileOutcome> {
+		switch (action.kind) {
+			case 'load-error':
+				return {
+					result: {
+						id: action.id,
 						ok: false,
 						action: 'failed',
-						reason,
-					});
-					if (opts.logFailures) {
-						this.stderr(
-							`athena-gateway: unregister ${sidecar.instanceId} failed: ${reason}\n`,
-						);
-					}
-					continue;
-				}
-			}
+						reason: action.reason,
+					},
+					log: {
+						stream: 'err',
+						message: `athena-gateway: skipping ${action.path}: ${action.reason}\n`,
+					},
+				};
+			case 'unregister-stale':
+				return this.executeUnregisterStale(action.id);
+			case 'replace':
+				return this.executeApply(action.sidecar, true);
+			case 'register':
+				return this.executeApply(action.sidecar, false);
+		}
+	}
 
-			const built = this.instantiateAdapter(sidecar);
-			if (!built.ok) {
-				results.push({
-					id: sidecar.instanceId,
-					ok: false,
-					action: 'failed',
-					reason: built.reason,
-				});
-				if (opts.logFailures) {
-					this.stderr(
-						`athena-gateway: ${sidecar.instanceId}: ${built.reason}\n`,
-					);
-				}
-				continue;
-			}
+	private async executeUnregisterStale(id: string): Promise<ReconcileOutcome> {
+		try {
+			await this.channelManager.unregister(id, 'shutdown');
+			return {result: {id, ok: true, action: 'unregistered'}};
+		} catch (err) {
+			const reason = errorReason(err);
+			return {
+				result: {id, ok: false, action: 'failed', reason},
+				log: {
+					stream: 'err',
+					message: `athena-gateway: unregister ${id} failed: ${reason}\n`,
+				},
+			};
+		}
+	}
 
+	private async executeApply(
+		sidecar: ChannelSidecar,
+		existed: boolean,
+	): Promise<ReconcileOutcome> {
+		const id = sidecar.instanceId;
+		if (existed) {
 			try {
-				await this.channelManager.register(
-					built.adapter,
-					sidecar.attachmentId !== undefined
-						? {attachmentId: sidecar.attachmentId}
-						: {},
-				);
-				results.push({
-					id: sidecar.instanceId,
-					ok: true,
-					action: existed ? 'replaced' : 'registered',
-				});
-				if (opts.logRegistrations) {
-					this.stdout(`athena-gateway: registered ${sidecar.instanceId}\n`);
-				}
+				await this.channelManager.unregister(id, 'shutdown');
 			} catch (err) {
 				const reason = errorReason(err);
-				results.push({
-					id: sidecar.instanceId,
-					ok: false,
-					action: 'failed',
-					reason,
-				});
-				if (opts.logFailures) {
-					this.stderr(
-						`athena-gateway: register ${sidecar.instanceId} failed: ${reason}\n`,
-					);
-				}
+				return {
+					result: {id, ok: false, action: 'failed', reason},
+					log: {
+						stream: 'err',
+						message: `athena-gateway: unregister ${id} failed: ${reason}\n`,
+					},
+				};
 			}
 		}
 
-		return {results};
+		const built = this.instantiateAdapter(sidecar);
+		if (!built.ok) {
+			return {
+				result: {id, ok: false, action: 'failed', reason: built.reason},
+				log: {
+					stream: 'err',
+					message: `athena-gateway: ${id}: ${built.reason}\n`,
+				},
+			};
+		}
+
+		try {
+			await this.channelManager.register(
+				built.adapter,
+				sidecar.attachmentId !== undefined
+					? {attachmentId: sidecar.attachmentId}
+					: {},
+			);
+			return {
+				result: {id, ok: true, action: existed ? 'replaced' : 'registered'},
+				log: {
+					stream: 'out',
+					message: `athena-gateway: registered ${id}\n`,
+				},
+			};
+		} catch (err) {
+			const reason = errorReason(err);
+			return {
+				result: {id, ok: false, action: 'failed', reason},
+				log: {
+					stream: 'err',
+					message: `athena-gateway: register ${id} failed: ${reason}\n`,
+				},
+			};
+		}
 	}
 }
 
-function pathIdFromSidecarPath(filePath: string): string {
-	const base = filePath.split(/[\\/]/).pop() ?? filePath;
-	return base.endsWith('.json') ? base.slice(0, -'.json'.length) : base;
-}
+type ReconcileOutcome = {
+	result: ChannelReloadResult;
+	log?: {stream: 'out' | 'err'; message: string};
+};
 
 function errorReason(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
