@@ -321,54 +321,42 @@ export function cursorToVisualPosition(
 	if (width <= 0) return {line: 0, col: cursorOffset, totalLines: 1};
 
 	const segments = value.split('\n');
+	const segmentPieces = segments.map(seg => wrapSegmentPieces(seg, width));
+	const totalLines = segmentPieces.reduce((sum, ps) => sum + ps.length, 0);
+
 	let visualLine = 0;
 	let globalOffset = 0;
 
 	for (let s = 0; s < segments.length; s++) {
 		const seg = segments[s]!;
+		const pieces = segmentPieces[s]!;
 		const segEnd = globalOffset + seg.length;
 
 		if (cursorOffset <= segEnd) {
-			// Cursor is within this segment
+			// Cursor is within this segment. Find the piece that owns it: a piece
+			// owns offsets in [start, start+len); an offset landing exactly on a
+			// piece boundary belongs to the next piece (col 0), and an offset at
+			// the segment end stays on the last piece (cursor past the last char).
 			const posInSeg = cursorOffset - globalOffset;
-			const totalLines =
-				visualLine + countSegmentVisualLines(segments, s, width);
-			if (seg.length === 0) {
-				return {line: visualLine, col: 0, totalLines};
+			for (let p = 0; p < pieces.length; p++) {
+				const piece = pieces[p]!;
+				const end = piece.start + piece.text.length;
+				if (posInSeg < end || p === pieces.length - 1) {
+					return {
+						line: visualLine + p,
+						col: posInSeg - piece.start,
+						totalLines,
+					};
+				}
 			}
-			const lineInSeg = Math.min(
-				Math.floor(posInSeg / width),
-				segmentVisualLines(seg.length, width) - 1,
-			);
-			const colInLine = posInSeg - lineInSeg * width;
-			return {line: visualLine + lineInSeg, col: colInLine, totalLines};
 		}
 
-		visualLine += segmentVisualLines(seg.length, width);
+		visualLine += pieces.length;
 		globalOffset = segEnd + 1; // +1 for \n
 	}
 
 	// Fallback: cursor at very end
-	const totalLines = wrapText(value, width).length;
 	return {line: Math.max(0, totalLines - 1), col: 0, totalLines};
-}
-
-/** Visual lines occupied by a single segment at the given width. */
-function segmentVisualLines(segLen: number, width: number): number {
-	return segLen === 0 ? 1 : Math.ceil(segLen / width);
-}
-
-/** Count total visual lines from segment index onwards. */
-function countSegmentVisualLines(
-	segments: string[],
-	fromIdx: number,
-	width: number,
-): number {
-	let count = 0;
-	for (let i = fromIdx; i < segments.length; i++) {
-		count += segmentVisualLines(segments[i]!.length, width);
-	}
-	return count;
 }
 
 /**
@@ -389,17 +377,17 @@ export function visualPositionToOffset(
 
 	for (let s = 0; s < segments.length; s++) {
 		const seg = segments[s]!;
-		const numWrappedLines = segmentVisualLines(seg.length, width);
+		const pieces = wrapSegmentPieces(seg, width);
 
-		if (targetLine < visualLine + numWrappedLines) {
+		if (targetLine < visualLine + pieces.length) {
 			// Target is within this segment
-			const lineInSeg = targetLine - visualLine;
-			const lineStart = lineInSeg * width;
-			const lineLen = Math.min(width, seg.length - lineStart);
-			return globalOffset + lineStart + Math.min(targetCol, lineLen);
+			const piece = pieces[targetLine - visualLine]!;
+			return (
+				globalOffset + piece.start + Math.min(targetCol, piece.text.length)
+			);
 		}
 
-		visualLine += numWrappedLines;
+		visualLine += pieces.length;
 		globalOffset += seg.length + 1; // +1 for \n
 	}
 
@@ -467,16 +455,55 @@ export function renderInputLines(
 	});
 }
 
+type WrapPiece = {text: string; start: number};
+
+/**
+ * Break a single newline-free segment into pieces no wider than `width` VISUAL
+ * columns, returning each piece's UTF-16 start offset within the segment.
+ *
+ * This is the single source of truth for input/feed line wrapping. Wrapping by
+ * visual width (not raw character count) keeps wide content — emoji, CJK,
+ * box-drawing — from producing a "line" whose visual width exceeds the box,
+ * which previously caused `fit()` to truncate and silently drop the overflowing
+ * characters (and overflowed the terminal, corrupting layout).
+ */
+function wrapSegmentPieces(segment: string, width: number): WrapPiece[] {
+	if (segment.length === 0) return [{text: '', start: 0}];
+	// Fast path: plain ASCII → character count equals visual width.
+	if (isSimpleAscii(segment)) {
+		const pieces: WrapPiece[] = [];
+		for (let i = 0; i < segment.length; i += width) {
+			pieces.push({text: segment.slice(i, i + width), start: i});
+		}
+		return pieces;
+	}
+	// Visual-width-aware wrapping for wide / multibyte content.
+	const pieces: WrapPiece[] = [];
+	let pieceStart = 0;
+	let pieceWidth = 0;
+	let i = 0;
+	while (i < segment.length) {
+		const cp = segment.codePointAt(i)!;
+		const chLen = cp > 0xffff ? 2 : 1;
+		const charWidth = cachedStringWidth(segment.slice(i, i + chLen));
+		if (pieceWidth > 0 && pieceWidth + charWidth > width) {
+			pieces.push({text: segment.slice(pieceStart, i), start: pieceStart});
+			pieceStart = i;
+			pieceWidth = 0;
+		}
+		pieceWidth += charWidth;
+		i += chLen;
+	}
+	pieces.push({text: segment.slice(pieceStart), start: pieceStart});
+	return pieces;
+}
+
 export function wrapText(text: string, width: number): string[] {
 	if (width <= 0) return [text];
 	const lines: string[] = [];
 	for (const segment of text.split('\n')) {
-		if (segment.length === 0) {
-			lines.push('');
-			continue;
-		}
-		for (let i = 0; i < segment.length; i += width) {
-			lines.push(segment.slice(i, i + width));
+		for (const piece of wrapSegmentPieces(segment, width)) {
+			lines.push(piece.text);
 		}
 	}
 	return lines;
