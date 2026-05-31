@@ -41,6 +41,9 @@ const {
 	resolveMarketplacePlugin,
 	resolveMarketplacePluginTarget,
 	pullMarketplaceRepo,
+	refreshMarketplaceRepo,
+	classifyGitFailure,
+	MarketplaceRefreshError,
 	resolveMarketplacePluginFromRepo,
 	resolveMarketplaceWorkflow,
 	resolveVersionedMarketplacePluginTarget,
@@ -542,7 +545,7 @@ describe('pullMarketplaceRepo', () => {
 				'https://github.com/lespaceman/athena-workflow-marketplace.git',
 				cacheBase,
 			],
-			{stdio: 'ignore'},
+			{stdio: ['ignore', 'ignore', 'pipe']},
 		);
 	});
 
@@ -579,7 +582,7 @@ describe('pullMarketplaceRepo', () => {
 				'https://github.com/lespaceman/athena-workflow-marketplace.git',
 				cacheBase,
 			],
-			{stdio: 'ignore'},
+			{stdio: ['ignore', 'ignore', 'pipe']},
 		);
 	});
 
@@ -599,10 +602,276 @@ describe('pullMarketplaceRepo', () => {
 		expect(() =>
 			pullMarketplaceRepo('lespaceman', 'athena-workflow-marketplace'),
 		).toThrow(
-			/Failed to refresh marketplace repo lespaceman\/athena-workflow-marketplace/,
+			/Could not refresh the "lespaceman\/athena-workflow-marketplace"/,
 		);
 		const backupDir = renameSyncMock.mock.calls[0]?.[1] as string;
 		expect(files[`${backupDir}/local-note.txt`]).toBe('accidental edit');
+	});
+
+	it('throws a classified MarketplaceRefreshError when no clean checkout can be produced', () => {
+		dirs.add(cacheBase);
+
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error('fatal: Authentication failed');
+			}
+		});
+
+		let captured: unknown;
+		try {
+			pullMarketplaceRepo('lespaceman', 'athena-workflow-marketplace');
+		} catch (error) {
+			captured = error;
+		}
+
+		expect(captured).toBeInstanceOf(MarketplaceRefreshError);
+		expect(
+			(captured as InstanceType<typeof MarketplaceRefreshError>).kind,
+		).toBe('network-or-auth');
+		expect(
+			(captured as InstanceType<typeof MarketplaceRefreshError>).marketplace,
+		).toBe('lespaceman/athena-workflow-marketplace');
+	});
+});
+
+describe('refreshMarketplaceRepo', () => {
+	const cacheBase =
+		'/home/testuser/.config/athena/marketplaces/lespaceman/athena-workflow-marketplace';
+
+	const repoUrl =
+		'https://github.com/lespaceman/athena-workflow-marketplace.git';
+
+	function refresh() {
+		return refreshMarketplaceRepo('lespaceman', 'athena-workflow-marketplace');
+	}
+
+	it('returns the cached repo dir when a clean fast-forward refresh succeeds', () => {
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation(() => undefined);
+
+		const outcome = refresh();
+
+		expect(outcome).toEqual({ok: true, repoDir: cacheBase});
+		expect(execFileSyncMock).toHaveBeenCalledWith(
+			'git',
+			['pull', '--ff-only'],
+			{
+				cwd: cacheBase,
+				stdio: ['ignore', 'ignore', 'pipe'],
+			},
+		);
+	});
+
+	it('clones a usable checkout when the cache is missing', () => {
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'clone') {
+				dirs.add(cacheBase);
+				files[`${cacheBase}/clean.txt`] = 'fresh checkout';
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome).toEqual({ok: true, repoDir: cacheBase});
+		expect(execFileSyncMock).toHaveBeenCalledWith(
+			'git',
+			['clone', '--depth', '1', repoUrl, cacheBase],
+			{stdio: ['ignore', 'ignore', 'pipe']},
+		);
+	});
+
+	it('classifies from captured git stderr when the Error message is generic', () => {
+		// Real-world: execFileSync throws "Command failed: git clone ..." with the
+		// useful diagnostic only on the captured stderr stream.
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				const error = new Error(
+					'Command failed: git clone --depth 1',
+				) as Error & {
+					stderr: Buffer;
+				};
+				error.stderr = Buffer.from(
+					"fatal: unable to access '...': Could not resolve host: github.com",
+				);
+				throw error;
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.kind).toBe('network-or-auth');
+		expect(outcome.cause).toMatch(/Could not resolve host/);
+	});
+
+	it('self-heals a dirty cache (non-fast-forward) by recloning and returns the repo dir', () => {
+		dirs.add(cacheBase);
+		files[`${cacheBase}/local-note.txt`] = 'accidental edit';
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error(
+					'fatal: Not possible to fast-forward, aborting (divergent)',
+				);
+			}
+			if (args[0] === 'clone') {
+				dirs.add(cacheBase);
+				files[`${cacheBase}/clean.txt`] = 'fresh checkout';
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome).toEqual({ok: true, repoDir: cacheBase});
+		expect(renameSyncMock).toHaveBeenCalledTimes(1);
+		expect(files[`${cacheBase}/clean.txt`]).toBe('fresh checkout');
+	});
+
+	it('self-heals a corrupt cache by recloning and returns the repo dir', () => {
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('fatal: not a git repository (corrupt object)');
+			}
+			if (args[0] === 'clone') {
+				dirs.add(cacheBase);
+				files[`${cacheBase}/clean.txt`] = 'fresh checkout';
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(true);
+	});
+
+	it('classifies an unreachable remote as network-or-auth when recovery cannot reclone', () => {
+		dirs.add(cacheBase);
+		files[`${cacheBase}/local-note.txt`] = 'accidental edit';
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error(
+					"fatal: unable to access 'https://github.com/...': Could not resolve host: github.com",
+				);
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.kind).toBe('network-or-auth');
+		expect(outcome.marketplace).toBe('lespaceman/athena-workflow-marketplace');
+		expect(outcome.message).toMatch(/connectivity or authentication/);
+		expect(outcome.backupDir).toMatch(/\.backup-/);
+	});
+
+	it('classifies an auth failure as network-or-auth', () => {
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error(
+					"fatal: Authentication failed for 'https://github.com/...'",
+				);
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.kind).toBe('network-or-auth');
+	});
+
+	it('classifies a non-network recovery failure as unrecoverable-cache', () => {
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error('EACCES: permission denied, mkdir cache dir');
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.kind).toBe('unrecoverable-cache');
+		expect(outcome.message).toMatch(/cached copy is corrupt/);
+	});
+
+	it('classifies a failed initial clone of a missing cache by cause', () => {
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'clone') {
+				throw new Error(
+					'fatal: could not read Username: terminal prompts disabled',
+				);
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.kind).toBe('network-or-auth');
+		expect(renameSyncMock).not.toHaveBeenCalled();
+		expect(outcome.backupDir).toBeUndefined();
+	});
+
+	it('never surfaces a bare git pull line as the sole explanation', () => {
+		dirs.add(cacheBase);
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === 'pull') {
+				throw new Error('Command failed: git pull --ff-only');
+			}
+			if (args[0] === 'clone') {
+				throw new Error('Command failed: git clone --depth 1');
+			}
+		});
+
+		const outcome = refresh();
+
+		expect(outcome.ok).toBe(false);
+		if (outcome.ok) return;
+		expect(outcome.message).toMatch(/marketplace/);
+		expect(outcome.message).not.toBe('Command failed: git pull --ff-only');
+	});
+});
+
+describe('classifyGitFailure', () => {
+	it.each([
+		['fatal: unable to access ...: Could not resolve host: github.com'],
+		['ssh: connect to host github.com port 22: Connection timed out'],
+		['fatal: Authentication failed for ...'],
+		['fatal: could not read Username: terminal prompts disabled'],
+		['remote: Permission denied (publickey).'],
+		['error: The requested URL returned error: 403 Forbidden'],
+		['remote: Repository not found.'],
+	])('classifies %j as network-or-auth', message => {
+		expect(classifyGitFailure(message)).toBe('network-or-auth');
+	});
+
+	it.each([
+		['fatal: not a git repository'],
+		['EACCES: permission denied, mkdir'],
+		['error: object file is empty'],
+		['Command failed: git pull --ff-only'],
+	])('classifies %j as unrecoverable-cache', message => {
+		expect(classifyGitFailure(message)).toBe('unrecoverable-cache');
 	});
 });
 

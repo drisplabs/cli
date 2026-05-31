@@ -55,7 +55,18 @@ const resolveMarketplaceWorkflowMock = vi.fn(
 );
 const listMarketplaceWorkflowsFromRepoMock = vi.fn(() => []);
 const resolveWorkflowInstallMock = vi.fn();
-const pullMarketplaceRepoMock = vi.fn();
+const refreshMarketplaceRepoMock = vi.fn();
+
+class MarketplaceRefreshErrorStub extends Error {
+	readonly kind: string;
+	readonly marketplace: string;
+	constructor(outcome: {kind: string; marketplace: string; message: string}) {
+		super(outcome.message);
+		this.name = 'MarketplaceRefreshError';
+		this.kind = outcome.kind;
+		this.marketplace = outcome.marketplace;
+	}
+}
 
 vi.mock('../../../infra/plugins/marketplace', () => ({
 	isMarketplaceRef: (entry: string) =>
@@ -69,7 +80,9 @@ vi.mock('../../../infra/plugins/marketplace', () => ({
 		`${repoDir}/.athena-workflow/marketplace.json`,
 	resolveWorkflowInstall: (...args: unknown[]) =>
 		resolveWorkflowInstallMock(...args),
-	pullMarketplaceRepo: (...args: unknown[]) => pullMarketplaceRepoMock(...args),
+	refreshMarketplaceRepo: (...args: unknown[]) =>
+		refreshMarketplaceRepoMock(...args),
+	MarketplaceRefreshError: MarketplaceRefreshErrorStub,
 }));
 
 vi.mock('../builtins/index', () => ({
@@ -101,7 +114,13 @@ beforeEach(() => {
 	listMarketplaceWorkflowsFromRepoMock.mockReset();
 	listMarketplaceWorkflowsFromRepoMock.mockReturnValue([]);
 	resolveWorkflowInstallMock.mockReset();
-	pullMarketplaceRepoMock.mockReset();
+	refreshMarketplaceRepoMock.mockReset();
+	refreshMarketplaceRepoMock.mockImplementation(
+		(owner: string, repo: string) => ({
+			ok: true,
+			repoDir: `/home/testuser/.config/athena/marketplaces/${owner}/${repo}`,
+		}),
+	);
 	resolveWorkflowInstallMock.mockImplementation((ref: string) => {
 		const atIdx = ref.indexOf('@');
 		const workflowName = atIdx >= 0 ? ref.slice(0, atIdx) : ref;
@@ -635,7 +654,7 @@ describe('updateWorkflow', () => {
 		const name = updateWorkflow('update-me');
 
 		expect(name).toBe('update-me');
-		expect(pullMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
 		expect(
 			JSON.parse(
 				files[
@@ -680,7 +699,7 @@ describe('updateWorkflow', () => {
 			});
 
 		expect(updateWorkflow('update-me')).toBe('update-me');
-		expect(pullMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
 		expect(resolveWorkflowInstallMock).toHaveBeenCalledWith(
 			'update-me@owner/repo',
 			[],
@@ -983,7 +1002,7 @@ describe('updateWorkflow (canonical source)', () => {
 
 		updateWorkflow('w');
 
-		expect(pullMarketplaceRepoMock).not.toHaveBeenCalled();
+		expect(refreshMarketplaceRepoMock).not.toHaveBeenCalled();
 		expect(
 			JSON.parse(
 				files['/home/testuser/.config/athena/workflows/w/workflow.json']!,
@@ -1060,6 +1079,44 @@ describe('updateWorkflow (offline / refresh failure)', () => {
 		});
 
 		expect(() => updateWorkflow('w')).toThrow(/clone failed/);
+		// Installed snapshot is untouched.
+		expect(
+			JSON.parse(
+				files['/home/testuser/.config/athena/workflows/w/workflow.json']!,
+			).promptTemplate,
+		).toBe('x');
+	});
+
+	it('surfaces a classified, marketplace-named cause when the refresh cannot produce a clean checkout', () => {
+		files['/home/testuser/.config/athena/workflows/w/workflow.json'] =
+			JSON.stringify({
+				name: 'w',
+				plugins: [],
+				promptTemplate: 'x',
+				workflowFile: 'workflow.md',
+			});
+		files['/home/testuser/.config/athena/workflows/w/workflow.md'] = '# x';
+		files['/home/testuser/.config/athena/workflows/w/source.json'] =
+			JSON.stringify({
+				v: 2,
+				kind: 'marketplace-remote',
+				ref: 'w@o/r',
+			});
+
+		refreshMarketplaceRepoMock.mockReturnValue({
+			ok: false,
+			kind: 'network-or-auth',
+			marketplace: 'o/r',
+			message:
+				'Could not refresh the "o/r" marketplace: the remote could not be reached (connectivity or authentication problem). fatal: Could not resolve host',
+			cause: 'fatal: Could not resolve host',
+		});
+
+		expect(() => updateWorkflow('w')).toThrow(
+			/Could not refresh the "o\/r" marketplace/,
+		);
+		// Resolution is never attempted once the refresh fails.
+		expect(resolveWorkflowInstallMock).not.toHaveBeenCalled();
 		// Installed snapshot is untouched.
 		expect(
 			JSON.parse(
