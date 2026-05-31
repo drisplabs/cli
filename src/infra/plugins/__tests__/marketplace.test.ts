@@ -42,6 +42,7 @@ const {
 	resolveMarketplacePluginTarget,
 	pullMarketplaceRepo,
 	resolveMarketplacePluginFromRepo,
+	resolveMarketplacePluginTargetFromRepo,
 	resolveMarketplaceWorkflow,
 	resolveVersionedMarketplacePluginTarget,
 } = await import('../marketplace');
@@ -639,6 +640,76 @@ describe('resolveMarketplacePluginFromRepo', () => {
 		);
 
 		expect(result).toBe(`${repoDir}/plugins/local-plugin`);
+	});
+});
+
+describe('resolveMarketplacePluginTargetFromRepo source-root fallback', () => {
+	const repoDir = '/tmp/workflow-marketplace';
+	const pluginName = 'versioned-plugin';
+	const ref = `${pluginName}@owner/repo`;
+	const version = '2.0.0';
+	const pluginDir = `${repoDir}/plugins/${pluginName}`;
+	const manifestPath = `${repoDir}/.agents/plugins/marketplace.json`;
+
+	// A versioned source plugin: the `version` makes
+	// buildMarketplacePluginResolution invoke resolvePackagedArtifactLayout
+	// instead of short-circuiting the `version ? … : undefined` ternary.
+	function addVersionedSourcePlugin(): void {
+		files[manifestPath] = JSON.stringify({
+			name: 'athena-workflow-marketplace',
+			owner: {name: 'Test Team'},
+			plugins: [{name: pluginName, source: `./plugins/${pluginName}`}],
+		});
+		dirs.add(pluginDir);
+		files[`${pluginDir}/.claude-plugin/plugin.json`] = JSON.stringify({
+			version,
+		});
+		// A loadable skill living at the plugin source root — the layout that
+		// must win when the packaged artifacts are missing or mismatched.
+		dirs.add(`${pluginDir}/skills`);
+		dirs.add(`${pluginDir}/skills/demo`);
+		files[`${pluginDir}/skills/demo/SKILL.md`] =
+			'---\nname: demo\ndescription: demo skill\nuser-invocable: true\n---\nbody';
+	}
+
+	const expectedSourceRootTarget = {
+		ref,
+		pluginName,
+		marketplacePath: manifestPath,
+		pluginDir,
+		codexPluginDir: pluginDir,
+	};
+
+	it('falls back to the source root when dist/<version>/release.json is missing', () => {
+		addVersionedSourcePlugin();
+
+		const result = resolveMarketplacePluginTargetFromRepo(ref, repoDir);
+
+		expect(result).toEqual(expectedSourceRootTarget);
+		// The loadable skill resolves from the source root, not a packaged dir.
+		expect(files[`${result.pluginDir}/skills/demo/SKILL.md`]).toBeDefined();
+	});
+
+	it('falls back to the source root when release.json version does not match', () => {
+		addVersionedSourcePlugin();
+		// Real packaged artifacts exist on disk, but the release manifest is
+		// stale: its version no longer matches the plugin's requested version.
+		addPackagedPluginArtifacts(pluginDir, version);
+		files[`${pluginDir}/dist/${version}/release.json`] = JSON.stringify({
+			version: '9.9.9',
+			artifacts: {
+				claude: {path: './claude/plugin'},
+				codex: {
+					marketplacePath: './.agents/plugins/marketplace.json',
+					pluginPath: './codex/plugin',
+				},
+			},
+		});
+
+		const result = resolveMarketplacePluginTargetFromRepo(ref, repoDir);
+
+		expect(result).toEqual(expectedSourceRootTarget);
+		expect(files[`${result.pluginDir}/skills/demo/SKILL.md`]).toBeDefined();
 	});
 });
 
