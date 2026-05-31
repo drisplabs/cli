@@ -3,8 +3,7 @@ import type {FeedEvent, FeedEventCause} from '../types';
 import type {RunLifecycle} from './runLifecycle';
 import type {ToolCorrelation} from './toolCorrelation';
 import type {TaskStateTracker} from './taskStateTracker';
-import type {SubagentTracker} from './subagentTracker';
-import {isSubagentTool} from '../todo';
+import type {SubagentLifecycle} from './subagentLifecycle';
 import {
 	type EnsureRun,
 	type FeedEventBuilder,
@@ -40,7 +39,7 @@ export function createToolProjection(args: {
 	runLifecycle: RunLifecycle;
 	toolCorrelation: ToolCorrelation;
 	taskState: TaskStateTracker;
-	subagents: SubagentTracker;
+	subagents: SubagentLifecycle;
 	resolveToolActor: () => string;
 }): ToolProjection {
 	const {
@@ -189,13 +188,7 @@ export function createToolProjection(args: {
 					toolInput,
 					actorId: preEvent.actor_id,
 				});
-				if (isSubagentTool(toolName)) {
-					if (typeof toolInput['description'] === 'string') {
-						subagents.recordPendingDescription(toolInput['description']);
-					} else {
-						subagents.clearPendingDescription();
-					}
-				}
+				subagents.observeToolInput(toolName, toolInput);
 				return results;
 			}
 
