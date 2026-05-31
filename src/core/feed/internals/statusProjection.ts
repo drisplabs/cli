@@ -1,7 +1,7 @@
 import type {RuntimeEvent} from '../../runtime/types';
 import type {FeedEvent} from '../types';
 import {type EnsureRun, type FeedEventBuilder, readString} from './projection';
-import type {TaskLifecycleTracker} from './taskLifecycleTracker';
+import type {TaskStateTracker} from './taskStateTracker';
 
 export type StatusProjection = {
 	mapStatusEvent(
@@ -13,9 +13,9 @@ export type StatusProjection = {
 export function createStatusProjection(args: {
 	ensureRunArray: EnsureRun;
 	makeEvent: FeedEventBuilder;
-	taskLifecycle: TaskLifecycleTracker;
+	taskState: TaskStateTracker;
 }): StatusProjection {
-	const {ensureRunArray, makeEvent, taskLifecycle} = args;
+	const {ensureRunArray, makeEvent, taskState} = args;
 
 	return {
 		mapStatusEvent(event, data) {
@@ -41,13 +41,7 @@ export function createStatusProjection(args: {
 				const taskId = readString(data['task_id']) ?? '';
 				const subject = readString(data['task_subject']) ?? '';
 				const description = readString(data['task_description']);
-				if (taskId && subject) {
-					taskLifecycle.upsertCreated({
-						taskId,
-						subject,
-						description,
-					});
-				}
+				taskState.applyTaskCreatedEvent(data);
 				results.push(
 					makeEvent(
 						'task.created',
@@ -69,7 +63,7 @@ export function createStatusProjection(args: {
 			if (event.kind === 'task.completed') {
 				const taskId = readString(data['task_id']) ?? '';
 				const subject = readString(data['task_subject']);
-				if (taskId) taskLifecycle.markCompleted({taskId, subject});
+				taskState.applyTaskCompletedEvent(data);
 				results.push(
 					makeEvent(
 						'task.completed',
