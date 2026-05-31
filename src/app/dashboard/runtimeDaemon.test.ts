@@ -375,6 +375,89 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
+	it('does not admit an assignment against a socket dropped mid-reconcile, then admits it once after a clean reconnect', async () => {
+		vi.useFakeTimers();
+		try {
+			const first = makeFakeSocket();
+			const second = makeFakeSocket();
+			const sockets = [first.client, second.client];
+
+			// The first reconciliation is held open so we can drop the socket
+			// while it is still in flight. The reconnect's reconciliation
+			// resolves immediately.
+			let releaseFirstReconcile: (
+				value: Array<{runnerId: string}>,
+			) => void = () => {};
+			const firstReconcile = new Promise<Array<{runnerId: string}>>(resolve => {
+				releaseFirstReconcile = resolve;
+			});
+			let fetchCalls = 0;
+			const fetchAttachments = vi.fn(async () => {
+				fetchCalls += 1;
+				return fetchCalls === 1 ? firstReconcile : [{runnerId: 'r1'}];
+			});
+			const executor = vi.fn(async () => {});
+
+			const daemonPromise = runDashboardRuntimeDaemon({
+				readConfig: () => stored,
+				refreshAccessToken: async () => ({
+					instanceId: 'inst_1',
+					accessToken: 'access_1',
+					expiresInSec: 900,
+				}),
+				makeInstanceSocketClient: () => sockets.shift() ?? second.client,
+				executeRemoteAssignment: executor,
+				// Non-zero so the reconnect is deferred and we can observe the
+				// dropped-client window before it fires.
+				reconnectDelaysMs: [100],
+				fetchAttachments,
+			});
+
+			// First socket connects; its attachment reconciliation is in flight.
+			await vi.waitFor(() => {
+				expect(first.calls.connect).toBe(1);
+				expect(fetchAttachments).toHaveBeenCalledTimes(1);
+			});
+
+			// An assignment arrives mid-reconcile → buffered, not yet admitted.
+			first.emitFrame({
+				type: 'job_assignment',
+				runId: 'run_race',
+				runSpec: {prompt: 'hi'},
+			});
+			expect(executor).not.toHaveBeenCalled();
+			expect(first.calls.assignmentAccepted).toEqual([]);
+
+			// The socket dies before reconciliation settles.
+			first.emitClose('dropped mid-reconcile');
+
+			// The dead connection's reconciliation now resolves. The in-connect
+			// guard (`client !== next`) must short-circuit before mark-ready so
+			// the assignment is NOT admitted against the dropped socket and the
+			// daemon does not mark itself ready.
+			releaseFirstReconcile([{runnerId: 'r1'}]);
+			const daemon = await daemonPromise;
+
+			expect(daemon.snapshot().socketConnected).toBe(false);
+			expect(executor).not.toHaveBeenCalled();
+			expect(first.calls.assignmentAccepted).toEqual([]);
+
+			// A clean reconnect completes; reconciliation succeeds this time and
+			// the buffered assignment is drained exactly once over the new socket.
+			await vi.advanceTimersByTimeAsync(100);
+			await vi.waitFor(() => {
+				expect(second.calls.assignmentAccepted).toEqual(['run_race']);
+			});
+			expect(executor).toHaveBeenCalledTimes(1);
+			expect(first.calls.assignmentAccepted).toEqual([]);
+			expect(daemon.snapshot().socketConnected).toBe(true);
+
+			await daemon.stop('test');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('does not reconcile console sidecars or reload the gateway when attachments change', async () => {
 		const fake = makeFakeSocket();
 		const home = process.env['HOME']!;
