@@ -10,8 +10,8 @@ import type {SpawnClaudeOptions} from '../../harnesses/claude/process/types';
 import type {SessionBridge} from '../channels/sessionBridge';
 import type {StartSessionBridgeOptions} from '../channels/sessionBridgeLifecycle';
 import type {DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
-import type {PairedFeedPublisher} from '../dashboard/pairedFeedPublisher';
-import type {DashboardDecisionInbox} from '../dashboard/dashboardDecisionInbox';
+import type {FeedSink} from '../dashboard/pairedFeedPublisher';
+import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
 import type {FeedEvent} from '../../core/feed/types';
 
 export const EXEC_EXIT_CODE = {
@@ -64,9 +64,9 @@ export type ExecRunOptions = {
 		dbPath: string;
 		label?: string;
 	}) => SessionStore;
-	dashboardFeedPublisher?: PairedFeedPublisher;
+	dashboardFeedPublisher?: FeedSink;
 	dashboardOrigin?: DashboardFeedOrigin;
-	dashboardDecisionInbox?: DashboardDecisionInbox;
+	dashboardDecisionInbox?: DashboardDecisionReader;
 	dashboardDecisionPollIntervalMs?: number;
 	beforeTerminalCompletion?: (input: {
 		result: ExecRunResult;

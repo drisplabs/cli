@@ -8,7 +8,7 @@ import type {
 	ExecuteRemoteAssignmentInput,
 	ValidatedAssignment,
 } from './remoteRunExecutor';
-import type {PairedFeedPublisher} from './pairedFeedPublisher';
+import type {FeedSink} from './pairedFeedPublisher';
 import type {RuntimeDecision} from '../../core/runtime/types';
 
 /**
@@ -53,7 +53,7 @@ export type DashboardPairedExecutionOptions = {
 	maxConcurrentRuns?: number;
 	now?: () => number;
 	runHistoryLimit?: number;
-	pairedFeedPublisher?: PairedFeedPublisher;
+	pairedFeedPublisher?: FeedSink;
 };
 
 export type DashboardPairedExecution = {

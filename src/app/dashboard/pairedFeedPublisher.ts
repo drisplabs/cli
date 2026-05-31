@@ -19,12 +19,21 @@ export type PairedFeedTransport = {
 	}): void;
 };
 
-export type PairedFeedPublisher = {
+/**
+ * The narrow capability a Run's execution path needs: publish FeedEvents and
+ * nothing else. Execution receives this — never the full publisher — so it
+ * cannot reach the dashboard transport lifecycle (attach/detach/handleAck/close),
+ * which the runtime daemon owns exclusively.
+ */
+export type FeedSink = {
 	publish(input: {
 		origin: DashboardFeedOrigin;
 		athenaSessionId: string;
 		feedEvents: readonly FeedEvent[];
 	}): void;
+};
+
+export type PairedFeedPublisher = FeedSink & {
 	attachTransport(transport: PairedFeedTransport): void;
 	detachTransport(): void;
 	handleAck(frame: FeedAckFrame): void;

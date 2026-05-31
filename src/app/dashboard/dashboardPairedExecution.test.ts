@@ -45,12 +45,11 @@ describe('DashboardPairedExecution', () => {
 	it('accepts an assignment and forwards env plus the decision inbox to the executor', async () => {
 		const {client} = makeClient();
 		const decisionInbox = makeDecisionInbox();
+		// A bare publish-only FeedSink — no transport methods — must suffice:
+		// paired execution forwards the capability to the executor and never
+		// touches transport lifecycle (attach/detach/handleAck/close).
 		const pairedFeedPublisher = {
 			publish: vi.fn(),
-			attachTransport: vi.fn(),
-			detachTransport: vi.fn(),
-			handleAck: vi.fn(),
-			close: vi.fn(),
 		};
 		const executor = vi.fn(async () => {}) as DashboardPairedExecutionExecutor;
 		const execution = createDashboardPairedExecution({

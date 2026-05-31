@@ -23,7 +23,7 @@ import {
 	type RunStreamClient,
 	type RunStreamClientOptions,
 } from './runStreamClient';
-import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
+import type {DashboardDecisionReader} from './dashboardDecisionInbox';
 import {
 	createRemoteRunEventPublisher,
 	type RemoteRunEventPublisher,
@@ -33,7 +33,7 @@ import {
 	parseArtifactUploadSpec,
 	type UploadObjectFn,
 } from './artifactCapture';
-import type {PairedFeedPublisher} from './pairedFeedPublisher';
+import type {FeedSink} from './pairedFeedPublisher';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
@@ -70,7 +70,7 @@ export type ExecuteRemoteAssignmentInput = {
 	projectDir: string;
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
-	decisionInbox?: DashboardDecisionInbox;
+	decisionInbox?: DashboardDecisionReader;
 	bootstrapRuntimeConfigFn?: typeof bootstrapRuntimeConfig;
 	now?: () => number;
 	abortSignal?: AbortSignal;
@@ -81,7 +81,7 @@ export type ExecuteRemoteAssignmentInput = {
 	installWorkflowFromSourceFn?: typeof installWorkflowFromSource;
 	readGlobalConfigFn?: typeof readGlobalConfig;
 	uploadArtifactObjectFn?: UploadObjectFn;
-	dashboardFeedPublisher?: PairedFeedPublisher;
+	dashboardFeedPublisher?: FeedSink;
 	/**
 	 * Bound on how long to wait for the per-run WebSocket to come up before
 	 * falling back to the instance-socket relay. Default 5s — short enough

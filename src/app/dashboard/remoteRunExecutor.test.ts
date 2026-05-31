@@ -499,11 +499,12 @@ describe('executeRemoteAssignment', () => {
 	});
 
 	it('passes the dashboard decision inbox to runExec', async () => {
+		// A bare consume-only reader — no enqueue/close — must suffice: the
+		// executor only polls + marks decisions consumed; enqueue/close stay
+		// owned by the daemon.
 		const decisionInbox = {
-			enqueue: vi.fn(),
 			pendingForSession: vi.fn(() => []),
 			markConsumed: vi.fn(),
-			close: vi.fn(),
 		};
 		const runExecFn = vi.fn(async (options: ExecRunOptions) => ({
 			success: true,
