@@ -331,43 +331,15 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		const eventKind = event.kind;
 		const results: FeedEvent[] = [];
 
-		// Fallback: emit agent.message from last_assistant_message when transcript yields nothing
-		function emitFallbackMessage(
-			parentKind: FeedEventKind,
-			actorId: string,
-			scope: 'root' | 'subagent',
-		): void {
-			if (results.some(r => r.kind === 'agent.message')) return;
-			const msg = readString(d['last_assistant_message']);
-			if (!msg) return;
-			const parentEvt = results.find(r => r.kind === parentKind);
-			const ev = agentMessageStream.emit({
-				runtimeEvent: event,
-				actorId,
-				scope,
-				message: msg,
-				source: 'hook',
-				cause: parentEvt ? {parent_event_id: parentEvt.event_id} : undefined,
-			});
-			if (ev) results.push(ev);
-		}
-
-		// Extract new assistant messages from transcript BEFORE processing the
-		// hook event so that agent.message gets a lower seq than tool.pre etc.
-		// Skip stop events — they use last_assistant_message to avoid flush-timing dupes.
-		const transcriptPath = event.context.transcriptPath;
-		const isStopEvent =
-			eventKind === 'stop.request' || eventKind === 'subagent.stop';
-		if (transcriptPath && !isStopEvent) {
-			results.push(
-				...agentMessageStream.emitTranscriptMessages(
-					transcriptPath,
-					event,
-					resolveToolActor(),
-					currentScope(),
-				),
-			);
-		}
+		// AgentMessageStream owns the transcript-before-event replay timing (and
+		// the rule that stop events drain + fall back instead of replaying).
+		results.push(
+			...agentMessageStream.replayBeforeEvent(
+				event,
+				resolveToolActor(),
+				currentScope(),
+			),
+		);
 
 		if (RUN_SESSION_EVENT_KINDS.has(eventKind)) {
 			results.push(...runSessionProjection.mapRunSessionEvent(event, d));
@@ -404,17 +376,28 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 			results.push(unknownEvt);
 		}
 
-		// Stop events: use last_assistant_message directly (always available in payload).
-		// Drain the transcript to advance the byte offset and prevent the next event
-		// from re-emitting the same text.
+		// Stop events: AgentMessageStream drains the transcript and falls back to
+		// last_assistant_message (deduped against any agent.message already emitted).
 		if (eventKind === 'stop.request') {
-			if (transcriptPath) agentMessageStream.drainTranscript(transcriptPath);
-			emitFallbackMessage('stop.request', 'agent:root', 'root');
+			results.push(
+				...agentMessageStream.emitStopFallback(event, {
+					actorId: 'agent:root',
+					scope: 'root',
+					parentKind: 'stop.request',
+					priorResults: results,
+				}),
+			);
 		}
 		if (eventKind === 'subagent.stop') {
 			const agentId = readString(d['agent_id']) ?? 'unknown';
-			if (transcriptPath) agentMessageStream.drainTranscript(transcriptPath);
-			emitFallbackMessage('subagent.stop', `subagent:${agentId}`, 'subagent');
+			results.push(
+				...agentMessageStream.emitStopFallback(event, {
+					actorId: `subagent:${agentId}`,
+					scope: 'subagent',
+					parentKind: 'subagent.stop',
+					priorResults: results,
+				}),
+			);
 		}
 
 		return results;

@@ -316,4 +316,153 @@ describe('agentMessageStream', () => {
 			expect(ams.appendReasoningSummary('item-1', 0, 'fresh')).toBe('fresh');
 		});
 	});
+
+	describe('replayBeforeEvent (transcript-before-event timing)', () => {
+		it('replays transcript assistant messages for a non-stop event', () => {
+			const ams = createAgentMessageStream(
+				buildEvent(),
+				fakeTranscript([{text: 'from transcript', model: 'opus'}]),
+			);
+			const out = ams.replayBeforeEvent(
+				makeRuntimeEvent({kind: 'pre_tool_use'} as Partial<RuntimeEvent>),
+				'agent:root',
+				'root',
+			);
+			expect(out).toHaveLength(1);
+			expect(out[0]?.kind).toBe('agent.message');
+			expect((out[0]?.data as {message: string}).message).toBe(
+				'from transcript',
+			);
+		});
+
+		it('does NOT replay for a stop.request event (it drains + falls back instead)', () => {
+			const ams = createAgentMessageStream(
+				buildEvent(),
+				fakeTranscript([{text: 'should not surface', model: 'opus'}]),
+			);
+			expect(
+				ams.replayBeforeEvent(
+					makeRuntimeEvent({kind: 'stop.request'} as Partial<RuntimeEvent>),
+					'agent:root',
+					'root',
+				),
+			).toEqual([]);
+		});
+
+		it('does NOT replay for a subagent.stop event', () => {
+			const ams = createAgentMessageStream(
+				buildEvent(),
+				fakeTranscript([{text: 'should not surface', model: 'opus'}]),
+			);
+			expect(
+				ams.replayBeforeEvent(
+					makeRuntimeEvent({kind: 'subagent.stop'} as Partial<RuntimeEvent>),
+					'subagent:foo',
+					'subagent',
+				),
+			).toEqual([]);
+		});
+
+		it('returns [] when the event has no transcript path', () => {
+			const ams = createAgentMessageStream(
+				buildEvent(),
+				fakeTranscript([{text: 'from transcript', model: 'opus'}]),
+			);
+			expect(
+				ams.replayBeforeEvent(
+					makeRuntimeEvent({
+						kind: 'pre_tool_use',
+						context: {cwd: '/tmp', transcriptPath: undefined},
+					} as Partial<RuntimeEvent>),
+					'agent:root',
+					'root',
+				),
+			).toEqual([]);
+		});
+	});
+
+	describe('emitStopFallback (stop-event drain + fallback)', () => {
+		const stopEvent = (lastMessage?: string): RuntimeEvent =>
+			makeRuntimeEvent({
+				kind: 'stop.request',
+				data: lastMessage ? {last_assistant_message: lastMessage} : {},
+			} as Partial<RuntimeEvent>);
+
+		it('emits a fallback agent.message from last_assistant_message', () => {
+			const ams = createAgentMessageStream(buildEvent(), fakeTranscript());
+			const out = ams.emitStopFallback(stopEvent('hi there'), {
+				actorId: 'agent:root',
+				scope: 'root',
+				parentKind: 'stop.request',
+				priorResults: [],
+			});
+			expect(out).toHaveLength(1);
+			expect(out[0]?.kind).toBe('agent.message');
+			expect((out[0]?.data as {message: string}).message).toBe('hi there');
+		});
+
+		it('parents the fallback to the prior event of parentKind', () => {
+			const ams = createAgentMessageStream(buildEvent(), fakeTranscript());
+			const parent = {
+				event_id: 'stop-evt-1',
+				kind: 'stop.request',
+			} as unknown as FeedEvent;
+			const out = ams.emitStopFallback(stopEvent('done'), {
+				actorId: 'agent:root',
+				scope: 'root',
+				parentKind: 'stop.request',
+				priorResults: [parent],
+			});
+			expect(out[0]?.cause?.parent_event_id).toBe('stop-evt-1');
+		});
+
+		it('does not duplicate when an agent.message was already emitted', () => {
+			const ams = createAgentMessageStream(buildEvent(), fakeTranscript());
+			const already = {
+				event_id: 'msg-1',
+				kind: 'agent.message',
+			} as unknown as FeedEvent;
+			expect(
+				ams.emitStopFallback(stopEvent('hi there'), {
+					actorId: 'agent:root',
+					scope: 'root',
+					parentKind: 'stop.request',
+					priorResults: [already],
+				}),
+			).toEqual([]);
+		});
+
+		it('returns [] when there is no last_assistant_message', () => {
+			const ams = createAgentMessageStream(buildEvent(), fakeTranscript());
+			expect(
+				ams.emitStopFallback(stopEvent(), {
+					actorId: 'agent:root',
+					scope: 'root',
+					parentKind: 'stop.request',
+					priorResults: [],
+				}),
+			).toEqual([]);
+		});
+
+		it('drains the transcript so a later replay does not re-surface the same text', () => {
+			const ams = createAgentMessageStream(
+				buildEvent(),
+				fakeTranscript([{text: 'already streamed', model: 'opus'}]),
+			);
+			ams.emitStopFallback(stopEvent('hi there'), {
+				actorId: 'agent:root',
+				scope: 'root',
+				parentKind: 'stop.request',
+				priorResults: [],
+			});
+			// fakeTranscript yields its messages only once; draining consumed them.
+			expect(
+				ams.replayBeforeEvent(
+					makeRuntimeEvent({kind: 'pre_tool_use'} as Partial<RuntimeEvent>),
+					'agent:root',
+					'root',
+				),
+			).toEqual([]);
+		});
+	});
 });
