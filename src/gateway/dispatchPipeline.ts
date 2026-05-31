@@ -31,7 +31,7 @@ import {
 	type RegisteredRuntime,
 	type RuntimeBindingObservers,
 } from './runtimeBindingStore';
-import {SessionRegistry, UnknownDispatchError} from './sessionRegistry';
+import {SessionRegistry} from './sessionRegistry';
 import type {GatewayStateDb} from './state/db';
 import {InboundQueue, type InboundQueueOptions} from './state/inboundQueue';
 import {Outbox} from './state/outbox';
@@ -215,6 +215,8 @@ export class DispatchPipeline {
 		const entry = this.registry.beginDispatch({
 			sessionKey,
 			agentId,
+			runtimeId: current.runtimeId,
+			...(key !== undefined ? {attachmentKey: key} : {}),
 			location: inbound.location,
 		});
 		this.pushDispatch(key, {
@@ -339,19 +341,22 @@ export class DispatchPipeline {
 		if (!slot) {
 			throw new Error('runtime mismatch on session.turn.complete');
 		}
-		let entry;
-		try {
-			entry = this.registry.completeDispatch(payload.dispatchId);
-		} catch (err) {
-			if (err instanceof UnknownDispatchError) {
-				writeGatewayTrace(
-					`pipeline turn.complete unknown dispatchId=${payload.dispatchId}`,
-				);
-				return {delivered: false};
-			}
-			throw err;
+		const completion = this.registry.completeDispatch(payload.dispatchId, {
+			runtimeId: payload.runtimeId,
+		});
+		if (completion.kind === 'unknown') {
+			writeGatewayTrace(
+				`pipeline turn.complete unknown dispatchId=${payload.dispatchId}`,
+			);
+			return {delivered: false};
 		}
-		const result = await this.sendOutbound(entry.location, payload);
+		if (completion.kind === 'runtime_mismatch') {
+			writeGatewayTrace(
+				`pipeline turn.complete runtime mismatch dispatchId=${payload.dispatchId} authorized=${completion.entry.runtimeId} claimed=${payload.runtimeId}`,
+			);
+			return {delivered: false};
+		}
+		const result = await this.sendOutbound(completion.entry.location, payload);
 		writeGatewayTrace(
 			`pipeline sendOutbound delivered dispatchId=${payload.dispatchId} providerMessageId=${result.providerMessageId}`,
 		);
@@ -359,16 +364,18 @@ export class DispatchPipeline {
 	}
 
 	private async sendOutbound(
-		_parkedLocation: ChannelLocation,
+		parkedLocation: ChannelLocation,
 		payload: SessionTurnCompleteRequestPayload,
 	): Promise<SendResult> {
+		// The reply routes to the location captured at dispatch creation — never
+		// the completion payload's location, which the runtime could spoof.
 		const out: OutboundMessage = {
-			location: payload.location,
+			location: parkedLocation,
 			text: payload.text,
 			idempotencyKey: payload.idempotencyKey,
 		};
 		const result = await this.outboundDispatcher.dispatch(
-			payload.location.channelId,
+			parkedLocation.channelId,
 			out,
 		);
 		if (result.kind === 'sent') return result.result;

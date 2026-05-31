@@ -297,6 +297,113 @@ describe('DispatchPipeline', () => {
 		});
 	});
 
+	describe('turn completion authorization', () => {
+		it('routes the reply to the parked location, ignoring a spoofed completion payload location', async () => {
+			registerR1(s);
+			s.send.mockResolvedValue({providerMessageId: '101', deliveredAt: 1});
+
+			const dispatched = s.pipeline.handleInbound(inbound);
+			const dispatchId =
+				dispatched.kind === 'dispatched' ? dispatched.dispatchId : '';
+
+			// A buggy/malicious runtime tries to redirect the reply elsewhere.
+			const spoofed = {
+				channelId: 'telegram',
+				accountId: 'attacker',
+				peer: {id: '999', kind: 'user' as const},
+			};
+
+			const reply = await s.pipeline.handleTurnComplete({
+				runtimeId: 'r1',
+				dispatchId,
+				location: spoofed,
+				text: 'hi back',
+				idempotencyKey: 'reply:1',
+			});
+
+			expect(reply).toEqual({delivered: true, providerMessageId: '101'});
+			// Reply must land on the originating location, not the payload's.
+			expect(s.send).toHaveBeenCalledWith('telegram', {
+				location: inbound.location,
+				text: 'hi back',
+				idempotencyKey: 'reply:1',
+			});
+		});
+
+		it('ignores a completion from a different registered runtime and keeps the turn parked', async () => {
+			const push2 = vi.fn();
+			s.pipeline.registerRuntime({
+				runtimeId: 'r1',
+				defaultAgentId: 'main',
+				pid: 100,
+				connectionId: 'c1',
+				push: s.push,
+				attachmentId: 'a1',
+			});
+			s.pipeline.registerRuntime({
+				runtimeId: 'r2',
+				defaultAgentId: 'main',
+				pid: 200,
+				connectionId: 'c2',
+				push: push2,
+				attachmentId: 'a2',
+			});
+			s.send.mockResolvedValue({providerMessageId: 'm', deliveredAt: 1});
+
+			const dispatched = s.pipeline.handleInbound(inbound, {
+				attachmentId: 'a1',
+			});
+			const dispatchId =
+				dispatched.kind === 'dispatched' ? dispatched.dispatchId : '';
+
+			// r2 is registered, but the turn was dispatched to r1.
+			const stolen = await s.pipeline.handleTurnComplete({
+				runtimeId: 'r2',
+				dispatchId,
+				location: inbound.location,
+				text: 'theft',
+				idempotencyKey: 'reply:steal',
+			});
+			expect(stolen).toEqual({delivered: false});
+			expect(s.send).not.toHaveBeenCalled();
+			// The turn is still parked so the authorized runtime can complete it.
+			expect(s.pipeline.pendingDispatchCount()).toBe(1);
+
+			const reply = await s.pipeline.handleTurnComplete({
+				runtimeId: 'r1',
+				dispatchId,
+				location: inbound.location,
+				text: 'pong',
+				idempotencyKey: 'reply:ok',
+			});
+			expect(reply).toEqual({delivered: true, providerMessageId: 'm'});
+			expect(s.pipeline.pendingDispatchCount()).toBe(0);
+		});
+
+		it('clears parked turns on unregister and rejects a late completion', async () => {
+			registerR1(s);
+			const dispatched = s.pipeline.handleInbound(inbound);
+			const dispatchId =
+				dispatched.kind === 'dispatched' ? dispatched.dispatchId : '';
+			expect(s.pipeline.pendingDispatchCount()).toBe(1);
+
+			s.pipeline.unregisterRuntime('r1');
+			expect(s.pipeline.pendingDispatchCount()).toBe(0);
+
+			// The runtime is gone — a late completion has no slot to authorize.
+			await expect(
+				s.pipeline.handleTurnComplete({
+					runtimeId: 'r1',
+					dispatchId,
+					location: inbound.location,
+					text: 'late',
+					idempotencyKey: 'reply:late',
+				}),
+			).rejects.toThrow('runtime mismatch');
+			expect(s.send).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('connection lifecycle (grace=0)', () => {
 		it('immediately unregisters and notifies on connection close', () => {
 			registerR1(s);
@@ -476,7 +583,7 @@ describe('DispatchPipeline', () => {
 			expect(s.push).not.toHaveBeenCalled();
 		});
 
-		it('handleTurnComplete accepts replies from a runtime registered under any attachment slot', async () => {
+		it('handleTurnComplete accepts a reply from the runtime the turn was dispatched to (non-legacy slot)', async () => {
 			const push2 = vi.fn();
 			s.pipeline.registerRuntime({
 				runtimeId: 'r1',
