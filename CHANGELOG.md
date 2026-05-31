@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.14](https://github.com/drisplabs/cli/compare/cli-v0.5.13...cli-v0.5.14) (2026-05-31)
+
+
+### Bug Fixes
+
+* **tui:** wrap input/feed text by visual width to stop multiline paste corruption ([#54](https://github.com/drisplabs/cli/issues/54)) ([f2ec802](https://github.com/drisplabs/cli/commit/f2ec802da7be39f8f95702ff05905e3963fdadd4)), closes [#23](https://github.com/drisplabs/cli/issues/23)
+
 ## [0.5.13](https://github.com/drisplabs/cli/compare/cli-v0.5.12...cli-v0.5.13) (2026-05-31)
 
 
