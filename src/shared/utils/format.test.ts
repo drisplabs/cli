@@ -712,3 +712,49 @@ describe('visualPositionToOffset', () => {
 		}
 	});
 });
+
+// Regression: multiline markdown paste corrupted the TUI because wrapText chunked
+// by raw character count while fit() clamps by visual width. For content with wide
+// characters (emoji/CJK — common in markdown reports) a "line" of `width` chars was
+// visually wider than the box, so fit() truncated it and silently dropped the
+// overflowing characters, and the over-wide line overflowed the terminal. See
+// drisplabs/cli#23.
+describe('wide-character wrapping (issue #23)', () => {
+	const W = 40;
+
+	it('wrapText keeps each piece within the visual width budget', () => {
+		const wide = '中'.repeat(30); // 30 chars × 2 cols = 60 visual cols
+		const lines = wrapText(wide, 20);
+		// 60 visual cols / 20 = 3 lines (not 30 chars / 20 ≈ 2).
+		expect(lines).toHaveLength(3);
+		expect(lines.join('')).toBe(wide); // nothing dropped or reordered
+		for (const line of lines) {
+			// fit() must pad (not truncate) every produced line.
+			expect(fit(line, 20)).not.toContain('...');
+		}
+	});
+
+	it('computeInputRows counts visual rows for wide content', () => {
+		expect(computeInputRows('中'.repeat(30), 20)).toBe(3);
+	});
+
+	it('renderInputLines preserves wide content instead of dropping it', () => {
+		const pasted =
+			'✅ 测试报告 with emoji 🎉 and 日本語 plus more ascii tail text here';
+		const rendered = renderInputLines(pasted, 0, W, false, '').join('');
+		for (const token of ['测试报告', '🎉', '日本語', 'tail text here']) {
+			expect(rendered).toContain(token);
+		}
+		// No piece exceeded the box width, so fit() never truncated with ellipsis.
+		expect(rendered).not.toContain('...');
+	});
+
+	it('cursor mapping roundtrips through wide characters', () => {
+		const text = '中文段落\nmixed 日本語 text';
+		for (let offset = 0; offset <= text.length; offset++) {
+			const {line, col} = cursorToVisualPosition(text, offset, 10);
+			const back = visualPositionToOffset(text, line, col, 10);
+			expect(back).toBe(offset);
+		}
+	});
+});

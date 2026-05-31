@@ -170,4 +170,29 @@ describe('MultiLineInput', () => {
 
 		expect(lastFrame()).toContain('pasted text');
 	});
+
+	// Regression for drisplabs/cli#23: pasting multiline markdown with wide
+	// characters must preserve every line in order without corrupting the render.
+	it('preserves multiline markdown paste with wide characters', async () => {
+		const onChange = vi.fn();
+		const {lastFrame, stdin} = render(
+			<MultiLineInput
+				width={40}
+				placeholder=""
+				isActive={true}
+				onChange={onChange}
+			/>,
+		);
+
+		const pasted = ['# 报告', '- ✅ done', '- 🎉 shipped'].join('\n');
+		stdin.write(pasted);
+		await delay(50);
+
+		// The full pasted value (newlines intact, nothing dropped) reaches onChange.
+		expect(onChange).toHaveBeenLastCalledWith(pasted);
+		const frame = lastFrame() ?? '';
+		for (const token of ['报告', '✅ done', '🎉 shipped']) {
+			expect(frame).toContain(token);
+		}
+	});
 });
