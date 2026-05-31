@@ -4,9 +4,23 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	formatHookForwarderCommand,
+	formatInstructionEmitCommand,
 	generateHookSettings,
 	quoteShellArg,
 } from './generateHookSettings';
+import {HANDOFF_COMPACT_INSTRUCTIONS} from '../../../core/compaction/handoffInstructions';
+
+/**
+ * Extracts the file path embedded in an instruction-emit hook command, which
+ * has the shape `'<node>' -e '...readFileSync("<path>", ...)...'`.
+ */
+function instructionPathFromCommand(command: string): string {
+	const match = command.match(/readFileSync\((".*?"),/);
+	if (!match) {
+		throw new Error(`No instruction path found in command: ${command}`);
+	}
+	return JSON.parse(match[1]!) as string;
+}
 
 describe('generateHookSettings', () => {
 	const createdFiles: string[] = [];
@@ -155,6 +169,51 @@ describe('generateHookSettings', () => {
 
 		// Should not throw when parsing
 		expect(() => JSON.parse(content)).not.toThrow();
+	});
+
+	it('registers a second PreCompact hook that emits the instruction file', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const content = fs.readFileSync(result.settingsPath, 'utf8');
+		const settings = JSON.parse(content);
+
+		// Forwarder entry (observability) + instruction-emit entry.
+		expect(settings.hooks.PreCompact).toHaveLength(2);
+		const emitCommand = settings.hooks.PreCompact[1].hooks[0].command as string;
+		const instructionPath = instructionPathFromCommand(emitCommand);
+		createdFiles.push(instructionPath);
+
+		expect(fs.existsSync(instructionPath)).toBe(true);
+		expect(fs.readFileSync(instructionPath, 'utf8')).toBe(
+			HANDOFF_COMPACT_INSTRUCTIONS,
+		);
+	});
+
+	it('cleanup removes the instruction file alongside the settings file', () => {
+		const result = generateHookSettings();
+		const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8'));
+		const instructionPath = instructionPathFromCommand(
+			settings.hooks.PreCompact[1].hooks[0].command as string,
+		);
+
+		expect(fs.existsSync(result.settingsPath)).toBe(true);
+		expect(fs.existsSync(instructionPath)).toBe(true);
+
+		result.cleanup();
+
+		expect(fs.existsSync(result.settingsPath)).toBe(false);
+		expect(fs.existsSync(instructionPath)).toBe(false);
+	});
+
+	it('formats the instruction-emit command with a quoted node path and -e script', () => {
+		const command = formatInstructionEmitCommand(
+			'/opt/homebrew/bin/node',
+			'/tmp/athena dir/compact.txt',
+		);
+		expect(command).toBe(
+			`'/opt/homebrew/bin/node' -e 'process.stdout.write(require('"'"'fs'"'"').readFileSync("/tmp/athena dir/compact.txt", '"'"'utf8'"'"'))'`,
+		);
 	});
 
 	it('quotes shell arguments safely for paths with spaces and quotes', () => {
