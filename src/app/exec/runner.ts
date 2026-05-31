@@ -26,7 +26,10 @@ import {
 	createRelayQuestionCallback,
 } from '../channels/relayAdapter';
 import {startSessionBridge} from '../channels/sessionBridgeLifecycle';
-import {createPairedFeedPublisher} from '../dashboard/pairedFeedPublisher';
+import {
+	createPairedFeedPublisher,
+	type FeedSink,
+} from '../dashboard/pairedFeedPublisher';
 import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
@@ -106,10 +109,15 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	const runtimeFactory = options.runtimeFactory ?? createRuntime;
 	const sessionStoreFactory = options.sessionStoreFactory ?? createSessionStore;
 	const athenaSessionId = options.athenaSessionId ?? crypto.randomUUID();
-	// An injected publisher is owned by the caller; only close the one we create.
-	const ownsFeedPublisher = !options.dashboardFeedPublisher;
-	const dashboardFeedPublisher =
-		options.dashboardFeedPublisher ?? createPairedFeedPublisher();
+	// Execution only needs to publish FeedEvents (a FeedSink). An injected sink
+	// is owned by the caller (the runtime daemon owns its transport lifecycle);
+	// when none is injected we create — and therefore must close — our own
+	// durable publisher, used here purely as a sink.
+	const ownedFeedPublisher = options.dashboardFeedPublisher
+		? null
+		: createPairedFeedPublisher();
+	const dashboardFeedPublisher: FeedSink =
+		options.dashboardFeedPublisher ?? ownedFeedPublisher!;
 	const dashboardOrigin = options.dashboardOrigin ?? 'local';
 
 	const output = createExecOutputWriter({
@@ -546,9 +554,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		}
 		await bridge?.stop();
 		store.close();
-		if (ownsFeedPublisher) {
-			dashboardFeedPublisher.close();
-		}
+		ownedFeedPublisher?.close();
 	}
 
 	const resolvedFinalMessage = resolveFinalMessage({

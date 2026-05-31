@@ -10,18 +10,27 @@ export type DashboardDecisionInboxRow = {
 	receivedAt: number;
 };
 
-export type DashboardDecisionInbox = {
+/**
+ * The narrow capability a Run's execution path needs: poll pending decisions
+ * and mark them consumed. Execution receives this — never the full inbox — so
+ * it cannot enqueue decisions or close the durable store; those stay owned by
+ * the runtime daemon (which routes dashboard decisions in).
+ */
+export type DashboardDecisionReader = {
+	pendingForSession(input: {
+		athenaSessionId: string;
+		limit: number;
+	}): DashboardDecisionInboxRow[];
+	markConsumed(input: {id: number}): void;
+};
+
+export type DashboardDecisionInbox = DashboardDecisionReader & {
 	enqueue(input: {
 		athenaSessionId: string;
 		requestId: string;
 		decision: RuntimeDecision;
 		receivedAt: number;
 	}): void;
-	pendingForSession(input: {
-		athenaSessionId: string;
-		limit: number;
-	}): DashboardDecisionInboxRow[];
-	markConsumed(input: {id: number}): void;
 	close(): void;
 };
 
