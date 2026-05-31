@@ -11,7 +11,8 @@ import path from 'node:path';
 import {
 	isMarketplaceRef,
 	listMarketplaceWorkflowsFromRepo,
-	pullMarketplaceRepo,
+	MarketplaceRefreshError,
+	refreshMarketplaceRepo,
 	resolveWorkflowInstall,
 	resolveWorkflowManifestPath,
 	type ResolvedWorkflowSource,
@@ -249,7 +250,10 @@ function reResolveFromMetadata(
 		const slashIdx = slug.indexOf('/');
 		const owner = slug.slice(0, slashIdx);
 		const repo = slug.slice(slashIdx + 1);
-		pullMarketplaceRepo(owner, repo);
+		const refreshed = refreshMarketplaceRepo(owner, repo);
+		if (!refreshed.ok) {
+			throw new MarketplaceRefreshError(refreshed);
+		}
 		return resolveWorkflowInstall(metadata.ref, []);
 	}
 	if (metadata.kind === 'marketplace-local') {

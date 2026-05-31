@@ -5,14 +5,11 @@
  * re-exports the public surface.
  */
 
-import {execFileSync} from 'node:child_process';
-import fs from 'node:fs';
 import {
 	buildMarketplacePluginResolution,
 	ensureRepo,
 	isMarketplaceRef,
 	isMarketplaceSlug,
-	marketplaceRepoCacheDir,
 	parseRef,
 	requireGitForMarketplace,
 	resolvePluginDirFromManifest,
@@ -22,6 +19,10 @@ import {
 	type MarketplaceManifest,
 	type MarketplacePluginTarget,
 } from './marketplaceShared';
+import {
+	MarketplaceRefreshError,
+	refreshMarketplaceRepo,
+} from './marketplaceRefresh';
 import {
 	pluginNpmPackageName,
 	refreshVersionedMarketplacePluginTarget,
@@ -42,53 +43,18 @@ import {
 } from './workflowResolver';
 
 /**
- * Pull latest changes for a cached marketplace repo.
- * Call this explicitly when user requests an update.
+ * Pull latest changes for a cached marketplace repo, self-healing a recoverable
+ * cache failure. Throws a {@link MarketplaceRefreshError} with a
+ * marketplace-named, classified cause when no clean checkout can be produced.
+ * Call this explicitly when the user requests an update.
+ *
+ * Prefer {@link refreshMarketplaceRepo} when you want to consume the classified
+ * outcome without exception handling.
  */
 export function pullMarketplaceRepo(owner: string, repo: string): void {
-	const repoDir = marketplaceRepoCacheDir(owner, repo);
-	const repoUrl = `https://github.com/${owner}/${repo}.git`;
-
-	if (!fs.existsSync(repoDir)) {
-		cloneMarketplaceRepo(owner, repo, repoUrl, repoDir);
-		return;
-	}
-
-	try {
-		execFileSync('git', ['pull', '--ff-only'], {
-			cwd: repoDir,
-			stdio: 'ignore',
-		});
-		return;
-	} catch (pullError) {
-		const backupDir = `${repoDir}.backup-${Date.now()}`;
-		try {
-			fs.renameSync(repoDir, backupDir);
-			cloneMarketplaceRepo(owner, repo, repoUrl, repoDir);
-		} catch (recoveryError) {
-			throw new Error(
-				`Failed to refresh marketplace repo ${owner}/${repo}: ${(pullError as Error).message}. Recovery clone failed: ${(recoveryError as Error).message}. Preserved previous cache at ${backupDir}.`,
-			);
-		}
-	}
-}
-
-function cloneMarketplaceRepo(
-	owner: string,
-	repo: string,
-	repoUrl: string,
-	repoDir: string,
-): void {
-	fs.mkdirSync(repoDir, {recursive: true});
-	try {
-		execFileSync('git', ['clone', '--depth', '1', repoUrl, repoDir], {
-			stdio: 'ignore',
-		});
-	} catch (error) {
-		fs.rmSync(repoDir, {recursive: true, force: true});
-		throw new Error(
-			`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
-		);
+	const outcome = refreshMarketplaceRepo(owner, repo);
+	if (!outcome.ok) {
+		throw new MarketplaceRefreshError(outcome);
 	}
 }
 
@@ -169,6 +135,14 @@ export {
 	WorkflowVersionNotFoundError,
 	type WorkflowAmbiguityCandidate,
 } from './workflowSourceErrors';
+
+export {
+	classifyGitFailure,
+	MarketplaceRefreshError,
+	refreshMarketplaceRepo,
+	type MarketplaceRefreshFailureKind,
+	type MarketplaceRefreshOutcome,
+} from './marketplaceRefresh';
 
 export type {
 	MarketplaceEntry,
