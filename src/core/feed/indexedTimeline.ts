@@ -17,6 +17,7 @@ import {
 	isEventExpandable,
 	toRunStatus,
 	VERBOSE_ONLY_KINDS,
+	isVerboseOnlyNotification,
 	computeDuplicateActors,
 } from './timeline';
 
@@ -116,6 +117,9 @@ function shouldSkipEvent(event: FeedEvent, verbose?: boolean): boolean {
 		event.kind === 'stop.request' &&
 		!event.data.stop_hook_active
 	) {
+		return true;
+	}
+	if (!verbose && isVerboseOnlyNotification(event)) {
 		return true;
 	}
 	return false;

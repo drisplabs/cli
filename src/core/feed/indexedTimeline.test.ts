@@ -459,3 +459,95 @@ describe('IndexedTimeline', () => {
 		expect(verboseEntries.length).toBeGreaterThan(nonVerboseEntries.length);
 	});
 });
+
+describe('Codex feed noise boundary', () => {
+	function opTags(events: FeedEvent[], verbose: boolean): string[] {
+		const feedItems = mergeFeedItems([], events);
+		const postByToolUseId = buildPostByToolUseId(events);
+		const indexed = new IndexedTimeline();
+		indexed.update(feedItems, events, postByToolUseId, verbose);
+		return indexed.getEntries().map(e => e.opTag);
+	}
+
+	function makeNoticeTyped(
+		seq: number,
+		notificationType: string,
+		message = 'm',
+	): FeedEvent {
+		return makeEvent('notification', seq, {
+			message,
+			notification_type: notificationType,
+		});
+	}
+
+	it('hides high-frequency Codex bookkeeping kinds from the default feed', () => {
+		const events: FeedEvent[] = [
+			makeEvent('thread.status', 1, {message: 'idle', status_type: 'idle'}),
+			makeEvent('server.request.resolved', 2, {
+				message: 'resolved',
+				request_id: 'r1',
+			}),
+			makeEvent('usage.update', 3, {usage: {total: 100}}),
+			makeEvent('tool.delta', 4, {
+				tool_name: 'Bash',
+				tool_input: {},
+				tool_use_id: 't1',
+				delta: 'x',
+			}),
+		];
+
+		const defaultTags = opTags(events, false);
+		expect(defaultTags).not.toContain('thread');
+		expect(defaultTags).not.toContain('req.done');
+		expect(defaultTags).not.toContain('usage.upd');
+		// tool.delta never renders as its own row in either mode.
+		expect(defaultTags).not.toContain('tool.call');
+
+		const verboseTags = opTags(events, true);
+		expect(verboseTags).toContain('thread');
+		expect(verboseTags).toContain('req.done');
+		expect(verboseTags).toContain('usage.upd');
+	});
+
+	it('hides noisy generic notification subtypes but keeps actionable ones', () => {
+		const events: FeedEvent[] = [
+			makeNoticeTyped(1, 'account.rate_limits_updated'),
+			makeNoticeTyped(2, 'item.agentMessage.started'),
+			makeNoticeTyped(3, 'config.warning', 'bad config'),
+			makeNoticeTyped(4, 'deprecation.notice', 'deprecated flag'),
+		];
+
+		const defaultTags = opTags(events, false);
+		// Two noisy rows hidden, two actionable notifications preserved.
+		const notifyCount = defaultTags.filter(t => t === 'notify').length;
+		expect(notifyCount).toBe(2);
+
+		// In verbose mode every notification is shown.
+		const verboseTags = opTags(events, true);
+		expect(verboseTags.filter(t => t === 'notify').length).toBe(4);
+	});
+
+	it('always preserves meaningful Codex state changes in the default feed', () => {
+		const events: FeedEvent[] = [
+			makeEvent('runtime.error', 1, {message: 'boom'}),
+			makeEvent('context.compaction', 2, {
+				message: 'compacting',
+				phase: 'started',
+			}),
+			makeEvent('plan.update', 3, {
+				plan: [{step: 'a', status: 'completed'}],
+			}),
+			makeEvent('tool.failure', 4, {
+				tool_name: 'Bash',
+				tool_input: {},
+				error: 'failed',
+			}),
+		];
+
+		const defaultTags = opTags(events, false);
+		expect(defaultTags).toContain('error');
+		expect(defaultTags).toContain('compact');
+		expect(defaultTags).toContain('plan.upd');
+		expect(defaultTags).toContain('tool.fail');
+	});
+});
