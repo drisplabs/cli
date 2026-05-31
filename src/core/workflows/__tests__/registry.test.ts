@@ -756,6 +756,76 @@ describe('updateWorkflow', () => {
 
 		expect(() => updateWorkflow('no-source')).toThrow(/has no recorded source/);
 	});
+
+	it('notifies the self-heal listener once when the refresh rebuilt the cache', () => {
+		files['/tmp/resolved-workflow.json'] = JSON.stringify({
+			name: 'healed',
+			plugins: [],
+			promptTemplate: 'new',
+			workflowFile: 'workflow.md',
+		});
+		files['/tmp/workflow.md'] = '# Workflow';
+		files['/home/testuser/.config/athena/workflows/healed/workflow.json'] =
+			JSON.stringify({
+				name: 'healed',
+				plugins: [],
+				promptTemplate: 'old',
+				workflowFile: 'workflow.md',
+			});
+		files['/home/testuser/.config/athena/workflows/healed/workflow.md'] =
+			'# Old Workflow';
+		files['/home/testuser/.config/athena/workflows/healed/source.json'] =
+			JSON.stringify({kind: 'marketplace', ref: 'healed@owner/repo'});
+
+		const onSelfHeal = vi.fn();
+		const refresh = vi.fn(() => ({
+			ok: true,
+			repoDir: '/home/testuser/.config/athena/marketplaces/owner/repo',
+			selfHealed: true,
+			backupDir:
+				'/home/testuser/.config/athena/marketplaces/owner/repo.backup-123',
+		}));
+
+		updateWorkflow('healed', refresh, onSelfHeal);
+
+		expect(onSelfHeal).toHaveBeenCalledTimes(1);
+		expect(onSelfHeal).toHaveBeenCalledWith({
+			marketplace: 'owner/repo',
+			backupDir:
+				'/home/testuser/.config/athena/marketplaces/owner/repo.backup-123',
+		});
+	});
+
+	it('does not notify the self-heal listener on a clean refresh', () => {
+		files['/tmp/resolved-workflow.json'] = JSON.stringify({
+			name: 'clean',
+			plugins: [],
+			promptTemplate: 'new',
+			workflowFile: 'workflow.md',
+		});
+		files['/tmp/workflow.md'] = '# Workflow';
+		files['/home/testuser/.config/athena/workflows/clean/workflow.json'] =
+			JSON.stringify({
+				name: 'clean',
+				plugins: [],
+				promptTemplate: 'old',
+				workflowFile: 'workflow.md',
+			});
+		files['/home/testuser/.config/athena/workflows/clean/workflow.md'] =
+			'# Old Workflow';
+		files['/home/testuser/.config/athena/workflows/clean/source.json'] =
+			JSON.stringify({kind: 'marketplace', ref: 'clean@owner/repo'});
+
+		const onSelfHeal = vi.fn();
+		const refresh = vi.fn(() => ({
+			ok: true,
+			repoDir: '/home/testuser/.config/athena/marketplaces/owner/repo',
+		}));
+
+		updateWorkflow('clean', refresh, onSelfHeal);
+
+		expect(onSelfHeal).not.toHaveBeenCalled();
+	});
 });
 
 describe('updateWorkflows (bulk refresh dedup)', () => {
@@ -855,6 +925,41 @@ describe('updateWorkflows (bulk refresh dedup)', () => {
 		expect(report.workflowFailures[0]!.error.message).toMatch(
 			/has no recorded source/,
 		);
+	});
+
+	it('collapses a shared self-healed marketplace into one report entry', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+		seedRemoteWorkflow('wf-c', 'wf-c@owner/repo');
+		// The memoized refresh keeps selfHealed:true, so onSelfHeal fires once per
+		// dependent workflow; the dedup Set must collapse them to one entry.
+		refreshMarketplaceRepoMock.mockReturnValue({
+			ok: true,
+			repoDir: '/home/testuser/.config/athena/marketplaces/owner/repo',
+			selfHealed: true,
+			backupDir:
+				'/home/testuser/.config/athena/marketplaces/owner/repo.backup-123',
+		});
+
+		const report = updateWorkflows(['wf-a', 'wf-b', 'wf-c']);
+
+		expect(report.upgraded).toEqual(['wf-a', 'wf-b', 'wf-c']);
+		expect(report.selfHealed).toHaveLength(1);
+		expect(report.selfHealed[0]).toEqual({
+			marketplace: 'owner/repo',
+			backupDir:
+				'/home/testuser/.config/athena/marketplaces/owner/repo.backup-123',
+		});
+	});
+
+	it('reports no self-heals for a normal bulk upgrade', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+
+		const report = updateWorkflows(['wf-a', 'wf-b']);
+
+		expect(report.upgraded).toEqual(['wf-a', 'wf-b']);
+		expect(report.selfHealed).toEqual([]);
 	});
 });
 

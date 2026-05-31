@@ -59,6 +59,7 @@ export type WorkflowCommandDeps = {
 	writeProjectConfig?: typeof writeProjectConfig;
 	logError?: (message: string) => void;
 	logOut?: (message: string) => void;
+	logWarn?: (message: string) => void;
 };
 
 type UseFlags = {
@@ -115,6 +116,16 @@ export function runWorkflowCommand(
 	const writeProject = deps.writeProjectConfig ?? writeProjectConfig;
 	const logError = deps.logError ?? console.error;
 	const logOut = deps.logOut ?? console.log;
+	const logWarn = deps.logWarn ?? console.warn;
+
+	const warnSelfHeal = (info: {
+		marketplace: string;
+		backupDir?: string;
+	}): void => {
+		logWarn(
+			`Warning: rebuilt the cached copy of marketplace ${info.marketplace} because it was unusable.${info.backupDir ? ` Previous cache preserved at ${info.backupDir}.` : ''}`,
+		);
+	};
 
 	const fmtError = (error: unknown): string =>
 		`Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -225,7 +236,7 @@ export function runWorkflowCommand(
 			if (name) {
 				// Upgrade a single workflow
 				try {
-					const updatedName = upgrade(name);
+					const updatedName = upgrade(name, undefined, warnSelfHeal);
 					logOut(
 						`Upgraded workflow: ${formatWorkflowLabel(updatedName)}${formatSourceSuffix(updatedName)}`,
 					);
@@ -251,6 +262,9 @@ export function runWorkflowCommand(
 				logOut(
 					`Upgraded workflow: ${formatWorkflowLabel(upgradedName)}${formatSourceSuffix(upgradedName)}`,
 				);
+			}
+			for (const info of report.selfHealed) {
+				warnSelfHeal(info);
 			}
 			for (const {error} of report.marketplaceFailures) {
 				// error.message already names the marketplace (owner/repo).
