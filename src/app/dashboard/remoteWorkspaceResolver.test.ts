@@ -3,6 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
 import {resolveRemoteWorkspace} from './remoteWorkspaceResolver';
+import {
+	validateDashboardAssignment,
+	type ValidatedAssignment,
+} from './remoteRunExecutor';
 
 const cleanup: string[] = [];
 
@@ -10,6 +14,19 @@ function makeTempDir(prefix = 'athena-remote-workspace-') {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 	cleanup.push(dir);
 	return dir;
+}
+
+function validated(frame: {
+	type: 'job_assignment';
+	runId: string;
+	runnerId?: string;
+	runSpec?: unknown;
+}): ValidatedAssignment {
+	const result = validateDashboardAssignment(frame);
+	if (result.kind !== 'valid') {
+		throw new Error(`test frame should be valid: ${result.rejection.message}`);
+	}
+	return result.assignment;
 }
 
 afterEach(() => {
@@ -21,12 +38,14 @@ afterEach(() => {
 describe('resolveRemoteWorkspace', () => {
 	it('uses a valid explicit projectDir', () => {
 		const projectDir = makeTempDir();
-		const result = resolveRemoteWorkspace({
-			type: 'job_assignment',
-			runId: 'run_1',
-			runnerId: 'runner_1',
-			runSpec: {prompt: 'go', projectDir},
-		});
+		const result = resolveRemoteWorkspace(
+			validated({
+				type: 'job_assignment',
+				runId: 'run_1',
+				runnerId: 'runner_1',
+				runSpec: {prompt: 'go', projectDir},
+			}),
+		);
 
 		expect(result).toEqual({kind: 'resolved', projectDir});
 	});
@@ -34,12 +53,12 @@ describe('resolveRemoteWorkspace', () => {
 	it('rejects an explicit home projectDir', () => {
 		const home = makeTempDir('athena-remote-home-');
 		const result = resolveRemoteWorkspace(
-			{
+			validated({
 				type: 'job_assignment',
 				runId: 'run_home',
 				runnerId: 'runner_1',
 				runSpec: {prompt: 'go', projectDir: home},
-			},
+			}),
 			{env: {HOME: home}},
 		);
 
@@ -56,12 +75,12 @@ describe('resolveRemoteWorkspace', () => {
 		const home = makeTempDir('athena-remote-home-');
 		const state = makeTempDir('athena-remote-state-');
 		const result = resolveRemoteWorkspace(
-			{
+			validated({
 				type: 'job_assignment',
 				runId: 'run_1',
 				runnerId: 'runner/one',
 				runSpec: {prompt: 'go', athenaSessionId: 'athena:session'},
-			},
+			}),
 			{
 				dashboardUrl: 'https://dash.example.com/org',
 				env: {HOME: home, XDG_STATE_HOME: state},
@@ -85,12 +104,12 @@ describe('resolveRemoteWorkspace', () => {
 		const home = makeTempDir('athena-remote-home-');
 		const state = makeTempDir('athena-remote-state-');
 		const result = resolveRemoteWorkspace(
-			{
+			validated({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runnerId: 'runner_1',
 				runSpec: {prompt: 'go'},
-			},
+			}),
 			{
 				dashboardUrl: 'https://dash.example.com',
 				env: {HOME: home, XDG_STATE_HOME: state},

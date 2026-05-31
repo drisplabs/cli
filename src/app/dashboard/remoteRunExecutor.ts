@@ -42,7 +42,7 @@ type JobAssignmentFrame = Extract<
 	{type: 'job_assignment'}
 >;
 
-type RemoteRunSpec = {
+export type RemoteRunSpec = {
 	prompt: string;
 	athenaSessionId?: string;
 	adapterResumeSessionId?: string;
@@ -65,7 +65,7 @@ type RemoteRunSpec = {
 };
 
 export type ExecuteRemoteAssignmentInput = {
-	frame: JobAssignmentFrame;
+	assignment: ValidatedAssignment;
 	client: Pick<InstanceSocketClient, 'sendRunEvent'>;
 	projectDir: string;
 	log?: InstanceSocketLogger;
@@ -168,10 +168,54 @@ export function parseRemoteRunSpec(value: unknown): RemoteRunSpec | null {
 	};
 }
 
-export function isRemoteAssignmentAdmissible(
+/**
+ * A Dashboard assignment that has passed the single validation gate: its
+ * `runSpec` parsed cleanly (prompt guaranteed present) and its identity fields
+ * are normalized. Workspace resolution, admission, and Run launch all consume
+ * this instead of reparsing the raw frame. The raw `frame` is retained for
+ * orthogonal concerns (e.g. artifact-upload spec parsing) that read the raw
+ * `runSpec` shape rather than the validated `RemoteRunSpec`.
+ */
+export type ValidatedAssignment = {
+	runId: string;
+	runnerId: string;
+	spec: RemoteRunSpec;
+	frame: JobAssignmentFrame;
+};
+
+export type AssignmentValidation =
+	| {kind: 'valid'; assignment: ValidatedAssignment}
+	| {
+			kind: 'rejected';
+			rejection: {reason: 'malformed_assignment'; message: string};
+	  };
+
+/**
+ * The one validation path for a Dashboard assignment: parse + validate the
+ * frame once into a {@link ValidatedAssignment} or a first-class rejection.
+ */
+export function validateDashboardAssignment(
 	frame: JobAssignmentFrame,
-): boolean {
-	return parseRemoteRunSpec(frame.runSpec) !== null;
+): AssignmentValidation {
+	const spec = parseRemoteRunSpec(frame.runSpec);
+	if (!spec) {
+		return {
+			kind: 'rejected',
+			rejection: {
+				reason: 'malformed_assignment',
+				message: 'remote assignment missing prompt',
+			},
+		};
+	}
+	return {
+		kind: 'valid',
+		assignment: {
+			runId: frame.runId,
+			runnerId: frame.runnerId ?? 'legacy',
+			spec,
+			frame,
+		},
+	};
 }
 
 function workflowNameFromRef(ref: string | undefined): string | undefined {
@@ -290,7 +334,7 @@ function mergeRunSpecEnvIntoWorkflow(
 }
 
 export async function executeRemoteAssignment({
-	frame,
+	assignment,
 	client,
 	projectDir,
 	log = () => {},
@@ -313,19 +357,16 @@ export async function executeRemoteAssignment({
 		current: null,
 	};
 
-	// Pre-parse so we know whether to open the per-run channel before the
-	// first frame. The intake admissibility gate (`isRemoteAssignmentAdmissible`)
-	// already parsed this frame once; re-parsing here is intentional and cheap —
-	// `parseRemoteRunSpec` is pure and side-effect-free, so we keep the executor
-	// self-contained rather than threading the parsed spec across the admission
-	// boundary.
-	const spec = parseRemoteRunSpec(frame.runSpec);
+	// The assignment was already validated once at intake, so the spec is
+	// guaranteed present and we consume it directly — no reparse. The raw frame
+	// is retained only for orthogonal concerns (artifact-upload spec parsing).
+	const {spec, runId, frame} = assignment;
 
 	const runEventPublisher: RemoteRunEventPublisher =
 		await createRemoteRunEventPublisher({
-			runId: frame.runId,
-			callbackWsUrl: spec?.callbackWsUrl,
-			callbackToken: spec?.callbackToken,
+			runId,
+			callbackWsUrl: spec.callbackWsUrl,
+			callbackToken: spec.callbackToken,
 			client,
 			log,
 			now,
@@ -350,10 +391,6 @@ export async function executeRemoteAssignment({
 	send('progress', {message: 'assignment received'});
 
 	try {
-		if (!spec) {
-			send('error', {message: 'remote assignment missing prompt'});
-			return;
-		}
 		let artifactUploadSpec;
 		try {
 			artifactUploadSpec = parseArtifactUploadSpec(frame.runSpec);
@@ -440,7 +477,7 @@ export async function executeRemoteAssignment({
 				projectDir,
 				harness: runtimeConfig.harness,
 				athenaSessionId:
-					spec.athenaSessionId ?? spec.sessionId ?? `athena-${frame.runId}`,
+					spec.athenaSessionId ?? spec.sessionId ?? `athena-${runId}`,
 				adapterResumeSessionId: spec.adapterResumeSessionId,
 				isolationConfig: runtimeConfig.isolationConfig,
 				pluginMcpConfig: runtimeConfig.pluginMcpConfig,
@@ -459,7 +496,7 @@ export async function executeRemoteAssignment({
 				...(artifactUploadSpec
 					? {
 							beforeTerminalCompletion: async ({result, runId}) => {
-								const artifactRunId = runId ?? frame.runId;
+								const artifactRunId = runId ?? assignment.runId;
 								const {feedEvent} = await captureAndUploadArtifacts({
 									spec: artifactUploadSpec,
 									projectDir,

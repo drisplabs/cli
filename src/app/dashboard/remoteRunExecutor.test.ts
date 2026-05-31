@@ -3,11 +3,28 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {executeRemoteAssignment} from './remoteRunExecutor';
+import {
+	executeRemoteAssignment,
+	validateDashboardAssignment,
+	type ValidatedAssignment,
+} from './remoteRunExecutor';
 import type {ExecRunOptions} from '../exec/types';
 import type {RunStreamClient, RunStreamFrameInput} from './runStreamClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
+
+function asValidatedAssignment(frame: {
+	type: 'job_assignment';
+	runId: string;
+	runnerId?: string;
+	runSpec?: unknown;
+}): ValidatedAssignment {
+	const result = validateDashboardAssignment(frame);
+	if (result.kind !== 'valid') {
+		throw new Error(`test frame should be valid: ${result.rejection.message}`);
+	}
+	return result.assignment;
+}
 
 function makeArtifactRepo(): string {
 	const dir = fs.mkdtempSync(
@@ -22,6 +39,56 @@ function makeArtifactRepo(): string {
 	fs.writeFileSync(path.join(dir, 'artifact.txt'), 'payload\n');
 	return dir;
 }
+
+describe('validateDashboardAssignment', () => {
+	it('produces a validated assignment with the parsed spec for a well-formed frame', () => {
+		const result = validateDashboardAssignment({
+			type: 'job_assignment',
+			runId: 'run_42',
+			runnerId: 'runner_7',
+			runSpec: {prompt: 'say hello', sessionId: 'athena-run_42'},
+		});
+
+		expect(result).toEqual({
+			kind: 'valid',
+			assignment: {
+				runId: 'run_42',
+				runnerId: 'runner_7',
+				spec: expect.objectContaining({prompt: 'say hello'}),
+				frame: expect.objectContaining({runId: 'run_42'}),
+			},
+		});
+	});
+
+	it('defaults the runnerId to legacy when the frame omits it', () => {
+		const result = validateDashboardAssignment({
+			type: 'job_assignment',
+			runId: 'run_42',
+			runSpec: {prompt: 'say hello'},
+		});
+
+		expect(result.kind).toBe('valid');
+		if (result.kind === 'valid') {
+			expect(result.assignment.runnerId).toBe('legacy');
+		}
+	});
+
+	it('rejects a malformed assignment with a first-class malformed_assignment rejection', () => {
+		const result = validateDashboardAssignment({
+			type: 'job_assignment',
+			runId: 'run_42',
+			runSpec: {sessionId: 'athena-run_42'},
+		});
+
+		expect(result).toEqual({
+			kind: 'rejected',
+			rejection: {
+				reason: 'malformed_assignment',
+				message: 'remote assignment missing prompt',
+			},
+		});
+	});
+});
 
 describe('executeRemoteAssignment', () => {
 	it('runs the assigned prompt and streams exec events back to the dashboard', async () => {
@@ -61,7 +128,7 @@ describe('executeRemoteAssignment', () => {
 		});
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {
@@ -71,7 +138,7 @@ describe('executeRemoteAssignment', () => {
 					timeoutSec: 12,
 					env: {FOO: 'bar'},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -174,7 +241,7 @@ describe('executeRemoteAssignment', () => {
 		}));
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {
@@ -182,7 +249,7 @@ describe('executeRemoteAssignment', () => {
 					sessionId: 'athena-run_42',
 					harness: 'codex',
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -224,7 +291,7 @@ describe('executeRemoteAssignment', () => {
 		}));
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_continue',
 				runSpec: {
@@ -232,7 +299,7 @@ describe('executeRemoteAssignment', () => {
 					athenaSessionId: 'athena-existing',
 					adapterResumeSessionId: 'codex-thread-123',
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: vi.fn(),
 			},
@@ -297,14 +364,14 @@ describe('executeRemoteAssignment', () => {
 
 		try {
 			await executeRemoteAssignment({
-				frame: {
+				assignment: asValidatedAssignment({
 					type: 'job_assignment',
 					runId: 'run_env',
 					runSpec: {
 						prompt: 'env',
 						env: {ATHENA_REMOTE_ENV_TEST: 'from-run'},
 					},
-				},
+				}),
 				client: {sendRunEvent: vi.fn()},
 				projectDir: '/tmp/project',
 				runExecFn,
@@ -399,22 +466,22 @@ describe('executeRemoteAssignment', () => {
 
 		await Promise.all([
 			executeRemoteAssignment({
-				frame: {
+				assignment: asValidatedAssignment({
 					type: 'job_assignment',
 					runId: 'run_env_1',
 					runSpec: {prompt: 'one', env: {RUN: 'one'}},
-				},
+				}),
 				client: {sendRunEvent: vi.fn()},
 				projectDir: '/tmp/project',
 				runExecFn,
 				bootstrapRuntimeConfigFn: () => runtimeConfig,
 			}),
 			executeRemoteAssignment({
-				frame: {
+				assignment: asValidatedAssignment({
 					type: 'job_assignment',
 					runId: 'run_env_2',
 					runSpec: {prompt: 'two', env: {RUN: 'two'}},
-				},
+				}),
 				client: {sendRunEvent: vi.fn()},
 				projectDir: '/tmp/project',
 				runExecFn,
@@ -457,11 +524,11 @@ describe('executeRemoteAssignment', () => {
 		}));
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_decisions',
 				runSpec: {prompt: 'needs approval'},
-			},
+			}),
 			client: {sendRunEvent: vi.fn()},
 			projectDir: '/tmp/project',
 			runExecFn,
@@ -554,7 +621,7 @@ describe('executeRemoteAssignment', () => {
 		}));
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {
@@ -565,7 +632,7 @@ describe('executeRemoteAssignment', () => {
 						version: '0.0.16',
 					},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -637,7 +704,7 @@ describe('executeRemoteAssignment', () => {
 		const installWorkflowFromSourceFn = vi.fn(() => 'custom-flow');
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_custom',
 				runSpec: {
@@ -648,7 +715,7 @@ describe('executeRemoteAssignment', () => {
 						version: '2.0.0',
 					},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: vi.fn(),
 			},
@@ -692,48 +759,15 @@ describe('executeRemoteAssignment', () => {
 		expect(runExecFn).toHaveBeenCalled();
 	});
 
-	it('sends a terminal error when the assignment has no prompt', async () => {
-		const sent: unknown[] = [];
-
-		await executeRemoteAssignment({
-			frame: {
-				type: 'job_assignment',
-				runId: 'run_42',
-				runSpec: {sessionId: 'athena-run_42'},
-			},
-			client: {
-				sendRunEvent: frame => sent.push(frame),
-			},
-			projectDir: '/tmp/project',
-			runExecFn: vi.fn(),
-		});
-
-		expect(sent).toEqual([
-			expect.objectContaining({
-				runId: 'run_42',
-				seq: 1,
-				kind: 'progress',
-			}),
-			expect.objectContaining({
-				runId: 'run_42',
-				seq: 2,
-				kind: 'error',
-				payload: expect.objectContaining({
-					message: expect.stringContaining('missing prompt'),
-				}),
-			}),
-		]);
-	});
-
 	it('sends a terminal error when runtime bootstrap fails', async () => {
 		const sent: unknown[] = [];
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -798,11 +832,11 @@ describe('executeRemoteAssignment', () => {
 		});
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -854,11 +888,11 @@ describe('executeRemoteAssignment', () => {
 		const sent: unknown[] = [];
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -989,7 +1023,7 @@ describe('executeRemoteAssignment', () => {
 			});
 
 			await executeRemoteAssignment({
-				frame: {
+				assignment: asValidatedAssignment({
 					type: 'job_assignment',
 					runId: 'run_callback',
 					runSpec: {
@@ -999,7 +1033,7 @@ describe('executeRemoteAssignment', () => {
 							'wss://dash.example/api/runs/run_callback/stream?token=t',
 						callbackToken: 't',
 					},
-				},
+				}),
 				client: {
 					sendRunEvent: frame => sentToInstanceSocket.push(frame),
 				},
@@ -1067,7 +1101,7 @@ describe('executeRemoteAssignment', () => {
 			};
 
 			await executeRemoteAssignment({
-				frame: {
+				assignment: asValidatedAssignment({
 					type: 'job_assignment',
 					runId: 'run_fallback',
 					runSpec: {
@@ -1076,7 +1110,7 @@ describe('executeRemoteAssignment', () => {
 							'wss://dash.example/api/runs/run_fallback/stream?token=t',
 						callbackToken: 't',
 					},
-				},
+				}),
 				client: {
 					sendRunEvent: frame =>
 						sentToInstanceSocket.push({kind: frame.kind, seq: frame.seq}),
@@ -1170,7 +1204,7 @@ describe('executeRemoteAssignment', () => {
 		});
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_artifacts',
 				runSpec: {
@@ -1182,7 +1216,7 @@ describe('executeRemoteAssignment', () => {
 						accessToken: 'token',
 					},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -1296,7 +1330,7 @@ describe('executeRemoteAssignment', () => {
 		});
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_artifacts_feed',
 				runSpec: {
@@ -1308,7 +1342,7 @@ describe('executeRemoteAssignment', () => {
 						accessToken: 'token',
 					},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: vi.fn(),
 			},
@@ -1375,7 +1409,7 @@ describe('executeRemoteAssignment', () => {
 		}));
 
 		await executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_bad_artifacts',
 				runSpec: {
@@ -1384,7 +1418,7 @@ describe('executeRemoteAssignment', () => {
 						bucket: 'bucket-1',
 					},
 				},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},
@@ -1462,11 +1496,11 @@ describe('executeRemoteAssignment', () => {
 		});
 
 		const pending = executeRemoteAssignment({
-			frame: {
+			assignment: asValidatedAssignment({
 				type: 'job_assignment',
 				runId: 'run_cancel',
 				runSpec: {prompt: 'hello'},
-			},
+			}),
 			client: {
 				sendRunEvent: frame => sent.push(frame),
 			},

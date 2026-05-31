@@ -4,7 +4,10 @@ import type {
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import type {DashboardPairedExecution} from './dashboardPairedExecution';
-import {isRemoteAssignmentAdmissible} from './remoteRunExecutor';
+import {
+	validateDashboardAssignment,
+	type ValidatedAssignment,
+} from './remoteRunExecutor';
 import {
 	resolveRemoteWorkspace,
 	type RemoteWorkspaceResolution,
@@ -26,7 +29,7 @@ export type DashboardAssignmentIntakeOptions = {
 	>;
 	log?: InstanceSocketLogger;
 	resolveWorkspace?: (
-		frame: JobAssignmentFrame,
+		assignment: ValidatedAssignment,
 		context: DashboardConnectionContext,
 	) => RemoteWorkspaceResolution;
 };
@@ -48,8 +51,8 @@ export function createDashboardAssignmentIntake(
 	const log = options.log ?? (() => {});
 	const resolveWorkspace =
 		options.resolveWorkspace ??
-		((frame, context) =>
-			resolveRemoteWorkspace(frame, {dashboardUrl: context.dashboardUrl}));
+		((assignment, context) =>
+			resolveRemoteWorkspace(assignment, {dashboardUrl: context.dashboardUrl}));
 	const pending: JobAssignmentFrame[] = [];
 	let context: DashboardConnectionContext | null = null;
 
@@ -57,19 +60,17 @@ export function createDashboardAssignmentIntake(
 		frame: JobAssignmentFrame,
 		readyContext: DashboardConnectionContext,
 	): void {
-		if (!isRemoteAssignmentAdmissible(frame)) {
-			const rejection = {
-				reason: 'malformed_assignment' as const,
-				message: 'remote assignment missing prompt',
-			};
-			options.execution.rejectAssignment(frame.runId, rejection);
+		const validation = validateDashboardAssignment(frame);
+		if (validation.kind === 'rejected') {
+			options.execution.rejectAssignment(frame.runId, validation.rejection);
 			options.client.sendAssignmentRejected({
 				runId: frame.runId,
-				...rejection,
+				...validation.rejection,
 			});
 			return;
 		}
-		const workspace = resolveWorkspace(frame, readyContext);
+		const assignment = validation.assignment;
+		const workspace = resolveWorkspace(assignment, readyContext);
 		if (workspace.kind === 'rejected') {
 			options.execution.rejectAssignment(frame.runId, workspace.rejection);
 			options.client.sendAssignmentRejected({
@@ -78,7 +79,7 @@ export function createDashboardAssignmentIntake(
 			});
 			return;
 		}
-		const outcome = options.execution.admitAssignment(frame, {
+		const outcome = options.execution.admitAssignment(assignment, {
 			projectDir: workspace.projectDir,
 		});
 		if (outcome.kind === 'accepted') {
