@@ -110,7 +110,19 @@ const STATUS_EVENT_KINDS = new Set<RuntimeEventKind>([
 ]);
 
 export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
-	const runLifecycle = createRunLifecycle();
+	// Run boundary collaborators. The resetPerRunState thunk and the (hoisted)
+	// makeEvent are wired into RunLifecycle so it owns the close → reset → open →
+	// emit choreography; the thunk closes over collaborators declared below but is
+	// only invoked at run-rollover time, never during construction.
+	const runLifecycle = createRunLifecycle({
+		makeEvent,
+		resetPerRunState: () => {
+			toolCorrelation.resetForNewRun();
+			decisionCorrelation.resetForNewRun();
+			agentMessageStream.resetForNewRun();
+			subagents.clear();
+		},
+	});
 	const decisionCorrelation = createDecisionCorrelation();
 	const toolCorrelation = createToolCorrelation();
 	const transcriptReader = createTranscriptReader();
@@ -249,58 +261,10 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 		}
 	}
 
-	function closeRunIntoEvent(
-		runtimeEvent: RuntimeEvent,
-		status: 'completed' | 'failed' | 'aborted',
-	): FeedEvent | null {
-		const closed = runLifecycle.closeRun(runtimeEvent.timestamp, status);
-		if (!closed) return null;
-		return makeEvent(
-			'run.end',
-			'info',
-			'system',
-			{status, counters: {...closed.counters}},
-			runtimeEvent,
-		);
-	}
-
-	function ensureRunArray(
-		runtimeEvent: RuntimeEvent,
-		triggerType: Run['trigger']['type'] = 'other',
-		promptPreview?: string,
-	): FeedEvent[] {
-		if (runLifecycle.getCurrentRun() && triggerType === 'other') return [];
-
-		const results: FeedEvent[] = [];
-
-		const closeEvt = closeRunIntoEvent(runtimeEvent, 'completed');
-		if (closeEvt) results.push(closeEvt);
-
-		// Reset all per-run state across the seams.
-		toolCorrelation.resetForNewRun();
-		decisionCorrelation.resetForNewRun();
-		agentMessageStream.resetForNewRun();
-		subagents.clear();
-
-		runLifecycle.openNewRun(
-			runtimeEvent.timestamp,
-			runtimeEvent.sessionId,
-			triggerType,
-			promptPreview,
-		);
-
-		results.push(
-			makeEvent(
-				'run.start',
-				'info',
-				'system',
-				{trigger: {type: triggerType, prompt_preview: promptPreview}},
-				runtimeEvent,
-			),
-		);
-
-		return results;
-	}
+	// Run boundary (closeRunIntoEvent / beginRun) is owned by RunLifecycle; the
+	// projections below receive bound references rather than local choreography.
+	const ensureRunArray = runLifecycle.beginRun;
+	const closeRunIntoEvent = runLifecycle.closeRunIntoEvent;
 
 	function resolveToolActor(): string {
 		return subagents.peek() ?? 'agent:root';

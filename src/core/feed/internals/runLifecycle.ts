@@ -1,11 +1,18 @@
 // src/core/feed/internals/runLifecycle.ts
 
+import type {RuntimeEvent} from '../../runtime/types';
 import type {Session, Run} from '../entities';
 import type {MapperBootstrap} from '../bootstrap';
 import type {FeedEvent} from '../types';
+import type {FeedEventBuilder} from './projection';
 
 /**
- * Owns Session and Run identity, sequence allocation, and per-run counters.
+ * Owns Session and Run identity, sequence allocation, per-run counters, and the
+ * Run boundary: starting a new Run closes the current one when needed, resets
+ * per-run FeedMapper state through its explicit collaborators, opens the next
+ * Run, and emits the run.start / run.end lifecycle FeedEvents through one
+ * interface (beginRun / closeRunIntoEvent). Callers request a boundary; they no
+ * longer own the close → reset → open → emit choreography.
  *
  * Sequence semantics:
  *   - `seq` is a monotonic counter across the entire mapper lifetime; allocateSeq()
@@ -15,15 +22,27 @@ import type {FeedEvent} from '../types';
  *   - On bootstrap restore, both counters resume from the highest value observed
  *     in stored events.
  *
- * The orchestrator drives lifecycle through closeRun / openNewRun. Counters are
- * derived from emitted-event kinds in the orchestrator and pushed in via
- * incrementCounter — RunLifecycle does not know about FeedEvent kinds.
+ * Counters are derived from emitted-event kinds in the orchestrator and pushed in
+ * via incrementCounter. The lifecycle FeedEvents are built via the injected
+ * makeEvent, and per-run state is cleared via the injected resetPerRunState — so
+ * RunLifecycle owns *when* the boundary fires without knowing *how* each
+ * collaborator resets itself.
  */
 export type RunLifecycleCounter =
 	| 'tool_uses'
 	| 'tool_failures'
 	| 'permission_requests'
 	| 'blocks';
+
+/**
+ * Collaborators the Run boundary drives: makeEvent builds the run.start/run.end
+ * FeedEvents, resetPerRunState clears per-run state across the FeedMapper seams
+ * (tool/decision correlation, agent message stream, subagent tracker).
+ */
+export type RunBoundaryDeps = {
+	makeEvent: FeedEventBuilder;
+	resetPerRunState: () => void;
+};
 
 export type RunLifecycle = {
 	allocateSeq(): number;
@@ -41,10 +60,27 @@ export type RunLifecycle = {
 		triggerType: Run['trigger']['type'],
 		promptPreview: string | undefined,
 	): Run;
+	/** Close the current Run (if any) into a run.end FeedEvent. */
+	closeRunIntoEvent(
+		runtimeEvent: RuntimeEvent,
+		status: 'completed' | 'failed' | 'aborted',
+	): FeedEvent | null;
+	/**
+	 * Ensure a Run is open for the incoming event, rolling over when triggered.
+	 * For an implicit ('other') trigger this is a no-op while a Run is already
+	 * open; otherwise it closes the current Run, resets per-run state, opens the
+	 * next Run, and returns the run.end (if any) followed by the run.start event.
+	 */
+	beginRun(
+		runtimeEvent: RuntimeEvent,
+		triggerType?: Run['trigger']['type'],
+		promptPreview?: string,
+	): FeedEvent[];
 	restoreFrom(bootstrap: MapperBootstrap): void;
 };
 
-export function createRunLifecycle(): RunLifecycle {
+export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
+	const {makeEvent, resetPerRunState} = boundary;
 	let currentSession: Session | null = null;
 	let currentRun: Run | null = null;
 	let seq = 0;
@@ -55,17 +91,107 @@ export function createRunLifecycle(): RunLifecycle {
 		return `${sessId}:R${runSeq}`;
 	}
 
+	function allocateSeq(): number {
+		return ++seq;
+	}
+
+	function getCurrentRun(): Run | null {
+		return currentRun;
+	}
+
+	function closeRun(
+		ts: number,
+		status: 'completed' | 'failed' | 'aborted',
+	): Run | null {
+		if (!currentRun) return null;
+		currentRun.status = status;
+		currentRun.ended_at = ts;
+		const closed = currentRun;
+		currentRun = null;
+		return closed;
+	}
+
+	function openNewRun(
+		ts: number,
+		sessionId: string,
+		triggerType: Run['trigger']['type'],
+		promptPreview: string | undefined,
+	): Run {
+		runSeq++;
+		currentRun = {
+			run_id: getRunId(),
+			session_id: sessionId,
+			started_at: ts,
+			trigger: {type: triggerType, prompt_preview: promptPreview},
+			status: 'running',
+			actors: {root_agent_id: 'agent:root', subagent_ids: []},
+			counters: {
+				tool_uses: 0,
+				tool_failures: 0,
+				permission_requests: 0,
+				blocks: 0,
+			},
+		};
+		return currentRun;
+	}
+
+	function closeRunIntoEvent(
+		runtimeEvent: RuntimeEvent,
+		status: 'completed' | 'failed' | 'aborted',
+	): FeedEvent | null {
+		const closed = closeRun(runtimeEvent.timestamp, status);
+		if (!closed) return null;
+		return makeEvent(
+			'run.end',
+			'info',
+			'system',
+			{status, counters: {...closed.counters}},
+			runtimeEvent,
+		);
+	}
+
+	function beginRun(
+		runtimeEvent: RuntimeEvent,
+		triggerType: Run['trigger']['type'] = 'other',
+		promptPreview?: string,
+	): FeedEvent[] {
+		if (currentRun && triggerType === 'other') return [];
+
+		const results: FeedEvent[] = [];
+
+		const closeEvt = closeRunIntoEvent(runtimeEvent, 'completed');
+		if (closeEvt) results.push(closeEvt);
+
+		// Reset all per-run state across the seams before opening the next Run.
+		resetPerRunState();
+
+		openNewRun(
+			runtimeEvent.timestamp,
+			runtimeEvent.sessionId,
+			triggerType,
+			promptPreview,
+		);
+
+		results.push(
+			makeEvent(
+				'run.start',
+				'info',
+				'system',
+				{trigger: {type: triggerType, prompt_preview: promptPreview}},
+				runtimeEvent,
+			),
+		);
+
+		return results;
+	}
+
 	return {
-		allocateSeq() {
-			return ++seq;
-		},
+		allocateSeq,
 		getRunId,
 		getSession() {
 			return currentSession;
 		},
-		getCurrentRun() {
-			return currentRun;
-		},
+		getCurrentRun,
 		setSession(session) {
 			currentSession = session;
 		},
@@ -78,32 +204,10 @@ export function createRunLifecycle(): RunLifecycle {
 		incrementCounter(name) {
 			if (currentRun) currentRun.counters[name]++;
 		},
-		closeRun(ts, status) {
-			if (!currentRun) return null;
-			currentRun.status = status;
-			currentRun.ended_at = ts;
-			const closed = currentRun;
-			currentRun = null;
-			return closed;
-		},
-		openNewRun(ts, sessionId, triggerType, promptPreview) {
-			runSeq++;
-			currentRun = {
-				run_id: getRunId(),
-				session_id: sessionId,
-				started_at: ts,
-				trigger: {type: triggerType, prompt_preview: promptPreview},
-				status: 'running',
-				actors: {root_agent_id: 'agent:root', subagent_ids: []},
-				counters: {
-					tool_uses: 0,
-					tool_failures: 0,
-					permission_requests: 0,
-					blocks: 0,
-				},
-			};
-			return currentRun;
-		},
+		closeRun,
+		openNewRun,
+		closeRunIntoEvent,
+		beginRun,
 		restoreFrom(bootstrap) {
 			for (const e of bootstrap.feedEvents) {
 				if (e.seq > seq) seq = e.seq;
