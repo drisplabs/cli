@@ -1207,7 +1207,54 @@ export const VERBOSE_ONLY_KINDS: ReadonlySet<FeedEventKind> = new Set([
 	'turn.diff',
 	'usage.update',
 	'reasoning.summary',
+	// Codex protocol bookkeeping that churns the feed without conveying
+	// meaningful agent progress. `usage.update` (above) still feeds header
+	// token/context metrics via the raw event stream — only the rendered row
+	// is suppressed in the default (non-verbose) feed.
+	'thread.status',
+	'server.request.resolved',
 ]);
+
+/**
+ * Generic `notification` events whose `notification_type` is high-frequency
+ * Codex bookkeeping. These reach the feed as `kind: 'notification'` (they have
+ * no dedicated FeedEvent kind) and dominate the timeline without conveying
+ * actionable state. They are hidden from the default feed but remain visible
+ * in verbose mode.
+ *
+ * Anything not listed here — config warnings, codex errors/warnings,
+ * deprecation notices, login/auth completion, MCP server status — is treated
+ * as meaningful and always rendered.
+ */
+export const VERBOSE_ONLY_NOTIFICATION_TYPES: ReadonlySet<string> = new Set([
+	'account.rate_limits_updated',
+	'account.updated',
+	'item.agentMessage.started',
+	'raw_response_item.completed',
+	'command_exec.output_delta',
+	'fuzzy_file_search.updated',
+	'fuzzy_file_search.completed',
+	'app.list_updated',
+	'thread_name',
+	'thread.archived',
+	'thread.unarchived',
+	'thread.realtime.transcript_delta',
+	'thread.realtime.output_audio_delta',
+]);
+
+/**
+ * True when the event is a generic Codex `notification` carrying a
+ * high-frequency bookkeeping `notification_type` (see
+ * {@link VERBOSE_ONLY_NOTIFICATION_TYPES}). Such rows are suppressed in the
+ * default feed and shown only in verbose mode.
+ */
+export function isVerboseOnlyNotification(event: FeedEvent): boolean {
+	return (
+		event.kind === 'notification' &&
+		typeof event.data.notification_type === 'string' &&
+		VERBOSE_ONLY_NOTIFICATION_TYPES.has(event.data.notification_type)
+	);
+}
 
 /**
  * A TimelineEntry is "stable" when its content is finalized and won't change.
