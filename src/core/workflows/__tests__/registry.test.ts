@@ -50,6 +50,18 @@ vi.mock('node:os', () => ({
 	},
 }));
 
+// Guard against any direct git shell-out from the registry code path. The
+// marketplace module is mocked above, so a `git` call surfacing here would mean
+// registry.ts grew its own git invocation — exactly what the local-upgrade
+// ownership boundary must never do.
+const execFileSyncMock = vi.fn();
+const execSyncMock = vi.fn();
+
+vi.mock('node:child_process', () => ({
+	execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+	execSync: (...args: unknown[]) => execSyncMock(...args),
+}));
+
 const resolveMarketplaceWorkflowMock = vi.fn(
 	() => '/tmp/resolved-workflow.json',
 );
@@ -122,6 +134,8 @@ beforeEach(() => {
 			repoDir: `/home/testuser/.config/athena/marketplaces/${owner}/${repo}`,
 		}),
 	);
+	execFileSyncMock.mockReset();
+	execSyncMock.mockReset();
 	resolveWorkflowInstallMock.mockImplementation((ref: string) => {
 		const atIdx = ref.indexOf('@');
 		const workflowName = atIdx >= 0 ? ref.slice(0, atIdx) : ref;
@@ -1260,6 +1274,79 @@ describe('updateWorkflow (canonical source)', () => {
 				files['/home/testuser/.config/athena/workflows/w/workflow.json']!,
 			).promptTemplate,
 		).toBe('loose-new');
+	});
+});
+
+// Regression guard for the marketplace-local ownership boundary (issue #39):
+// upgrading a marketplace-local workflow must read the user-owned repo and
+// resolve from its manifest only. It must never run git (no pull/clone/reset/
+// stash/backup) and must never be routed through the remote cache self-heal
+// path (pullMarketplaceRepo / refreshMarketplaceRepo). This is structurally
+// true today but unguarded; as remote self-healing grows it must stay true.
+describe('updateWorkflow (marketplace-local ownership boundary)', () => {
+	function seedLocalWorkflow(): void {
+		files['/home/testuser/.config/athena/workflows/w/workflow.json'] =
+			JSON.stringify({
+				name: 'w',
+				plugins: [],
+				promptTemplate: 'old',
+				workflowFile: 'workflow.md',
+			});
+		files['/home/testuser/.config/athena/workflows/w/workflow.md'] = '# old';
+		files['/home/testuser/.config/athena/workflows/w/source.json'] =
+			JSON.stringify({
+				v: 2,
+				kind: 'marketplace-local',
+				repoDir: '/tmp/m',
+				workflowName: 'w',
+			});
+	}
+
+	it('never mutates git or enters the remote refresh path on a successful local upgrade', () => {
+		seedLocalWorkflow();
+		listMarketplaceWorkflowsFromRepoMock.mockReturnValue([
+			{
+				name: 'w',
+				workflowPath: '/tmp/m/workflows/w/workflow.json',
+				source: {kind: 'local', repoDir: '/tmp/m'},
+			},
+		]);
+		files['/tmp/m/workflows/w/workflow.json'] = JSON.stringify({
+			name: 'w',
+			plugins: [],
+			promptTemplate: 'new-local',
+			workflowFile: 'workflow.md',
+		});
+		files['/tmp/m/workflows/w/workflow.md'] = '# new';
+
+		updateWorkflow('w');
+
+		// Resolved from the local manifest, not git.
+		expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith('/tmp/m');
+		// No remote self-heal path.
+		expect(refreshMarketplaceRepoMock).not.toHaveBeenCalled();
+		// No git mutation of the user-owned repo (pull/clone/reset/stash/backup).
+		expect(execFileSyncMock).not.toHaveBeenCalled();
+		expect(execSyncMock).not.toHaveBeenCalled();
+	});
+
+	it('does not enter the remote refresh path when the workflow is missing from the local marketplace', () => {
+		seedLocalWorkflow();
+		// The workflow has been renamed/removed in the local marketplace.
+		listMarketplaceWorkflowsFromRepoMock.mockReturnValue([
+			{
+				name: 'not-w',
+				workflowPath: '/tmp/m/workflows/not-w/workflow.json',
+				source: {kind: 'local', repoDir: '/tmp/m'},
+			},
+		]);
+
+		// Still produces the existing clear "no longer in the local marketplace"
+		// error rather than trying to self-heal.
+		expect(() => updateWorkflow('w')).toThrow(/no longer.*local marketplace/i);
+		expect(refreshMarketplaceRepoMock).not.toHaveBeenCalled();
+		expect(execFileSyncMock).not.toHaveBeenCalled();
+		expect(execSyncMock).not.toHaveBeenCalled();
 	});
 });
 
