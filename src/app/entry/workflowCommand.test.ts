@@ -390,7 +390,11 @@ describe('runWorkflowCommand', () => {
 				.fn()
 				.mockReturnValue(['default', 'alpha', 'beta']);
 			const listBuiltinWorkflows = vi.fn().mockReturnValue(['default']);
-			const updateWorkflow = vi.fn().mockImplementation((name: string) => name);
+			const updateWorkflows = vi.fn().mockReturnValue({
+				upgraded: ['alpha', 'beta'],
+				marketplaceFailures: [],
+				workflowFailures: [],
+			});
 			const resolveWorkflow = vi
 				.fn()
 				.mockImplementation((name: string) => ({name}));
@@ -403,16 +407,59 @@ describe('runWorkflowCommand', () => {
 				{
 					listWorkflows,
 					listBuiltinWorkflows,
-					updateWorkflow,
+					updateWorkflows,
 					resolveWorkflow,
 					logOut,
 				},
 			);
 
 			expect(code).toBe(0);
-			expect(updateWorkflow).toHaveBeenCalledWith('alpha');
-			expect(updateWorkflow).toHaveBeenCalledWith('beta');
-			expect(updateWorkflow).not.toHaveBeenCalledWith('default');
+			// Bulk upgrade hands the whole non-builtin set to the dedup orchestrator.
+			expect(updateWorkflows).toHaveBeenCalledWith(['alpha', 'beta']);
+			expect(logOut).toHaveBeenCalledWith('Upgraded workflow: alpha');
+			expect(logOut).toHaveBeenCalledWith('Upgraded workflow: beta');
+		});
+
+		it('reports a shared marketplace refresh failure once across the set', () => {
+			const logOut = vi.fn();
+			const logError = vi.fn();
+			const listWorkflows = vi.fn().mockReturnValue(['alpha', 'beta', 'gamma']);
+			const listBuiltinWorkflows = vi.fn().mockReturnValue([]);
+			const updateWorkflows = vi.fn().mockReturnValue({
+				upgraded: [],
+				marketplaceFailures: [
+					{
+						marketplace: 'owner/repo',
+						error: new Error(
+							'Could not refresh the "owner/repo" marketplace: the cached copy is corrupt and could not be rebuilt.',
+						),
+					},
+				],
+				workflowFailures: [],
+			});
+			const resolveWorkflow = vi
+				.fn()
+				.mockImplementation((name: string) => ({name}));
+
+			const code = runCmd(
+				{subcommand: 'upgrade', subcommandArgs: []},
+				{
+					listWorkflows,
+					listBuiltinWorkflows,
+					updateWorkflows,
+					resolveWorkflow,
+					logOut,
+					logError,
+				},
+			);
+
+			expect(code).toBe(1);
+			expect(updateWorkflows).toHaveBeenCalledWith(['alpha', 'beta', 'gamma']);
+			// A single marketplace-named failure line, not one per dependent workflow.
+			expect(logError).toHaveBeenCalledTimes(1);
+			expect(logError).toHaveBeenCalledWith(
+				'Error: Could not refresh the "owner/repo" marketplace: the cached copy is corrupt and could not be rebuilt.',
+			);
 		});
 
 		it('prints message when no installed workflows to upgrade', () => {
@@ -460,11 +507,10 @@ describe('runWorkflowCommand', () => {
 			const logError = vi.fn();
 			const listWorkflows = vi.fn().mockReturnValue(['alpha', 'beta']);
 			const listBuiltinWorkflows = vi.fn().mockReturnValue([]);
-			const updateWorkflow = vi.fn().mockImplementation((name: string) => {
-				if (name === 'beta') {
-					throw new Error('no source');
-				}
-				return name;
+			const updateWorkflows = vi.fn().mockReturnValue({
+				upgraded: ['alpha'],
+				marketplaceFailures: [],
+				workflowFailures: [{name: 'beta', error: new Error('no source')}],
 			});
 			const resolveWorkflow = vi
 				.fn()
@@ -478,7 +524,7 @@ describe('runWorkflowCommand', () => {
 				{
 					listWorkflows,
 					listBuiltinWorkflows,
-					updateWorkflow,
+					updateWorkflows,
 					resolveWorkflow,
 					logOut,
 					logError,

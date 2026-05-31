@@ -14,9 +14,11 @@ export {
 	resolveWorkflow,
 	installWorkflowFromSource,
 	updateWorkflow,
+	updateWorkflows,
 	listWorkflows,
 	removeWorkflow,
 } from './registry';
+export type {BulkWorkflowUpgradeReport} from './registry';
 export {installWorkflowPlugins, resolveWorkflowPlugins} from './installer';
 export type {ResolvedWorkflowPlugins} from './installer';
 export {compileWorkflowPlan} from './plan';

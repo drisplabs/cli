@@ -5,6 +5,7 @@ import {
 	removeWorkflow,
 	resolveWorkflow,
 	updateWorkflow,
+	updateWorkflows,
 } from '../../core/workflows/index';
 import {
 	gatherMarketplaceWorkflowSources,
@@ -48,6 +49,7 @@ export type WorkflowCommandDeps = {
 	listBuiltinWorkflows?: typeof listBuiltinWorkflows;
 	removeWorkflow?: typeof removeWorkflow;
 	updateWorkflow?: typeof updateWorkflow;
+	updateWorkflows?: typeof updateWorkflows;
 	resolveWorkflow?: typeof resolveWorkflow;
 	gatherMarketplaceWorkflowSources?: typeof gatherMarketplaceWorkflowSources;
 	resolveWorkflowInstall?: typeof resolveWorkflowInstall;
@@ -104,6 +106,7 @@ export function runWorkflowCommand(
 	const remove = deps.removeWorkflow ?? removeWorkflow;
 	const resolveInstalledWorkflow = deps.resolveWorkflow ?? resolveWorkflow;
 	const upgrade = deps.updateWorkflow ?? updateWorkflow;
+	const upgradeAll = deps.updateWorkflows ?? updateWorkflows;
 	const gatherSources =
 		deps.gatherMarketplaceWorkflowSources ?? gatherMarketplaceWorkflowSources;
 	const readGlobal = deps.readGlobalConfig ?? readGlobalConfig;
@@ -241,19 +244,26 @@ export function runWorkflowCommand(
 				return 0;
 			}
 
-			let failures = 0;
-			for (const wfName of all) {
-				try {
-					const updatedName = upgrade(wfName);
-					logOut(
-						`Upgraded workflow: ${formatWorkflowLabel(updatedName)}${formatSourceSuffix(updatedName)}`,
-					);
-				} catch (error) {
-					logError(`Failed to upgrade "${wfName}": ${fmtError(error)}`);
-					failures++;
-				}
+			// Refresh each shared remote marketplace at most once across the set,
+			// so N workflows from one repo recover (or fail) a single time.
+			const report = upgradeAll(all);
+			for (const upgradedName of report.upgraded) {
+				logOut(
+					`Upgraded workflow: ${formatWorkflowLabel(upgradedName)}${formatSourceSuffix(upgradedName)}`,
+				);
 			}
-			return failures > 0 ? 1 : 0;
+			for (const {error} of report.marketplaceFailures) {
+				// error.message already names the marketplace (owner/repo).
+				logError(fmtError(error));
+			}
+			for (const {name: failedName, error} of report.workflowFailures) {
+				logError(`Failed to upgrade "${failedName}": ${fmtError(error)}`);
+			}
+			return report.marketplaceFailures.length +
+				report.workflowFailures.length >
+				0
+				? 1
+				: 0;
 		}
 
 		case 'remove': {

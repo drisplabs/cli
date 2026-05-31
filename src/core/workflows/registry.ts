@@ -15,6 +15,7 @@ import {
 	refreshMarketplaceRepo,
 	resolveWorkflowInstall,
 	resolveWorkflowManifestPath,
+	type MarketplaceRefreshOutcome,
 	type ResolvedWorkflowSource,
 } from '../../infra/plugins/marketplace';
 import type {
@@ -242,15 +243,26 @@ export function installWorkflowFromSource(
 	return workflowName;
 }
 
+/**
+ * Refresh a remote marketplace cache to a usable checkout (or a classified
+ * failure). Injectable so a bulk upgrade can dedupe refreshes of a shared
+ * `owner/repo` across many workflows.
+ */
+type MarketplaceRefresh = (
+	owner: string,
+	repo: string,
+) => MarketplaceRefreshOutcome;
+
 function reResolveFromMetadata(
 	metadata: import('./types').WorkflowSourceMetadata,
+	refresh: MarketplaceRefresh = refreshMarketplaceRepo,
 ): ResolvedWorkflowSource {
 	if (metadata.kind === 'marketplace-remote') {
 		const slug = metadata.ref.slice(metadata.ref.indexOf('@') + 1);
 		const slashIdx = slug.indexOf('/');
 		const owner = slug.slice(0, slashIdx);
 		const repo = slug.slice(slashIdx + 1);
-		const refreshed = refreshMarketplaceRepo(owner, repo);
+		const refreshed = refresh(owner, repo);
 		if (!refreshed.ok) {
 			throw new MarketplaceRefreshError(refreshed);
 		}
@@ -277,7 +289,10 @@ function reResolveFromMetadata(
 	return {kind: 'filesystem', workflowPath: metadata.path};
 }
 
-export function updateWorkflow(name: string): string {
+export function updateWorkflow(
+	name: string,
+	refresh: MarketplaceRefresh = refreshMarketplaceRepo,
+): string {
 	const workflowDir = path.join(registryDir(), name);
 	const metadata = readWorkflowSourceMetadata(workflowDir);
 
@@ -287,10 +302,68 @@ export function updateWorkflow(name: string): string {
 		);
 	}
 
-	const source = reResolveFromMetadata(metadata);
+	const source = reResolveFromMetadata(metadata, refresh);
 	const installedName = installWorkflowFromSource(source, name);
 	refreshPinnedWorkflowPlugins(resolveWorkflow(installedName));
 	return installedName;
+}
+
+/** Outcome of a bulk {@link updateWorkflows} run. */
+export interface BulkWorkflowUpgradeReport {
+	/** Names that upgraded successfully, in input order. */
+	upgraded: string[];
+	/**
+	 * One entry per remote marketplace that failed to refresh — deduplicated by
+	 * `owner/repo`, so a shared broken cache reports a single named failure
+	 * rather than one per dependent workflow.
+	 */
+	marketplaceFailures: {marketplace: string; error: MarketplaceRefreshError}[];
+	/** Per-workflow failures that are not a shared marketplace refresh failure. */
+	workflowFailures: {name: string; error: Error}[];
+}
+
+/**
+ * Upgrade many workflows in one command, refreshing each unique remote
+ * marketplace (`owner/repo`) at most once. N workflows installed from the same
+ * marketplace trigger a single cache refresh; a broken shared cache is
+ * recovered (or reported) once, not once per workflow.
+ */
+export function updateWorkflows(names: string[]): BulkWorkflowUpgradeReport {
+	const refreshCache = new Map<string, MarketplaceRefreshOutcome>();
+	const refresh: MarketplaceRefresh = (owner, repo) => {
+		const key = `${owner}/${repo}`;
+		const cached = refreshCache.get(key);
+		if (cached) return cached;
+		const outcome = refreshMarketplaceRepo(owner, repo);
+		refreshCache.set(key, outcome);
+		return outcome;
+	};
+
+	const upgraded: string[] = [];
+	const marketplaceFailures: BulkWorkflowUpgradeReport['marketplaceFailures'] =
+		[];
+	const reportedMarketplaces = new Set<string>();
+	const workflowFailures: BulkWorkflowUpgradeReport['workflowFailures'] = [];
+
+	for (const name of names) {
+		try {
+			upgraded.push(updateWorkflow(name, refresh));
+		} catch (error) {
+			if (error instanceof MarketplaceRefreshError) {
+				if (!reportedMarketplaces.has(error.marketplace)) {
+					reportedMarketplaces.add(error.marketplace);
+					marketplaceFailures.push({marketplace: error.marketplace, error});
+				}
+			} else {
+				workflowFailures.push({
+					name,
+					error: error instanceof Error ? error : new Error(String(error)),
+				});
+			}
+		}
+	}
+
+	return {upgraded, marketplaceFailures, workflowFailures};
 }
 
 /**

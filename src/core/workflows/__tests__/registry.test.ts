@@ -99,6 +99,7 @@ const {
 	resolveWorkflow,
 	installWorkflowFromSource,
 	updateWorkflow,
+	updateWorkflows,
 	listWorkflows,
 	removeWorkflow,
 } = await import('../registry');
@@ -754,6 +755,106 @@ describe('updateWorkflow', () => {
 			'# Workflow';
 
 		expect(() => updateWorkflow('no-source')).toThrow(/has no recorded source/);
+	});
+});
+
+describe('updateWorkflows (bulk refresh dedup)', () => {
+	/** Seed an installed workflow recorded as a remote-marketplace ref. */
+	const seedRemoteWorkflow = (name: string, ref: string): void => {
+		files['/tmp/resolved-workflow.json'] = JSON.stringify({
+			name: 'resolved',
+			plugins: [],
+			promptTemplate: 'new',
+			workflowFile: 'workflow.md',
+		});
+		files['/tmp/workflow.md'] = '# Workflow';
+		files[`/home/testuser/.config/athena/workflows/${name}/workflow.json`] =
+			JSON.stringify({
+				name,
+				plugins: [],
+				promptTemplate: 'old',
+				workflowFile: 'workflow.md',
+			});
+		files[`/home/testuser/.config/athena/workflows/${name}/workflow.md`] =
+			'# Old Workflow';
+		files[`/home/testuser/.config/athena/workflows/${name}/source.json`] =
+			JSON.stringify({kind: 'marketplace', ref});
+	};
+
+	it('refreshes a shared remote marketplace at most once for N workflows', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+		seedRemoteWorkflow('wf-c', 'wf-c@owner/repo');
+
+		const report = updateWorkflows(['wf-a', 'wf-b', 'wf-c']);
+
+		expect(report.upgraded).toEqual(['wf-a', 'wf-b', 'wf-c']);
+		expect(report.marketplaceFailures).toEqual([]);
+		expect(report.workflowFailures).toEqual([]);
+		// Exactly one git-level refresh for the shared owner/repo, not one per workflow.
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledTimes(1);
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
+	});
+
+	it('reports a broken shared cache once, not once per dependent workflow', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+		seedRemoteWorkflow('wf-c', 'wf-c@owner/repo');
+		refreshMarketplaceRepoMock.mockReturnValue({
+			ok: false,
+			kind: 'unrecoverable-cache',
+			marketplace: 'owner/repo',
+			message: 'Could not refresh the "owner/repo" marketplace: corrupt.',
+			cause: 'fatal: not a git repository',
+		});
+
+		const report = updateWorkflows(['wf-a', 'wf-b', 'wf-c']);
+
+		expect(report.upgraded).toEqual([]);
+		expect(report.workflowFailures).toEqual([]);
+		// One refresh attempt and one marketplace-named failure for all three.
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledTimes(1);
+		expect(report.marketplaceFailures).toHaveLength(1);
+		expect(report.marketplaceFailures[0]!.marketplace).toBe('owner/repo');
+		expect(report.marketplaceFailures[0]!.error).toBeInstanceOf(
+			MarketplaceRefreshErrorStub,
+		);
+	});
+
+	it('refreshes each distinct marketplace once', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+		seedRemoteWorkflow('wf-c', 'wf-c@other/pkg');
+
+		const report = updateWorkflows(['wf-a', 'wf-b', 'wf-c']);
+
+		expect(report.upgraded).toEqual(['wf-a', 'wf-b', 'wf-c']);
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledTimes(2);
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledWith('owner', 'repo');
+		expect(refreshMarketplaceRepoMock).toHaveBeenCalledWith('other', 'pkg');
+	});
+
+	it('isolates a non-marketplace failure to that workflow and upgrades the rest', () => {
+		seedRemoteWorkflow('wf-a', 'wf-a@owner/repo');
+		seedRemoteWorkflow('wf-b', 'wf-b@owner/repo');
+		// wf-missing has no recorded source → updateWorkflow throws a plain Error.
+		files['/home/testuser/.config/athena/workflows/wf-missing/workflow.json'] =
+			JSON.stringify({
+				name: 'wf-missing',
+				plugins: [],
+				promptTemplate: '{input}',
+				workflowFile: 'workflow.md',
+			});
+
+		const report = updateWorkflows(['wf-a', 'wf-missing', 'wf-b']);
+
+		expect(report.upgraded).toEqual(['wf-a', 'wf-b']);
+		expect(report.marketplaceFailures).toEqual([]);
+		expect(report.workflowFailures).toHaveLength(1);
+		expect(report.workflowFailures[0]!.name).toBe('wf-missing');
+		expect(report.workflowFailures[0]!.error.message).toMatch(
+			/has no recorded source/,
+		);
 	});
 });
 
