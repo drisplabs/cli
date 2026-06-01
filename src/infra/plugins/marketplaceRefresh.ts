@@ -199,3 +199,30 @@ export function refreshMarketplaceRepo(
 		}
 	}
 }
+
+/**
+ * Ensure the marketplace repo is cloned locally.
+ * Only clones if repo doesn't exist. No automatic pull on startup.
+ * Returns the absolute path to the cached repo directory.
+ */
+export function ensureRepo(owner: string, repo: string): string {
+	const repoDir = marketplaceRepoCacheDir(owner, repo);
+
+	if (!fs.existsSync(repoDir)) {
+		const repoUrl = `https://github.com/${owner}/${repo}.git`;
+		fs.mkdirSync(repoDir, {recursive: true});
+
+		try {
+			execFileSync('git', ['clone', '--depth', '1', repoUrl, repoDir], {
+				stdio: 'ignore',
+			});
+		} catch (error) {
+			fs.rmSync(repoDir, {recursive: true, force: true});
+			throw new Error(
+				`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
+			);
+		}
+	}
+
+	return repoDir;
+}

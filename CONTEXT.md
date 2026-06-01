@@ -110,6 +110,34 @@ The single Athena runtime currently bound to the gateway. Owns a `defaultAgentId
 The gateway module that owns the **Dispatch turn** end-to-end. Wraps the binding store, the inbound queue, the outbox + drain loop, and the runtime push handle behind one interface. Owns the stale-binding grace timer and emits observer notifications for telemetry and external dispose.
 _Avoid_: dispatcher (the historical class is now an internal collaborator), message pipeline (too generic).
 
+### Marketplace cache
+
+**Marketplace cache**:
+The local clone of a remote `owner/repo` marketplace under
+`marketplaceRepoCacheDir`. Two **cache policies** operate on it, both owned by
+`marketplaceRefresh`.
+_Avoid_: marketplace repo (ambiguous with the remote), cache dir (the path, not
+the concept).
+
+**Ensure** _(cache policy)_:
+Clone-if-missing. Used on the read/resolve path — plugin and workflow
+resolution, on every harness launch. Clones only when the cache is absent;
+**never pulls**. Returns the cache directory, throws a classified
+`MarketplaceRefreshError` when the clone fails.
+_Avoid_: load, sync (sync implies a pull).
+
+**Refresh** _(cache policy)_:
+Pull-then-self-heal. Used only on an explicit `workflow upgrade`.
+Fast-forward pulls; on a dirty/divergent/corrupt cache, self-heals via
+backup-then-reclone. Returns a classified outcome, **never throws**.
+
+**Refresh failure kind**:
+Every cache clone or pull failure is classified `network-or-auth` (remote
+unreachable or auth rejected) or `unrecoverable-cache` (local cache could not be
+rebuilt), so callers render a marketplace-named cause instead of raw git output.
+Shared by both cache policies; the user-facing wording is not (Ensure says
+"reach", Refresh says "refresh").
+
 ## Relationships
 
 - A **Session** contains many **Runs**.
@@ -126,6 +154,10 @@ _Avoid_: dispatcher (the historical class is now an internal collaborator), mess
 - A **Dashboard connection context** exists only while the dashboard socket is
   connected; buffered **Dashboard assignments** are admitted only after the
   context is available.
+- The **Ensure** and **Refresh** cache policies both operate on one
+  **Marketplace cache** and share one **Refresh failure kind** classifier; they
+  differ only in whether they pull, whether they self-heal, and whether they
+  throw or return an outcome.
 
 ## Example dialogue
 

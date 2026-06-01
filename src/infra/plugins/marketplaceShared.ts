@@ -316,30 +316,14 @@ export function resolvePackagedArtifactLayout(
 
 /**
  * Ensure the marketplace repo is cloned locally.
- * Only clones if repo doesn't exist. No automatic pull on startup.
- * Returns the absolute path to the cached repo directory.
+ *
+ * The implementation now lives in {@link ./marketplaceRefresh}, which owns both
+ * marketplace **cache policies** (Ensure = clone-if-missing, Refresh =
+ * pull + self-heal) and the shared clone primitive. It is re-exported here so
+ * existing callers (plugin, versioned-plugin, and workflow resolution) keep
+ * importing `ensureRepo` from `marketplaceShared` unchanged.
  */
-export function ensureRepo(owner: string, repo: string): string {
-	const repoDir = marketplaceRepoCacheDir(owner, repo);
-
-	if (!fs.existsSync(repoDir)) {
-		const repoUrl = `https://github.com/${owner}/${repo}.git`;
-		fs.mkdirSync(repoDir, {recursive: true});
-
-		try {
-			execFileSync('git', ['clone', '--depth', '1', repoUrl, repoDir], {
-				stdio: 'ignore',
-			});
-		} catch (error) {
-			fs.rmSync(repoDir, {recursive: true, force: true});
-			throw new Error(
-				`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
-			);
-		}
-	}
-
-	return repoDir;
-}
+export {ensureRepo} from './marketplaceRefresh';
 
 export function requireGitForMarketplace(kind: 'plugins' | 'workflows'): void {
 	try {
