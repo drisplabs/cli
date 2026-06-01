@@ -1,5 +1,6 @@
 import {spawn, type ChildProcess} from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {processRegistry} from '../../../shared/utils/processRegistry';
 import {type SpawnClaudeOptions} from './types';
@@ -97,19 +98,70 @@ const HANDOFF_COMPACT_SYSTEM_PROMPT = `## Compact Instructions
 
 ${HANDOFF_COMPACT_INSTRUCTIONS}`;
 
-function appendHandoffCompactInstructions(
-	config: ReturnType<typeof resolveIsolationConfig>,
-): ReturnType<typeof resolveIsolationConfig> {
-	return {
-		...config,
-		appendSystemPrompt: [
+function joinPromptParts(parts: Array<string | undefined>): string {
+	return parts
+		.filter(
+			(part): part is string => typeof part === 'string' && part.length > 0,
+		)
+		.join('\n\n');
+}
+
+type IsolationConfig = ReturnType<typeof resolveIsolationConfig>;
+
+/**
+ * Appends the handoff compact instructions to the spawned session's appended
+ * system prompt.
+ *
+ * Claude Code rejects passing both `--append-system-prompt` and
+ * `--append-system-prompt-file`. When a caller (e.g. a workflow) already
+ * supplies a prompt file, we must not also pass an inline string — so we fold
+ * the file's contents, any inline prompt, and the compact instructions into a
+ * single temp file and pass only the file flag (also keeps us clear of argv
+ * length limits for large workflow prompts). Otherwise we merge inline.
+ */
+function appendHandoffCompactInstructions(config: IsolationConfig): {
+	config: IsolationConfig;
+	cleanup: () => void;
+} {
+	if (config.appendSystemPromptFile) {
+		const existing = fs.readFileSync(config.appendSystemPromptFile, 'utf8');
+		const combined = joinPromptParts([
+			existing,
 			config.appendSystemPrompt,
 			HANDOFF_COMPACT_SYSTEM_PROMPT,
-		]
-			.filter(
-				(part): part is string => typeof part === 'string' && part.length > 0,
-			)
-			.join('\n\n'),
+		]);
+		const combinedPath = path.join(
+			os.tmpdir(),
+			`athena-append-system-prompt-${process.pid}-${Date.now()}.md`,
+		);
+		fs.writeFileSync(combinedPath, combined, {encoding: 'utf8', mode: 0o600});
+		return {
+			config: {
+				...config,
+				appendSystemPrompt: undefined,
+				appendSystemPromptFile: combinedPath,
+			},
+			cleanup: () => {
+				try {
+					if (fs.existsSync(combinedPath)) {
+						fs.unlinkSync(combinedPath);
+					}
+				} catch {
+					// Ignore cleanup errors
+				}
+			},
+		};
+	}
+
+	return {
+		config: {
+			...config,
+			appendSystemPrompt: joinPromptParts([
+				config.appendSystemPrompt,
+				HANDOFF_COMPACT_SYSTEM_PROMPT,
+			]),
+		},
+		cleanup: () => {},
 	};
 }
 
@@ -149,13 +201,15 @@ export function spawnClaude(options: SpawnClaudeOptions): ChildProcess {
 
 	// Resolve isolation config (defaults to strict)
 	const isolationConfig = resolveIsolationConfig(isolation);
-	const streamingConfig = appendHandoffCompactInstructions({
-		...isolationConfig,
-		// Athena depends on the stream-json event feed for live token/context
-		// updates, so opt in unless a caller explicitly disables it.
-		verbose: isolationConfig.verbose ?? true,
-		includePartialMessages: isolationConfig.includePartialMessages ?? true,
-	});
+	const {config: streamingConfig, cleanup: promptCleanup} =
+		appendHandoffCompactInstructions({
+			...isolationConfig,
+			// Athena depends on the stream-json event feed for live token/context
+			// updates, so opt in unless a caller explicitly disables it.
+			verbose: isolationConfig.verbose ?? true,
+			includePartialMessages: isolationConfig.includePartialMessages ?? true,
+		});
+	registerCleanupOnExit(promptCleanup);
 
 	// Generate temp settings file with athena's hooks
 	const portableAuth = resolveRuntimeAuthOverlay({cwd: projectDir});
