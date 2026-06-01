@@ -9,6 +9,7 @@ import {
 	resolveCodexMcpConfig,
 	resolveCodexWorkflowPlugins,
 } from './sessionAssets';
+import {HANDOFF_COMPACT_PROMPT} from '../../../core/compaction/handoffInstructions';
 
 export type CodexApprovalPolicy = 'on-request' | 'auto-edit' | 'full-auto';
 export type CodexSandbox =
@@ -86,6 +87,9 @@ export function buildCodexPromptOptions(input: {
 		plugins: resolveCodexWorkflowPlugins(input.workflowPlan),
 		config: {
 			model_auto_compact_token_limit: 175000,
+			// Steer Codex's history compaction toward a handoff-style summary.
+			// `compact_prompt` replaces the default summarization prompt.
+			compact_prompt: HANDOFF_COMPACT_PROMPT,
 			...(resolveCodexMcpConfig(input.pluginMcpConfig, input.workflowPlan) ??
 				{}),
 		},

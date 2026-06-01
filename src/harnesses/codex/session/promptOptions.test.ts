@@ -15,6 +15,8 @@ vi.mock('node:fs', () => ({
 }));
 
 const {buildCodexPromptOptions} = await import('./promptOptions');
+const {HANDOFF_COMPACT_PROMPT} =
+	await import('../../../core/compaction/handoffInstructions');
 
 describe('buildCodexPromptOptions', () => {
 	const savedEnv = {...process.env};
@@ -49,7 +51,10 @@ describe('buildCodexPromptOptions', () => {
 			developerInstructions: 'Use the workflow tracker.',
 			agentRoots: undefined,
 			plugins: [],
-			config: {model_auto_compact_token_limit: 175000},
+			config: {
+				model_auto_compact_token_limit: 175000,
+				compact_prompt: HANDOFF_COMPACT_PROMPT,
+			},
 			ephemeral: undefined,
 			approvalPolicy: 'on-request',
 			sandbox: 'workspace-write',
@@ -68,7 +73,10 @@ describe('buildCodexPromptOptions', () => {
 			developerInstructions: undefined,
 			agentRoots: undefined,
 			plugins: [],
-			config: {model_auto_compact_token_limit: 175000},
+			config: {
+				model_auto_compact_token_limit: 175000,
+				compact_prompt: HANDOFF_COMPACT_PROMPT,
+			},
 			ephemeral: undefined,
 			approvalPolicy: 'on-request',
 			sandbox: 'workspace-write',
@@ -154,6 +162,7 @@ describe('buildCodexPromptOptions', () => {
 			],
 			config: {
 				model_auto_compact_token_limit: 175000,
+				compact_prompt: HANDOFF_COMPACT_PROMPT,
 				mcp_servers: {
 					'agent-web-interface': {
 						command: 'npx',
@@ -250,6 +259,7 @@ describe('buildCodexPromptOptions', () => {
 		});
 		expect(result.config).toEqual({
 			model_auto_compact_token_limit: 175000,
+			compact_prompt: HANDOFF_COMPACT_PROMPT,
 			mcp_servers: {
 				'plugin-server': {
 					command: 'node',
@@ -278,6 +288,7 @@ describe('buildCodexPromptOptions', () => {
 		});
 		expect(result.config).toEqual({
 			model_auto_compact_token_limit: 175000,
+			compact_prompt: HANDOFF_COMPACT_PROMPT,
 			mcp_servers: {
 				'plugin-server': {
 					command: 'node',
@@ -299,7 +310,10 @@ describe('buildCodexPromptOptions', () => {
 			developerInstructions: undefined,
 			agentRoots: undefined,
 			plugins: [],
-			config: {model_auto_compact_token_limit: 175000},
+			config: {
+				model_auto_compact_token_limit: 175000,
+				compact_prompt: HANDOFF_COMPACT_PROMPT,
+			},
 			ephemeral: true,
 			approvalPolicy: 'on-request',
 			sandbox: 'workspace-write',
