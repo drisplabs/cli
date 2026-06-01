@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.16](https://github.com/drisplabs/cli/compare/cli-v0.5.15...cli-v0.5.16) (2026-06-01)
+
+
+### Bug Fixes
+
+* **compaction:** avoid passing both --append-system-prompt and -file ([#73](https://github.com/drisplabs/cli/issues/73)) ([d46b896](https://github.com/drisplabs/cli/commit/d46b8961de104f950f67c0dbb41075e5b33f6600))
+
 ## [0.5.15](https://github.com/drisplabs/cli/compare/cli-v0.5.14...cli-v0.5.15) (2026-06-01)
 
 
