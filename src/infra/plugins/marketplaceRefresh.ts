@@ -201,25 +201,44 @@ export function refreshMarketplaceRepo(
 }
 
 /**
- * Ensure the marketplace repo is cloned locally.
- * Only clones if repo doesn't exist. No automatic pull on startup.
- * Returns the absolute path to the cached repo directory.
+ * Build a classified, Ensure-worded failure outcome for a clone failure on the
+ * read/resolve path. Shares the {@link MarketplaceRefreshFailureKind} classifier
+ * with Refresh, but words the message for the **Ensure** policy ("could not
+ * reach / clone") — never "refresh", because a first-access clone is not a
+ * refresh. Ensure never self-heals, so there is no `backupDir`.
+ */
+function ensureFailureOutcome(
+	kind: MarketplaceRefreshFailureKind,
+	marketplace: string,
+	cause: string,
+): Extract<MarketplaceRefreshOutcome, {ok: false}> {
+	const message =
+		kind === 'network-or-auth'
+			? `Could not reach the "${marketplace}" marketplace: the remote could not be reached (connectivity or authentication problem). ${cause}`
+			: `Could not clone the "${marketplace}" marketplace: the local cache could not be created. ${cause}`;
+	return {ok: false, kind, marketplace, message, cause};
+}
+
+/**
+ * Ensure the marketplace repo is cloned locally (the **Ensure** cache policy:
+ * clone-if-missing). Only clones if the repo doesn't exist; never pulls or
+ * self-heals. Returns the absolute path to the cached repo directory, or throws
+ * a classified {@link MarketplaceRefreshError} when the clone fails — sharing
+ * the clone primitive and failure-kind classifier with {@link refreshMarketplaceRepo}
+ * so a user hitting a marketplace offline gets a marketplace-named cause instead
+ * of raw git output.
  */
 export function ensureRepo(owner: string, repo: string): string {
 	const repoDir = marketplaceRepoCacheDir(owner, repo);
 
 	if (!fs.existsSync(repoDir)) {
-		const repoUrl = `https://github.com/${owner}/${repo}.git`;
-		fs.mkdirSync(repoDir, {recursive: true});
-
+		const marketplace = `${owner}/${repo}`;
 		try {
-			execFileSync('git', ['clone', '--depth', '1', repoUrl, repoDir], {
-				stdio: 'ignore',
-			});
+			cloneInto(repoUrlFor(owner, repo), repoDir);
 		} catch (error) {
-			fs.rmSync(repoDir, {recursive: true, force: true});
-			throw new Error(
-				`Failed to clone marketplace repo ${owner}/${repo}: ${(error as Error).message}`,
+			const cause = gitFailureText(error);
+			throw new MarketplaceRefreshError(
+				ensureFailureOutcome(classifyGitFailure(cause), marketplace, cause),
 			);
 		}
 	}
