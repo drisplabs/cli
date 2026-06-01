@@ -26,7 +26,7 @@ import {
 	ShellInput,
 	type ShellInputHandle,
 } from '../../ui/components/ShellInput';
-import {useAppMode} from '../../ui/hooks/useAppMode';
+import {deriveAppMode} from '../../shared/utils/deriveAppMode';
 import {
 	type InputHistory,
 	useInputHistory,
@@ -498,7 +498,7 @@ function AppContent({
 	sessionTelemetryMetricsRef.current = metrics;
 
 	useTerminalTitle(workflow?.name, isHarnessRunning);
-	const appMode = useAppMode(
+	const appMode = deriveAppMode(
 		isHarnessRunning,
 		currentPermissionRequest,
 		currentQuestionRequest,
