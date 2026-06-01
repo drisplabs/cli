@@ -656,6 +656,10 @@ describe('refreshMarketplaceRepo', () => {
 		const outcome = refresh();
 
 		expect(outcome).toEqual({ok: true, repoDir: cacheBase});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.selfHealed).toBeFalsy();
+		expect(outcome.backupDir).toBeUndefined();
 		expect(execFileSyncMock).toHaveBeenCalledWith(
 			'git',
 			['pull', '--ff-only'],
@@ -730,7 +734,11 @@ describe('refreshMarketplaceRepo', () => {
 
 		const outcome = refresh();
 
-		expect(outcome).toEqual({ok: true, repoDir: cacheBase});
+		expect(outcome.ok).toBe(true);
+		if (!outcome.ok) return;
+		expect(outcome.repoDir).toBe(cacheBase);
+		expect(outcome.selfHealed).toBe(true);
+		expect(outcome.backupDir).toMatch(new RegExp(`^${cacheBase}\\.backup-`));
 		expect(renameSyncMock).toHaveBeenCalledTimes(1);
 		expect(files[`${cacheBase}/clean.txt`]).toBe('fresh checkout');
 	});

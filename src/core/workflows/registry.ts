@@ -253,9 +253,15 @@ type MarketplaceRefresh = (
 	repo: string,
 ) => MarketplaceRefreshOutcome;
 
+type SelfHealListener = (info: {
+	marketplace: string;
+	backupDir?: string;
+}) => void;
+
 function reResolveFromMetadata(
 	metadata: import('./types').WorkflowSourceMetadata,
 	refresh: MarketplaceRefresh = refreshMarketplaceRepo,
+	onSelfHeal?: SelfHealListener,
 ): ResolvedWorkflowSource {
 	if (metadata.kind === 'marketplace-remote') {
 		const slug = metadata.ref.slice(metadata.ref.indexOf('@') + 1);
@@ -265,6 +271,12 @@ function reResolveFromMetadata(
 		const refreshed = refresh(owner, repo);
 		if (!refreshed.ok) {
 			throw new MarketplaceRefreshError(refreshed);
+		}
+		if (refreshed.selfHealed) {
+			onSelfHeal?.({
+				marketplace: `${owner}/${repo}`,
+				backupDir: refreshed.backupDir,
+			});
 		}
 		return resolveWorkflowInstall(metadata.ref, []);
 	}
@@ -292,6 +304,7 @@ function reResolveFromMetadata(
 export function updateWorkflow(
 	name: string,
 	refresh: MarketplaceRefresh = refreshMarketplaceRepo,
+	onSelfHeal?: SelfHealListener,
 ): string {
 	const workflowDir = path.join(registryDir(), name);
 	const metadata = readWorkflowSourceMetadata(workflowDir);
@@ -302,7 +315,7 @@ export function updateWorkflow(
 		);
 	}
 
-	const source = reResolveFromMetadata(metadata, refresh);
+	const source = reResolveFromMetadata(metadata, refresh, onSelfHeal);
 	const installedName = installWorkflowFromSource(source, name);
 	refreshPinnedWorkflowPlugins(resolveWorkflow(installedName));
 	return installedName;
@@ -320,6 +333,12 @@ export interface BulkWorkflowUpgradeReport {
 	marketplaceFailures: {marketplace: string; error: MarketplaceRefreshError}[];
 	/** Per-workflow failures that are not a shared marketplace refresh failure. */
 	workflowFailures: {name: string; error: Error}[];
+	/**
+	 * One entry per remote marketplace whose cache was rebuilt (backup + reclone)
+	 * during this run — deduplicated by `owner/repo`, so a shared self-healed
+	 * cache warns once rather than once per dependent workflow.
+	 */
+	selfHealed: {marketplace: string; backupDir?: string}[];
 }
 
 /**
@@ -344,10 +363,18 @@ export function updateWorkflows(names: string[]): BulkWorkflowUpgradeReport {
 		[];
 	const reportedMarketplaces = new Set<string>();
 	const workflowFailures: BulkWorkflowUpgradeReport['workflowFailures'] = [];
+	const selfHealed: BulkWorkflowUpgradeReport['selfHealed'] = [];
+	const selfHealedMarketplaces = new Set<string>();
+	const onSelfHeal: SelfHealListener = info => {
+		if (!selfHealedMarketplaces.has(info.marketplace)) {
+			selfHealedMarketplaces.add(info.marketplace);
+			selfHealed.push(info);
+		}
+	};
 
 	for (const name of names) {
 		try {
-			upgraded.push(updateWorkflow(name, refresh));
+			upgraded.push(updateWorkflow(name, refresh, onSelfHeal));
 		} catch (error) {
 			if (error instanceof MarketplaceRefreshError) {
 				if (!reportedMarketplaces.has(error.marketplace)) {
@@ -363,7 +390,7 @@ export function updateWorkflows(names: string[]): BulkWorkflowUpgradeReport {
 		}
 	}
 
-	return {upgraded, marketplaceFailures, workflowFailures};
+	return {upgraded, marketplaceFailures, workflowFailures, selfHealed};
 }
 
 /**

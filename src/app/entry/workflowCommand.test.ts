@@ -380,7 +380,11 @@ describe('runWorkflowCommand', () => {
 			);
 
 			expect(code).toBe(0);
-			expect(updateWorkflow).toHaveBeenCalledWith('alpha');
+			expect(updateWorkflow).toHaveBeenCalledWith(
+				'alpha',
+				undefined,
+				expect.any(Function),
+			);
 			expect(logOut).toHaveBeenCalledWith('Upgraded workflow: alpha (0.9.0)');
 		});
 
@@ -394,6 +398,7 @@ describe('runWorkflowCommand', () => {
 				upgraded: ['alpha', 'beta'],
 				marketplaceFailures: [],
 				workflowFailures: [],
+				selfHealed: [],
 			});
 			const resolveWorkflow = vi
 				.fn()
@@ -436,6 +441,7 @@ describe('runWorkflowCommand', () => {
 					},
 				],
 				workflowFailures: [],
+				selfHealed: [],
 			});
 			const resolveWorkflow = vi
 				.fn()
@@ -511,6 +517,7 @@ describe('runWorkflowCommand', () => {
 				upgraded: ['alpha'],
 				marketplaceFailures: [],
 				workflowFailures: [{name: 'beta', error: new Error('no source')}],
+				selfHealed: [],
 			});
 			const resolveWorkflow = vi
 				.fn()
@@ -536,6 +543,127 @@ describe('runWorkflowCommand', () => {
 			expect(logError).toHaveBeenCalledWith(
 				'Failed to upgrade "beta": Error: no source',
 			);
+		});
+
+		it('warns once when a single upgrade self-heals the marketplace cache', () => {
+			const logOut = vi.fn();
+			const logWarn = vi.fn();
+			// updateWorkflow notifies its caller via the onSelfHeal callback when a
+			// repair happened; the command turns that into one user-facing warning.
+			const updateWorkflow = vi.fn(
+				(
+					_name: string,
+					_refresh: unknown,
+					onSelfHeal?: (info: {
+						marketplace: string;
+						backupDir?: string;
+					}) => void,
+				) => {
+					onSelfHeal?.({
+						marketplace: 'owner/repo',
+						backupDir: '/cache/owner/repo.backup-1',
+					});
+					return 'alpha';
+				},
+			);
+			const resolveWorkflow = vi.fn().mockReturnValue({name: 'alpha'});
+
+			const code = runCmd(
+				{subcommand: 'upgrade', subcommandArgs: ['alpha']},
+				{updateWorkflow, resolveWorkflow, logOut, logWarn},
+			);
+
+			// A self-heal is not an error: the upgrade still succeeds.
+			expect(code).toBe(0);
+			expect(logWarn).toHaveBeenCalledTimes(1);
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('owner/repo'),
+			);
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('/cache/owner/repo.backup-1'),
+			);
+		});
+
+		it('does not warn when a single upgrade fast-forwards cleanly', () => {
+			const logWarn = vi.fn();
+			// No onSelfHeal callback fired => clean fast-forward, no repair.
+			const updateWorkflow = vi.fn().mockReturnValue('alpha');
+			const resolveWorkflow = vi.fn().mockReturnValue({name: 'alpha'});
+
+			const code = runCmd(
+				{subcommand: 'upgrade', subcommandArgs: ['alpha']},
+				{updateWorkflow, resolveWorkflow, logOut: vi.fn(), logWarn},
+			);
+
+			expect(code).toBe(0);
+			expect(logWarn).not.toHaveBeenCalled();
+		});
+
+		it('warns once per self-healed marketplace during a bulk upgrade', () => {
+			const logWarn = vi.fn();
+			const listWorkflows = vi.fn().mockReturnValue(['alpha', 'beta']);
+			const listBuiltinWorkflows = vi.fn().mockReturnValue([]);
+			// The orchestrator already deduped the self-heal by owner/repo, so the
+			// command reports one warning per entry it returns.
+			const updateWorkflows = vi.fn().mockReturnValue({
+				upgraded: ['alpha', 'beta'],
+				marketplaceFailures: [],
+				workflowFailures: [],
+				selfHealed: [
+					{marketplace: 'owner/repo', backupDir: '/cache/owner/repo.backup-1'},
+				],
+			});
+			const resolveWorkflow = vi
+				.fn()
+				.mockImplementation((name: string) => ({name}));
+
+			const code = runCmd(
+				{subcommand: 'upgrade', subcommandArgs: []},
+				{
+					listWorkflows,
+					listBuiltinWorkflows,
+					updateWorkflows,
+					resolveWorkflow,
+					logOut: vi.fn(),
+					logWarn,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(logWarn).toHaveBeenCalledTimes(1);
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('owner/repo'),
+			);
+		});
+
+		it('does not warn during a bulk upgrade with no self-heals', () => {
+			const logWarn = vi.fn();
+			const listWorkflows = vi.fn().mockReturnValue(['alpha', 'beta']);
+			const listBuiltinWorkflows = vi.fn().mockReturnValue([]);
+			const updateWorkflows = vi.fn().mockReturnValue({
+				upgraded: ['alpha', 'beta'],
+				marketplaceFailures: [],
+				workflowFailures: [],
+				selfHealed: [],
+			});
+			const resolveWorkflow = vi
+				.fn()
+				.mockImplementation((name: string) => ({name}));
+
+			const code = runCmd(
+				{subcommand: 'upgrade', subcommandArgs: []},
+				{
+					listWorkflows,
+					listBuiltinWorkflows,
+					updateWorkflows,
+					resolveWorkflow,
+					logOut: vi.fn(),
+					logWarn,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(logWarn).not.toHaveBeenCalled();
 		});
 	});
 

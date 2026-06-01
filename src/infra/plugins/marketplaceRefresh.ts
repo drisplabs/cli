@@ -22,7 +22,14 @@ export type MarketplaceRefreshFailureKind =
 	| 'unrecoverable-cache';
 
 export type MarketplaceRefreshOutcome =
-	| {ok: true; repoDir: string}
+	| {
+			ok: true;
+			repoDir: string;
+			/** True when the cache was repaired (backup + reclone) rather than fast-forwarded. */
+			selfHealed?: boolean;
+			/** Where the replaced cache was preserved, set only on a self-heal. */
+			backupDir?: string;
+	  }
 	| {
 			ok: false;
 			kind: MarketplaceRefreshFailureKind;
@@ -180,7 +187,7 @@ export function refreshMarketplaceRepo(
 		try {
 			fs.renameSync(repoDir, backupDir);
 			cloneInto(repoUrl, repoDir);
-			return {ok: true, repoDir};
+			return {ok: true, repoDir, selfHealed: true, backupDir};
 		} catch (recoveryError) {
 			const cause = gitFailureText(recoveryError);
 			return failureOutcome(
