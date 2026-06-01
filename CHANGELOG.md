@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.15](https://github.com/drisplabs/cli/compare/cli-v0.5.14...cli-v0.5.15) (2026-06-01)
+
+
+### Features
+
+* **compaction:** handoff-style compact instructions for Claude & Codex ([#64](https://github.com/drisplabs/cli/issues/64)) ([a95660a](https://github.com/drisplabs/cli/commit/a95660a64f05ea6e65b3a9db5c515e3555276b30))
+* **marketplace:** classify Ensure-path clone failures via the shared refresh seam ([#70](https://github.com/drisplabs/cli/issues/70)) ([499a2be](https://github.com/drisplabs/cli/commit/499a2be8f1602e435502594b4229bd7b1ec85958)), closes [#67](https://github.com/drisplabs/cli/issues/67)
+* **marketplace:** warn when a remote cache self-heals during workflow upgrade ([#41](https://github.com/drisplabs/cli/issues/41)) ([#63](https://github.com/drisplabs/cli/issues/63)) ([47e7624](https://github.com/drisplabs/cli/commit/47e7624618e3425a6345ef9421d076814a6233b9))
+
+
+### Bug Fixes
+
+* **compaction:** load Claude handoff instructions at spawn ([e174725](https://github.com/drisplabs/cli/commit/e1747254ebe2395834ee1c75015ab54a8394b006))
+* **marketplace:** classify remote cache refresh failures (network/auth vs unrecoverable) ([#38](https://github.com/drisplabs/cli/issues/38)) ([#60](https://github.com/drisplabs/cli/issues/60)) ([c4c9172](https://github.com/drisplabs/cli/commit/c4c91728970bb67d62aebef430a3e589eb0dcb9d))
+* **release:** keep release PR current and surface more changelog types ([#68](https://github.com/drisplabs/cli/issues/68)) ([1f51457](https://github.com/drisplabs/cli/commit/1f51457a108d45f8ee681e3a4802e5bcf3fb2c56))
+* **workflows:** dedup remote marketplace refresh during bulk upgrade ([#40](https://github.com/drisplabs/cli/issues/40)) ([#62](https://github.com/drisplabs/cli/issues/62)) ([bd845bb](https://github.com/drisplabs/cli/commit/bd845bb9a8b8c7f443d94e1cf346ae6a5fb602d9))
+
+
+### Refactors
+
+* **marketplace:** lift ensureRepo into the marketplaceRefresh module ([#69](https://github.com/drisplabs/cli/issues/69)) ([d754bd4](https://github.com/drisplabs/cli/commit/d754bd4a5887206f3864450d913ff07aebb45754)), closes [#66](https://github.com/drisplabs/cli/issues/66)
+
 ## [0.5.14](https://github.com/drisplabs/cli/compare/cli-v0.5.13...cli-v0.5.14) (2026-05-31)
 
 
