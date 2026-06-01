@@ -164,6 +164,39 @@ describe('spawnClaude', () => {
 		expect(args[promptIndex + 1]).toContain(HANDOFF_COMPACT_INSTRUCTIONS);
 	});
 
+	it('folds a caller prompt file and compact instructions into one file flag (no inline flag)', () => {
+		const sourcePath = path.join(
+			os.tmpdir(),
+			`athena-spawn-test-source-${process.pid}-${Date.now()}.md`,
+		);
+		fs.writeFileSync(sourcePath, 'Workflow system instructions.', 'utf8');
+		try {
+			spawnClaude({
+				prompt: 'Hello, Claude!',
+				projectDir: '/test/project',
+				instanceId: 12345,
+				isolation: {appendSystemPromptFile: sourcePath},
+			});
+
+			const args = vi.mocked(childProcess.spawn).mock.calls[0]?.[1] as string[];
+			// Passing both flags makes Claude Code exit 1, so the inline flag must
+			// be absent when a file flag is present.
+			expect(args).not.toContain('--append-system-prompt');
+			const fileIndex = args.indexOf('--append-system-prompt-file');
+			expect(fileIndex).toBeGreaterThanOrEqual(0);
+
+			const combinedPath = args[fileIndex + 1]!;
+			expect(combinedPath).not.toBe(sourcePath);
+			const combined = fs.readFileSync(combinedPath, 'utf8');
+			expect(combined).toContain('Workflow system instructions.');
+			expect(combined).toContain('## Compact Instructions');
+			expect(combined).toContain(HANDOFF_COMPACT_INSTRUCTIONS);
+			fs.unlinkSync(combinedPath);
+		} finally {
+			fs.unlinkSync(sourcePath);
+		}
+	});
+
 	it('uses a hook socket path outside the child cwd by default', () => {
 		spawnClaude({
 			prompt: 'Hello, Claude!',
