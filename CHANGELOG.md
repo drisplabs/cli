@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.17](https://github.com/drisplabs/cli/compare/cli-v0.5.16...cli-v0.5.17) (2026-06-01)
+
+
+### Refactors
+
+* **ui/hooks:** extract deriveAppMode to shared/utils ([#12](https://github.com/drisplabs/cli/issues/12)) ([#76](https://github.com/drisplabs/cli/issues/76)) ([6bc94d0](https://github.com/drisplabs/cli/commit/6bc94d0bff94d773754e7092ae8618e27d9034a6))
+
 ## [0.5.16](https://github.com/drisplabs/cli/compare/cli-v0.5.15...cli-v0.5.16) (2026-06-01)
 
 
