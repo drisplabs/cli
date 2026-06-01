@@ -1,13 +1,13 @@
-import type {AppMode} from '../../shared/types/headerMetrics';
+import type {AppMode} from '../types/headerMetrics';
 
 /**
  * Derive the current app mode from runtime state.
  * Priority: permission > question > working > idle.
  *
- * Named as a hook by convention (called in component render path),
- * but is a pure derivation with no React state or effects.
+ * A pure derivation with no React state or effects — called in the
+ * component render path but holds no state of its own.
  */
-export function useAppMode(
+export function deriveAppMode(
 	isClaudeRunning: boolean,
 	currentPermissionRequest: unknown | null,
 	currentQuestionRequest: unknown | null,
