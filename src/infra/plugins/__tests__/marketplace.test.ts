@@ -190,7 +190,9 @@ describe('resolveMarketplacePlugin', () => {
 
 		expect(result).toBe(`${cacheBase}/plugins/web-testing-toolkit`);
 
-		// Verify clone was called
+		// Verify clone was called. Ensure now shares the refresh seam's clone
+		// primitive, which captures git stderr (stdout discarded) so a failure can
+		// be classified by its diagnostic text rather than a generic exit code.
 		expect(execFileSyncMock).toHaveBeenCalledWith(
 			'git',
 			[
@@ -200,7 +202,7 @@ describe('resolveMarketplacePlugin', () => {
 				'https://github.com/lespaceman/athena-workflow-marketplace.git',
 				cacheBase,
 			],
-			{stdio: 'ignore'},
+			{stdio: ['ignore', 'ignore', 'pipe']},
 		);
 	});
 
@@ -242,19 +244,86 @@ describe('resolveMarketplacePlugin', () => {
 		).toThrow('git is not installed');
 	});
 
-	it('throws when clone fails', () => {
+	it('throws a classified, marketplace-named MarketplaceRefreshError when clone fails', () => {
 		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
 			if (args[0] === '--version') return;
-			if (args[0] === 'clone') throw new Error('repo not found');
+			if (args[0] === 'clone') {
+				const error = new Error(
+					'Command failed: git clone --depth 1',
+				) as Error & {
+					stderr: Buffer;
+				};
+				error.stderr = Buffer.from(
+					"fatal: unable to access '...': Could not resolve host: github.com",
+				);
+				throw error;
+			}
 		});
 
-		expect(() =>
+		let captured: unknown;
+		try {
 			resolveMarketplacePlugin(
 				'web-testing-toolkit@lespaceman/athena-workflow-marketplace',
-			),
-		).toThrow(
-			'Failed to clone marketplace repo lespaceman/athena-workflow-marketplace',
+			);
+		} catch (error) {
+			captured = error;
+		}
+
+		expect(captured).toBeInstanceOf(MarketplaceRefreshError);
+		const refreshError = captured as InstanceType<
+			typeof MarketplaceRefreshError
+		>;
+		expect(refreshError.kind).toBe('network-or-auth');
+		expect(refreshError.marketplace).toBe(
+			'lespaceman/athena-workflow-marketplace',
 		);
+		// Ensure-worded, marketplace-named message — never the raw git line.
+		expect(refreshError.message).toMatch(
+			/lespaceman\/athena-workflow-marketplace/,
+		);
+		expect(refreshError.message).toMatch(/could not reach/i);
+		expect(refreshError.message).not.toMatch(/could not refresh/i);
+		expect(refreshError.message).not.toBe(
+			'Command failed: git clone --depth 1',
+		);
+	});
+
+	it('classifies an unrecognized Ensure-path clone failure as unrecoverable-cache', () => {
+		execFileSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+			if (args[0] === '--version') return;
+			if (args[0] === 'clone') {
+				const error = new Error(
+					'Command failed: git clone --depth 1',
+				) as Error & {
+					stderr: Buffer;
+				};
+				error.stderr = Buffer.from(
+					'fatal: destination path already exists and is not an empty directory.',
+				);
+				throw error;
+			}
+		});
+
+		let captured: unknown;
+		try {
+			resolveMarketplacePlugin(
+				'web-testing-toolkit@lespaceman/athena-workflow-marketplace',
+			);
+		} catch (error) {
+			captured = error;
+		}
+
+		expect(captured).toBeInstanceOf(MarketplaceRefreshError);
+		const refreshError = captured as InstanceType<
+			typeof MarketplaceRefreshError
+		>;
+		expect(refreshError.kind).toBe('unrecoverable-cache');
+		expect(refreshError.message).toMatch(
+			/lespaceman\/athena-workflow-marketplace/,
+		);
+		// Ensure-worded ("could not clone"), never the Refresh "refresh" wording.
+		expect(refreshError.message).toMatch(/could not clone/i);
+		expect(refreshError.message).not.toMatch(/could not refresh/i);
 	});
 
 	it('throws when marketplace.json is missing', () => {
