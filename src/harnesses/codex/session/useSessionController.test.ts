@@ -5,6 +5,7 @@ import {describe, it, expect, vi, beforeEach} from 'vitest';
 import {renderHook, act} from '@testing-library/react';
 import type {Runtime} from '../../../core/runtime/types';
 import {useCodexSessionController} from './useSessionController';
+import {HANDOFF_COMPACT_PROMPT} from '../../../core/compaction/handoffInstructions';
 
 describe('useCodexSessionController', () => {
 	const sendPrompt = vi.fn<(...args: unknown[]) => Promise<void>>();
@@ -45,7 +46,10 @@ describe('useCodexSessionController', () => {
 			developerInstructions: undefined,
 			agentRoots: undefined,
 			plugins: [],
-			config: {model_auto_compact_token_limit: 175000},
+			config: {
+				model_auto_compact_token_limit: 175000,
+				compact_prompt: HANDOFF_COMPACT_PROMPT,
+			},
 			ephemeral: undefined,
 			approvalPolicy: 'on-request',
 			sandbox: 'workspace-write',
