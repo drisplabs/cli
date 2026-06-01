@@ -13,6 +13,7 @@ import {buildIsolationArgs, validateConflicts} from '../config/flagRegistry';
 import {resolveClaudeBinary} from '../system/resolveBinary';
 import {resolveRuntimeAuthOverlay} from '../auth/runtimeAuth';
 import type {HarnessProcessFailureCode} from '../../../core/runtime/process';
+import {HANDOFF_COMPACT_INSTRUCTIONS} from '../../../core/compaction/handoffInstructions';
 import {
 	ATHENA_HOOK_SOCKET_ENV,
 	isSocketPathTooLong,
@@ -92,6 +93,26 @@ function runSpawnPreflight(hookSocketPath: string): void {
 	validateSocketPath(hookSocketPath);
 }
 
+const HANDOFF_COMPACT_SYSTEM_PROMPT = `## Compact Instructions
+
+${HANDOFF_COMPACT_INSTRUCTIONS}`;
+
+function appendHandoffCompactInstructions(
+	config: ReturnType<typeof resolveIsolationConfig>,
+): ReturnType<typeof resolveIsolationConfig> {
+	return {
+		...config,
+		appendSystemPrompt: [
+			config.appendSystemPrompt,
+			HANDOFF_COMPACT_SYSTEM_PROMPT,
+		]
+			.filter(
+				(part): part is string => typeof part === 'string' && part.length > 0,
+			)
+			.join('\n\n'),
+	};
+}
+
 /**
  * Spawns a Claude Code headless process with the given prompt.
  *
@@ -128,13 +149,13 @@ export function spawnClaude(options: SpawnClaudeOptions): ChildProcess {
 
 	// Resolve isolation config (defaults to strict)
 	const isolationConfig = resolveIsolationConfig(isolation);
-	const streamingConfig = {
+	const streamingConfig = appendHandoffCompactInstructions({
 		...isolationConfig,
 		// Athena depends on the stream-json event feed for live token/context
 		// updates, so opt in unless a caller explicitly disables it.
 		verbose: isolationConfig.verbose ?? true,
 		includePartialMessages: isolationConfig.includePartialMessages ?? true,
-	};
+	});
 
 	// Generate temp settings file with athena's hooks
 	const portableAuth = resolveRuntimeAuthOverlay({cwd: projectDir});

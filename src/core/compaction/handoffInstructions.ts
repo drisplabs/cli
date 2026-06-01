@@ -11,17 +11,18 @@
  * "save to a temp directory" step — the summary itself is the handoff.
  *
  * Two shapes, because the two harnesses consume them differently:
- *   - Claude Code's PreCompact hook *augments* the built-in summarizer, so it
- *     wants an instruction snippet (HANDOFF_COMPACT_INSTRUCTIONS).
+ *   - Claude Code reads compact guidance from loaded instructions, so Athena
+ *     appends a "Compact Instructions" section to the spawned session.
  *   - Codex's `compact_prompt` *replaces* the summarization prompt, so it wants
  *     a complete standalone prompt (HANDOFF_COMPACT_PROMPT).
  */
 
 /**
- * Augmenting instructions for Claude Code's PreCompact hook. The hook's stdout
- * (on exit 0) is appended to Claude's built-in compaction instructions.
+ * Augmenting instructions for Claude Code's loaded instructions. Claude Code's
+ * documented compaction control path is persistent instructions such as
+ * CLAUDE.md; Athena injects the same shape via `--append-system-prompt`.
  */
-export const HANDOFF_COMPACT_INSTRUCTIONS = `Compact this conversation into a handoff summary so a fresh agent can continue the work without re-reading the history. Preserve:
+export const HANDOFF_COMPACT_INSTRUCTIONS = `When compacting this conversation, write the compacted summary as a handoff so a fresh agent can continue the work without re-reading the history. Preserve:
 - The current task and goal, and where it stands right now.
 - Decisions already made (and why) and any open questions still to resolve.
 - Files and locations touched, referenced by path — do not paste file contents.

@@ -9,7 +9,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {HANDOFF_COMPACT_INSTRUCTIONS} from '../../../core/compaction/handoffInstructions';
 
 /**
  * Hook events that require a matcher (tool-related events).
@@ -119,23 +118,6 @@ export function formatHookForwarderCommand(
 	return `${quoteShellArg(nodePath)} ${quoteShellArg(scriptPath)}`;
 }
 
-/**
- * Builds a hook command that emits the contents of a file to stdout via node.
- *
- * Claude Code treats a PreCompact hook's stdout (on exit 0) as custom compact
- * instructions. We read through node rather than `cat` so the command does not
- * depend on a POSIX shell having `cat` on PATH.
- */
-export function formatInstructionEmitCommand(
-	nodePath: string,
-	instructionPath: string,
-): string {
-	const readScript = `process.stdout.write(require('fs').readFileSync(${JSON.stringify(
-		instructionPath,
-	)}, 'utf8'))`;
-	return `${quoteShellArg(nodePath)} -e ${quoteShellArg(readScript)}`;
-}
-
 function resolveHookForwarderPath(entryUrl: string): string | null {
 	let currentDir = path.dirname(fileURLToPath(entryUrl));
 
@@ -229,34 +211,6 @@ export function generateHookSettings(
 		];
 	}
 
-	const dir = tempDir ?? os.tmpdir();
-
-	// Inject handoff-style compact instructions. Claude Code appends a
-	// PreCompact hook's stdout (exit 0) to its built-in compaction prompt, so we
-	// write the instruction text to a file and add a second PreCompact hook that
-	// emits it. This runs alongside the forwarder hook (observability), which
-	// only ever passes through or blocks via exit codes.
-	const instructionFilename = `athena-compact-instructions-${process.pid}-${Date.now()}.txt`;
-	const instructionPath = path.join(dir, instructionFilename);
-	fs.writeFileSync(instructionPath, HANDOFF_COMPACT_INSTRUCTIONS, {
-		encoding: 'utf8',
-		mode: 0o600,
-	});
-	hooks['PreCompact'] = [
-		...(hooks['PreCompact'] ?? []),
-		{
-			hooks: [
-				{
-					type: 'command',
-					command: formatInstructionEmitCommand(
-						process.execPath,
-						instructionPath,
-					),
-				},
-			],
-		},
-	];
-
 	const settings: ClaudeSettings = {hooks};
 	if (authOverlay?.env && Object.keys(authOverlay.env).length > 0) {
 		settings.env = authOverlay.env;
@@ -266,6 +220,7 @@ export function generateHookSettings(
 	}
 
 	// Generate a unique temp file path
+	const dir = tempDir ?? os.tmpdir();
 	const filename = `athena-hooks-${process.pid}-${Date.now()}.json`;
 	const settingsPath = path.join(dir, filename);
 
@@ -289,14 +244,12 @@ export function generateHookSettings(
 	return {
 		settingsPath,
 		cleanup: () => {
-			for (const filePath of [settingsPath, instructionPath]) {
-				try {
-					if (fs.existsSync(filePath)) {
-						fs.unlinkSync(filePath);
-					}
-				} catch {
-					// Ignore cleanup errors
+			try {
+				if (fs.existsSync(settingsPath)) {
+					fs.unlinkSync(settingsPath);
 				}
+			} catch {
+				// Ignore cleanup errors
 			}
 		},
 	};

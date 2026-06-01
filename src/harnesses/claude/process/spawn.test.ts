@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {spawnClaude} from './spawn';
 import {EventEmitter} from 'node:events';
+import {HANDOFF_COMPACT_INSTRUCTIONS} from '../../../core/compaction/handoffInstructions';
 
 const mockCleanup = vi.fn();
 
@@ -130,6 +131,37 @@ describe('spawnClaude', () => {
 				}),
 			}),
 		);
+	});
+
+	it('injects handoff compact instructions through the appended system prompt', () => {
+		spawnClaude({
+			prompt: 'Hello, Claude!',
+			projectDir: '/test/project',
+			instanceId: 12345,
+		});
+
+		const args = vi.mocked(childProcess.spawn).mock.calls[0]?.[1] as string[];
+		const promptIndex = args.indexOf('--append-system-prompt');
+		expect(promptIndex).toBeGreaterThanOrEqual(0);
+		expect(args[promptIndex + 1]).toContain('## Compact Instructions');
+		expect(args[promptIndex + 1]).toContain(HANDOFF_COMPACT_INSTRUCTIONS);
+	});
+
+	it('preserves caller appended system prompt while adding compact instructions', () => {
+		spawnClaude({
+			prompt: 'Hello, Claude!',
+			projectDir: '/test/project',
+			instanceId: 12345,
+			isolation: {
+				appendSystemPrompt: 'Caller-specific instructions.',
+			},
+		});
+
+		const args = vi.mocked(childProcess.spawn).mock.calls[0]?.[1] as string[];
+		const promptIndex = args.indexOf('--append-system-prompt');
+		expect(args[promptIndex + 1]).toContain('Caller-specific instructions.');
+		expect(args[promptIndex + 1]).toContain('## Compact Instructions');
+		expect(args[promptIndex + 1]).toContain(HANDOFF_COMPACT_INSTRUCTIONS);
 	});
 
 	it('uses a hook socket path outside the child cwd by default', () => {
