@@ -15,12 +15,12 @@ seam."_
 By the issue's own test the seam is real, and two of its premises had gone stale
 by the time it was re-triaged.
 
-The module is the home of the **Relay** concept (see `CONTEXT.md` -> Gateway ->
+The module is the home of the **Relay** concept (see `CONTEXT.md` → Gateway →
 Relay): the round-trip that resolves a `RuntimeEvent` needing user input by
 sending it to the paired dashboard channel via the session bridge and feeding
 the answer back as a `RuntimeDecision`.
 
-1. **It is not logicless.** The file holds genuine relay->decision translation:
+1. **It is not logicless.** The file holds genuine relay→decision translation:
    `permissionRelayDecision`, `questionRelayDecision`, `extractRelayQuestions`,
    tool-input preview/truncation, and gateway tracing. It maps to and from
    `shared/gateway-protocol`, not a coordinator.
@@ -41,7 +41,7 @@ call site" premise that made the deletion low-risk is no longer true.
 
 `src/app/channels/relayAdapter.ts` stays as a shared module.
 
-It is the single home of relay->decision translation, shared by interactive (Ink)
+It is the single home of relay→decision translation, shared by interactive (Ink)
 and headless (exec) modes. Deleting it would duplicate ~140 LOC of relay logic
 across an interactive React provider and a headless runner - the exact
 divergence risk the shared module exists to prevent.
@@ -73,7 +73,7 @@ relay logic collapses to a true type-only pass-through.
 
 ## References
 
-- `CONTEXT.md` - Gateway -> Relay, RuntimeEvent, RuntimeDecision, Dispatch turn
+- `CONTEXT.md` - Gateway → Relay, RuntimeEvent, RuntimeDecision, Dispatch turn
 - `src/app/channels/relayAdapter.ts`
 - `src/app/providers/RuntimeProvider.tsx`
 - `src/app/exec/runner.ts`
