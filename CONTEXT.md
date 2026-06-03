@@ -110,6 +110,10 @@ The single Athena runtime currently bound to the gateway. Owns a `defaultAgentId
 The gateway module that owns the **Dispatch turn** end-to-end. Wraps the binding store, the inbound queue, the outbox + drain loop, and the runtime push handle behind one interface. Owns the stale-binding grace timer and emits observer notifications for telemetry and external dispose.
 _Avoid_: dispatcher (the historical class is now an internal collaborator), message pipeline (too generic).
 
+**Relay**:
+The round-trip that resolves a **RuntimeEvent** requiring user input (a `permission.request`, a question) by sending it out to the paired dashboard channel via the session bridge and feeding the answer back as a **RuntimeDecision**. CLI→channel→CLI — the interactive inverse of a **Dispatch turn** (channel→CLI→channel). The same relay wiring serves both interactive (Ink) and headless (exec) modes, so neither mode owns it.
+_Avoid_: relay adapter (the module, not the concept), permission proxy.
+
 ### Marketplace cache
 
 **Marketplace cache**:
@@ -149,6 +153,7 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
 - The **Root plan** persists across **Runs** within a **Session** — only per-run state (subagent stack, tool/decision correlation, message stream) is reset between runs.
 - A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
 - The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
+- A **Relay** is initiated by whichever mode is running (interactive or exec); both modes share one relay wiring, so a relay is a CLI-initiated inverse of a channel-initiated **Dispatch turn**.
 - A **Dashboard assignment** is admitted by the dashboard runtime daemon before
   it launches the corresponding dashboard **Run** locally.
 - A **Dashboard connection context** exists only while the dashboard socket is
