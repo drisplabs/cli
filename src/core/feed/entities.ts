@@ -9,7 +9,7 @@ export type Session = {
 	agent_type?: string;
 };
 
-export type RunStatus =
+export type FeedRunStatus =
 	| 'running'
 	| 'blocked'
 	| 'completed'
@@ -26,7 +26,7 @@ export type Run = {
 		request_id?: string;
 		prompt_preview?: string;
 	};
-	status: RunStatus;
+	status: FeedRunStatus;
 	actors: {root_agent_id: string; subagent_ids: string[]};
 	counters: {
 		tool_uses: number;
