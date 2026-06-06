@@ -389,8 +389,6 @@ describe('sessionUiState', () => {
 			const state: SessionUiState = {
 				...initialSessionUiState,
 				focusMode: 'messages',
-				// Cursor remains on the first message; viewport scrolling must not
-				// be re-anchored back toward offset 0.
 				messageCursorIndex: 0,
 				messageViewportStart: 0,
 				messageTailFollow: false,
@@ -400,9 +398,10 @@ describe('sessionUiState', () => {
 				{type: 'scroll_message_viewport', delta: 999},
 				ctx,
 			);
-			// maxStart = 120 - 10 = 110
+			// maxStart = 120 - 10 = 110; viewport reaches the true bottom and the
+			// focused entry derives to the last message occupying that anchor.
 			expect(result.messageViewportStart).toBe(110);
-			expect(result.messageCursorIndex).toBe(0);
+			expect(result.messageCursorIndex).toBe(2);
 			expect(result.messageTailFollow).toBe(false);
 		});
 
@@ -470,8 +469,90 @@ describe('sessionUiState', () => {
 		});
 	});
 
-	describe('message cursor model', () => {
-		it('move_message_cursor moves cursor by delta', () => {
+	describe('line-based message navigation (#20)', () => {
+		it('derives cursor from the viewport anchor when scrolling into a long message', () => {
+			// Two messages. msg0 occupies lines 0..49, msg1 starts at line 50.
+			const ctx = makeContext({
+				messageEntryCount: 60,
+				messageEntryLength: 2,
+				messageEntryLineOffsets: [0, 50],
+				messageContentRows: 10,
+			});
+			const state: SessionUiState = {
+				...initialSessionUiState,
+				focusMode: 'messages',
+				messageViewportStart: 0,
+				messageCursorIndex: 0,
+				messageTailFollow: false,
+			};
+			// Scroll deep into / past the long first message.
+			const result = reduceSessionUiState(
+				state,
+				{type: 'scroll_message_viewport', delta: 52},
+				ctx,
+			);
+			// Viewport clamps to maxStart = 60 - 10 = 50; the anchor line is now
+			// inside msg1, so the focused entry derives to 1 (not stuck at 0).
+			expect(result.messageViewportStart).toBe(50);
+			expect(result.messageCursorIndex).toBe(1);
+		});
+	});
+
+	describe('message cursor model (derived from viewport anchor)', () => {
+		// One short message (5 lines) then one long message taller than the
+		// viewport (msg1 occupies lines 5..54). Viewport height = 10.
+		const longMsgCtx = () =>
+			makeContext({
+				messageEntryCount: 55,
+				messageEntryLength: 2,
+				messageEntryLineOffsets: [0, 5],
+				messageContentRows: 10,
+			});
+
+		it('AC1: scrolls a long message line-by-line from first to last line', () => {
+			const ctx = longMsgCtx();
+			let state: SessionUiState = {
+				...initialSessionUiState,
+				focusMode: 'messages',
+				messageViewportStart: 0,
+				messageTailFollow: false,
+			};
+			// Step down one line at a time until clamped at the bottom.
+			const maxStart = 55 - 10; // 45
+			for (let i = 0; i < 60; i++) {
+				state = reduceSessionUiState(
+					state,
+					{type: 'scroll_message_viewport', delta: 1},
+					ctx,
+				);
+			}
+			// Every line is reachable and the viewport clamps to the true last line.
+			expect(state.messageViewportStart).toBe(maxStart);
+			// Anchor line 45 sits inside the long message → focused entry derives to 1.
+			expect(state.messageCursorIndex).toBe(1);
+		});
+
+		it('AC2: focused entry stays on the long message while its body scrolls', () => {
+			const ctx = longMsgCtx();
+			const state: SessionUiState = {
+				...initialSessionUiState,
+				focusMode: 'messages',
+				messageViewportStart: 0,
+				messageTailFollow: false,
+			};
+			// Scroll just past the short message into the long message body.
+			const result = reduceSessionUiState(
+				state,
+				{type: 'scroll_message_viewport', delta: 20},
+				ctx,
+			);
+			expect(result.messageViewportStart).toBe(20);
+			// Anchor 20 is within msg1 (starts at line 5) → cursor derives to 1, not
+			// stuck on msg0 and not jumped past the body.
+			expect(result.messageCursorIndex).toBe(1);
+		});
+
+		it('derives the focused entry from the top visible line on scroll up', () => {
 			const ctx = makeContext({
 				messageEntryCount: 50,
 				messageEntryLength: 5,
@@ -481,161 +562,48 @@ describe('sessionUiState', () => {
 			const state: SessionUiState = {
 				...initialSessionUiState,
 				focusMode: 'messages',
-				messageCursorIndex: 2,
+				messageViewportStart: 35,
 				messageTailFollow: false,
 			};
 			const result = reduceSessionUiState(
 				state,
-				{type: 'move_message_cursor', delta: 1},
+				{type: 'scroll_message_viewport', delta: -10},
 				ctx,
 			);
-			expect(result.messageCursorIndex).toBe(3);
-			expect(result.messageTailFollow).toBe(false);
+			expect(result.messageViewportStart).toBe(25);
+			// Anchor 25 lands inside entry 2 (offsets [0,10,20,30,40]).
+			expect(result.messageCursorIndex).toBe(2);
 		});
 
-		it('move_message_cursor clamps at 0', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 10, 20, 30, 40],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
+		it('AC3: PageDown/PageUp scroll by line step and stay clamped', () => {
+			const ctx = longMsgCtx();
+			const start: SessionUiState = {
 				...initialSessionUiState,
 				focusMode: 'messages',
-				messageCursorIndex: 1,
+				messageViewportStart: 0,
 				messageTailFollow: false,
 			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: -5},
+			const down = reduceSessionUiState(
+				start,
+				{type: 'scroll_message_viewport', delta: 5},
 				ctx,
 			);
-			expect(result.messageCursorIndex).toBe(0);
+			expect(down.messageViewportStart).toBe(5);
+			const up = reduceSessionUiState(
+				down,
+				{type: 'scroll_message_viewport', delta: -5},
+				ctx,
+			);
+			expect(up.messageViewportStart).toBe(0);
+			expect(up.messageCursorIndex).toBe(0);
 		});
 
-		it('move_message_cursor clamps at max (messageEntryLength - 1)', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 10, 20, 30, 40],
-				messageContentRows: 10,
-			});
+		it('AC3: Home (jump_message_top) goes to first line / first entry', () => {
+			const ctx = longMsgCtx();
 			const state: SessionUiState = {
 				...initialSessionUiState,
 				focusMode: 'messages',
-				messageCursorIndex: 3,
-				messageTailFollow: false,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: 5},
-				ctx,
-			);
-			expect(result.messageCursorIndex).toBe(4);
-		});
-
-		it('move_message_cursor disables tailFollow', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 10,
-				messageEntryLineOffsets: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 9,
-				messageTailFollow: true,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: -1},
-				ctx,
-			);
-			expect(result.messageTailFollow).toBe(false);
-			expect(result.messageCursorIndex).toBe(8);
-		});
-
-		it('move_message_cursor scrolls viewport when cursor is at bottom boundary', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 10, 20, 30, 40],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 4,
-				messageViewportStart: 31,
-				messageTailFollow: false,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: 1},
-				ctx,
-			);
-			expect(result.messageCursorIndex).toBe(4);
-			expect(result.messageViewportStart).toBe(32);
-		});
-
-		it('move_message_cursor viewport scroll clamps at maxStart', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 10, 20, 30, 40],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 4,
-				messageViewportStart: 39,
-				messageTailFollow: false,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: 5},
-				ctx,
-			);
-			expect(result.messageCursorIndex).toBe(4);
-			expect(result.messageViewportStart).toBe(40);
-		});
-
-		it('jump_message_tail sets cursor to last entry and enables tailFollow', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 10,
-				messageEntryLineOffsets: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 3,
-				messageTailFollow: false,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'jump_message_tail'},
-				ctx,
-			);
-			expect(result.messageCursorIndex).toBe(9);
-			expect(result.messageTailFollow).toBe(true);
-		});
-
-		it('jump_message_top sets cursor to 0 and disables tailFollow', () => {
-			const ctx = makeContext({
-				messageEntryCount: 50,
-				messageEntryLength: 10,
-				messageEntryLineOffsets: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
-				messageContentRows: 10,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 7,
+				messageViewportStart: 40,
 				messageTailFollow: true,
 			};
 			const result = reduceSessionUiState(
@@ -643,25 +611,97 @@ describe('sessionUiState', () => {
 				{type: 'jump_message_top'},
 				ctx,
 			);
+			expect(result.messageViewportStart).toBe(0);
 			expect(result.messageCursorIndex).toBe(0);
 			expect(result.messageTailFollow).toBe(false);
 		});
 
-		it('resolve clamps messageCursorIndex when entries shrink', () => {
+		it('AC3: End (jump_message_tail) pins to bottom, last entry, tailFollow on', () => {
+			const ctx = makeContext({
+				messageEntryCount: 50,
+				messageEntryLength: 10,
+				messageEntryLineOffsets: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45],
+				messageContentRows: 10,
+			});
+			const state: SessionUiState = {
+				...initialSessionUiState,
+				focusMode: 'messages',
+				messageViewportStart: 0,
+				messageTailFollow: false,
+			};
+			const result = reduceSessionUiState(
+				state,
+				{type: 'jump_message_tail'},
+				ctx,
+			);
+			expect(result.messageViewportStart).toBe(40);
+			expect(result.messageCursorIndex).toBe(9);
+			expect(result.messageTailFollow).toBe(true);
+		});
+
+		it('AC4: mixed user/agent — separator lines attribute to the preceding entry', () => {
+			// Three entries with separator lines: agent(0) at 0..2, separator at 3,
+			// user(1) at 4..6, separator at 7, agent(2) at 8..12.
+			const ctx = makeContext({
+				messageEntryCount: 13,
+				messageEntryLength: 3,
+				messageEntryLineOffsets: [0, 4, 8],
+				messageContentRows: 5,
+			});
+			// Anchor on the separator line (3) before entry 1 stays on entry 0.
+			const onSep = resolve(
+				{
+					focusMode: 'messages',
+					messageViewportStart: 3,
+					messageTailFollow: false,
+				},
+				ctx,
+			);
+			expect(onSep.messageCursorIndex).toBe(0);
+			// Anchor on entry 1's first content line derives to 1.
+			const onEntry1 = resolve(
+				{
+					focusMode: 'messages',
+					messageViewportStart: 4,
+					messageTailFollow: false,
+				},
+				ctx,
+			);
+			expect(onEntry1.messageCursorIndex).toBe(1);
+		});
+
+		it('AC4: tab filtering reclamps viewport and re-derives cursor', () => {
+			// Was scrolled deep into a "both" view; switching to a tab with fewer
+			// lines reclamps the viewport and re-derives the focused entry.
 			const result = resolve(
 				{
 					focusMode: 'messages',
-					messageCursorIndex: 7,
+					messageViewportStart: 40,
+					messageCursorIndex: 4,
 					messageTailFollow: false,
 				},
 				{
-					messageEntryCount: 30,
+					messageEntryCount: 25,
 					messageEntryLength: 3,
-					messageEntryLineOffsets: [0, 10, 20],
+					messageEntryLineOffsets: [0, 8, 16],
 					messageContentRows: 10,
 				},
 			);
-			expect(result.messageCursorIndex).toBe(2);
+			// maxStart = 25 - 10 = 15; anchor 15 lands inside entry 1 (offsets [0,8,16]).
+			expect(result.messageViewportStart).toBe(15);
+			expect(result.messageCursorIndex).toBe(1);
+		});
+
+		it('AC4: resize/clamp — viewport shrinks to the new bottom', () => {
+			const result = resolve(
+				{
+					focusMode: 'messages',
+					messageViewportStart: 25,
+					messageTailFollow: false,
+				},
+				{messageEntryCount: 20, messageContentRows: 10},
+			);
+			expect(result.messageViewportStart).toBe(10);
 		});
 
 		it('resolve pins cursor to last entry when tailFollow is true', () => {
@@ -681,50 +721,26 @@ describe('sessionUiState', () => {
 			expect(result.messageCursorIndex).toBe(4);
 		});
 
-		it('move_message_cursor scrolls viewport so cursor entry is visible', () => {
+		it('AC4: short messages — single short message keeps cursor at 0', () => {
 			const ctx = makeContext({
-				messageEntryCount: 22,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 3, 7, 12, 18],
-				messageContentRows: 5,
+				messageEntryCount: 3,
+				messageEntryLength: 1,
+				messageEntryLineOffsets: [0],
+				messageContentRows: 10,
 			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 1,
-				messageViewportStart: 0,
-				messageTailFollow: false,
-			};
+			// Document shorter than viewport: scrolling is a no-op, cursor stays 0.
 			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: 2},
+				{
+					...initialSessionUiState,
+					focusMode: 'messages',
+					messageViewportStart: 0,
+					messageTailFollow: false,
+				},
+				{type: 'scroll_message_viewport', delta: 5},
 				ctx,
 			);
-			expect(result.messageCursorIndex).toBe(3);
-			expect(result.messageViewportStart).toBe(8);
-		});
-
-		it('move_message_cursor scrolls viewport up when cursor goes above', () => {
-			const ctx = makeContext({
-				messageEntryCount: 22,
-				messageEntryLength: 5,
-				messageEntryLineOffsets: [0, 3, 7, 12, 18],
-				messageContentRows: 5,
-			});
-			const state: SessionUiState = {
-				...initialSessionUiState,
-				focusMode: 'messages',
-				messageCursorIndex: 3,
-				messageViewportStart: 10,
-				messageTailFollow: false,
-			};
-			const result = reduceSessionUiState(
-				state,
-				{type: 'move_message_cursor', delta: -2},
-				ctx,
-			);
-			expect(result.messageCursorIndex).toBe(1);
-			expect(result.messageViewportStart).toBe(3);
+			expect(result.messageViewportStart).toBe(0);
+			expect(result.messageCursorIndex).toBe(0);
 		});
 	});
 
