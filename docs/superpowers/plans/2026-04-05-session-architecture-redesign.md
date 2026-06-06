@@ -1202,7 +1202,7 @@ const TRACKER_SKELETON_TEMPLATE = `${TRACKER_SKELETON_MARKER}
 ---
 
 > This tracker was created by the runner. Update it as you work.
-> See the Stateless Session Protocol for tracker conventions.
+> See the Stateless Turn Protocol for tracker conventions.
 
 ## Status
 
@@ -1967,7 +1967,7 @@ Why read first: without the tracker, you'll duplicate work already done or contr
 - [ ] **Step 2: Run tests that reference state machine content**
 
 Run: `npx vitest run src/core/workflows/sessionPlan.test.ts`
-Expected: The test that checks `instructions.toContain('# Stateless Session Protocol')` should still pass since the header is unchanged.
+Expected: The test that checks the protocol header (`instructions.toContain('# Stateless Turn Protocol')`) should still pass since this redesign does not touch the header.
 
 - [ ] **Step 3: Commit**
 

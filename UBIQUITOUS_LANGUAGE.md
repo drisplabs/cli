@@ -35,13 +35,13 @@ Athena Session        durable work-unit; one ~/.config/athena/sessions/<id>/sess
 
 ## The protocol
 
-| Term                        | Definition                                                                                        | Aliases to avoid                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| **Stateless Turn Protocol** | The agent-facing rules governing how each memoryless Turn reads, advances, and writes the Tracker | State machine, the loop, workflow protocol, Stateless Session Protocol (old name) |
-| **Orient**                  | The protocol phase for Turn 1: replace the Skeleton, explore, and build the plan                  | Setup, init, bootstrap                                                            |
-| **Execute**                 | The protocol phase for Turn 2+: resume work from where the Tracker says                           | Run, continue, work                                                               |
-| **End**                     | The protocol phase that reconciles the Tracker and writes a Terminal Marker if finished           | Finish, complete                                                                  |
-| **Continue Prompt**         | The lightweight user prompt sent on Turn 2+ telling the agent to read the Tracker                 | Resume prompt                                                                     |
+| Term                        | Definition                                                                                        | Aliases to avoid                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **Stateless Turn Protocol** | The agent-facing rules governing how each memoryless Turn reads, advances, and writes the Tracker | State machine, the loop, workflow protocol |
+| **Orient**                  | The protocol phase for Turn 1: replace the Skeleton, explore, and build the plan                  | Setup, init, bootstrap                     |
+| **Execute**                 | The protocol phase for Turn 2+: resume work from where the Tracker says                           | Run, continue, work                        |
+| **End**                     | The protocol phase that reconciles the Tracker and writes a Terminal Marker if finished           | Finish, complete                           |
+| **Continue Prompt**         | The lightweight user prompt sent on Turn 2+ telling the agent to read the Tracker                 | Resume prompt                              |
 
 ## The runner
 
