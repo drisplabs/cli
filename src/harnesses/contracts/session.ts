@@ -30,6 +30,18 @@ export type SessionController<ConfigOverride = HarnessProcessOverride> = {
 	kill: () => Promise<void>;
 };
 
+/**
+ * The per-Turn vendor session/thread on the harness seam.
+ *
+ * Each Turn runs in a **fresh Agent Session that is never resumed** (no
+ * `--resume`) — continuity lives in the Tracker, not the vendor session. This is
+ * a documented glossary alias over the structural {@link SessionController}; the
+ * two are interchangeable. See ADR 0003
+ * (docs/adr/0003-execution-unit-terminology.md).
+ */
+export type AgentSession<ConfigOverride = HarnessProcessOverride> =
+	SessionController<ConfigOverride>;
+
 export type UseSessionControllerResult<
 	ConfigOverride = HarnessProcessOverride,
 > = {

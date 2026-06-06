@@ -76,7 +76,7 @@ const TRACKER_SKELETON_TEMPLATE = `${TRACKER_SKELETON_MARKER}
 ---
 
 > This tracker was created by the runner. Update it as you work.
-> See the Stateless Session Protocol for tracker conventions.
+> See the Stateless Turn Protocol for tracker conventions.
 
 ## Status
 

@@ -68,9 +68,9 @@ in code. Introduce `AgentSession` as a thin documented alias on the vendor seam
 **4. Keep `iteration` as an integer index.** It is already used as the Turn's index, not as a standalone
 concept. Prose says "Turn N (iteration N)"; no code change.
 
-**5. Rename the protocol `Stateless Session Protocol` → `Stateless Turn Protocol`.** In that document
-"session" means a Turn; the body prose is being rewritten to "Turn", so the title follows for internal
-consistency.
+**5. Rename the protocol to `Stateless Turn Protocol`.** Its previous title named the per-invocation unit
+"session"; in that document "session" means a Turn, and the body prose is being rewritten to "Turn", so the
+title follows for internal consistency.
 
 **6. Do NOT rename persistence identifiers.** The `session` / `workflow_runs` / `adapter_sessions` table and
 column names (`session_id`, `run_id`, …) stay as legacy names, explained by the cross-walk mapping above.
