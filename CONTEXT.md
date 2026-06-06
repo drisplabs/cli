@@ -164,6 +164,27 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
   differ only in whether they pull, whether they self-heal, and whether they
   throw or return an outcome.
 
+## Relationship to workflow-execution language
+
+This document owns the **feed-pipeline** bounded context (observation / projection, owned by the **FeedMapper**). A second bounded context, **workflow-execution** (execution / control, owned by the Runner), is documented in `UBIQUITOUS_LANGUAGE.md`. The two collide only on the bare English words _session_, _run_, and _turn_ — they are kept **separate and qualified**, never merged (see `docs/adr/0003-execution-unit-terminology.md`).
+
+Cross-walk of the colliding words:
+
+| Bare word | Feed-pipeline meaning (this doc)                    | Workflow-execution meaning (`UBIQUITOUS_LANGUAGE.md`)                                        | Persistence reality                             |
+| --------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| session   | FeedMapper **Session** (drisp instance lifecycle)   | **Athena Session** (durable container) or **Agent Session** (per-Turn vendor session/thread) | `session` table                                 |
+| run       | **Run** / **Feed Run** (trigger-bounded projection) | **Workflow Run** (one loop execution)                                                        | `feed_events.run_id` ≠ `workflow_runs.id`       |
+| turn      | **Dispatch turn** (`dispatchId`)                    | **Turn** (`startTurn`)                                                                       | `gateway_function_invocations` vs no Turn table |
+
+Legacy DB-name mapping (the persisted identifiers keep their original names; this mapping explains them rather than renaming them — see ADR 0003):
+
+| Persisted identifier | Domain concept                                                         |
+| -------------------- | ---------------------------------------------------------------------- |
+| `session` table      | **Athena Session** (durable work-unit)                                 |
+| `workflow_runs`      | **Workflow Run** (loop execution; many per Athena Session)             |
+| `feed_events.run_id` | **Feed Run** (this doc's projection) — unrelated to `workflow_runs.id` |
+| `adapter_sessions`   | **Agent Session** (the per-Turn vendor session/thread)                 |
+
 ## Example dialogue
 
 > **Dev:** "When a `tool.post` arrives but `ToolCorrelation` has no matching pre, what does the **FeedMapper** emit?"
@@ -172,5 +193,6 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
 ## Flagged ambiguities
 
 - "event" alone is ambiguous between **RuntimeEvent** and **FeedEvent** — always qualify.
-- "session" alone is ambiguous between drisp **Session** and harness adapter session — say "adapter session" for the latter.
+- "session" alone is ambiguous between drisp **Session** and harness adapter session — say "adapter session" for the latter. It also collides with the workflow-execution **Athena Session** / **Agent Session** (see the cross-walk above).
+- "run" alone is ambiguous between the FeedMapper **Run** (this doc) and the workflow-execution **Workflow Run** (`UBIQUITOUS_LANGUAGE.md`) — `feed_events.run_id` is unrelated to `workflow_runs.id`. Qualify as **Feed Run** vs **Workflow Run**.
 - "task" is overloaded by the protocol: `TodoWrite` tool inputs use it for plan items, while the `Task` tool spawns **Subagents**. Inside core/, say **plan step** for the former and **Subagent** for the latter — never bare "task."
