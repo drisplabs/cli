@@ -68,7 +68,6 @@ export type SessionUiAction =
 	| {type: 'set_search_match_pos'; position: number}
 	| {type: 'set_message_tab'; tab: MessageTab}
 	| {type: 'scroll_message_viewport'; delta: number}
-	| {type: 'move_message_cursor'; delta: number}
 	| {type: 'jump_message_tail'}
 	| {type: 'jump_message_top'};
 
@@ -164,6 +163,25 @@ function maxMessageViewportStart(ctx: SessionUiContext): number {
 		: Math.max(0, ctx.messageEntryCount - ctx.messageContentRows);
 }
 
+/**
+ * The message entry whose region contains the given wrapped-line index.
+ * Returns the largest entry index whose first line is at or above `line`,
+ * i.e. the message currently occupying that line. Used to derive the focused
+ * entry (highlight + yank) from the line-based viewport anchor.
+ */
+function entryAtLine(offsets: ReadonlyArray<number>, line: number): number {
+	if (offsets.length === 0) return 0;
+	let result = 0;
+	for (let i = 0; i < offsets.length; i++) {
+		if (offsets[i]! <= line) {
+			result = i;
+		} else {
+			break;
+		}
+	}
+	return result;
+}
+
 function resolveIdToIndex(
 	entries: ReadonlyArray<{id: string}>,
 	cursorId: string | null,
@@ -201,10 +219,17 @@ function computeFeedState(
 	};
 }
 
+/**
+ * Line-based scroll model (#20). The wrapped-line list is the scrollable
+ * document: `messageViewportStart` is the top visible line, clamped to
+ * [0, maxStart]. The focused entry (`messageCursorIndex`, used for highlight +
+ * yank) is DERIVED from the viewport anchor rather than driving it, so that
+ * scrolling through a message taller than the viewport advances line-by-line
+ * and naturally reveals the next message instead of jumping head-to-head.
+ */
 function computeMessageState(
 	viewportStart: number,
 	tailFollow: boolean,
-	cursorIndex: number,
 	ctx: SessionUiContext,
 ): MessageState {
 	const mc = maxMessageCursor(ctx);
@@ -218,20 +243,11 @@ function computeMessageState(
 		};
 	}
 
-	const nextCursor = ctx.messageEntryLength > 0 ? clamp(cursorIndex, 0, mc) : 0;
-	let nextStart = clamp(viewportStart, 0, ms);
-
-	const offsets = ctx.messageEntryLineOffsets;
-	if (offsets.length > 0 && nextCursor < offsets.length) {
-		const cursorLineStart = offsets[nextCursor]!;
-		if (cursorLineStart < nextStart) {
-			nextStart = cursorLineStart;
-		}
-		if (cursorLineStart >= nextStart + ctx.messageContentRows) {
-			nextStart = cursorLineStart - ctx.messageContentRows + 1;
-		}
-		nextStart = clamp(nextStart, 0, ms);
-	}
+	const nextStart = clamp(viewportStart, 0, ms);
+	const nextCursor =
+		ctx.messageEntryLength > 0
+			? clamp(entryAtLine(ctx.messageEntryLineOffsets, nextStart), 0, mc)
+			: 0;
 
 	return {
 		messageTailFollow: false,
@@ -322,7 +338,6 @@ export function resolveSessionUiState(
 	const msgState = computeMessageState(
 		state.messageViewportStart,
 		state.messageTailFollow,
-		state.messageCursorIndex,
 		ctx,
 	);
 	const todoCursor = resolveTodoCursor(state, ctx);
@@ -609,50 +624,20 @@ export function reduceSessionUiState(
 			if (current.messagePanelTab === action.tab) return current;
 			return {...current, messagePanelTab: action.tab};
 		case 'scroll_message_viewport':
-			return withMessageChange(current, {
-				messageTailFollow: false,
-				messageViewportStart: clamp(
-					current.messageViewportStart + action.delta,
-					0,
-					maxMessageViewportStart(ctx),
-				),
-				messageCursorIndex:
-					ctx.messageEntryLength > 0
-						? clamp(current.messageCursorIndex, 0, maxMessageCursor(ctx))
-						: 0,
-			});
-		case 'move_message_cursor': {
-			const mc = maxMessageCursor(ctx);
-			const requested = current.messageCursorIndex + action.delta;
-			const actual = ctx.messageEntryLength > 0 ? clamp(requested, 0, mc) : 0;
-
-			// Cursor hit boundary — scroll viewport instead of staying stuck
-			if (actual === current.messageCursorIndex && action.delta !== 0) {
-				return withMessageChange(current, {
-					messageTailFollow: false,
-					messageViewportStart: clamp(
-						current.messageViewportStart + action.delta,
-						0,
-						maxMessageViewportStart(ctx),
-					),
-					messageCursorIndex: actual,
-				});
-			}
-
-			return withMessageChange(
-				current,
-				computeMessageState(current.messageViewportStart, false, actual, ctx),
-			);
-		}
-		case 'jump_message_tail':
+			// Line-based scroll: move the viewport anchor by `delta` lines and
+			// derive the focused entry from the new anchor (#20).
 			return withMessageChange(
 				current,
 				computeMessageState(
-					current.messageViewportStart,
-					true,
-					current.messageCursorIndex,
+					current.messageViewportStart + action.delta,
+					false,
 					ctx,
 				),
+			);
+		case 'jump_message_tail':
+			return withMessageChange(
+				current,
+				computeMessageState(current.messageViewportStart, true, ctx),
 			);
 		case 'jump_message_top':
 			return withMessageChange(current, {

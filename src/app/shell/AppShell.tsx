@@ -1405,8 +1405,8 @@ function AppContent({
 		isActive: focusMode === 'messages' && !dialogActive && !pagerActive,
 		pageStep: messagePageStep,
 		callbacks: {
-			moveCursor: (delta: number) =>
-				dispatchUi({type: 'move_message_cursor', delta}),
+			scrollByLines: (delta: number) =>
+				dispatchUi({type: 'scroll_message_viewport', delta}),
 			jumpToTail: () => dispatchUi({type: 'jump_message_tail'}),
 			jumpToTop: () => dispatchUi({type: 'jump_message_top'}),
 			yankAtCursor: yankMessageAtCursor,
