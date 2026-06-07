@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.18](https://github.com/drisplabs/cli/compare/cli-v0.5.17...cli-v0.5.18) (2026-06-07)
+
+
+### Bug Fixes
+
+* **messages:** line-based scrolling for long messages + keyboard nav ([#20](https://github.com/drisplabs/cli/issues/20)) ([#85](https://github.com/drisplabs/cli/issues/85)) ([ccf0161](https://github.com/drisplabs/cli/commit/ccf0161c6308f1a15bd3e374de608cd47979629b))
+
 ## [0.5.17](https://github.com/drisplabs/cli/compare/cli-v0.5.16...cli-v0.5.17) (2026-06-01)
 
 
