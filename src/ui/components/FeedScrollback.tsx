@@ -48,7 +48,6 @@ export function FeedScrollback({
 									focused: false,
 									expanded: false,
 									matched: isMatched,
-									isDuplicateActor: entry.duplicateActor,
 									ascii,
 									theme,
 									innerWidth,

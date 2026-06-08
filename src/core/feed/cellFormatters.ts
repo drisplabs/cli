@@ -119,22 +119,6 @@ export function formatTime(
 	return chalk.hex(theme.textMuted)(fitImpl(clock, contentWidth));
 }
 
-export function formatActor(
-	actor: string,
-	duplicate: boolean,
-	contentWidth: number,
-	theme: Theme,
-	_actorId: string,
-): string {
-	if (contentWidth <= 0) return '';
-	if (duplicate) {
-		// Left-aligned dot matching fit('·', width) behavior in old path
-		const text = fitImpl('\u00B7', contentWidth);
-		return chalk.hex(theme.textMuted)(text);
-	}
-	return chalk.hex(theme.textMuted)(fitImpl(actor, contentWidth));
-}
-
 export function formatTool(
 	toolColumn: string,
 	contentWidth: number,
@@ -164,22 +148,6 @@ export function formatTool(
 	const trailingPad = ' '.repeat(Math.max(0, contentWidth - 2 - label.length));
 	const pill = chalk.bgHex(palette.bg).hex(palette.fg)(` ${label} `);
 	return `${pill}${trailingPad}`;
-}
-
-export function formatResult(
-	outcome: string | undefined,
-	outcomeZero: boolean | undefined,
-	isError: boolean | undefined,
-	contentWidth: number,
-	theme: Theme,
-): string {
-	if (contentWidth <= 0) return '';
-	if (!outcome) return fitImpl('', contentWidth);
-
-	const fitted = fitImpl(outcome.trim(), contentWidth);
-	if (isError) return chalk.hex(theme.status.error)(fitted);
-	if (outcomeZero) return chalk.hex(theme.status.warning)(fitted);
-	return chalk.hex(theme.textMuted)(fitted);
 }
 
 export function formatSuffix(
@@ -251,12 +219,14 @@ function renderSegments(
 	width: number,
 	theme: Theme,
 	opTag: string,
+	error = false,
 ): string {
 	if (width <= 0) return '';
 	const normalizePathPrefix = (text: string): string =>
 		text.replace(/(^|\s)(?:\u2026\/|\.{3}\/)/g, '$1/');
 	if (segments.length === 0) {
-		return fitImpl(normalizePathPrefix(summary), width);
+		const fitted = fitImpl(normalizePathPrefix(summary), width);
+		return error ? chalk.hex(theme.status.error)(fitted) : fitted;
 	}
 
 	const isAgentMsg = opTag === 'agent.msg';
@@ -267,10 +237,13 @@ function renderSegments(
 		: isLifecycle || isSubReturn
 			? theme.textMuted
 			: theme.text;
-	const shouldDim = isAgentMsg || isLifecycle;
+	// An errored row paints every segment red and never dims, so the failure
+	// is unmissable regardless of the row's normal tool-category styling.
+	const shouldDim = !error && (isAgentMsg || isLifecycle);
 	const hasFilename = segments.some(seg => seg.role === 'filename');
 
 	const roleColor = (role: SummarySegmentRole): string => {
+		if (error) return theme.status.error;
 		switch (role) {
 			case 'verb':
 				return baseColor;
@@ -313,8 +286,10 @@ function renderOutcome(
 	outcome: string | undefined,
 	outcomeZero: boolean | undefined,
 	theme: Theme,
+	error = false,
 ): string | undefined {
 	if (!outcome) return undefined;
+	if (error) return chalk.hex(theme.status.error)(outcome);
 	if (outcomeZero) return chalk.hex(theme.status.warning)(outcome);
 	return chalk.hex(theme.textMuted)(outcome);
 }
@@ -330,6 +305,8 @@ export type FormatDetailsOpts = {
 	contentWidth: number;
 	theme: Theme;
 	opTag: string;
+	/** When set, segments and the inline outcome are tinted with the error color. */
+	error?: boolean;
 };
 
 export function formatDetails(opts: FormatDetailsOpts): string {
@@ -344,6 +321,7 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 		contentWidth,
 		theme,
 		opTag,
+		error = false,
 	} = opts;
 
 	// Step 1: merged-column prefix
@@ -351,13 +329,14 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 	const innerWidth = Math.max(0, contentWidth - prefix.length);
 
 	// Step 2: render outcome
-	const outcomeStr = renderOutcome(outcome, outcomeZero, theme);
+	const outcomeStr = renderOutcome(outcome, outcomeZero, theme, error);
 	const outcomeClean = outcomeStr ? stripAnsi(outcomeStr) : undefined;
 
 	// Step 3: if no outcome, just render segments into innerWidth
 	if (!outcomeStr || innerWidth <= 0) {
 		return (
-			prefix.text + renderSegments(segments, summary, innerWidth, theme, opTag)
+			prefix.text +
+			renderSegments(segments, summary, innerWidth, theme, opTag, error)
 		);
 	}
 
@@ -365,13 +344,15 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 	const outcomeLen = outcomeClean!.length;
 	const targetBudget = innerWidth - outcomeLen - 2;
 	if (targetBudget < 10) {
-		// Inline: segments + gap + outcome, all truncated
+		// Inline: outcome wins the tail, segments truncate first. Color is
+		// dropped here because the pieces are re-fitted from stripped text.
 		const segStr = renderSegments(
 			segments,
 			summary,
 			Math.max(0, innerWidth - outcomeLen - 2),
 			theme,
 			opTag,
+			error,
 		);
 		const segClean = stripAnsi(segStr).trimEnd();
 		const padNeeded = innerWidth - segClean.length - outcomeLen;
@@ -383,7 +364,14 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 		return prefix.text + truncated;
 	}
 
-	const segStr = renderSegments(segments, summary, targetBudget, theme, opTag);
+	const segStr = renderSegments(
+		segments,
+		summary,
+		targetBudget,
+		theme,
+		opTag,
+		error,
+	);
 	const segClean = stripAnsi(segStr);
 	const padNeeded = innerWidth - segClean.length - outcomeLen;
 	const pad = padNeeded > 0 ? ' '.repeat(padNeeded) : '  ';

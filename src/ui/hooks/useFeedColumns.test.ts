@@ -29,47 +29,66 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 }
 
 describe('useFeedColumns', () => {
-	it('enforces at least 2 columns between DETAILS and RESULT when result exists', () => {
+	it('drops the RESULT column and folds its width into DETAILS', () => {
 		const entries = [makeEntry({summaryOutcome: 'exit 1'})];
 		const {result} = renderHook(() => useFeedColumns(entries, 160));
 
-		expect(result.current.resultW).toBeGreaterThan(0);
+		// RESULT is no longer a separate column.
+		expect(result.current).not.toHaveProperty('resultW');
+		expect(result.current).not.toHaveProperty('detailsResultGapW');
+
+		// Fixed overhead is gutter(1) + time(5) + toolW + 2 gaps; DETAILS
+		// absorbs everything else (no ACTOR_W, no RESULT column).
+		// gapW is 2 at innerWidth 160; toolW for "Read" is 12.
 		expect(result.current.gapW).toBe(2);
-		expect(result.current.detailsResultGapW).toBeGreaterThanOrEqual(2);
+		expect(result.current.toolW).toBe(12);
+		expect(result.current.detailsW).toBe(160 - (1 + 5) - 12 - 2 * 2);
 	});
 
-	it('keeps DETAILS->RESULT gap aligned with regular gap when regular gap is wider', () => {
-		const entries = [makeEntry({summaryOutcome: 'replaced 19 -> 27 lines'})];
+	it('uses two gaps (time|action and action|details) and no actor column', () => {
+		const entries = [makeEntry()];
 		const {result} = renderHook(() => useFeedColumns(entries, 260));
 
-		expect(result.current.gapW).toBe(2);
-		expect(result.current.detailsResultGapW).toBe(2);
+		// gutter(1) + time(5) + toolW + 2 gaps; no ACTOR_W, no RESULT column.
+		const {toolW, gapW, detailsW} = result.current;
+		expect(detailsW).toBe(260 - (1 + 5) - toolW - 2 * gapW);
 	});
 
-	it('does not reserve DETAILS->RESULT gap when RESULT column is absent', () => {
-		const entries = [makeEntry()];
-		const {result} = renderHook(() => useFeedColumns(entries, 160));
+	it('does not carry RESULT-related widths regardless of outcome presence', () => {
+		const withOutcome = renderHook(() =>
+			useFeedColumns([makeEntry({summaryOutcome: 'exit 1'})], 160),
+		);
+		const withoutOutcome = renderHook(() => useFeedColumns([makeEntry()], 160));
 
-		expect(result.current.resultW).toBe(0);
-		expect(result.current.detailsResultGapW).toBe(0);
+		for (const r of [withOutcome.result, withoutOutcome.result]) {
+			expect(r.current).not.toHaveProperty('resultW');
+			expect(r.current).not.toHaveProperty('detailsResultGapW');
+		}
+		// An outcome no longer steals width from DETAILS — it is folded inline.
+		expect(withOutcome.result.current.detailsW).toBe(
+			withoutOutcome.result.current.detailsW,
+		);
 	});
 
 	it('keeps live feed columns monotonic while scrollback is active', () => {
 		const previous = computeFeedColumns(
-			[
-				makeEntry({
-					toolColumn: 'General Purpose',
-					summaryOutcome: 'replaced 19 -> 27 lines',
-				}),
-			],
+			[makeEntry({toolColumn: 'General Purpose'})],
 			160,
 		);
 		const next = computeFeedColumns([makeEntry({toolColumn: 'Read'})], 160);
 		const stabilized = stabilizeFeedColumns(previous, next, 160);
 
+		// Wider TOOL column must not shrink, so DETAILS must not grow.
 		expect(stabilized.toolW).toBe(previous.toolW);
-		expect(stabilized.resultW).toBe(previous.resultW);
 		expect(stabilized.detailsW).toBeLessThanOrEqual(previous.detailsW);
+	});
+
+	it('returns the previous object when stabilized widths are unchanged', () => {
+		const previous = computeFeedColumns([makeEntry({toolColumn: 'Read'})], 160);
+		const next = computeFeedColumns([makeEntry({toolColumn: 'Grep'})], 160);
+		const stabilized = stabilizeFeedColumns(previous, next, 160);
+
+		expect(stabilized).toBe(previous);
 	});
 
 	it('reuses the previous column object when a patched row does not change widths', () => {

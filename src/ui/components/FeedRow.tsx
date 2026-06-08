@@ -9,11 +9,9 @@ import {parseToolName} from '../../shared/utils/toolNameParser';
 import {
 	formatGutter,
 	formatTime,
-	formatActor,
 	formatTool,
 	type ToolPillCategory,
 	resolveToolPillCategoryForLabel,
-	formatResult,
 	formatDetails,
 } from '../../core/feed/cellFormatters';
 import {fitAnsi, spaces} from '../../shared/utils/format';
@@ -22,9 +20,7 @@ import {logVisibleRowFormat} from '../../shared/utils/perf';
 type FeedColumnWidths = {
 	toolW: number;
 	detailsW: number;
-	resultW: number;
 	gapW: number;
-	detailsResultGapW: number;
 };
 
 type Props = {
@@ -33,7 +29,6 @@ type Props = {
 	focused: boolean;
 	expanded: boolean;
 	matched: boolean;
-	isDuplicateActor: boolean;
 	ascii: boolean;
 	theme: Theme;
 };
@@ -163,7 +158,6 @@ function buildLineCacheKey({
 	focused,
 	expanded,
 	matched,
-	isDuplicateActor,
 	ascii,
 	theme,
 	innerWidth,
@@ -172,13 +166,10 @@ function buildLineCacheKey({
 		innerWidth,
 		cols.toolW,
 		cols.detailsW,
-		cols.resultW,
 		cols.gapW,
-		cols.detailsResultGapW,
 		focused ? 1 : 0,
 		expanded ? 1 : 0,
 		matched ? 1 : 0,
-		isDuplicateActor ? 1 : 0,
 		ascii ? 1 : 0,
 		entry.expandable ? 1 : 0,
 		entry.error ? 1 : 0,
@@ -198,19 +189,23 @@ function lineParts({
 	focused,
 	expanded: _expanded,
 	matched,
-	isDuplicateActor,
 	ascii,
 	theme,
 }: Props): {
 	gutter: string;
 	time: string;
-	actor: string;
 	tool: string;
 	detail: string;
-	result: string;
 } {
 	const isUserBorder = entry.opTag === 'prompt' || entry.opTag === 'msg.user';
-	const rowTextOverrideColor = focused ? theme.text : undefined;
+	// Focus wins over error: a focused row keeps the bright focus styling, an
+	// unfocused errored row turns its text cells red.
+	const errorActive = entry.error && !focused;
+	const rowTextOverrideColor = focused
+		? theme.text
+		: entry.error
+			? theme.status.error
+			: undefined;
 	const isToolRow =
 		entry.opTag.startsWith('tool.') || entry.opTag === 'perm.req';
 	const isSubagentRow =
@@ -241,18 +236,20 @@ function lineParts({
 		return resolveToolPillCategoryForLabel(toolText);
 	})();
 
-	const gutter = formatGutter({
-		focused,
-		matched,
-		isUserBorder,
-		ascii,
-		theme,
-	});
-	const time = cell(formatTime(entry.ts, 5, theme), rowTextOverrideColor);
-	const actor = cell(
-		formatActor(entry.actor, isDuplicateActor, 10, theme, entry.actorId),
-		rowTextOverrideColor,
+	const gutter = cell(
+		formatGutter({
+			focused,
+			matched,
+			isUserBorder,
+			ascii,
+			theme,
+		}),
+		// Tint the gutter red on an errored row; focus keeps its accent border.
+		errorActive ? theme.status.error : undefined,
 	);
+	const time = cell(formatTime(entry.ts, 5, theme), rowTextOverrideColor);
+	// The ACTION pill keeps its tool-category color even on an errored row, so
+	// you can still tell a failed Read from a failed Bash at a glance.
 	const tool = formatTool(toolText, cols.toolW, theme, {
 		pill: isToolRow || isSubagentRow || hasSyntheticPill,
 		category: toolCategory,
@@ -263,25 +260,19 @@ function lineParts({
 	const detail = formatDetails({
 		segments: detailSummaryInfo.segments,
 		summary: detailSummaryInfo.summary,
+		outcome: entry.summaryOutcome,
+		outcomeZero: entry.summaryOutcomeZero,
+		error: errorActive,
 		mode: 'full',
 		contentWidth: cols.detailsW,
 		theme,
 		opTag: entry.opTag,
 	});
-	const result = formatResult(
-		entry.summaryOutcome,
-		entry.summaryOutcomeZero,
-		entry.error,
-		cols.resultW,
-		theme,
-	);
 	return {
 		gutter,
 		time,
-		actor,
 		tool,
 		detail,
-		result,
 	};
 }
 
@@ -298,22 +289,16 @@ export function formatFeedRowLine({
 
 		const parts = lineParts(props);
 		const {
-			cols: {gapW, detailsResultGapW, resultW},
+			cols: {gapW},
 		} = props;
 
-		let line =
+		const line =
 			parts.gutter +
 			parts.time +
-			spaces(gapW) +
-			parts.actor +
 			spaces(gapW) +
 			parts.tool +
 			spaces(gapW) +
 			parts.detail;
-
-		if (resultW > 0) {
-			line += spaces(detailsResultGapW) + parts.result;
-		}
 
 		const formatted = fitAnsi(line, innerWidth);
 		const focusedFormatted = props.focused
@@ -341,7 +326,6 @@ function FeedRowImpl({
 	focused,
 	expanded,
 	matched,
-	isDuplicateActor,
 	ascii,
 	theme,
 }: Props) {
@@ -351,7 +335,6 @@ function FeedRowImpl({
 		focused,
 		expanded,
 		matched,
-		isDuplicateActor,
 		ascii,
 		theme,
 	});
@@ -365,10 +348,6 @@ function FeedRowImpl({
 				<Text wrap="truncate-end">{parts.time}</Text>
 			</Box>
 			<Box width={cols.gapW} flexShrink={0} />
-			<Box width={10} flexShrink={0}>
-				<Text wrap="truncate-end">{parts.actor}</Text>
-			</Box>
-			<Box width={cols.gapW} flexShrink={0} />
 			<Box width={cols.toolW} flexShrink={0}>
 				<Text wrap="truncate-end">{parts.tool}</Text>
 			</Box>
@@ -376,14 +355,6 @@ function FeedRowImpl({
 			<Box width={cols.detailsW} flexShrink={0}>
 				<Text wrap="truncate-end">{parts.detail}</Text>
 			</Box>
-			{cols.resultW > 0 && (
-				<>
-					<Box width={cols.detailsResultGapW} flexShrink={0} />
-					<Box width={cols.resultW} flexShrink={0}>
-						<Text wrap="truncate-end">{parts.result}</Text>
-					</Box>
-				</>
-			)}
 			<Box flexGrow={1} flexShrink={1} />
 		</>
 	);

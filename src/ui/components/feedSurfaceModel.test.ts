@@ -38,9 +38,7 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 const defaultCols: FeedColumnWidths = {
 	toolW: 12,
 	detailsW: 30,
-	resultW: 8,
 	gapW: 1,
-	detailsResultGapW: 1,
 };
 
 function defaultParams(

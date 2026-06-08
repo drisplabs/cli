@@ -1,12 +1,12 @@
 import {describe, test, expect} from 'vitest';
 import stripAnsi from 'strip-ansi';
+import chalk from 'chalk';
 import {darkTheme} from '../../ui/theme/themes';
 import {
 	formatGutter,
 	opCategoryColor,
 	fit,
 	formatTime,
-	formatActor,
 	formatTool,
 	formatSuffix,
 	resolveToolPillCategoryForLabel,
@@ -156,30 +156,6 @@ describe('formatTime', () => {
 	test('fills exactly contentWidth chars', () => {
 		const r = formatTime(Date.now(), 5, theme);
 		expect(stripAnsi(r)).toHaveLength(5);
-	});
-});
-
-describe('formatActor', () => {
-	test('non-duplicate shows actor name padded to width', () => {
-		const r = formatActor('AGENT', false, 10, theme, 'agent:root');
-		expect(stripAnsi(r)).toHaveLength(10);
-		expect(stripAnsi(r)).toContain('AGENT');
-	});
-
-	test('duplicate shows left-aligned dot', () => {
-		const r = formatActor('AGENT', true, 10, theme, 'agent:root');
-		expect(stripAnsi(r)).toBe('·         ');
-		expect(stripAnsi(r)).toHaveLength(10);
-	});
-
-	test('long actor name truncated with ellipsis', () => {
-		const r = formatActor('VERY-LONG-ACTOR', false, 10, theme, 'agent:root');
-		expect(stripAnsi(r)).toHaveLength(10);
-		expect(stripAnsi(r)).toContain('...');
-	});
-
-	test('zero width returns empty', () => {
-		expect(formatActor('AGENT', false, 0, theme, 'agent:root')).toBe('');
 	});
 });
 
@@ -384,6 +360,96 @@ describe('formatDetails', () => {
 		// At chalk level 0, verify both produce valid output
 		expect(stripAnsi(noZero)).toContain('0 files');
 		expect(stripAnsi(withZero)).toContain('0 files');
+	});
+
+	test('error flag tints the inline outcome with the error color', () => {
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+		try {
+			const errEscape = chalk.hex(theme.status.error)('§').split('§')[0]!;
+			const base = {
+				segments: [{text: 'src/missing.tsx', role: 'target' as const}],
+				summary: 'src/missing.tsx',
+				outcome: 'File does not exist',
+				mode: 'full' as const,
+				contentWidth: 60,
+				theme,
+				opTag: 'tool.fail',
+			};
+			const errored = formatDetails({...base, error: true});
+			const normal = formatDetails({...base});
+
+			// Layout is unchanged; the outcome still appears inline.
+			expect(stripAnsi(errored)).toContain('File does not exist');
+			// Only the errored variant paints with the error color.
+			expect(errored).toContain(errEscape);
+			expect(normal).not.toContain(errEscape);
+		} finally {
+			chalk.level = prevLevel;
+		}
+	});
+
+	test('error color overrides the zero-result warning tint', () => {
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+		try {
+			const errEscape = chalk.hex(theme.status.error)('§').split('§')[0]!;
+			const warnEscape = chalk.hex(theme.status.warning)('§').split('§')[0]!;
+			const r = formatDetails({
+				segments: [{text: 'test', role: 'target'}],
+				summary: 'test',
+				outcome: '0 matches',
+				outcomeZero: true,
+				error: true,
+				mode: 'full',
+				contentWidth: 40,
+				theme,
+				opTag: 'tool.fail',
+			});
+			expect(r).toContain(errEscape);
+			expect(r).not.toContain(warnEscape);
+		} finally {
+			chalk.level = prevLevel;
+		}
+	});
+
+	test('folds a non-error outcome right-aligned at the tail of DETAILS', () => {
+		const r = formatDetails({
+			segments: [{text: 'src/app.tsx', role: 'target'}],
+			summary: 'src/app.tsx',
+			outcome: '13 files',
+			mode: 'full',
+			contentWidth: 40,
+			theme,
+			opTag: 'tool.ok',
+		});
+		const plain = stripAnsi(r);
+		expect(plain.length).toBeLessThanOrEqual(40);
+		// Segment leads, outcome trails (right-aligned).
+		expect(plain.indexOf('src/app.tsx')).toBeLessThan(
+			plain.indexOf('13 files'),
+		);
+		expect(plain.trimEnd().endsWith('13 files')).toBe(true);
+	});
+
+	test('inline outcome truncates the segments first on a narrow width', () => {
+		const r = formatDetails({
+			segments: [
+				{text: 'a/very/long/path/that/will/not/fit.tsx', role: 'target'},
+			],
+			summary: 'a/very/long/path/that/will/not/fit.tsx',
+			outcome: 'exit 0',
+			mode: 'full',
+			// targetBudget = 14 - 6 - 2 = 6 < 10, so the inline-fallback path runs.
+			contentWidth: 14,
+			theme,
+			opTag: 'tool.ok',
+		});
+		const plain = stripAnsi(r);
+		// Never overflows the panel width.
+		expect(plain.length).toBeLessThanOrEqual(14);
+		// The outcome survives; the path is the part that gets clipped.
+		expect(plain).toContain('exit 0');
 	});
 });
 

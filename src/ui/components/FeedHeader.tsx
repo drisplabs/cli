@@ -20,15 +20,9 @@ export function formatFeedHeaderLine(
 	let line = ' ';
 	line += style(fit('TIME', 5));
 	line += ' '.repeat(cols.gapW);
-	line += style(fit('ACTOR', 10));
-	line += ' '.repeat(cols.gapW);
 	line += style(fit('ACTION', cols.toolW));
 	line += ' '.repeat(cols.gapW);
 	line += style(fit('DETAILS', cols.detailsW));
-	if (cols.resultW > 0) {
-		line += ' '.repeat(cols.detailsResultGapW);
-		line += style(fit('RESULT', cols.resultW));
-	}
 	return fitAnsi(line, innerWidth);
 }
 
@@ -44,10 +38,6 @@ function FeedHeaderImpl({cols, theme}: Props) {
 				<Text wrap="truncate-end">{style(fit('TIME', 5))}</Text>
 			</Box>
 			<Box width={cols.gapW} flexShrink={0} />
-			<Box width={10} flexShrink={0}>
-				<Text wrap="truncate-end">{style(fit('ACTOR', 10))}</Text>
-			</Box>
-			<Box width={cols.gapW} flexShrink={0} />
 			<Box width={cols.toolW} flexShrink={0}>
 				<Text wrap="truncate-end">{style(fit('ACTION', cols.toolW))}</Text>
 			</Box>
@@ -55,16 +45,6 @@ function FeedHeaderImpl({cols, theme}: Props) {
 			<Box width={cols.detailsW} flexShrink={0}>
 				<Text wrap="truncate-end">{style(fit('DETAILS', cols.detailsW))}</Text>
 			</Box>
-			{cols.resultW > 0 && (
-				<>
-					<Box width={cols.detailsResultGapW} flexShrink={0} />
-					<Box width={cols.resultW} flexShrink={0}>
-						<Text wrap="truncate-end">
-							{style(fit('RESULT', cols.resultW))}
-						</Text>
-					</Box>
-				</>
-			)}
 			<Box flexGrow={1} flexShrink={1} />
 		</>
 	);

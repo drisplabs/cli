@@ -144,7 +144,6 @@ function formatRow(
 			focused: isFocused,
 			expanded: false,
 			matched,
-			isDuplicateActor: entry.duplicateActor,
 			ascii,
 			theme,
 			innerWidth,
