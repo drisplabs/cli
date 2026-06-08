@@ -362,8 +362,9 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 			innerWidth,
 		);
 		// Re-apply the error tint the strip+refit above discarded, so a narrow
-		// errored row stays unmistakably red (the prefix is empty in full mode,
-		// which is the only mode that sets `error`).
+		// errored row stays unmistakably red. Only the segment+outcome run is
+		// tinted; the merged-column prefix keeps its own color regardless of
+		// mode (it is empty in full mode, the only mode that sets `error`).
 		return (
 			prefix.text +
 			(error ? chalk.hex(theme.status.error)(truncated) : truncated)

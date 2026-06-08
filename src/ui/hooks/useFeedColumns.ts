@@ -18,10 +18,8 @@ function areFeedColumnsEqual(left: FeedColumns, right: FeedColumns): boolean {
 
 const GUTTER_W = 1;
 const TIME_W = 5;
-// Suffix glyph column removed (no chevrons in table rows).
-const SUFFIX_W = 0;
-/** Fixed non-gap overhead: gutter + time + suffix (ACTOR column removed). */
-const BASE_FIXED = GUTTER_W + TIME_W + SUFFIX_W;
+/** Fixed non-gap overhead: gutter + time (ACTOR and suffix columns removed). */
+const BASE_FIXED = GUTTER_W + TIME_W;
 // Two gaps remain: time|action and action|details.
 const GAP_COUNT = 2;
 
