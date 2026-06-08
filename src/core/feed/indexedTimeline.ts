@@ -5,7 +5,6 @@ import type {FeedItem} from './items';
 import type {FeedEvent} from './types';
 import type {TimelineEntry, RunSummary} from './timeline';
 import {
-	opCategory,
 	eventOperation,
 	eventLabel,
 	eventSummary,
@@ -18,7 +17,6 @@ import {
 	toRunStatus,
 	VERBOSE_ONLY_KINDS,
 	isVerboseOnlyNotification,
-	computeDuplicateActors,
 } from './timeline';
 
 type SearchCacheEntry = {
@@ -104,7 +102,6 @@ function buildMessageEntry(
 		error: false,
 		expandable: details.length > 120,
 		details,
-		duplicateActor: false,
 	};
 }
 
@@ -210,7 +207,6 @@ function buildEventEntry(
 		details: '',
 		feedEvent: event,
 		pairedPostEvent: pairedPost,
-		duplicateActor: false,
 	};
 }
 
@@ -248,31 +244,6 @@ function rememberPendingEntry(
 		return;
 	}
 	pendingEntryIndexByToolUseId.set(event.data.tool_use_id, index);
-}
-
-function recomputeDuplicateActorAt(
-	entries: TimelineEntry[],
-	index: number,
-): void {
-	const entry = entries[index]!;
-	if (index === 0) {
-		entry.duplicateActor = false;
-		return;
-	}
-	const prev = entries[index - 1]!;
-	const sameActor = entry.actorId === prev.actorId;
-	const isBreak = opCategory(entry.opTag) !== opCategory(prev.opTag);
-	entry.duplicateActor = sameActor && !isBreak;
-}
-
-function recomputeDuplicateActorsAround(
-	entries: TimelineEntry[],
-	index: number,
-): void {
-	recomputeDuplicateActorAt(entries, index);
-	if (index + 1 < entries.length) {
-		recomputeDuplicateActorAt(entries, index + 1);
-	}
 }
 
 function sameFeedItemPrefix(previous: FeedItem[], next: FeedItem[]): boolean {
@@ -350,7 +321,6 @@ function buildTimelineCache(
 		}
 	}
 
-	computeDuplicateActors(entries);
 	return {
 		feedItems,
 		feedEvents,
@@ -383,11 +353,7 @@ function appendTimelineCache(
 
 	for (const item of feedItems.slice(previous.feedItems.length)) {
 		if (item.type === 'message') {
-			const index =
-				entries.push(
-					buildMessageEntry(item.data, activeRunId, messageCounter++),
-				) - 1;
-			recomputeDuplicateActorsAround(entries, index);
+			entries.push(buildMessageEntry(item.data, activeRunId, messageCounter++));
 			continue;
 		}
 
@@ -410,7 +376,6 @@ function appendTimelineCache(
 					if (event.kind === 'tool.post' || event.kind === 'tool.failure') {
 						pendingEntryIndexByToolUseId.delete(resolvedToolUseId);
 					}
-					recomputeDuplicateActorsAround(entries, pendingIndex);
 				}
 			}
 			continue;
@@ -424,7 +389,6 @@ function appendTimelineCache(
 		);
 		if (entry) {
 			const index = entries.push(entry) - 1;
-			recomputeDuplicateActorsAround(entries, index);
 			rememberPendingEntry(pendingEntryIndexByToolUseId, entry, index);
 		}
 		if (event.kind === 'run.end') {

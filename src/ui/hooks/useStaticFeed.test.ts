@@ -40,7 +40,6 @@ function makeEntry(
 		error: false,
 		expandable: false,
 		details: '',
-		duplicateActor: false,
 		...overrides,
 	};
 }

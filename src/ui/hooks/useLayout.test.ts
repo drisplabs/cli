@@ -277,3 +277,57 @@ describe('useLayout', () => {
 		expect(result.current.actualTodoRows).toBe(6);
 	});
 });
+
+describe('split-mode message panel width', () => {
+	it('gives the message panel ~65% of the inner width when there are messages', () => {
+		const todoPanel = makeTodoPanel({
+			todoVisible: false,
+			visibleTodoItems: [],
+		});
+		const {result} = renderHook(() =>
+			useLayout({
+				terminalRows: 40,
+				terminalWidth: 100,
+				showRunOverlay: false,
+				runSummaries: [],
+				todoPanel,
+				feedEntryCount: 5,
+				footerRows: 2,
+				hasMessages: true,
+			}),
+		);
+
+		const {innerWidth, messagePanelWidth, feedPanelWidth, splitMode} =
+			result.current;
+		expect(splitMode).toBe(true);
+		// Messages take ~65%, the feed side rail ~35%.
+		expect(messagePanelWidth / innerWidth).toBeGreaterThan(0.6);
+		expect(messagePanelWidth / innerWidth).toBeLessThan(0.68);
+		expect(messagePanelWidth).toBeGreaterThan(feedPanelWidth);
+		// The two panels tile the inner width with a single divider column.
+		expect(messagePanelWidth + feedPanelWidth + 1).toBe(innerWidth);
+	});
+
+	it('hands the full inner width to the feed when there are no messages', () => {
+		const todoPanel = makeTodoPanel({
+			todoVisible: false,
+			visibleTodoItems: [],
+		});
+		const {result} = renderHook(() =>
+			useLayout({
+				terminalRows: 40,
+				terminalWidth: 100,
+				showRunOverlay: false,
+				runSummaries: [],
+				todoPanel,
+				feedEntryCount: 5,
+				footerRows: 2,
+				hasMessages: false,
+			}),
+		);
+
+		expect(result.current.splitMode).toBe(false);
+		expect(result.current.messagePanelWidth).toBe(0);
+		expect(result.current.feedPanelWidth).toBe(result.current.innerWidth);
+	});
+});

@@ -42,7 +42,6 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 		error: false,
 		expandable: false,
 		details: '',
-		duplicateActor: false,
 		...overrides,
 	};
 }
@@ -50,9 +49,7 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 const defaultCols: FeedColumnWidths = {
 	toolW: 12,
 	detailsW: 30,
-	resultW: 8,
 	gapW: 1,
-	detailsResultGapW: 1,
 };
 
 function defaultParams(
@@ -364,7 +361,6 @@ describe('Parity: mixed tool rows and plain agent rows', () => {
 				actor: 'SUBAGENT',
 				actorId: 'agent:sub1',
 				summary: 'Delegated task result',
-				duplicateActor: true,
 				ts: FIXED_TS + 3,
 			}),
 			makeEntry({
