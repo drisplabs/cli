@@ -41,7 +41,6 @@ export type TimelineEntry = {
 	error: boolean;
 	expandable: boolean;
 	details: string;
-	duplicateActor: boolean;
 	feedEvent?: FeedEvent;
 	pairedPostEvent?: FeedEvent;
 };
@@ -69,18 +68,6 @@ export type SummaryResult = {
 export function opCategory(op: string): string {
 	const dot = op.indexOf('.');
 	return dot >= 0 ? op.slice(0, dot) : op;
-}
-
-export function computeDuplicateActors(entries: TimelineEntry[]): void {
-	for (let i = 0; i < entries.length; i++) {
-		const prev = i > 0 ? entries[i - 1]! : undefined;
-		const sameActor =
-			prev !== undefined && entries[i]!.actorId === prev.actorId;
-		const isBreak =
-			prev !== undefined &&
-			opCategory(entries[i]!.opTag) !== opCategory(prev.opTag);
-		entries[i]!.duplicateActor = sameActor && !isBreak;
-	}
 }
 
 /** Strip inline markdown syntax for compact single-line display. */

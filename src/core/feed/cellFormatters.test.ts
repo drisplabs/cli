@@ -14,8 +14,6 @@ import {
 	layoutTargetAndOutcome,
 	formatDetails,
 } from './cellFormatters';
-import type {TimelineEntry} from './timeline';
-import {computeDuplicateActors} from './timeline';
 
 const theme = darkTheme;
 
@@ -483,33 +481,5 @@ describe('formatDetails', () => {
 		} finally {
 			chalk.level = prevLevel;
 		}
-	});
-});
-
-describe('computeDuplicateActors', () => {
-	test('marks consecutive same-actor entries as duplicate', () => {
-		const entries = [
-			{actorId: 'a', opTag: 'tool.ok'},
-			{actorId: 'a', opTag: 'tool.ok'},
-			{actorId: 'b', opTag: 'tool.ok'},
-			{actorId: 'b', opTag: 'tool.ok'},
-		] as TimelineEntry[];
-		computeDuplicateActors(entries);
-		expect(entries[0]!.duplicateActor).toBe(false);
-		expect(entries[1]!.duplicateActor).toBe(true);
-		expect(entries[2]!.duplicateActor).toBe(false);
-		expect(entries[3]!.duplicateActor).toBe(true);
-	});
-
-	test('first entry is never duplicate', () => {
-		const entries = [{actorId: 'a', opTag: 'tool.ok'}] as TimelineEntry[];
-		computeDuplicateActors(entries);
-		expect(entries[0]!.duplicateActor).toBe(false);
-	});
-
-	test('empty array is a no-op', () => {
-		const entries: TimelineEntry[] = [];
-		computeDuplicateActors(entries);
-		expect(entries).toHaveLength(0);
 	});
 });

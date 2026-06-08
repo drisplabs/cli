@@ -15,7 +15,6 @@ import {
 	mergedEventOperation,
 	mergedEventSummary,
 	VERBOSE_ONLY_KINDS,
-	computeDuplicateActors,
 	type TimelineEntry,
 } from './timeline';
 
@@ -1366,20 +1365,6 @@ describe('VERBOSE_ONLY_KINDS', () => {
 	});
 });
 
-describe('computeDuplicateActors', () => {
-	it('resets at category boundaries', () => {
-		const entries = [
-			{actorId: 'agent:root', opTag: 'tool.ok', duplicateActor: false},
-			{actorId: 'agent:root', opTag: 'tool.ok', duplicateActor: false},
-			{actorId: 'agent:root', opTag: 'agent.msg', duplicateActor: false},
-		] as TimelineEntry[];
-		computeDuplicateActors(entries);
-		expect(entries[0]!.duplicateActor).toBe(false);
-		expect(entries[1]!.duplicateActor).toBe(true);
-		expect(entries[2]!.duplicateActor).toBe(false);
-	});
-});
-
 describe('mergedEventOperation', () => {
 	it('returns tool.ok when postEvent is tool.post', () => {
 		const pre = {
@@ -1645,7 +1630,6 @@ describe('isEntryStable', () => {
 			error: false,
 			expandable: false,
 			details: '',
-			duplicateActor: false,
 			...overrides,
 		}) as TimelineEntry;
 

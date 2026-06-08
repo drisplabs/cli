@@ -42,7 +42,6 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 		error: false,
 		expandable: false,
 		details: '',
-		duplicateActor: false,
 		...overrides,
 	};
 }
@@ -362,7 +361,6 @@ describe('Parity: mixed tool rows and plain agent rows', () => {
 				actor: 'SUBAGENT',
 				actorId: 'agent:sub1',
 				summary: 'Delegated task result',
-				duplicateActor: true,
 				ts: FIXED_TS + 3,
 			}),
 			makeEntry({
