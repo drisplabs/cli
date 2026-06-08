@@ -45,7 +45,8 @@ export type UseLayoutResult = {
 	messageContentRows: number;
 };
 
-const MESSAGE_PANEL_RATIO = 0.5;
+// Messages get the lion's share of the width; the feed is a slim side rail.
+const MESSAGE_PANEL_RATIO = 0.65;
 
 export function useLayout({
 	terminalRows,
