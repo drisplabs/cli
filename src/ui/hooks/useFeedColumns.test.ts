@@ -83,11 +83,18 @@ describe('useFeedColumns', () => {
 		expect(stabilized.detailsW).toBeLessThanOrEqual(previous.detailsW);
 	});
 
-	it('returns the previous object when stabilized widths are unchanged', () => {
-		const previous = computeFeedColumns([makeEntry({toolColumn: 'Read'})], 160);
-		const next = computeFeedColumns([makeEntry({toolColumn: 'Grep'})], 160);
-		const stabilized = stabilizeFeedColumns(previous, next, 160);
+	it('returns the previous object identity when a narrower next collapses back', () => {
+		// `next` genuinely differs (narrower TOOL column), but max()-stabilization
+		// collapses it back to `previous`, so the same object must be returned
+		// (no churn for memoized consumers).
+		const previous = computeFeedColumns(
+			[makeEntry({toolColumn: 'General Purpose'})],
+			160,
+		);
+		const next = computeFeedColumns([makeEntry({toolColumn: 'Read'})], 160);
+		expect(next.toolW).toBeLessThan(previous.toolW);
 
+		const stabilized = stabilizeFeedColumns(previous, next, 160);
 		expect(stabilized).toBe(previous);
 	});
 

@@ -381,8 +381,12 @@ describe('formatDetails', () => {
 
 			// Layout is unchanged; the outcome still appears inline.
 			expect(stripAnsi(errored)).toContain('File does not exist');
-			// Only the errored variant paints with the error color.
-			expect(errored).toContain(errEscape);
+			// Both the segment AND the outcome are independently tinted red —
+			// not just one region — so a regression that reddened only one would
+			// fail here.
+			expect(errored).toContain(errEscape + 'src/missing.tsx');
+			expect(errored).toContain(errEscape + 'File does not exist');
+			// The non-error variant paints neither region red.
 			expect(normal).not.toContain(errEscape);
 		} finally {
 			chalk.level = prevLevel;
@@ -450,6 +454,35 @@ describe('formatDetails', () => {
 		expect(plain.length).toBeLessThanOrEqual(14);
 		// The outcome survives; the path is the part that gets clipped.
 		expect(plain).toContain('exit 0');
+		// Prove the segment lost the contest for width (its tail is gone).
+		expect(plain).not.toContain('fit.tsx');
+	});
+
+	test('keeps the error tint on a narrow (inline-fallback) errored row', () => {
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+		try {
+			const errEscape = chalk.hex(theme.status.error)('§').split('§')[0]!;
+			const r = formatDetails({
+				segments: [
+					{text: 'a/very/long/path/that/will/not/fit.tsx', role: 'target'},
+				],
+				summary: 'a/very/long/path/that/will/not/fit.tsx',
+				outcome: 'ENOENT',
+				error: true,
+				mode: 'full',
+				// targetBudget = 14 - 6 - 2 = 6 < 10 → inline-fallback path.
+				contentWidth: 14,
+				theme,
+				opTag: 'tool.fail',
+			});
+			expect(stripAnsi(r).length).toBeLessThanOrEqual(14);
+			expect(stripAnsi(r)).toContain('ENOENT');
+			// The narrow row is still unmistakably red.
+			expect(r).toContain(errEscape);
+		} finally {
+			chalk.level = prevLevel;
+		}
 	});
 });
 

@@ -37,6 +37,17 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 	};
 }
 
+/**
+ * A minimal tool.failure feed event — enough for the row's pill-category
+ * resolution, which only reads `kind` and `data.tool_name`.
+ */
+function toolFailureEvent(toolName: string): TimelineEntry['feedEvent'] {
+	return {
+		kind: 'tool.failure',
+		data: {tool_name: toolName, tool_input: {}, error: 'boom'},
+	} as unknown as TimelineEntry['feedEvent'];
+}
+
 function rowLine(
 	entry: TimelineEntry,
 	overrides: Partial<Parameters<typeof formatFeedRowLine>[0]> = {},
@@ -97,6 +108,7 @@ describe('formatFeedRowLine', () => {
 				id: 'row-error',
 				opTag: 'tool.fail',
 				error: true,
+				feedEvent: toolFailureEvent('Read'),
 				summary: 'Read src/missing.ts',
 				summarySegments: [
 					{role: 'verb', text: 'Read'},
@@ -106,13 +118,72 @@ describe('formatFeedRowLine', () => {
 			});
 			const line = rowLine(entry);
 
+			const safeBg = chalk.bgHex(theme.toolPill.safe.bg)('§').split('§')[0]!;
 			// The inline error message is visible and tinted red.
 			expect(stripAnsi(line)).toContain('File does not exist');
 			expect(line).toContain(errEscape);
-			// The ACTION pill keeps a background fill (its category color), so a
-			// failed Read still looks different from a failed Bash — the pill is
-			// not flattened to the error red.
-			expect(line).toContain('[48;2;');
+			// The ACTION pill keeps its category background ('safe' for Read), so
+			// it is not flattened to the error red.
+			expect(line).toContain(safeBg);
+		} finally {
+			chalk.level = prevLevel;
+		}
+	});
+
+	test('a failed Read and a failed Bash keep distinct ACTION pill colors', () => {
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+		try {
+			const safeBg = chalk.bgHex(theme.toolPill.safe.bg)('§').split('§')[0]!;
+			const mutatingBg = chalk
+				.bgHex(theme.toolPill.mutating.bg)('§')
+				.split('§')[0]!;
+			const read = rowLine(
+				makeEntry({
+					id: 'fail-read',
+					opTag: 'tool.fail',
+					error: true,
+					toolColumn: 'Read',
+					feedEvent: toolFailureEvent('Read'),
+				}),
+			);
+			const bash = rowLine(
+				makeEntry({
+					id: 'fail-bash',
+					opTag: 'tool.fail',
+					error: true,
+					toolColumn: 'Bash',
+					feedEvent: toolFailureEvent('Bash'),
+				}),
+			);
+
+			// Even errored, a Read pill (safe) is a different color from a Bash
+			// pill (mutating) — the category survives the error styling.
+			expect(read).toContain(safeBg);
+			expect(read).not.toContain(mutatingBg);
+			expect(bash).toContain(mutatingBg);
+			expect(bash).not.toContain(safeBg);
+		} finally {
+			chalk.level = prevLevel;
+		}
+	});
+
+	test('error red does not clobber the search-match gutter glyph', () => {
+		const prevLevel = chalk.level;
+		chalk.level = 3;
+		try {
+			const accentEscape = chalk.hex(theme.accent)('§').split('§')[0]!;
+			const entry = makeEntry({
+				id: 'row-error-matched',
+				opTag: 'tool.fail',
+				error: true,
+				summaryOutcome: 'File does not exist',
+			});
+			const line = rowLine(entry, {matched: true});
+
+			// The match glyph keeps its accent "search hit" color even though the
+			// rest of the row is errored-red.
+			expect(line).toContain(accentEscape);
 		} finally {
 			chalk.level = prevLevel;
 		}

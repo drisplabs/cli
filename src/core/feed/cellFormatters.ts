@@ -361,7 +361,13 @@ export function formatDetails(opts: FormatDetailsOpts): string {
 			segClean + pad + stripAnsi(outcomeStr),
 			innerWidth,
 		);
-		return prefix.text + truncated;
+		// Re-apply the error tint the strip+refit above discarded, so a narrow
+		// errored row stays unmistakably red (the prefix is empty in full mode,
+		// which is the only mode that sets `error`).
+		return (
+			prefix.text +
+			(error ? chalk.hex(theme.status.error)(truncated) : truncated)
+		);
 	}
 
 	const segStr = renderSegments(

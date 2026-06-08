@@ -244,8 +244,10 @@ function lineParts({
 			ascii,
 			theme,
 		}),
-		// Tint the gutter red on an errored row; focus keeps its accent border.
-		errorActive ? theme.status.error : undefined,
+		// Tint the gutter red on an errored row, but never stomp a meaningful
+		// glyph: focus keeps its accent border, and a search-match / user-border
+		// gutter keeps its own signal color.
+		errorActive && !matched && !isUserBorder ? theme.status.error : undefined,
 	);
 	const time = cell(formatTime(entry.ts, 5, theme), rowTextOverrideColor);
 	// The ACTION pill keeps its tool-category color even on an errored row, so
