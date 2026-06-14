@@ -136,7 +136,6 @@ function FeedGridImpl({
 					entry.summary,
 					entry.summaryOutcome ?? '',
 					entry.error ? 'error' : 'ok',
-					entry.duplicateActor ? 'dup' : 'solo',
 					focusMode === 'feed' && idx === feedCursor ? 'focused' : 'plain',
 					searchMatchSet.has(idx) ? 'matched' : 'unmatched',
 				].join('|'),

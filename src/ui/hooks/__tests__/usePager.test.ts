@@ -52,7 +52,6 @@ function makeEntry(overrides: Partial<TimelineEntry> = {}): TimelineEntry {
 		error: false,
 		expandable: true,
 		details: 'details',
-		duplicateActor: false,
 		...overrides,
 	};
 }

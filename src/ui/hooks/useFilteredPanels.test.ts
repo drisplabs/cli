@@ -19,7 +19,6 @@ function makeEntry(overrides: Partial<TimelineEntry>): TimelineEntry {
 		error: overrides.error ?? false,
 		expandable: overrides.expandable ?? true,
 		details: overrides.details ?? '',
-		duplicateActor: overrides.duplicateActor ?? false,
 		feedEvent: overrides.feedEvent,
 		pairedPostEvent: overrides.pairedPostEvent,
 		runId: overrides.runId,
