@@ -39,15 +39,19 @@ Rules:
 ### Orient (Turn 1)
 
 1. **Replace the skeleton immediately**, before any domain work. Even a three-line tracker (goal + "orienting") protects you if the Turn dies during setup.
-2. Run the workflow's orientation steps. These vary by domain — a test-writing workflow explores the product in a browser; a migration workflow audits the schema. The workflow defines what orientation means.
-3. Refine the tracker into a granular plan. Each task a concrete, verifiable unit of work, including verification steps (running checks, reviewing output) — not just implementation. Vague tasks ("write tests") cannot be meaningfully resumed by a future Turn that has no idea what they mean here.
-4. Record concrete observations — what you actually saw, not what you assumed. Wrong assumptions burn entire future Turns on rework.
-5. **Single-Turn requests still go through this phase.** If the entire request is satisfied in one Turn, write a minimal tracker (what was asked, what was done, the outcome) and append `<!-- WORKFLOW_COMPLETE -->`. Leaving the skeleton in place causes the runner to classify the Turn as a failure.
+2. Identify and load the applicable workflow skills before doing domain work. If a workflow, plugin, or local skill table names a relevant skill, read it fully and follow it. Do not assume you already know the workflow's conventions, tool sequence, quality gates, or implementation details.
+3. Use a dedicated git worktree for repository-changing work. If you are not already inside a task-specific worktree, create or enter one before editing files, record its branch/path in the tracker, and continue there. Skip this only when the workflow explicitly forbids it or the task is read-only.
+4. Run the workflow's orientation steps exactly as written. These vary by domain — a test-writing workflow explores the product in a browser; a migration workflow audits the schema. The workflow defines what orientation means. Do not skip, reorder, reinterpret, or replace workflow steps with a generic approach unless the workflow explicitly allows it or the tracker records a concrete blocker that makes the written step impossible.
+5. Refine the tracker into a granular plan. Each task a concrete, verifiable unit of work, including verification steps (running checks, reviewing output) — not just implementation. Vague tasks ("write tests") cannot be meaningfully resumed by a future Turn that has no idea what they mean here.
+6. Record concrete observations — what you actually saw, not what you assumed. Wrong assumptions burn entire future Turns on rework.
+7. **Single-Turn requests still go through this phase.** If the entire request is satisfied in one Turn, write a minimal tracker (what was asked, what was done, the outcome) and append `<!-- WORKFLOW_COMPLETE -->`. Leaving the skeleton in place causes the runner to classify the Turn as a failure.
 
 ### Execute (Turn 2+)
 
 - Work from where the tracker says, in the workflow's prescribed sequence. Not every Turn covers every step.
-- If the workflow defines a skill table, **load the relevant skill before each activity**. Skills carry the implementation detail (scaffolding steps, locator rules, anti-patterns, code templates) that this protocol intentionally doesn't repeat.
+- Be strict with workflow steps. Before starting each unit, identify the next required workflow step from the workflow document and tracker, follow it as written, and record completion or blockers against that step. Do not substitute your own process, collapse separate gates into one, or advance past an unchecked step.
+- Be strict with skills. Before each new activity, check the workflow, plugin metadata, local skill table, and tracker for relevant skills. Load the appropriate skill first, read it completely, and follow its instructions. If no skill applies, record that explicitly in the tracker before proceeding. Skills carry the implementation detail (scaffolding steps, locator rules, anti-patterns, code templates) that this protocol intentionally doesn't repeat.
+- Keep repository work inside the recorded git worktree. If a continuation Turn starts outside the recorded worktree, enter it before editing. If no worktree is recorded and edits are still required, create or enter one before proceeding.
 - Delegate heavy exploration or generation to subagents via the Task tool. Pass file paths, conventions, and concrete output expectations; tell them which skill to load. Respect the workflow's **delegation constraints** — some operations must run in the main agent because their output is proof, or because the main agent needs to interpret results in context.
 - Run quality gates in order. Do not skip — they exist because skipping cascades into rework. On a failing verdict, address the issues and re-run before proceeding. Respect the workflow's **retry limits**: repeated failure usually signals a deeper issue another retry won't fix.
 
@@ -98,7 +102,9 @@ Work a bounded chunk per Turn. Ending early and letting the next Turn pick up fr
 - [ ] Replace the skeleton immediately, even for single-Turn requests
 - [ ] Update on concrete triggers — unit done, insight learned, risky op pending, plan changed
 - [ ] Project the tracker plan into task tools at Turn start; keep both in sync as work lands
-- [ ] Load the workflow's skill before each activity
+- [ ] Follow the workflow steps as written; do not skip, reorder, or substitute your own process
+- [ ] Load the appropriate skill before each activity; do not rely on assumed knowledge
+- [ ] Use and record a dedicated git worktree for repository-changing work
 - [ ] Run quality gates in order; respect delegation constraints and retry limits
 - [ ] Write the completion marker only when all work is verified
 - [ ] Checkpoint and end before context goes stale

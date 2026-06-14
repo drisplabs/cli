@@ -109,6 +109,41 @@ describe('workflow session planning', () => {
 		);
 	});
 
+	it('includes strict workflow step, skill loading, and git worktree discipline in looped workflow prompts', () => {
+		const projectDir = makeTempDir();
+		const workflowPath = path.join(projectDir, 'workflow.md');
+		fs.writeFileSync(workflowPath, '# Workflow Steps', 'utf-8');
+
+		const state = createWorkflowRunState({
+			projectDir,
+			sessionId: 'sess-1',
+			harness: 'openai-codex',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				workflowFile: 'workflow.md',
+				loop: {enabled: true, maxIterations: 5},
+			},
+		});
+
+		const instructions = (state.workflowOverride as Record<string, unknown>)[
+			'developerInstructions'
+		] as string;
+		expect(instructions).toContain('Be strict with workflow steps');
+		expect(instructions).toContain('follow it as written');
+		expect(instructions).toContain('Do not substitute your own process');
+		expect(instructions).toContain('Be strict with skills');
+		expect(instructions).toContain('read it completely');
+		expect(instructions).toContain(
+			'Do not assume you already know the workflow',
+		);
+		expect(instructions).toContain(
+			'Use a dedicated git worktree for repository-changing work',
+		);
+		expect(instructions).toContain('record its branch/path in the tracker');
+	});
+
 	it('uses non-codex harness task tools in composed state machine content', () => {
 		const projectDir = makeTempDir();
 		const workflowPath = path.join(projectDir, 'workflow.md');
