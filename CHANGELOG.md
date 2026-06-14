@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.20](https://github.com/drisplabs/cli/compare/cli-v0.5.19...cli-v0.5.20) (2026-06-14)
+
+
+### Bug Fixes
+
+* **workflows:** tighten state machine discipline ([8443de8](https://github.com/drisplabs/cli/commit/8443de8ce4dda7b0b1ce5df98645df2f7b099824))
+
 ## [0.5.18](https://github.com/drisplabs/cli/compare/cli-v0.5.17...cli-v0.5.18) (2026-06-07)
 
 
