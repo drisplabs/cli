@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.22](https://github.com/drisplabs/cli/compare/cli-v0.5.21...cli-v0.5.22) (2026-06-15)
+
+
+### Features
+
+* add terminal mouse mode toggle ([43925e0](https://github.com/drisplabs/cli/commit/43925e04c55fc665335716d8d81e89ef500a5b87))
+* **marketplace:** add refresh command ([8fde6da](https://github.com/drisplabs/cli/commit/8fde6da1bde3b2a09e6acddbaf712f8008869301))
+
 ## [0.5.21](https://github.com/drisplabs/cli/compare/cli-v0.5.20...cli-v0.5.21) (2026-06-15)
 
 
