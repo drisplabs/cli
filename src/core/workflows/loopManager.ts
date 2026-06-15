@@ -18,7 +18,7 @@ export const DEFAULT_TRACKER_PATH = '.athena/{sessionId}/tracker.md';
 export const TRACKER_SKELETON_MARKER = '<!-- TRACKER_SKELETON -->';
 
 const DEFAULT_CONTINUE_PROMPT =
-	'Continue the task. Read the tracker at {trackerPath} for current progress.';
+	'Continue the task. Read the tracker at {trackerPath} for current progress. If the work is complete or blocked, the terminal marker must be the final non-empty line of the tracker; do not write any prose after it.';
 
 export type LoopState = {
 	active: boolean;
@@ -29,6 +29,7 @@ export type LoopState = {
 	completed: boolean;
 	blocked: boolean;
 	blockedReason?: string;
+	misplacedTerminalMarker?: string;
 	reachedLimit: boolean;
 	skeletonNotReplaced: boolean;
 };
@@ -62,13 +63,35 @@ export function createLoopManager(
 		}
 	}
 
-	function getTerminalLine(content: string): string | undefined {
-		const lines = content
+	function getNonEmptyLines(content: string): string[] {
+		return content
 			.trimEnd()
 			.split('\n')
 			.map(line => line.trim())
 			.filter(line => line.length > 0);
+	}
+
+	function isBlockedLine(line: string): boolean {
+		return (
+			line === `${blockedMarker} -->` || line.startsWith(`${blockedMarker}:`)
+		);
+	}
+
+	function isTerminalMarkerLine(line: string): boolean {
+		return line === completionMarker || isBlockedLine(line);
+	}
+
+	function getTerminalLine(content: string): string | undefined {
+		const lines = getNonEmptyLines(content);
 		return lines.at(-1);
+	}
+
+	function getMisplacedTerminalMarker(content: string): string | undefined {
+		const lines = getNonEmptyLines(content);
+		if (lines.length < 2) return undefined;
+		const terminalLine = lines.at(-1);
+		if (terminalLine && isTerminalMarkerLine(terminalLine)) return undefined;
+		return lines.slice(0, -1).find(isTerminalMarkerLine);
 	}
 
 	function extractBlockedReason(line: string): string | undefined {
@@ -82,12 +105,10 @@ export function createLoopManager(
 		const content = readTracker();
 		const terminalLine = getTerminalLine(content);
 		const completed = terminalLine === completionMarker;
-		const blocked =
-			terminalLine !== undefined &&
-			(terminalLine === `${blockedMarker} -->` ||
-				terminalLine.startsWith(`${blockedMarker}:`));
+		const blocked = terminalLine !== undefined && isBlockedLine(terminalLine);
 		const blockedReason =
 			blocked && terminalLine ? extractBlockedReason(terminalLine) : undefined;
+		const misplacedTerminalMarker = getMisplacedTerminalMarker(content);
 		const reachedLimit = iteration >= config.maxIterations;
 		const skeletonNotReplaced = content.includes(TRACKER_SKELETON_MARKER);
 
@@ -100,6 +121,7 @@ export function createLoopManager(
 			completed,
 			blocked,
 			blockedReason,
+			misplacedTerminalMarker,
 			reachedLimit,
 			skeletonNotReplaced,
 		};

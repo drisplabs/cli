@@ -304,6 +304,51 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('fails fast when a terminal marker is not the final tracker line', async () => {
+		const projectDir = makeTempDir();
+		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				trackerPath,
+				[
+					'## Summary',
+					'All work was completed.',
+					'<!-- WORKFLOW_COMPLETE -->',
+					'Trailing summary that would otherwise cause another iteration.',
+				].join('\n'),
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('failed');
+		expect(result.stopReason).toContain('final non-empty line');
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				status: 'failed',
+				stopReason: expect.stringContaining('final non-empty line'),
+			}),
+		);
+	});
+
 	it('uses injected createTracker instead of fs', async () => {
 		const createTracker = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);

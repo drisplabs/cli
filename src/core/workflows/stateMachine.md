@@ -31,6 +31,7 @@ Default markers (workflows may override — use the markers configured for the a
 Rules:
 
 - Only the last non-empty line of the tracker is authoritative. Marker-like text in notes, examples, or quoted instructions earlier in the file is ignored.
+- When you write a terminal marker, it must be the final non-empty line of the tracker. Put every summary, status note, and next-step sentence before the marker. Never append prose after it.
 - The runner trusts markers unconditionally. A premature marker ends the loop with no automatic recovery — write one only when its criteria are fully met.
 - Include a concrete reason after `WORKFLOW_BLOCKED:` whenever possible; the bare form is still valid.
 
@@ -59,8 +60,8 @@ Rules:
 
 1. Tracker reflects all progress, discoveries, and blockers.
 2. Tracker says clearly what the next Turn should do first.
-3. If all work is verified: append the completion marker.
-4. If an unrecoverable blocker prevents progress: append the blocked marker, with a reason if you have one.
+3. If all work is verified: append the completion marker as the final non-empty line.
+4. If an unrecoverable blocker prevents progress: append the blocked marker as the final non-empty line, with a reason if you have one.
 
 ## When to write the tracker
 
@@ -106,5 +107,5 @@ Work a bounded chunk per Turn. Ending early and letting the next Turn pick up fr
 - [ ] Load the appropriate skill before each activity; do not rely on assumed knowledge
 - [ ] Use and record a dedicated git worktree for repository-changing work
 - [ ] Run quality gates in order; respect delegation constraints and retry limits
-- [ ] Write the completion marker only when all work is verified
+- [ ] Write the completion marker only when all work is verified, and make it the final non-empty line
 - [ ] Checkpoint and end before context goes stale
