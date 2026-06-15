@@ -81,7 +81,7 @@ describe('formatFeedHeaderLine', () => {
 });
 
 describe('formatFeedRowLine', () => {
-	test('omits the actor cell and folds the outcome inline into DETAILS', () => {
+	test('omits the actor cell and non-error result tail', () => {
 		const entry = makeEntry({
 			id: 'row-no-actor',
 			actor: 'SUBAGENT',
@@ -91,11 +91,29 @@ describe('formatFeedRowLine', () => {
 
 		// No standalone ACTOR cell renders the actor name anymore.
 		expect(line).not.toContain('SUBAGENT');
-		// The non-error outcome survives, folded into the end of DETAILS.
-		expect(line).toContain('13 files');
+		// Successful result summaries stay out of the feed row.
+		expect(line).not.toContain('13 files');
 		// Tool label and detail target are still present.
 		expect(line).toContain('Read');
 		expect(line).toContain('src/app.ts');
+	});
+
+	test('adds an ellipsis when the details cell is clipped', () => {
+		const entry = makeEntry({
+			id: 'row-ellipsis',
+			summary:
+				'Read src/features/feed/very-long-file-name-that-will-not-fit.ts',
+			summarySegments: [
+				{role: 'verb', text: 'Read'},
+				{
+					role: 'target',
+					text: ' src/features/feed/very-long-file-name-that-will-not-fit.ts',
+				},
+			],
+		});
+		const line = stripAnsi(rowLine(entry, {cols: {...cols, detailsW: 24}}));
+
+		expect(line).toContain('src/features/feed/ver...');
 	});
 
 	test('an errored row reds the gutter/time/details but keeps the ACTION pill color', () => {

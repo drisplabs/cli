@@ -262,7 +262,7 @@ function lineParts({
 	const detail = formatDetails({
 		segments: detailSummaryInfo.segments,
 		summary: detailSummaryInfo.summary,
-		outcome: entry.summaryOutcome,
+		outcome: errorActive ? entry.summaryOutcome : undefined,
 		outcomeZero: entry.summaryOutcomeZero,
 		error: errorActive,
 		mode: 'full',

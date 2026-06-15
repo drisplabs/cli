@@ -266,7 +266,7 @@ function renderSegments(
 		const normalizedText = normalizePathPrefix(seg.text);
 		const text =
 			normalizedText.length > remaining
-				? normalizedText.slice(0, remaining)
+				? fitImpl(normalizedText, remaining)
 				: normalizedText;
 		const styled = chalk.hex(roleColor(seg.role))(text);
 		result += shouldDim ? chalk.dim(styled) : styled;
