@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.21](https://github.com/drisplabs/cli/compare/cli-v0.5.20...cli-v0.5.21) (2026-06-15)
+
+
+### Bug Fixes
+
+* **feed:** refine row details ([1fd337e](https://github.com/drisplabs/cli/commit/1fd337e8b9d9e910798ae8d93e19080842ed8609))
+
 ## [0.5.20](https://github.com/drisplabs/cli/compare/cli-v0.5.19...cli-v0.5.20) (2026-06-14)
 
 
