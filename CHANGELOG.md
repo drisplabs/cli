@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.23](https://github.com/drisplabs/cli/compare/cli-v0.5.22...cli-v0.5.23) (2026-06-15)
+
+
+### Bug Fixes
+
+* **workflows:** prevent terminal marker loops ([888f75a](https://github.com/drisplabs/cli/commit/888f75a4d9b0ede3e76f40a8931238ac83859a41))
+* **workflows:** prevent terminal marker loops ([#93](https://github.com/drisplabs/cli/issues/93)) ([0c1af3f](https://github.com/drisplabs/cli/commit/0c1af3f3de83986d83a799109771d11dc28afd28))
+
 ## [0.5.22](https://github.com/drisplabs/cli/compare/cli-v0.5.21...cli-v0.5.22) (2026-06-15)
 
 
