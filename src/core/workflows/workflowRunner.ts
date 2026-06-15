@@ -276,6 +276,10 @@ export function createWorkflowRunner(
 						status = 'failed';
 						stopReason =
 							'tracker skeleton was never replaced — Claude did not bootstrap the tracker';
+					} else if (loopStop.reason === 'misplaced_terminal_marker') {
+						status = 'failed';
+						stopReason =
+							'terminal workflow marker is not the final non-empty line of the tracker; move all summary text above the marker';
 					} else {
 						status = 'failed';
 						stopReason = `Loop stopped: ${loopStop.reason}`;

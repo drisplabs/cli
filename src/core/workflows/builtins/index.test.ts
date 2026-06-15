@@ -38,6 +38,10 @@ describe('resolveBuiltinWorkflow', () => {
 		expect(prompt).toContain(DEFAULT_COMPLETION_MARKER);
 		expect(prompt).toContain(`${DEFAULT_BLOCKED_MARKER} -->`);
 		expect(prompt).toContain(`${DEFAULT_BLOCKED_MARKER}: reason -->`);
+		expect(prompt).toContain('final non-empty line of the tracker file');
+		expect(prompt).toContain(
+			'Do not write any tracker content after the terminal marker',
+		);
 		expect(prompt).not.toContain('TASK_COMPLETE');
 		expect(prompt).not.toContain('TASK_BLOCKED');
 	});

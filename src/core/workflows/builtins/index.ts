@@ -60,15 +60,17 @@ After completing meaningful work, update the tracker:
 
 When all steps are complete:
 1. Update the tracker with all steps checked off
-2. Add \`${DEFAULT_COMPLETION_MARKER}\` at the end of the tracker file
-3. Provide a summary of what was accomplished
+2. Put any final summary or outcome notes above the terminal marker
+3. Add \`${DEFAULT_COMPLETION_MARKER}\` as the final non-empty line of the tracker file
+4. Do not write any tracker content after the terminal marker
 
 ### Blocked
 
 If you are blocked and cannot make further progress:
 1. Document what is blocking you in the Notes section
-2. Add \`${DEFAULT_BLOCKED_CLOSED_MARKER}\` or \`${DEFAULT_BLOCKED_REASON_MARKER}\` at the end of the tracker file
-3. Explain what needs to happen to unblock the task whenever possible
+2. Explain what needs to happen to unblock the task whenever possible above the terminal marker
+3. Add \`${DEFAULT_BLOCKED_CLOSED_MARKER}\` or \`${DEFAULT_BLOCKED_REASON_MARKER}\` as the final non-empty line of the tracker file
+4. Do not write any tracker content after the terminal marker
 `;
 
 function ensureSystemPromptFile(): string {

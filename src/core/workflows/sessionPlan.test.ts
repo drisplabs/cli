@@ -131,6 +131,10 @@ describe('workflow session planning', () => {
 			'developerInstructions'
 		] as string;
 		expect(instructions).toContain('Be strict with workflow steps');
+		expect(instructions).toContain(
+			'terminal marker, it must be the final non-empty line',
+		);
+		expect(instructions).toContain('Never append prose after it');
 		expect(instructions).toContain('follow it as written');
 		expect(instructions).toContain('Do not substitute your own process');
 		expect(instructions).toContain('Be strict with skills');
@@ -254,6 +258,41 @@ describe('workflow session planning', () => {
 		expect(stopInfo).not.toBeNull();
 		expect(stopInfo!.reason).toBe('max_iterations');
 		expect(fs.existsSync(trackerPath)).toBe(true);
+	});
+
+	it('stops when a terminal marker has trailing tracker content', () => {
+		const projectDir = makeTempDir();
+		const trackerPath = path.join(projectDir, 'tracker.md');
+		fs.writeFileSync(
+			trackerPath,
+			[
+				'## Summary',
+				'Done.',
+				'<!-- DONE -->',
+				'Trailing summary after the terminal marker.',
+			].join('\n'),
+			'utf-8',
+		);
+
+		const state = createWorkflowRunState({
+			projectDir,
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: 'Execute: {input}',
+				loop: {
+					enabled: true,
+					completionMarker: '<!-- DONE -->',
+					maxIterations: 5,
+					trackerPath: 'tracker.md',
+				},
+			},
+		});
+
+		const stopInfo = shouldContinueWorkflowRun(state);
+		expect(stopInfo).not.toBeNull();
+		expect(stopInfo!.reason).toBe('misplaced_terminal_marker');
+		expect(state.loopManager).toBeNull();
 	});
 
 	it('records missing tracker as a loop stop reason', () => {

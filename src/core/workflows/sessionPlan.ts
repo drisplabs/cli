@@ -218,6 +218,14 @@ export function shouldContinueWorkflowRun(
 		};
 	}
 
+	if (loopState.misplacedTerminalMarker) {
+		cleanupWorkflowRun(state);
+		return {
+			reason: 'misplaced_terminal_marker',
+			maxIterations: loopState.maxIterations,
+		};
+	}
+
 	let reason: LoopStopReason | undefined;
 	if (loopState.completed) {
 		reason = 'completed';

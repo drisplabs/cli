@@ -70,6 +70,22 @@ describe('createLoopManager', () => {
 			expect(state.completed).toBe(false);
 		});
 
+		it('flags a standalone completion marker with trailing tracker content', () => {
+			files['/project/e2e-tracker.md'] = [
+				'# E2E Test Tracker',
+				'## Summary',
+				'Done and verified.',
+				'<!-- E2E_COMPLETE -->',
+				'Final summary accidentally written after the marker.',
+			].join('\n');
+
+			const mgr = createLoopManager('/project/e2e-tracker.md', DEFAULT_CONFIG);
+			const state = mgr.getState();
+
+			expect(state.completed).toBe(false);
+			expect(state.misplacedTerminalMarker).toBe('<!-- E2E_COMPLETE -->');
+		});
+
 		it('uses default WORKFLOW_COMPLETE marker when none specified', () => {
 			files['/project/tracker.md'] = '<!-- WORKFLOW_COMPLETE -->';
 			const mgr = createLoopManager('/project/tracker.md', {
@@ -144,6 +160,27 @@ describe('createLoopManager', () => {
 
 			expect(state.blocked).toBe(false);
 			expect(state.blockedReason).toBeUndefined();
+		});
+
+		it('flags a standalone blocked marker with trailing tracker content', () => {
+			files['/project/e2e-tracker.md'] = [
+				'# E2E Test Tracker',
+				'Waiting on external access.',
+				'<!-- E2E_BLOCKED: No browser access -->',
+				'Please retry tomorrow.',
+			].join('\n');
+
+			const config = {
+				...DEFAULT_CONFIG,
+				blockedMarker: '<!-- E2E_BLOCKED',
+			};
+			const mgr = createLoopManager('/project/e2e-tracker.md', config);
+			const state = mgr.getState();
+
+			expect(state.blocked).toBe(false);
+			expect(state.misplacedTerminalMarker).toBe(
+				'<!-- E2E_BLOCKED: No browser access -->',
+			);
 		});
 
 		it('detects reached iteration limit', () => {
@@ -227,5 +264,14 @@ describe('buildContinuePrompt', () => {
 			maxIterations: 5,
 		});
 		expect(result).toContain(DEFAULT_TRACKER_PATH);
+	});
+
+	it('reminds the agent that terminal markers must be final', () => {
+		const result = buildContinuePrompt({
+			enabled: true,
+			maxIterations: 5,
+		});
+		expect(result).toContain('final non-empty line');
+		expect(result).toContain('do not write any prose after it');
 	});
 });
