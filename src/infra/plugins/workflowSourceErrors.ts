@@ -29,7 +29,7 @@ export class WorkflowNotFoundError extends Error {
 			? searchedSources.join(', ')
 			: '(no marketplaces configured)';
 		super(
-			`Workflow "${workflowName}" not found in any configured marketplace (searched: ${sourceList}).`,
+			`Workflow "${workflowName}" not found in any configured marketplace (searched: ${sourceList}). If this workflow was recently added, run \`athena-flow marketplace refresh\` and try again.`,
 		);
 		this.name = 'WorkflowNotFoundError';
 		this.workflowName = workflowName;

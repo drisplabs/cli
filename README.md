@@ -107,6 +107,8 @@ Manage marketplace sources:
 ```bash
 drisp marketplace add owner/repo           # Add a marketplace source
 drisp marketplace add ./local/path         # Add a local marketplace
+drisp marketplace refresh                  # Refresh configured remote sources
+drisp marketplace refresh owner/repo       # Refresh one remote source
 drisp marketplace list                     # List configured sources
 drisp marketplace remove owner/repo        # Remove a source
 ```
@@ -248,7 +250,7 @@ Config merges in order: **global &rarr; project &rarr; CLI flags**.
 | `resume [id]`       | Resume most recent or specific session                       |
 | `exec "<prompt>"`   | Headless run for CI / scripting                              |
 | `workflow <sub>`    | `install` · `list` · `search` · `remove` · `upgrade` · `use` |
-| `marketplace <sub>` | `add` · `remove` · `list`                                    |
+| `marketplace <sub>` | `add` · `refresh` · `remove` · `list`                        |
 
 </details>
 

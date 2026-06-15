@@ -37,6 +37,7 @@ describe('WorkflowNotFoundError', () => {
 		expect(err.message).toContain('missing');
 		expect(err.message).toContain('owner/a');
 		expect(err.message).toContain('owner/b');
+		expect(err.message).toContain('athena-flow marketplace refresh');
 		expect(err.workflowName).toBe('missing');
 	});
 });

@@ -1,6 +1,7 @@
 import {
 	listMarketplaceWorkflows,
 	listMarketplaceWorkflowsFromRepo,
+	pullMarketplaceRepo,
 	resolveWorkflowMarketplaceSource,
 } from '../../infra/plugins/marketplace';
 import {readGlobalConfig, writeGlobalConfig} from '../../infra/plugins/config';
@@ -11,6 +12,7 @@ const USAGE = `Usage: athena-flow marketplace <subcommand>
 
 Subcommands
   add <source>       Add a marketplace source (owner/repo or local path)
+  refresh [source]   Refresh remote marketplace source(s)
   remove <source>    Remove a configured marketplace source
   list               List configured marketplace sources`;
 
@@ -22,6 +24,7 @@ export type MarketplaceCommandInput = {
 export type MarketplaceCommandDeps = {
 	listMarketplaceWorkflows?: typeof listMarketplaceWorkflows;
 	listMarketplaceWorkflowsFromRepo?: typeof listMarketplaceWorkflowsFromRepo;
+	pullMarketplaceRepo?: typeof pullMarketplaceRepo;
 	resolveWorkflowMarketplaceSource?: typeof resolveWorkflowMarketplaceSource;
 	readGlobalConfig?: typeof readGlobalConfig;
 	writeGlobalConfig?: typeof writeGlobalConfig;
@@ -37,6 +40,7 @@ export function runMarketplaceCommand(
 		deps.listMarketplaceWorkflows ?? listMarketplaceWorkflows;
 	const listMarketplaceFromRepo =
 		deps.listMarketplaceWorkflowsFromRepo ?? listMarketplaceWorkflowsFromRepo;
+	const pullMarketplace = deps.pullMarketplaceRepo ?? pullMarketplaceRepo;
 	const resolveMarketplaceSource =
 		deps.resolveWorkflowMarketplaceSource ?? resolveWorkflowMarketplaceSource;
 	const readConfig = deps.readGlobalConfig ?? readGlobalConfig;
@@ -57,7 +61,8 @@ export function runMarketplaceCommand(
 			try {
 				const resolvedSource = resolveMarketplaceSource(source);
 
-				// Validate by listing (also pulls remote repos)
+				// Validate by listing. Remote listing uses the clone-if-missing
+				// ensure policy; explicit refresh is handled by `marketplace refresh`.
 				if (resolvedSource.kind === 'remote') {
 					listMarketplace(resolvedSource.owner, resolvedSource.repo);
 				} else {
@@ -84,6 +89,37 @@ export function runMarketplaceCommand(
 				logError(fmtError(error));
 				return 1;
 			}
+		}
+
+		case 'refresh': {
+			const requested = input.subcommandArgs[0];
+			const configuredSources = readConfig().workflowMarketplaceSources;
+			const sources = requested
+				? [requested]
+				: configuredSources && configuredSources.length > 0
+					? configuredSources
+					: [DEFAULT_MARKETPLACE_SLUG];
+			let failures = 0;
+
+			for (const source of sources) {
+				try {
+					const resolvedSource = resolveMarketplaceSource(source);
+					if (resolvedSource.kind === 'remote') {
+						pullMarketplace(resolvedSource.owner, resolvedSource.repo);
+						logOut(`Refreshed marketplace: ${resolvedSource.slug}`);
+					} else {
+						listMarketplaceFromRepo(resolvedSource.repoDir);
+						logOut(
+							`Local marketplace does not require refresh: ${resolvedSource.repoDir}`,
+						);
+					}
+				} catch (error) {
+					failures += 1;
+					logError(fmtError(error));
+				}
+			}
+
+			return failures > 0 ? 1 : 0;
 		}
 
 		case 'remove': {

@@ -166,6 +166,189 @@ describe('runMarketplaceCommand', () => {
 		});
 	});
 
+	describe('refresh', () => {
+		it('refreshes a requested remote marketplace source', () => {
+			const logOut = vi.fn();
+			const pullMarketplaceRepo = vi.fn();
+			const resolveWorkflowMarketplaceSource = vi.fn().mockReturnValue({
+				kind: 'remote',
+				slug: 'owner/repo',
+				owner: 'owner',
+				repo: 'repo',
+			});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: ['owner/repo']},
+				{
+					pullMarketplaceRepo,
+					resolveWorkflowMarketplaceSource,
+					logOut,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(pullMarketplaceRepo).toHaveBeenCalledWith('owner', 'repo');
+			expect(logOut).toHaveBeenCalledWith('Refreshed marketplace: owner/repo');
+		});
+
+		it('refreshes configured remote marketplace sources when source is omitted', () => {
+			const logOut = vi.fn();
+			const pullMarketplaceRepo = vi.fn();
+			const readGlobalConfig = vi.fn().mockReturnValue({
+				plugins: [],
+				additionalDirectories: [],
+				workflowMarketplaceSources: ['owner/first', 'owner/second'],
+			});
+			const resolveWorkflowMarketplaceSource = vi
+				.fn()
+				.mockImplementation((source: string) => {
+					const [owner, repo] = source.split('/');
+					return {kind: 'remote', slug: source, owner, repo};
+				});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: []},
+				{
+					pullMarketplaceRepo,
+					readGlobalConfig,
+					resolveWorkflowMarketplaceSource,
+					logOut,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(pullMarketplaceRepo).toHaveBeenCalledWith('owner', 'first');
+			expect(pullMarketplaceRepo).toHaveBeenCalledWith('owner', 'second');
+			expect(logOut).toHaveBeenCalledWith('Refreshed marketplace: owner/first');
+			expect(logOut).toHaveBeenCalledWith(
+				'Refreshed marketplace: owner/second',
+			);
+		});
+
+		it('refreshes the default marketplace when no sources are configured', () => {
+			const logOut = vi.fn();
+			const pullMarketplaceRepo = vi.fn();
+			const readGlobalConfig = vi.fn().mockReturnValue({
+				plugins: [],
+				additionalDirectories: [],
+			});
+			const resolveWorkflowMarketplaceSource = vi.fn().mockReturnValue({
+				kind: 'remote',
+				slug: 'lespaceman/athena-workflow-marketplace',
+				owner: 'lespaceman',
+				repo: 'athena-workflow-marketplace',
+			});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: []},
+				{
+					pullMarketplaceRepo,
+					readGlobalConfig,
+					resolveWorkflowMarketplaceSource,
+					logOut,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(resolveWorkflowMarketplaceSource).toHaveBeenCalledWith(
+				'lespaceman/athena-workflow-marketplace',
+			);
+			expect(pullMarketplaceRepo).toHaveBeenCalledWith(
+				'lespaceman',
+				'athena-workflow-marketplace',
+			);
+		});
+
+		it('refreshes the default marketplace when configured sources are empty', () => {
+			const logOut = vi.fn();
+			const pullMarketplaceRepo = vi.fn();
+			const readGlobalConfig = vi.fn().mockReturnValue({
+				plugins: [],
+				additionalDirectories: [],
+				workflowMarketplaceSources: [],
+			});
+			const resolveWorkflowMarketplaceSource = vi.fn().mockReturnValue({
+				kind: 'remote',
+				slug: 'lespaceman/athena-workflow-marketplace',
+				owner: 'lespaceman',
+				repo: 'athena-workflow-marketplace',
+			});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: []},
+				{
+					pullMarketplaceRepo,
+					readGlobalConfig,
+					resolveWorkflowMarketplaceSource,
+					logOut,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(resolveWorkflowMarketplaceSource).toHaveBeenCalledWith(
+				'lespaceman/athena-workflow-marketplace',
+			);
+			expect(pullMarketplaceRepo).toHaveBeenCalledWith(
+				'lespaceman',
+				'athena-workflow-marketplace',
+			);
+		});
+
+		it('validates a local marketplace without pulling', () => {
+			const logOut = vi.fn();
+			const pullMarketplaceRepo = vi.fn();
+			const listMarketplaceWorkflowsFromRepo = vi.fn().mockReturnValue([]);
+			const resolveWorkflowMarketplaceSource = vi.fn().mockReturnValue({
+				kind: 'local',
+				repoDir: '/local/path',
+			});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: ['/local/path']},
+				{
+					pullMarketplaceRepo,
+					listMarketplaceWorkflowsFromRepo,
+					resolveWorkflowMarketplaceSource,
+					logOut,
+				},
+			);
+
+			expect(code).toBe(0);
+			expect(pullMarketplaceRepo).not.toHaveBeenCalled();
+			expect(listMarketplaceWorkflowsFromRepo).toHaveBeenCalledWith(
+				'/local/path',
+			);
+			expect(logOut).toHaveBeenCalledWith(
+				'Local marketplace does not require refresh: /local/path',
+			);
+		});
+
+		it('returns 1 when any refresh fails', () => {
+			const logError = vi.fn();
+			const pullMarketplaceRepo = vi.fn().mockImplementation(() => {
+				throw new Error('network failed');
+			});
+			const resolveWorkflowMarketplaceSource = vi.fn().mockReturnValue({
+				kind: 'remote',
+				slug: 'owner/repo',
+				owner: 'owner',
+				repo: 'repo',
+			});
+
+			const code = runMarketplaceCommand(
+				{subcommand: 'refresh', subcommandArgs: ['owner/repo']},
+				{
+					pullMarketplaceRepo,
+					resolveWorkflowMarketplaceSource,
+					logError,
+				},
+			);
+
+			expect(code).toBe(1);
+			expect(logError).toHaveBeenCalledWith('Error: network failed');
+		});
+	});
+
 	describe('remove', () => {
 		it('removes a configured source', () => {
 			const logOut = vi.fn();
