@@ -18,6 +18,7 @@ import setup from './setup';
 import {telemetryCommand} from './telemetry';
 import {workflowCommand} from './workflow';
 import {modelCommand} from './model';
+import {mouseCommand} from './mouse';
 
 const builtins = [
 	helpCommand,
@@ -31,6 +32,7 @@ const builtins = [
 	telemetryCommand,
 	workflowCommand,
 	modelCommand,
+	mouseCommand,
 ];
 
 let registered = false;

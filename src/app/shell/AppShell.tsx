@@ -286,6 +286,7 @@ function AppContent({
 	const [workflowPickerDismissible, setWorkflowPickerDismissible] =
 		useState(hadWorkflowOnMount);
 	const [modelPickerVisible, setModelPickerVisible] = useState(false);
+	const [mouseMode, setMouseMode] = useState<'on' | 'off'>('on');
 	const [uiState, setUiState] = useState(initialSessionUiState);
 	const [toastMessage, setToastMessage] = useState<string | null>(null);
 	const [diagnosticsConsent, setDiagnosticsConsent] = useState<
@@ -817,6 +818,8 @@ function AppContent({
 					addMessage: addMessageObj,
 					exit,
 					clearScreen,
+					mouseMode,
+					setMouseMode,
 					showSessions: onShowSessions,
 					showSetup: onShowSetup,
 					showWorkflowPicker: () => {
@@ -885,6 +888,7 @@ function AppContent({
 			runtimeError,
 			exit,
 			clearScreen,
+			mouseMode,
 			onShowSessions,
 			onShowSetup,
 			metrics,
@@ -1313,6 +1317,7 @@ function AppContent({
 	const {pagerActive, handleExpandForPager} = usePager({
 		displayedEntriesRef: displayedFeedEntriesRef,
 		feedCursorId: feedNav.feedCursorId,
+		mouseEnabled: mouseMode === 'on',
 		theme,
 	});
 
@@ -1420,6 +1425,7 @@ function AppContent({
 
 	usePanelMouseWheel({
 		isActive:
+			mouseMode === 'on' &&
 			!dialogActive &&
 			!pagerActive &&
 			!workflowPickerVisible &&

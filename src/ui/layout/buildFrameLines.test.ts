@@ -84,4 +84,15 @@ describe('buildFrameLines contextual prompt', () => {
 		});
 		expect(footerHelp).toContain('Filter');
 	});
+
+	it('shows native terminal selection hint', () => {
+		for (const focusMode of ['input', 'feed', 'messages', 'todo']) {
+			const {footerHelp} = buildFrameLines({
+				...baseCtx,
+				focusMode,
+			});
+			expect(footerHelp).toContain('Fn-drag');
+			expect(footerHelp).toContain('Select');
+		}
+	});
 });

@@ -26,12 +26,14 @@ function pagerContentRows(): number {
 export type UsePagerOptions = {
 	displayedEntriesRef: React.RefObject<TimelineEntry[]>;
 	feedCursorId: string | null;
+	mouseEnabled?: boolean;
 	theme?: Theme;
 };
 
 export function usePager({
 	displayedEntriesRef,
 	feedCursorId,
+	mouseEnabled = true,
 	theme,
 }: UsePagerOptions): {
 	pagerActive: boolean;
@@ -132,11 +134,13 @@ export function usePager({
 		pagerScrollRef.current = 0;
 		lastPairedPostRef.current = entry.pairedPostEvent;
 
-		// Enter alternate screen and enable SGR mouse tracking for wheel events
+		// Enter alternate screen and optionally enable SGR mouse tracking for wheel events.
 		process.stdout.write('\x1B[?1049h');
-		process.stdout.write('\x1B[?1000h\x1B[?1006h');
+		if (mouseEnabled) {
+			process.stdout.write('\x1B[?1000h\x1B[?1006h');
+		}
 		paintPager();
-	}, [pagerActive, paintPager, theme]);
+	}, [mouseEnabled, pagerActive, paintPager, theme]);
 
 	// While pager is active, AppShell still re-renders as feed events arrive.
 	// Ink can repaint an empty frame over the alternate-screen content, so
@@ -286,7 +290,7 @@ export function usePager({
 		return () => {
 			process.stdin.removeListener('data', onData);
 		};
-	}, [pagerActive, scrollPager]);
+	}, [mouseEnabled, pagerActive, scrollPager]);
 
 	return {pagerActive, handleExpandForPager};
 }

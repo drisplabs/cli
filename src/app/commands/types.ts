@@ -61,6 +61,8 @@ export type UICommandContext = {
 	addMessage: (msg: Omit<Message, 'seq'>) => void;
 	exit: () => void;
 	clearScreen: () => void;
+	mouseMode: 'on' | 'off';
+	setMouseMode: (mode: 'on' | 'off') => void;
 	showSessions: () => void;
 	showSetup: () => void;
 	showWorkflowPicker: () => void;

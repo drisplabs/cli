@@ -52,6 +52,7 @@ export function buildFrameLines(ctx: FrameContext): FrameLines {
 				[h.space, 'Toggle'],
 				[h.enter, 'Jump'],
 				['a', 'Prompt'],
+				['Fn-drag', 'Select'],
 				[h.escape, 'Back'],
 			]);
 		}
@@ -67,6 +68,7 @@ export function buildFrameLines(ctx: FrameContext): FrameLines {
 			inputPairs.push(
 				[h.tab, 'Focus'],
 				['⌃P/N', 'History'],
+				['Fn-drag', 'Select'],
 				[h.toggle, 'Hints'],
 			);
 			return buildHintPairs(inputPairs);
@@ -80,6 +82,7 @@ export function buildFrameLines(ctx: FrameContext): FrameLines {
 				['/', 'Cmds'],
 				[':', 'Search'],
 				['End', 'Tail'],
+				['Fn-drag', 'Select'],
 			];
 			if (ctx.isClaudeRunning) {
 				messagePairs.push([`${h.escape} ${h.escape}`, 'Interrupt']);
@@ -102,6 +105,7 @@ export function buildFrameLines(ctx: FrameContext): FrameLines {
 			['/', 'Cmds'],
 			[':', 'Search'],
 			['End', 'Tail'],
+			['Fn-drag', 'Select'],
 		];
 		if (ctx.isClaudeRunning) {
 			feedPairs.push([`${h.escape} ${h.escape}`, 'Interrupt']);

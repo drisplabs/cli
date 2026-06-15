@@ -53,7 +53,12 @@ function makeUIContext(
 		addMessage: vi.fn(),
 		exit: vi.fn(),
 		clearScreen: vi.fn(),
+		mouseMode: 'on',
+		setMouseMode: vi.fn(),
 		showSessions: vi.fn(),
+		showSetup: vi.fn(),
+		showWorkflowPicker: vi.fn(),
+		showModelPicker: vi.fn(),
 		sessionStats: makeSessionStats(),
 		...overrides,
 	};
