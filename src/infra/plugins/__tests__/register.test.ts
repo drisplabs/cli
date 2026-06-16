@@ -275,6 +275,67 @@ describe('buildPluginMcpConfig', () => {
 		expect(written.mcpServers).toHaveProperty('serverB');
 		expect(written.mcpServers).not.toHaveProperty('serverA');
 	});
+
+	it('injects personal MCP servers even when there are no plugin dirs', async () => {
+		const fs = await import('node:fs');
+
+		const result = buildPluginMcpConfig([], undefined, [
+			{
+				name: 'fs',
+				command: 'npx',
+				args: ['-y', 'server'],
+				sourceLayer: 'global',
+			},
+		]);
+
+		expect(result).toBeDefined();
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers.fs).toEqual({
+			command: 'npx',
+			args: ['-y', 'server'],
+		});
+		// name/sourceLayer are stripped from the written harness config
+		expect(written.mcpServers.fs).not.toHaveProperty('name');
+		expect(written.mcpServers.fs).not.toHaveProperty('sourceLayer');
+	});
+
+	it('merges personal servers alongside plugin servers', async () => {
+		const fs = await import('node:fs');
+		addPlugin('/plugins/a', {
+			mcpServers: {serverA: {command: 'node', args: ['a.js']}},
+		});
+
+		buildPluginMcpConfig(['/plugins/a'], undefined, [
+			{name: 'fs', command: 'npx', sourceLayer: 'project'},
+		]);
+
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers).toHaveProperty('serverA');
+		expect(written.mcpServers.fs).toEqual({command: 'npx'});
+	});
+
+	it('lets a workflow plugin win on name collision with a personal server (no throw)', async () => {
+		const fs = await import('node:fs');
+		addPlugin('/plugins/a', {
+			mcpServers: {shared: {command: 'plugin-cmd'}},
+		});
+
+		expect(() =>
+			buildPluginMcpConfig(['/plugins/a'], undefined, [
+				{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+			]),
+		).not.toThrow();
+
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers.shared.command).toBe('plugin-cmd');
+	});
+
+	it('returns undefined when there are no plugin or personal servers', () => {
+		expect(buildPluginMcpConfig([], undefined, [])).toBeUndefined();
+	});
 });
 
 describe('registerPlugins with MCP disabled', () => {

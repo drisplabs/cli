@@ -7,6 +7,7 @@ import {
 	type AthenaConfig,
 	type AthenaHarness,
 } from '../../infra/plugins/index';
+import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
 import {shouldResolveWorkflow} from '../../setup/shouldResolveWorkflow';
 import type {
 	HarnessProcessConfig,
@@ -126,8 +127,14 @@ export function bootstrapRuntimeConfig({
 		projectPlugins: projectConfig.plugins,
 		pluginFlags,
 	});
+	// Personal MCP servers (Issue 2) are injected for the claude-code path only.
+	// The openai-codex path keeps its separate workflowPluginMcpConfig flow.
+	const personalMcpServers =
+		harness === 'openai-codex'
+			? []
+			: resolveEffectiveCapabilities({globalConfig, projectConfig}).mcpServers;
 	const pluginResult =
-		pluginDirs.length > 0
+		pluginDirs.length > 0 || personalMcpServers.length > 0
 			? registerPlugins(
 					pluginDirs,
 					workflowToResolve
@@ -135,6 +142,7 @@ export function bootstrapRuntimeConfig({
 								?.mcpServerOptions
 						: undefined,
 					harness !== 'openai-codex',
+					personalMcpServers,
 				)
 			: {mcpConfig: undefined};
 	const workflowPluginMcpConfig =

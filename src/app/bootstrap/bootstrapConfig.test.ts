@@ -21,7 +21,14 @@ vi.mock('../../infra/plugins/index', async () => {
 			dirs: string[],
 			mcpServerOptions?: Record<string, Record<string, string>>,
 			includeMcpConfig?: boolean,
-		) => registerPluginsMock(dirs, mcpServerOptions, includeMcpConfig),
+			personalMcpServers?: unknown[],
+		) =>
+			registerPluginsMock(
+				dirs,
+				mcpServerOptions,
+				includeMcpConfig,
+				personalMcpServers,
+			),
 		buildPluginMcpConfig: (
 			dirs: string[],
 			mcpServerOptions?: Record<string, Record<string, string>>,
@@ -197,6 +204,7 @@ describe('bootstrapRuntimeConfig', () => {
 				'agent-web-interface': {AWI_HEADLESS: 'true'},
 			},
 			true,
+			[],
 		);
 		expect(result.workflow?.name).toBe('e2e-test-builder');
 		expect(result.workflowRef).toBe('e2e-test-builder');
@@ -373,7 +381,35 @@ describe('bootstrapRuntimeConfig', () => {
 			['/global-plugin', '/project-plugin'],
 			{projectServer: {PROJECT: 'true'}},
 			true,
+			[],
 		);
+	});
+
+	it('injects effective personal MCP servers even with no plugin dirs', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			mcpServers: {fs: {command: 'npx', args: ['-y', 'server']}},
+		});
+		readConfigMock.mockReturnValue({...emptyConfig});
+		registerPluginsMock.mockReturnValue({mcpConfig: '/tmp/personal-mcp.json'});
+		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		// gate fires despite zero plugin dirs; resolved personal servers forwarded
+		expect(registerPluginsMock).toHaveBeenCalledWith([], undefined, true, [
+			{
+				name: 'fs',
+				command: 'npx',
+				args: ['-y', 'server'],
+				sourceLayer: 'global',
+			},
+		]);
+		expect(result.pluginMcpConfig).toBe('/tmp/personal-mcp.json');
 	});
 
 	it('does not probe Claude-specific model sources for non-claude harnesses', () => {
@@ -565,6 +601,7 @@ describe('bootstrapRuntimeConfig', () => {
 			['/global-plugin', '/project-plugin', '/cli-plugin'],
 			undefined,
 			false,
+			[],
 		);
 		expect(buildPluginMcpConfigMock).toHaveBeenCalledWith(
 			['/workflow-plugin'],

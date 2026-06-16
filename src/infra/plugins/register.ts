@@ -11,6 +11,7 @@ import path from 'node:path';
 import {register} from '../../app/commands/registry';
 import {loadPlugin} from './loader';
 import type {McpServerChoices} from './config';
+import type {EffectiveMcpServer} from '../capabilities/effective';
 
 export type PluginRegistrationResult = {
 	mcpConfig?: string;
@@ -19,6 +20,7 @@ export type PluginRegistrationResult = {
 export function buildPluginMcpConfig(
 	pluginDirs: string[],
 	mcpServerOptions?: McpServerChoices,
+	personalMcpServers: EffectiveMcpServer[] = [],
 ): string | undefined {
 	const mergedServers: Record<string, Record<string, unknown>> = {};
 
@@ -56,6 +58,21 @@ export function buildPluginMcpConfig(
 		}
 	}
 
+	// Merge personal MCP servers after workflow-plugin servers. On a name
+	// collision the workflow plugin wins and the personal server is skipped
+	// (provisional — conflict UX is owned by a later issue). The `name` and
+	// `sourceLayer` bookkeeping fields are stripped before writing.
+	for (const {
+		name,
+		sourceLayer: _sourceLayer,
+		...server
+	} of personalMcpServers) {
+		if (name in mergedServers) {
+			continue;
+		}
+		mergedServers[name] = server;
+	}
+
 	if (Object.keys(mergedServers).length === 0) {
 		return undefined;
 	}
@@ -77,6 +94,7 @@ export function registerPlugins(
 	pluginDirs: string[],
 	mcpServerOptions?: McpServerChoices,
 	includeMcpConfig = true,
+	personalMcpServers: EffectiveMcpServer[] = [],
 ): PluginRegistrationResult {
 	for (const dir of pluginDirs) {
 		const commands = loadPlugin(dir);
@@ -86,7 +104,7 @@ export function registerPlugins(
 	}
 
 	const mcpConfig = includeMcpConfig
-		? buildPluginMcpConfig(pluginDirs, mcpServerOptions)
+		? buildPluginMcpConfig(pluginDirs, mcpServerOptions, personalMcpServers)
 		: undefined;
 
 	return {mcpConfig};
