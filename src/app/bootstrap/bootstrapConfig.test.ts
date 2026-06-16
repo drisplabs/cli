@@ -117,7 +117,15 @@ describe('bootstrapRuntimeConfig', () => {
 		readGlobalConfigMock.mockReset();
 		readConfigMock.mockReset();
 		registerPluginsMock.mockReset();
+		registerPluginsMock.mockReturnValue({
+			mcpConfig: undefined,
+			conflicts: {mcpServers: [], skills: []},
+		});
 		buildPluginMcpConfigMock.mockReset();
+		buildPluginMcpConfigMock.mockReturnValue({
+			mcpConfig: undefined,
+			conflicts: [],
+		});
 		resolveWorkflowMock.mockReset();
 		installWorkflowPluginsMock.mockReset();
 		installWorkflowPluginsMock.mockReturnValue([]);
@@ -510,6 +518,59 @@ describe('bootstrapRuntimeConfig', () => {
 		expect(result.personalSkills).toEqual([]);
 	});
 
+	it('surfaces capability conflicts from registerPlugins on the output (AC3)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			mcpServers: {shared: {command: 'personal-cmd'}},
+			skills: [{name: 'dup', source: './dup', path: '/abs/dup'}],
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		registerPluginsMock.mockReturnValue({
+			mcpConfig: undefined,
+			conflicts: {
+				mcpServers: [
+					{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+				],
+				skills: [
+					{
+						name: 'dup',
+						source: './dup',
+						path: '/abs/dup',
+						sourceLayer: 'global',
+					},
+				],
+			},
+		});
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(result.capabilityConflicts).toEqual({
+			mcpServers: [
+				{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+			],
+			skills: [
+				{name: 'dup', source: './dup', path: '/abs/dup', sourceLayer: 'global'},
+			],
+		});
+	});
+
+	it('exposes empty capability conflicts when nothing is configured (AC3 none)', () => {
+		readGlobalConfigMock.mockReturnValue(emptyConfig);
+		readConfigMock.mockReturnValue(emptyConfig);
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(result.capabilityConflicts).toEqual({mcpServers: [], skills: []});
+	});
+
 	it('does not probe Claude-specific model sources for non-claude harnesses', () => {
 		process.env['ANTHROPIC_MODEL'] = 'anthropic-env-model';
 		readGlobalConfigMock.mockReturnValue({
@@ -685,8 +746,12 @@ describe('bootstrapRuntimeConfig', () => {
 		});
 		registerPluginsMock.mockReturnValue({
 			mcpConfig: '/tmp/all-plugin-mcp.json',
+			conflicts: {mcpServers: [], skills: []},
 		});
-		buildPluginMcpConfigMock.mockReturnValue('/tmp/workflow-only-mcp.json');
+		buildPluginMcpConfigMock.mockReturnValue({
+			mcpConfig: '/tmp/workflow-only-mcp.json',
+			conflicts: [],
+		});
 
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',

@@ -16,16 +16,36 @@ import type {
 	EffectiveSkill,
 } from '../capabilities/effective';
 
+/**
+ * Personal capabilities (MCP servers + skills) that were shadowed by a
+ * same-named workflow-plugin capability and therefore skipped. Loading
+ * behavior is unchanged (plugin wins); this records what was dropped so the
+ * reporting surfaces can surface it. Entries retain their `sourceLayer`;
+ * downstream reporting strips to name + layer only.
+ */
+export type CapabilityConflicts = {
+	mcpServers: EffectiveMcpServer[];
+	skills: EffectiveSkill[];
+};
+
 export type PluginRegistrationResult = {
 	mcpConfig?: string;
+	conflicts: CapabilityConflicts;
+};
+
+export type BuildPluginMcpConfigResult = {
+	mcpConfig?: string;
+	/** Personal MCP servers skipped because a plugin server shares their name. */
+	conflicts: EffectiveMcpServer[];
 };
 
 export function buildPluginMcpConfig(
 	pluginDirs: string[],
 	mcpServerOptions?: McpServerChoices,
 	personalMcpServers: EffectiveMcpServer[] = [],
-): string | undefined {
+): BuildPluginMcpConfigResult {
 	const mergedServers: Record<string, Record<string, unknown>> = {};
+	const conflicts: EffectiveMcpServer[] = [];
 
 	for (const dir of pluginDirs) {
 		const mcpPath = path.join(dir, '.mcp.json');
@@ -65,24 +85,22 @@ export function buildPluginMcpConfig(
 	// collision the workflow plugin wins and the personal server is skipped
 	// (provisional — conflict UX is owned by a later issue). The `name` and
 	// `sourceLayer` bookkeeping fields are stripped before writing.
-	for (const {
-		name,
-		sourceLayer: _sourceLayer,
-		...server
-	} of personalMcpServers) {
+	for (const personal of personalMcpServers) {
+		const {name, sourceLayer: _sourceLayer, ...server} = personal;
 		if (name in mergedServers) {
+			conflicts.push(personal);
 			continue;
 		}
 		mergedServers[name] = server;
 	}
 
 	if (Object.keys(mergedServers).length === 0) {
-		return undefined;
+		return {mcpConfig: undefined, conflicts};
 	}
 
 	const mcpConfig = path.join(os.tmpdir(), `athena-mcp-${process.pid}.json`);
 	fs.writeFileSync(mcpConfig, JSON.stringify({mcpServers: mergedServers}));
-	return mcpConfig;
+	return {mcpConfig, conflicts};
 }
 
 /**
@@ -110,17 +128,27 @@ export function registerPlugins(
 	// Register personal skills after workflow-plugin skills. On a name collision
 	// the workflow plugin wins and the personal skill is skipped (provisional —
 	// conflict UX is owned by a later issue). Pre-checking the registry avoids
-	// register()'s throw-on-collision.
+	// register()'s throw-on-collision. The skipped entry is recorded as a
+	// conflict, resolved back to its EffectiveSkill (for sourceLayer) by name.
+	const skillByName = new Map(personalSkills.map(skill => [skill.name, skill]));
+	const skillConflicts: EffectiveSkill[] = [];
 	for (const command of loadPersonalSkills(personalSkills)) {
 		if (get(command.name)) {
+			const shadowed = skillByName.get(command.name);
+			if (shadowed) {
+				skillConflicts.push(shadowed);
+			}
 			continue;
 		}
 		register(command);
 	}
 
-	const mcpConfig = includeMcpConfig
+	const mcpResult = includeMcpConfig
 		? buildPluginMcpConfig(pluginDirs, mcpServerOptions, personalMcpServers)
-		: undefined;
+		: {mcpConfig: undefined, conflicts: []};
 
-	return {mcpConfig};
+	return {
+		mcpConfig: mcpResult.mcpConfig,
+		conflicts: {mcpServers: mcpResult.conflicts, skills: skillConflicts},
+	};
 }

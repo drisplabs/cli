@@ -6,6 +6,7 @@ import {
 	resolveActiveWorkflow,
 	type AthenaConfig,
 	type AthenaHarness,
+	type CapabilityConflicts,
 } from '../../infra/plugins/index';
 import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
 import type {
@@ -58,6 +59,12 @@ export type RuntimeBootstrapOutput = {
 	personalMcpServers: EffectiveMcpServer[];
 	/** Effective personal skills injected into the session (claude-code only; codex → []). */
 	personalSkills: EffectiveSkill[];
+	/**
+	 * Personal capabilities shadowed by a same-named workflow plugin (plugin
+	 * wins, personal skipped). Empty when there are no collisions or no
+	 * personal capabilities (codex → empty).
+	 */
+	capabilityConflicts: CapabilityConflicts;
 	warnings: string[];
 };
 
@@ -158,7 +165,7 @@ export function bootstrapRuntimeConfig({
 					personalMcpServers,
 					personalSkills,
 				)
-			: {mcpConfig: undefined};
+			: {mcpConfig: undefined, conflicts: {mcpServers: [], skills: []}};
 	const workflowPluginMcpConfig =
 		harness === 'openai-codex'
 			? buildPluginMcpConfig(
@@ -167,7 +174,7 @@ export function bootstrapRuntimeConfig({
 						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
 								?.mcpServerOptions
 						: undefined,
-				)
+				).mcpConfig
 			: undefined;
 	const pluginMcpConfig =
 		harness === 'openai-codex' ? undefined : pluginResult.mcpConfig;
@@ -235,6 +242,7 @@ export function bootstrapRuntimeConfig({
 		modelName,
 		personalMcpServers,
 		personalSkills,
+		capabilityConflicts: pluginResult.conflicts,
 		warnings,
 	};
 }
