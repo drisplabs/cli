@@ -25,6 +25,32 @@ export type WorkflowSelection = {
 };
 export type WorkflowSelections = Record<string, WorkflowSelection>;
 
+/**
+ * A personal MCP server configured directly by the user (not via a workflow
+ * plugin). Mirrors the `.mcp.json` server shape minus workflow-only `options`.
+ */
+export type PersonalMcpServer = {
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+};
+
+/** Personal MCP servers by server name. */
+export type PersonalMcpServers = Record<string, PersonalMcpServer>;
+
+/**
+ * A personal skill installed directly by the user (not via a workflow plugin).
+ * `name` is the skill's frontmatter name (used for remove-by-name + dedup);
+ * `source` is the installed ref/path (used for remove-by-ref / reinstall);
+ * `path` is the resolved local SKILL.md directory (absolute, set at install
+ * time in Issue 3). Stored opaque — `path` is NOT relative-resolved on read.
+ */
+export type PersonalSkillEntry = {
+	name: string;
+	source: string;
+	path: string;
+};
+
 export type AthenaConfig = {
 	plugins: string[];
 	/** Additional directories to grant Claude access to (passed as --add-dir flags) */
@@ -56,6 +82,16 @@ export type AthenaConfig = {
 	 * exec mode.
 	 */
 	channels?: string[];
+	/**
+	 * Personal MCP servers configured directly by the user, keyed by name.
+	 * Merged with workflow-plugin MCP servers when launching Agent Sessions.
+	 */
+	mcpServers?: PersonalMcpServers;
+	/**
+	 * Personal skills installed directly by the user. Merged with
+	 * workflow-plugin skills when launching Agent Sessions.
+	 */
+	skills?: PersonalSkillEntry[];
 };
 
 const EMPTY_CONFIG: AthenaConfig = {plugins: [], additionalDirectories: []};
@@ -169,6 +205,8 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetryDiagnostics?: boolean;
 		deviceId?: string;
 		channels?: string[];
+		mcpServers?: PersonalMcpServers;
+		skills?: PersonalSkillEntry[];
 	};
 
 	if ('workflowMarketplaceSource' in (raw as Record<string, unknown>)) {
@@ -242,6 +280,11 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetryDiagnostics: raw.telemetryDiagnostics,
 		deviceId: raw.deviceId,
 		channels: raw.channels,
+		// Personal capabilities are stored opaque. In particular skill `path`
+		// is NOT relative-resolved against baseDir (R1) — Issue 3 resolves it
+		// to an absolute path at install time.
+		mcpServers: raw.mcpServers,
+		skills: raw.skills,
 	};
 }
 
