@@ -22,12 +22,14 @@ vi.mock('../../infra/plugins/index', async () => {
 			mcpServerOptions?: Record<string, Record<string, string>>,
 			includeMcpConfig?: boolean,
 			personalMcpServers?: unknown[],
+			personalSkills?: unknown[],
 		) =>
 			registerPluginsMock(
 				dirs,
 				mcpServerOptions,
 				includeMcpConfig,
 				personalMcpServers,
+				personalSkills,
 			),
 		buildPluginMcpConfig: (
 			dirs: string[],
@@ -204,6 +206,7 @@ describe('bootstrapRuntimeConfig', () => {
 				'agent-web-interface': {AWI_HEADLESS: 'true'},
 			},
 			true,
+			[],
 			[],
 		);
 		expect(result.workflow?.name).toBe('e2e-test-builder');
@@ -382,6 +385,7 @@ describe('bootstrapRuntimeConfig', () => {
 			{projectServer: {PROJECT: 'true'}},
 			true,
 			[],
+			[],
 		);
 	});
 
@@ -401,15 +405,53 @@ describe('bootstrapRuntimeConfig', () => {
 		});
 
 		// gate fires despite zero plugin dirs; resolved personal servers forwarded
-		expect(registerPluginsMock).toHaveBeenCalledWith([], undefined, true, [
-			{
-				name: 'fs',
-				command: 'npx',
-				args: ['-y', 'server'],
-				sourceLayer: 'global',
-			},
-		]);
+		expect(registerPluginsMock).toHaveBeenCalledWith(
+			[],
+			undefined,
+			true,
+			[
+				{
+					name: 'fs',
+					command: 'npx',
+					args: ['-y', 'server'],
+					sourceLayer: 'global',
+				},
+			],
+			[],
+		);
 		expect(result.pluginMcpConfig).toBe('/tmp/personal-mcp.json');
+	});
+
+	it('injects effective personal skills even with no plugin dirs', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
+		});
+		readConfigMock.mockReturnValue({...emptyConfig});
+		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
+
+		bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		// gate fires despite zero plugin dirs + zero personal MCP; skills forwarded
+		expect(registerPluginsMock).toHaveBeenCalledWith(
+			[],
+			undefined,
+			true,
+			[],
+			[
+				{
+					name: 'greet',
+					source: './greet',
+					path: '/abs/greet',
+					sourceLayer: 'global',
+				},
+			],
+		);
 	});
 
 	it('does not probe Claude-specific model sources for non-claude harnesses', () => {
@@ -601,6 +643,7 @@ describe('bootstrapRuntimeConfig', () => {
 			['/global-plugin', '/project-plugin', '/cli-plugin'],
 			undefined,
 			false,
+			[],
 			[],
 		);
 		expect(buildPluginMcpConfigMock).toHaveBeenCalledWith(

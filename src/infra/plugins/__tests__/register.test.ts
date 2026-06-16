@@ -338,6 +338,62 @@ describe('buildPluginMcpConfig', () => {
 	});
 });
 
+function addPersonalSkill(dir: string, name: string): void {
+	files[dir] = '';
+	files[`${dir}/SKILL.md`] =
+		`---\nname: ${name}\ndescription: Personal ${name}\n---\nBody`;
+}
+
+describe('registerPlugins with personal skills', () => {
+	it('registers a personal skill as an invocable command', () => {
+		addPersonalSkill('/personal/greet', 'greet');
+
+		registerPlugins(
+			[],
+			undefined,
+			true,
+			[],
+			[
+				{
+					name: 'greet',
+					source: '/personal/greet',
+					path: '/personal/greet',
+					sourceLayer: 'global',
+				},
+			],
+		);
+
+		expect(get('greet')).toBeDefined();
+		expect(get('greet')!.name).toBe('greet');
+	});
+
+	it('lets a workflow plugin win on a skill name collision (personal skipped, no throw)', () => {
+		addPlugin('/plugins/a', {skillName: 'shared'});
+		addPersonalSkill('/personal/shared', 'shared');
+
+		expect(() =>
+			registerPlugins(
+				['/plugins/a'],
+				undefined,
+				true,
+				[],
+				[
+					{
+						name: 'shared',
+						source: '/personal/shared',
+						path: '/personal/shared',
+						sourceLayer: 'project',
+					},
+				],
+			),
+		).not.toThrow();
+
+		// Plugin command wins — its description differs from the personal one.
+		expect(get('shared')).toBeDefined();
+		expect(get('shared')!.description).toBe('Test');
+	});
+});
+
 describe('registerPlugins with MCP disabled', () => {
 	it('registers commands without building MCP config', async () => {
 		const fs = await import('node:fs');

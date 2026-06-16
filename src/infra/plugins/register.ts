@@ -8,10 +8,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {register} from '../../app/commands/registry';
-import {loadPlugin} from './loader';
+import {get, register} from '../../app/commands/registry';
+import {loadPlugin, loadPersonalSkills} from './loader';
 import type {McpServerChoices} from './config';
-import type {EffectiveMcpServer} from '../capabilities/effective';
+import type {
+	EffectiveMcpServer,
+	EffectiveSkill,
+} from '../capabilities/effective';
 
 export type PluginRegistrationResult = {
 	mcpConfig?: string;
@@ -95,12 +98,24 @@ export function registerPlugins(
 	mcpServerOptions?: McpServerChoices,
 	includeMcpConfig = true,
 	personalMcpServers: EffectiveMcpServer[] = [],
+	personalSkills: EffectiveSkill[] = [],
 ): PluginRegistrationResult {
 	for (const dir of pluginDirs) {
 		const commands = loadPlugin(dir);
 		for (const command of commands) {
 			register(command);
 		}
+	}
+
+	// Register personal skills after workflow-plugin skills. On a name collision
+	// the workflow plugin wins and the personal skill is skipped (provisional —
+	// conflict UX is owned by a later issue). Pre-checking the registry avoids
+	// register()'s throw-on-collision.
+	for (const command of loadPersonalSkills(personalSkills)) {
+		if (get(command.name)) {
+			continue;
+		}
+		register(command);
 	}
 
 	const mcpConfig = includeMcpConfig

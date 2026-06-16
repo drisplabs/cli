@@ -127,14 +127,19 @@ export function bootstrapRuntimeConfig({
 		projectPlugins: projectConfig.plugins,
 		pluginFlags,
 	});
-	// Personal MCP servers (Issue 2) are injected for the claude-code path only.
-	// The openai-codex path keeps its separate workflowPluginMcpConfig flow.
-	const personalMcpServers =
+	// Personal MCP servers (Issue 2) and personal skills (Issue 3) are injected
+	// for the claude-code path only. The openai-codex path keeps its separate
+	// workflowPluginMcpConfig flow and its own command-registration semantics.
+	const effectiveCapabilities =
 		harness === 'openai-codex'
-			? []
-			: resolveEffectiveCapabilities({globalConfig, projectConfig}).mcpServers;
+			? {mcpServers: [], skills: []}
+			: resolveEffectiveCapabilities({globalConfig, projectConfig});
+	const personalMcpServers = effectiveCapabilities.mcpServers;
+	const personalSkills = effectiveCapabilities.skills;
 	const pluginResult =
-		pluginDirs.length > 0 || personalMcpServers.length > 0
+		pluginDirs.length > 0 ||
+		personalMcpServers.length > 0 ||
+		personalSkills.length > 0
 			? registerPlugins(
 					pluginDirs,
 					workflowToResolve
@@ -143,6 +148,7 @@ export function bootstrapRuntimeConfig({
 						: undefined,
 					harness !== 'openai-codex',
 					personalMcpServers,
+					personalSkills,
 				)
 			: {mcpConfig: undefined};
 	const workflowPluginMcpConfig =

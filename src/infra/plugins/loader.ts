@@ -10,6 +10,7 @@ import path from 'node:path';
 import {type PluginManifest} from './types';
 import {parseFrontmatter} from './frontmatter';
 import {type PromptCommand} from '../../app/commands/types';
+import {type EffectiveSkill} from '../capabilities/effective';
 
 /**
  * Load a plugin from a directory and return PromptCommands for its
@@ -72,6 +73,42 @@ export function loadPlugin(pluginDir: string): PromptCommand[] {
 			if (!nested.isDirectory()) continue;
 			const nestedSkill = path.join(entryDir, nested.name, 'SKILL.md');
 			if (fs.existsSync(nestedSkill)) loadSkillFile(nestedSkill);
+		}
+	}
+
+	return commands;
+}
+
+/**
+ * Load personal skills (configured directly by the user, not via a plugin dir)
+ * into PromptCommands. Each entry's `path` is the resolved skill directory
+ * containing a SKILL.md.
+ *
+ * Unlike plugin skills, personal skills are loaded regardless of the
+ * `user-invocable` frontmatter flag — installing a personal skill is itself the
+ * opt-in to invoke it. A skill whose directory or SKILL.md is missing or
+ * invalid is warned about and skipped (never throws), so a moved/deleted skill
+ * dir can't break session startup.
+ */
+export function loadPersonalSkills(skills: EffectiveSkill[]): PromptCommand[] {
+	const commands: PromptCommand[] = [];
+
+	for (const skill of skills) {
+		const skillPath = path.join(skill.path, 'SKILL.md');
+		if (!fs.existsSync(skillPath)) {
+			console.warn(
+				`Skipping personal skill '${skill.name}' [${skill.sourceLayer}]: SKILL.md not found at ${skill.path}`,
+			);
+			continue;
+		}
+		try {
+			const parsed = parseFrontmatter(fs.readFileSync(skillPath, 'utf-8'));
+			commands.push(skillToCommand(parsed.frontmatter, parsed.body));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`Skipping personal skill '${skill.name}' [${skill.sourceLayer}]: ${message}`,
+			);
 		}
 	}
 

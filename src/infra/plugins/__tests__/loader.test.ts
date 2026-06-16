@@ -1,5 +1,6 @@
 import {describe, it, expect, vi, beforeEach} from 'vitest';
-import {loadPlugin} from '../loader';
+import {loadPlugin, loadPersonalSkills} from '../loader';
+import type {EffectiveSkill} from '../../capabilities/effective';
 
 // Build a minimal in-memory file system for tests
 const files: Record<string, string> = {};
@@ -252,5 +253,75 @@ describe('loadPlugin', () => {
 
 		expect(commands).toHaveLength(1);
 		expect(commands[0]!.isolation).toBeUndefined();
+	});
+});
+
+describe('loadPersonalSkills', () => {
+	function addPersonalSkill(
+		dir: string,
+		frontmatter: string,
+		body = 'Body',
+	): void {
+		files[dir] = '';
+		files[`${dir}/SKILL.md`] = `---\n${frontmatter}\n---\n${body}`;
+	}
+
+	function personalEntry(dir: string, name: string): EffectiveSkill {
+		return {name, source: dir, path: dir, sourceLayer: 'global'};
+	}
+
+	it('loads a personal skill at its path into a PromptCommand', () => {
+		addPersonalSkill(
+			'/personal/greet',
+			'name: greet\ndescription: Greet\nargument-hint: <name>',
+			'Hello $ARGUMENTS',
+		);
+
+		const commands = loadPersonalSkills([
+			personalEntry('/personal/greet', 'greet'),
+		]);
+
+		expect(commands).toHaveLength(1);
+		expect(commands[0]!.name).toBe('greet');
+		expect(commands[0]!.category).toBe('prompt');
+		expect(commands[0]!.buildPrompt({args: 'World'})).toBe('Hello World');
+	});
+
+	it('loads a personal skill even when user-invocable is not set (install is the opt-in)', () => {
+		addPersonalSkill('/personal/fmt', 'name: fmt\ndescription: Format');
+
+		const commands = loadPersonalSkills([
+			personalEntry('/personal/fmt', 'fmt'),
+		]);
+
+		expect(commands.map(c => c.name)).toEqual(['fmt']);
+	});
+
+	it('skips a personal skill whose SKILL.md is missing without throwing', () => {
+		// No files added — the path does not exist on disk.
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const commands = loadPersonalSkills([
+			personalEntry('/personal/gone', 'gone'),
+		]);
+
+		expect(commands).toHaveLength(0);
+		expect(warn).toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it('loads valid skills and skips broken ones in the same batch', () => {
+		addPersonalSkill('/personal/ok', 'name: ok\ndescription: Fine');
+		files['/personal/bad'] = '';
+		files['/personal/bad/SKILL.md'] = 'no frontmatter at all';
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const commands = loadPersonalSkills([
+			personalEntry('/personal/ok', 'ok'),
+			personalEntry('/personal/bad', 'bad'),
+		]);
+
+		expect(commands.map(c => c.name)).toEqual(['ok']);
+		warn.mockRestore();
 	});
 });
