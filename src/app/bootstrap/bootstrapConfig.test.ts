@@ -454,6 +454,62 @@ describe('bootstrapRuntimeConfig', () => {
 		);
 	});
 
+	it('exposes resolved personal MCP servers and skills on the output (AC1)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			mcpServers: {fs: {command: 'npx', args: ['-y', 'server']}},
+		});
+		readConfigMock.mockReturnValue({
+			...emptyConfig,
+			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
+		});
+		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(result.personalMcpServers).toEqual([
+			{
+				name: 'fs',
+				command: 'npx',
+				args: ['-y', 'server'],
+				sourceLayer: 'global',
+			},
+		]);
+		expect(result.personalSkills).toEqual([
+			{
+				name: 'greet',
+				source: './greet',
+				path: '/abs/greet',
+				sourceLayer: 'project',
+			},
+		]);
+	});
+
+	it('exposes empty personal capability lists for the codex harness (AC1)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			mcpServers: {fs: {command: 'npx', args: ['-y', 'server']}},
+			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
+		});
+		readConfigMock.mockReturnValue({...emptyConfig});
+		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+			harnessOverride: 'openai-codex',
+		});
+
+		expect(result.personalMcpServers).toEqual([]);
+		expect(result.personalSkills).toEqual([]);
+	});
+
 	it('does not probe Claude-specific model sources for non-claude harnesses', () => {
 		process.env['ANTHROPIC_MODEL'] = 'anthropic-env-model';
 		readGlobalConfigMock.mockReturnValue({

@@ -8,6 +8,10 @@ import {
 	type AthenaHarness,
 } from '../../infra/plugins/index';
 import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
+import type {
+	EffectiveMcpServer,
+	EffectiveSkill,
+} from '../../infra/capabilities/effective';
 import {shouldResolveWorkflow} from '../../setup/shouldResolveWorkflow';
 import type {
 	HarnessProcessConfig,
@@ -50,6 +54,10 @@ export type RuntimeBootstrapOutput = {
 	workflow?: WorkflowConfig;
 	workflowPlan?: WorkflowPlan;
 	modelName: string | null;
+	/** Effective personal MCP servers injected into the session (claude-code only; codex → []). */
+	personalMcpServers: EffectiveMcpServer[];
+	/** Effective personal skills injected into the session (claude-code only; codex → []). */
+	personalSkills: EffectiveSkill[];
 	warnings: string[];
 };
 
@@ -225,6 +233,8 @@ export function bootstrapRuntimeConfig({
 		workflow: activeWorkflow,
 		workflowPlan,
 		modelName,
+		personalMcpServers,
+		personalSkills,
 		warnings,
 	};
 }

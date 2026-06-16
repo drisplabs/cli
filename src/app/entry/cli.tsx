@@ -178,6 +178,29 @@ function printExecDryRunSummary(
 	lines.push(
 		`  plugin mcp config: ${runtimeConfig.pluginMcpConfig ?? '<none>'}`,
 	);
+	// Personal capabilities are reported separately from workflow plugins so the
+	// user can see exactly what they configured (vs. what the workflow brought).
+	// Print name + source layer ONLY — never env values, command, args, or paths.
+	const mcpLabel = 'personal mcp servers:';
+	const skillLabel = 'personal skills:';
+	const personalLabelWidth = mcpLabel.length;
+	lines.push('  personal capabilities:');
+	if (runtimeConfig.personalMcpServers.length === 0) {
+		lines.push(`    ${mcpLabel.padEnd(personalLabelWidth)} <none>`);
+	} else {
+		lines.push(`    ${mcpLabel}`);
+		for (const server of runtimeConfig.personalMcpServers) {
+			lines.push(`      - ${server.name} [${server.sourceLayer}]`);
+		}
+	}
+	if (runtimeConfig.personalSkills.length === 0) {
+		lines.push(`    ${skillLabel.padEnd(personalLabelWidth)} <none>`);
+	} else {
+		lines.push(`    ${skillLabel}`);
+		for (const skill of runtimeConfig.personalSkills) {
+			lines.push(`      - ${skill.name} [${skill.sourceLayer}]`);
+		}
+	}
 	for (const line of lines) {
 		console.log(line);
 	}
