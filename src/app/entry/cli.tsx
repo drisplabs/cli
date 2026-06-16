@@ -34,6 +34,7 @@ import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
 import {runMcpCommand} from './mcpCommand';
+import {runSkillCommand} from './skillCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
 import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
@@ -76,6 +77,7 @@ const KNOWN_COMMANDS = new Set([
 	'exec',
 	'workflow',
 	'mcp',
+	'skill',
 	'marketplace',
 	'channel',
 	'gateway',
@@ -219,6 +221,7 @@ const cli = meow(
 			exec "<prompt>"       Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
+			skill <sub>           Manage personal skills (install, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
 			channel <sub>         Manage external channels
 			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
@@ -514,6 +517,20 @@ async function main(): Promise<void> {
 				subcommand,
 				subcommandArgs,
 				serverCommandTokens,
+				projectDir,
+			}),
+		);
+		return;
+	}
+
+	if (command === 'skill') {
+		const [subcommand = '', ...subcommandArgs] = commandArgs;
+		if (cli.flags.project) subcommandArgs.push('--project');
+		if (cli.flags.global) subcommandArgs.push('--global');
+		await exitWith(
+			runSkillCommand({
+				subcommand,
+				subcommandArgs,
 				projectDir,
 			}),
 		);
