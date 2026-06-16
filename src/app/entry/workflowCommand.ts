@@ -20,6 +20,7 @@ import {
 	writeGlobalConfig,
 	writeProjectConfig,
 } from '../../infra/plugins/config';
+import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
@@ -363,6 +364,28 @@ export function runWorkflowCommand(
 				logOut(
 					`  note: project config overrides global at ${projectConfigPath(input.projectDir)}`,
 				);
+			}
+
+			const {mcpServers, skills} = resolveEffectiveCapabilities({
+				globalConfig,
+				projectConfig,
+			});
+			if (mcpServers.length === 0 && skills.length === 0) {
+				logOut('Personal capabilities: none configured');
+			} else {
+				logOut('Personal capabilities:');
+				if (mcpServers.length > 0) {
+					logOut('  MCP servers:');
+					for (const server of mcpServers) {
+						logOut(`    ${server.name} [${server.sourceLayer}]`);
+					}
+				}
+				if (skills.length > 0) {
+					logOut('  Skills:');
+					for (const skill of skills) {
+						logOut(`    ${skill.name} [${skill.sourceLayer}]`);
+					}
+				}
 			}
 			return 0;
 		}
