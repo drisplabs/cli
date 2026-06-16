@@ -13,6 +13,23 @@ import type {DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
 import type {FeedSink} from '../dashboard/pairedFeedPublisher';
 import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
 import type {FeedEvent} from '../../core/feed/types';
+import type {CapabilitySourceLayer} from '../../infra/capabilities/effective';
+
+/**
+ * A reporting-only summary of an active personal capability: name + source
+ * layer ONLY. Command/args/env (MCP) and path (skills) are stripped at the
+ * call site so secret-bearing fields never reach the startup notice or the
+ * `exec.started` event.
+ */
+export type PersonalCapabilitySummaryEntry = {
+	name: string;
+	sourceLayer: CapabilitySourceLayer;
+};
+
+export type PersonalCapabilitiesSummary = {
+	mcpServers: ReadonlyArray<PersonalCapabilitySummaryEntry>;
+	skills: ReadonlyArray<PersonalCapabilitySummaryEntry>;
+};
 
 export const EXEC_EXIT_CODE = {
 	SUCCESS: 0,
@@ -54,6 +71,12 @@ export type ExecRunOptions = {
 	 * `timeoutMs` (or forever if no timeout).
 	 */
 	channels?: readonly string[];
+	/**
+	 * Reporting-only summary of the effective personal capabilities active for
+	 * this session (name + source layer only). Surfaced in the `exec.started`
+	 * event and a human-facing startup notice; does NOT affect what loads.
+	 */
+	personalCapabilities?: PersonalCapabilitiesSummary;
 	stdout?: Pick<Writable, 'write'>;
 	stderr?: Pick<Writable, 'write'>;
 	runtimeFactory?: RuntimeFactory;

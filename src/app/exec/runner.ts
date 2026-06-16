@@ -51,6 +51,33 @@ const NULL_TOKENS: TokenUsage = {
 	contextWindowSize: null,
 };
 
+/**
+ * Build a concise human-facing startup notice for active personal
+ * capabilities — labeled "personal" to distinguish them from workflow plugins.
+ * Returns null when nothing is active (caller stays silent). Prints name +
+ * source layer ONLY; never command/args/env (MCP) or path (skills).
+ */
+function formatPersonalCapabilityNotice(summary: {
+	mcpServers: ReadonlyArray<{name: string; sourceLayer: string}>;
+	skills: ReadonlyArray<{name: string; sourceLayer: string}>;
+}): string | null {
+	const parts: string[] = [];
+	if (summary.mcpServers.length > 0) {
+		const list = summary.mcpServers
+			.map(server => `${server.name} [${server.sourceLayer}]`)
+			.join(', ');
+		parts.push(`mcp servers: ${list}`);
+	}
+	if (summary.skills.length > 0) {
+		const list = summary.skills
+			.map(skill => `${skill.name} [${skill.sourceLayer}]`)
+			.join(', ');
+		parts.push(`skills: ${list}`);
+	}
+	if (parts.length === 0) return null;
+	return `personal capabilities active — ${parts.join('; ')}`;
+}
+
 function workflowFailure(
 	state: ExecWorkflowFailureState,
 	message: string,
@@ -418,11 +445,23 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		}, options.timeoutMs);
 	}
 
+	const personalCapabilities = options.personalCapabilities ?? {
+		mcpServers: [],
+		skills: [],
+	};
+
 	output.emitJsonEvent('exec.started', {
 		projectDir: options.projectDir,
 		harness: options.harness,
 		athenaSessionId: options.ephemeral ? null : athenaSessionId,
+		personalCapabilities,
 	});
+
+	const personalCapabilityNotice =
+		formatPersonalCapabilityNotice(personalCapabilities);
+	if (personalCapabilityNotice) {
+		output.notice(personalCapabilityNotice);
+	}
 
 	try {
 		await runtime.start();

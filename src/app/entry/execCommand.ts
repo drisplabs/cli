@@ -23,6 +23,8 @@ export type ExecRuntimeConfig = Pick<
 	| 'pluginMcpConfig'
 	| 'workflow'
 	| 'workflowPlan'
+	| 'personalMcpServers'
+	| 'personalSkills'
 >;
 
 export type RunExecCommandInput = {
@@ -149,6 +151,19 @@ export async function runExecCommand(
 		ephemeral: input.flags.ephemeral,
 		timeoutMs: input.flags.timeoutMs,
 		channels: input.flags.channels,
+		// Reporting-only summary: strip to name + source layer so secret-bearing
+		// MCP env/command/args and skill paths never reach the startup notice or
+		// the exec.started event (R3).
+		personalCapabilities: {
+			mcpServers: input.runtimeConfig.personalMcpServers.map(server => ({
+				name: server.name,
+				sourceLayer: server.sourceLayer,
+			})),
+			skills: input.runtimeConfig.personalSkills.map(skill => ({
+				name: skill.name,
+				sourceLayer: skill.sourceLayer,
+			})),
+		},
 	});
 
 	return result.exitCode;

@@ -174,6 +174,140 @@ describe('runExec', () => {
 		expect(stderr.read()).not.toContain('error');
 	});
 
+	function makeQuietSpawn(runtime: MockRuntime) {
+		return (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			setImmediate(() => {
+				runtime.emit(
+					makeRuntimeEvent({kind: 'session.start', hookName: 'SessionStart'}),
+				);
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+	}
+
+	it('emits personal capabilities in the exec.started JSON event', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+			personalCapabilities: {
+				mcpServers: [{name: 'db', sourceLayer: 'project'}],
+				skills: [{name: 'greet', sourceLayer: 'global'}],
+			},
+		});
+
+		const startedLine = stdout
+			.read()
+			.split('\n')
+			.filter(Boolean)
+			.map(line => JSON.parse(line))
+			.find(event => event.type === 'exec.started');
+		expect(startedLine).toBeDefined();
+		expect(startedLine.data.personalCapabilities).toEqual({
+			mcpServers: [{name: 'db', sourceLayer: 'project'}],
+			skills: [{name: 'greet', sourceLayer: 'global'}],
+		});
+	});
+
+	it('emits empty personal capability arrays in exec.started when none configured', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+		});
+
+		const startedLine = stdout
+			.read()
+			.split('\n')
+			.filter(Boolean)
+			.map(line => JSON.parse(line))
+			.find(event => event.type === 'exec.started');
+		expect(startedLine.data.personalCapabilities).toEqual({
+			mcpServers: [],
+			skills: [],
+		});
+	});
+
+	it('prints a human-facing personal capabilities notice in non-json mode', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: false,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+			personalCapabilities: {
+				mcpServers: [{name: 'db', sourceLayer: 'project'}],
+				skills: [{name: 'greet', sourceLayer: 'global'}],
+			},
+		});
+
+		const err = stderr.read();
+		expect(err.toLowerCase()).toContain('personal');
+		expect(err).toContain('db [project]');
+		expect(err).toContain('greet [global]');
+	});
+
+	it('stays silent about personal capabilities when none are configured', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: false,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+		});
+
+		expect(stderr.read().toLowerCase()).not.toContain('personal');
+	});
+
 	it('publishes mapped feed events to the dashboard feed publisher', async () => {
 		const runtime = new MockRuntime();
 		const dashboardFeedPublisher = {
