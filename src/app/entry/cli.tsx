@@ -218,6 +218,7 @@ const cli = meow(
 			resume [sessionId]    Resume most recent (or specified) session
 			exec "<prompt>"       Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
+			mcp <sub>             Manage personal MCP servers (add, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
 			channel <sub>         Manage external channels
 			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
