@@ -25,6 +25,7 @@ export type ExecRuntimeConfig = Pick<
 	| 'workflowPlan'
 	| 'personalMcpServers'
 	| 'personalSkills'
+	| 'capabilityConflicts'
 >;
 
 export type RunExecCommandInput = {
@@ -160,6 +161,20 @@ export async function runExecCommand(
 				sourceLayer: server.sourceLayer,
 			})),
 			skills: input.runtimeConfig.personalSkills.map(skill => ({
+				name: skill.name,
+				sourceLayer: skill.sourceLayer,
+			})),
+		},
+		// Same strip for shadowed (conflicting) capabilities — name + source
+		// layer only, never the personal MCP env/command/args or skill path (R7).
+		capabilityConflicts: {
+			mcpServers: input.runtimeConfig.capabilityConflicts.mcpServers.map(
+				server => ({
+					name: server.name,
+					sourceLayer: server.sourceLayer,
+				}),
+			),
+			skills: input.runtimeConfig.capabilityConflicts.skills.map(skill => ({
 				name: skill.name,
 				sourceLayer: skill.sourceLayer,
 			})),

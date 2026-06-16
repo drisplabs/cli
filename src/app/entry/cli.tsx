@@ -201,6 +201,21 @@ function printExecDryRunSummary(
 			lines.push(`      - ${skill.name} [${skill.sourceLayer}]`);
 		}
 	}
+	// Personal capabilities shadowed by a same-named workflow plugin (plugin
+	// wins, personal skipped). Name + layer ONLY, same secret rule as above.
+	const {mcpServers: conflictMcp, skills: conflictSkills} =
+		runtimeConfig.capabilityConflicts;
+	if (conflictMcp.length === 0 && conflictSkills.length === 0) {
+		lines.push('    conflicts (shadowed by workflow plugin): <none>');
+	} else {
+		lines.push('    conflicts (shadowed by workflow plugin):');
+		for (const server of conflictMcp) {
+			lines.push(`      - ${server.name} [${server.sourceLayer}]`);
+		}
+		for (const skill of conflictSkills) {
+			lines.push(`      - ${skill.name} [${skill.sourceLayer}]`);
+		}
+	}
 	for (const line of lines) {
 		console.log(line);
 	}

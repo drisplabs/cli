@@ -77,6 +77,13 @@ export type ExecRunOptions = {
 	 * event and a human-facing startup notice; does NOT affect what loads.
 	 */
 	personalCapabilities?: PersonalCapabilitiesSummary;
+	/**
+	 * Reporting-only summary of personal capabilities shadowed by a same-named
+	 * workflow plugin (plugin wins, personal skipped). Name + source layer only.
+	 * Surfaced in the `exec.started` event and a human-facing conflict warning;
+	 * does NOT affect what loads.
+	 */
+	capabilityConflicts?: PersonalCapabilitiesSummary;
 	stdout?: Pick<Writable, 'write'>;
 	stderr?: Pick<Writable, 'write'>;
 	runtimeFactory?: RuntimeFactory;

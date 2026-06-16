@@ -308,6 +308,120 @@ describe('runExec', () => {
 		expect(stderr.read().toLowerCase()).not.toContain('personal');
 	});
 
+	it('emits capability conflicts in the exec.started JSON event (AC5)', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+			capabilityConflicts: {
+				mcpServers: [{name: 'shared-mcp', sourceLayer: 'global'}],
+				skills: [{name: 'shared-skill', sourceLayer: 'project'}],
+			},
+		});
+
+		const startedLine = stdout
+			.read()
+			.split('\n')
+			.filter(Boolean)
+			.map(line => JSON.parse(line))
+			.find(event => event.type === 'exec.started');
+		expect(startedLine.data.capabilityConflicts).toEqual({
+			mcpServers: [{name: 'shared-mcp', sourceLayer: 'global'}],
+			skills: [{name: 'shared-skill', sourceLayer: 'project'}],
+		});
+	});
+
+	it('emits empty capability conflict arrays in exec.started when none (AC5 none)', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+		});
+
+		const startedLine = stdout
+			.read()
+			.split('\n')
+			.filter(Boolean)
+			.map(line => JSON.parse(line))
+			.find(event => event.type === 'exec.started');
+		expect(startedLine.data.capabilityConflicts).toEqual({
+			mcpServers: [],
+			skills: [],
+		});
+	});
+
+	it('prints a human-facing conflict warning notice in non-json mode (AC6)', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: false,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+			capabilityConflicts: {
+				mcpServers: [{name: 'shared-mcp', sourceLayer: 'global'}],
+				skills: [{name: 'shared-skill', sourceLayer: 'project'}],
+			},
+		});
+
+		const err = stderr.read();
+		expect(err.toLowerCase()).toContain('conflict');
+		expect(err.toLowerCase()).toContain('workflow plugin');
+		expect(err).toContain('shared-mcp [global]');
+		expect(err).toContain('shared-skill [project]');
+	});
+
+	it('stays silent about conflicts when there are none (AC6 none)', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			json: false,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: makeQuietSpawn(runtime),
+		});
+
+		expect(stderr.read().toLowerCase()).not.toContain('conflict');
+	});
+
 	it('publishes mapped feed events to the dashboard feed publisher', async () => {
 		const runtime = new MockRuntime();
 		const dashboardFeedPublisher = {
