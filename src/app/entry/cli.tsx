@@ -33,6 +33,7 @@ import {EXEC_EXIT_CODE} from '../exec';
 import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
+import {runMcpCommand} from './mcpCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
 import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
@@ -74,6 +75,7 @@ const KNOWN_COMMANDS = new Set([
 	'resume',
 	'exec',
 	'workflow',
+	'mcp',
 	'marketplace',
 	'channel',
 	'gateway',
@@ -398,6 +400,10 @@ const cli = meow(
 				type: 'boolean',
 				default: false,
 			},
+			env: {
+				type: 'string',
+				isMultiple: true,
+			},
 			printApiKey: {
 				type: 'boolean',
 				default: false,
@@ -481,6 +487,34 @@ async function main(): Promise<void> {
 
 		await exitWith(
 			runWorkflowCommand({subcommand, subcommandArgs, projectDir}),
+		);
+		return;
+	}
+
+	if (command === 'mcp') {
+		// Everything after a literal `--` is the server command + its own args.
+		// meow strips `--` and folds those tokens into cli.input, so recover them
+		// from process.argv and strip the same trailing tokens from commandArgs.
+		const rawArgs = process.argv.slice(2);
+		const dashIdx = rawArgs.indexOf('--');
+		const serverCommandTokens = dashIdx >= 0 ? rawArgs.slice(dashIdx + 1) : [];
+		const cleanArgs =
+			serverCommandTokens.length > 0
+				? commandArgs.slice(0, commandArgs.length - serverCommandTokens.length)
+				: commandArgs;
+		const [subcommand = '', ...subcommandArgs] = cleanArgs;
+		if (cli.flags.project) subcommandArgs.push('--project');
+		if (cli.flags.global) subcommandArgs.push('--global');
+		for (const entry of cli.flags.env ?? []) {
+			subcommandArgs.push('--env', entry);
+		}
+		await exitWith(
+			runMcpCommand({
+				subcommand,
+				subcommandArgs,
+				serverCommandTokens,
+				projectDir,
+			}),
 		);
 		return;
 	}
