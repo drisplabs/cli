@@ -2,11 +2,6 @@
 
 import type {FeedEvent} from '../types';
 import {type TodoItem, type TodoWriteInput} from '../todo';
-import {createRootPlanTracker} from './rootPlanTracker';
-import {
-	coerceTaskStatus,
-	createTaskLifecycleTracker,
-} from './taskLifecycleTracker';
 import {readObject, readString} from './projection';
 
 /**
@@ -16,9 +11,11 @@ import {readObject, readString} from './projection';
  * task list. Both live event projections and bootstrap restore drive the task
  * list through these methods, so the interpretation lives in exactly one place.
  *
- * State is delegated to two pure trackers (rootPlanTracker for the Codex plan,
- * taskLifecycleTracker for Claude tasks); this module concentrates the
- * interpretation and restore behavior on top of them.
+ * The two underlying state arrays — the Codex/root plan and the Claude task
+ * lifecycle — are private closure state here rather than separate leaves: each
+ * had a single caller (this module) and an interface wider than its body, and
+ * their invariants (plan-delta diff ignores activeForm; a re-create must not
+ * reset an updated status) are only exercised through this interpretation.
  */
 export type TaskStateTracker = {
 	/** Combined task list: Codex plan items first, then Claude lifecycle tasks. */
@@ -50,6 +47,18 @@ export function extractTodoItems(toolInput: unknown): TodoItem[] {
 	return Array.isArray(input?.todos) ? input.todos : [];
 }
 
+function coerceTaskStatus(status: unknown): TodoItem['status'] | null {
+	switch (status) {
+		case 'pending':
+		case 'in_progress':
+		case 'completed':
+		case 'failed':
+			return status;
+		default:
+			return null;
+	}
+}
+
 function mapPlanStepStatus(status: string | undefined): TodoItem['status'] {
 	switch (status) {
 		case 'inProgress':
@@ -63,8 +72,79 @@ function mapPlanStepStatus(status: string | undefined): TodoItem['status'] {
 }
 
 export function createTaskStateTracker(): TaskStateTracker {
-	const rootPlan = createRootPlanTracker();
-	const taskLifecycle = createTaskLifecycleTracker();
+	// The canonical Codex/root plan (replaced wholesale by TodoWrite or a plan
+	// delta) and the Claude task lifecycle (upserted per taskId).
+	let rootPlanItems: TodoItem[] = [];
+	let taskItems: TodoItem[] = [];
+
+	/** True iff setting the root plan to `next` would observably change it
+	 * (activeForm is intentionally not compared — matches the plan.delta diff). */
+	function rootPlanDiffers(next: TodoItem[]): boolean {
+		if (next.length !== rootPlanItems.length) return true;
+		for (let i = 0; i < next.length; i++) {
+			if (next[i]?.content !== rootPlanItems[i]?.content) return true;
+			if (next[i]?.status !== rootPlanItems[i]?.status) return true;
+		}
+		return false;
+	}
+
+	function upsertCreatedTask(input: {
+		taskId: string;
+		subject: string;
+		description?: string;
+		activeForm?: string;
+	}): void {
+		const {taskId, subject, description, activeForm} = input;
+		const task: TodoItem = {
+			taskId,
+			content: subject,
+			status: 'pending',
+			activeForm: activeForm ?? description,
+		};
+		const existingIndex = taskItems.findIndex(item => item.taskId === taskId);
+		if (existingIndex === -1) {
+			taskItems = [...taskItems, task];
+			return;
+		}
+		// Re-create must not reset an updated status — keep the existing item's
+		// status, refresh its content/activeForm.
+		taskItems = taskItems.map((item, index) =>
+			index === existingIndex
+				? {
+						...item,
+						taskId,
+						content: subject,
+						activeForm: task.activeForm ?? item.activeForm,
+					}
+				: item,
+		);
+	}
+
+	function markTaskCompleted(input: {taskId: string; subject?: string}): void {
+		const {taskId, subject} = input;
+		const existingIndex = taskItems.findIndex(item => item.taskId === taskId);
+		if (existingIndex === -1) {
+			if (!subject) return;
+			taskItems = [
+				...taskItems,
+				{taskId, content: subject, status: 'completed'},
+			];
+			return;
+		}
+		taskItems = taskItems.map((item, index) =>
+			index === existingIndex ? {...item, status: 'completed'} : item,
+		);
+	}
+
+	function updateTaskStatus(input: {
+		taskId: string;
+		status: TodoItem['status'];
+	}): void {
+		const {taskId, status} = input;
+		taskItems = taskItems.map(item =>
+			item.taskId === taskId ? {...item, status} : item,
+		);
+	}
 
 	function applyToolPre(input: {
 		toolName: string;
@@ -73,13 +153,13 @@ export function createTaskStateTracker(): TaskStateTracker {
 	}): void {
 		const {toolName, toolInput, actorId} = input;
 		if (toolName === 'TodoWrite' && actorId === 'agent:root') {
-			rootPlan.set(extractTodoItems(toolInput));
+			rootPlanItems = extractTodoItems(toolInput);
 		}
 		if (toolName === 'TaskUpdate') {
 			const taskId = readString(toolInput['taskId'], toolInput['task_id']);
 			const status = coerceTaskStatus(toolInput['status']);
 			if (taskId && status) {
-				taskLifecycle.updateStatus({taskId, status});
+				updateTaskStatus({taskId, status});
 			}
 		}
 	}
@@ -96,7 +176,7 @@ export function createTaskStateTracker(): TaskStateTracker {
 			const taskId = readString(task['id'], task['task_id']);
 			const subject = readString(task['subject'], toolInput['subject']);
 			if (taskId && subject) {
-				taskLifecycle.upsertCreated({
+				upsertCreatedTask({
 					taskId,
 					subject,
 					description: readString(toolInput['description']),
@@ -116,7 +196,7 @@ export function createTaskStateTracker(): TaskStateTracker {
 				readObject(response['statusChange'])['to'] ?? toolInput['status'],
 			);
 			if (taskId && status) {
-				taskLifecycle.updateStatus({taskId, status});
+				updateTaskStatus({taskId, status});
 			}
 		}
 	}
@@ -126,7 +206,7 @@ export function createTaskStateTracker(): TaskStateTracker {
 		const subject = readString(data['task_subject']);
 		const description = readString(data['task_description']);
 		if (taskId && subject) {
-			taskLifecycle.upsertCreated({taskId, subject, description});
+			upsertCreatedTask({taskId, subject, description});
 		}
 	}
 
@@ -134,13 +214,13 @@ export function createTaskStateTracker(): TaskStateTracker {
 		const taskId = readString(data['task_id']);
 		const subject = readString(data['task_subject']);
 		if (taskId) {
-			taskLifecycle.markCompleted({taskId, subject});
+			markTaskCompleted({taskId, subject});
 		}
 	}
 
 	return {
 		current() {
-			return [...rootPlan.current(), ...taskLifecycle.current()];
+			return [...rootPlanItems, ...taskItems];
 		},
 		applyToolPre,
 		applyToolPost,
@@ -150,8 +230,8 @@ export function createTaskStateTracker(): TaskStateTracker {
 				content: typeof step.step === 'string' ? step.step : '',
 				status: mapPlanStepStatus(step.status),
 			}));
-			if (!rootPlan.differs(next)) return false;
-			rootPlan.set(next);
+			if (!rootPlanDiffers(next)) return false;
+			rootPlanItems = next;
 			return true;
 		},
 		applyTaskCreatedEvent,

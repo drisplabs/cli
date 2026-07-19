@@ -2,7 +2,6 @@
 
 import type {ActorRegistry} from '../entities';
 import type {RunLifecycle} from './runLifecycle';
-import {createSubagentTracker} from './subagentTracker';
 import {isSubagentTool} from '../todo';
 
 /**
@@ -17,8 +16,16 @@ import {isSubagentTool} from '../todo';
  *   - actor-registration effects: ActorRegistry.ensureSubagent + recording the
  *     agent id on the current Run's `subagent_ids`.
  *
- * It composes the pure {@link createSubagentTracker} for low-level state; this
- * module adds the interpretation and the ActorRegistry/RunLifecycle effects.
+ * The low-level state lives here as private closure fields rather than in a
+ * separate leaf, because its invariants are only meaningful in terms of the
+ * lifecycle this module drives:
+ *   - `stack`: currently-active subagent actor IDs (LIFO). `stopSubagent`
+ *     removes the LAST occurrence, so nested (and duplicate) starts unwind in
+ *     order; an unmatched stop is a no-op.
+ *   - `descriptions`: per-agent registry, written on start and read on stop.
+ *   - `pendingDescription`: the handoff value; consuming it (on the next start)
+ *     clears it. `clear()` resets the active stack only — descriptions and the
+ *     pending value survive a run boundary.
  */
 export type SubagentStart = {actorId: string; description: string | undefined};
 export type SubagentStop = {actorId: string; description: string | undefined};
@@ -51,46 +58,56 @@ export function createSubagentLifecycle(args: {
 	runLifecycle: RunLifecycle;
 }): SubagentLifecycle {
 	const {actors, runLifecycle} = args;
-	const tracker = createSubagentTracker();
+
+	const stack: string[] = [];
+	const descriptions = new Map<string, string>();
+	let pendingDescription: string | undefined;
+
 	const actorIdFor = (agentId: string): string => `subagent:${agentId}`;
 
 	return {
 		observeToolInput(toolName, toolInput) {
 			if (!isSubagentTool(toolName)) return;
-			if (typeof toolInput['description'] === 'string') {
-				tracker.recordPendingDescription(toolInput['description']);
-			} else {
-				tracker.clearPendingDescription();
-			}
+			pendingDescription =
+				typeof toolInput['description'] === 'string'
+					? toolInput['description']
+					: undefined;
 		},
 		startSubagent({agentId, agentType, fallbackDescription}) {
-			const description =
-				tracker.consumePendingDescription() ?? fallbackDescription;
+			// Consume the pending description (clears it) whether or not this start
+			// carries an agent id.
+			const consumed = pendingDescription;
+			pendingDescription = undefined;
+			const description = consumed ?? fallbackDescription;
 			if (agentId) {
 				actors.ensureSubagent(agentId, agentType ?? 'unknown');
 				const currentRun = runLifecycle.getCurrentRun();
 				if (currentRun) currentRun.actors.subagent_ids.push(agentId);
-				tracker.pushActor(actorIdFor(agentId));
-				if (description) tracker.setDescription(agentId, description);
+				stack.push(actorIdFor(agentId));
+				if (description) descriptions.set(agentId, description);
 			}
 			return {actorId: 'agent:root', description: description ?? undefined};
 		},
 		stopSubagent(agentId) {
-			if (agentId) tracker.popActor(actorIdFor(agentId));
+			if (agentId) {
+				const actorId = actorIdFor(agentId);
+				const idx = stack.lastIndexOf(actorId);
+				if (idx !== -1) stack.splice(idx, 1);
+			}
 			return {
 				actorId: actorIdFor(agentId ?? 'unknown'),
-				description: tracker.description(agentId ?? ''),
+				description: descriptions.get(agentId ?? ''),
 			};
 		},
 		currentActor() {
-			return tracker.peek() ?? 'agent:root';
+			return stack.at(-1) ?? 'agent:root';
 		},
 		currentScope() {
-			return tracker.currentScope();
+			return stack.length > 0 ? 'subagent' : 'root';
 		},
 		actorIdFor,
 		clear() {
-			tracker.clear();
+			stack.length = 0;
 		},
 	};
 }

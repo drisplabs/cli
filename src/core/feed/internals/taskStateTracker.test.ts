@@ -146,6 +146,37 @@ describe('taskStateTracker', () => {
 	});
 
 	describe('lifecycle events', () => {
+		it('re-creating a task after an update refreshes content but keeps the updated status', () => {
+			const t = createTaskStateTracker();
+			t.applyTaskCreatedEvent({task_id: '2', task_subject: 'Fix locator'});
+			t.applyToolPre({
+				toolName: 'TaskUpdate',
+				actorId: 'agent:root',
+				toolInput: {taskId: '2', status: 'in_progress'},
+			});
+			t.applyTaskCreatedEvent({
+				task_id: '2',
+				task_subject: 'Fix locator in beneficiary.ts',
+				task_description: 'Use drawer container',
+			});
+			expect(t.current()).toEqual([
+				{
+					taskId: '2',
+					content: 'Fix locator in beneficiary.ts',
+					status: 'in_progress',
+					activeForm: 'Use drawer container',
+				},
+			]);
+		});
+
+		it('records a completed-only task from task.completed with a subject and no prior create', () => {
+			const t = createTaskStateTracker();
+			t.applyTaskCompletedEvent({task_id: '9', task_subject: 'Late arrival'});
+			expect(t.current()).toEqual([
+				{taskId: '9', content: 'Late arrival', status: 'completed'},
+			]);
+		});
+
 		it('adds a pending task from task.created and completes it from task.completed', () => {
 			const t = createTaskStateTracker();
 			t.applyTaskCreatedEvent({
