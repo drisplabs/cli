@@ -49,6 +49,7 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		buildIsolationConfig: input => buildClaudeCompatibleIsolationConfig(input),
 		resolveModelName: ({configuredModel}) => configuredModel ?? null,
 	}),
+	listModels: async () => [],
 };
 
 const HARNESS_ADAPTERS: HarnessAdapter[] = [

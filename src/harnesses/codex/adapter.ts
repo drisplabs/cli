@@ -1,4 +1,6 @@
 import {createCodexRuntime} from './runtime';
+import type {CodexRuntimeModel} from './runtime/server';
+import type {Runtime} from '../../core/runtime/types';
 import {createCodexSessionController} from './session/controller';
 import {useCodexSessionController} from './session/useSessionController';
 import {verifyCodexHarness} from './system/verifyHarness';
@@ -53,4 +55,26 @@ export const codexHarnessAdapter: HarnessAdapter = {
 		return controller;
 	},
 	resolveConfigProfile: () => CODEX_CONFIG_PROFILE,
+	listModels: async runtime => {
+		if (!isCodexRuntimeWithModels(runtime)) {
+			throw new Error('Codex runtime is not available');
+		}
+		const models = await runtime.listModels();
+		return models.map(model => ({
+			value: model.model,
+			label: model.displayName,
+			description: model.description,
+			isDefault: model.isDefault,
+		}));
+	},
 };
+
+type CodexRuntimeWithModels = Runtime & {
+	listModels: () => Promise<CodexRuntimeModel[]>;
+};
+
+function isCodexRuntimeWithModels(
+	runtime: Runtime | null | undefined,
+): runtime is CodexRuntimeWithModels {
+	return Boolean(runtime && 'listModels' in runtime);
+}

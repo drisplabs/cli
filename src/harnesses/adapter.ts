@@ -21,6 +21,14 @@ export type HarnessCapabilities = {
 	supportsConfigurableIsolation: boolean;
 };
 
+/** One selectable model a harness exposes. Owned by the harness seam. */
+export type HarnessModelOption = {
+	value: string;
+	label: string;
+	description: string;
+	isDefault?: boolean;
+};
+
 export type HarnessAdapter = {
 	id: AthenaHarness;
 	label: string;
@@ -31,4 +39,10 @@ export type HarnessAdapter = {
 	createSessionController: CreateSessionController;
 	useSessionController: UseSessionController;
 	resolveConfigProfile: () => HarnessConfigProfile;
+	/**
+	 * The model catalog this harness offers. Claude serves a static list; Codex
+	 * fetches from its live Runtime. The caller passes the active Runtime when it
+	 * has one.
+	 */
+	listModels: (runtime?: Runtime | null) => Promise<HarnessModelOption[]>;
 };
