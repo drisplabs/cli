@@ -2,9 +2,9 @@ import {WebSocketServer, type WebSocket} from 'ws';
 import type {Server as HttpsServer} from 'node:https';
 import {createServer as createHttpsServer} from 'node:https';
 import {readFileSync} from 'node:fs';
-import type {FramedConnection, ServerTransport} from './types';
+import type {ServerTransport} from './types';
 import {isLoopbackHost, type GatewayTlsConfig} from '../paths';
-import {traceGatewayFrame} from './trace';
+import {createWsConnection} from './wsChannel';
 
 export type WsServerTransportOptions = {
 	host: string;
@@ -96,7 +96,7 @@ export function createWsServerTransport(
 				const pongTimeoutMs = opts.pongTimeoutMs ?? 30_000;
 				wss.on('connection', ws => {
 					attachHeartbeat(ws, pingIntervalMs, pongTimeoutMs);
-					onConnection(createWsConnection(ws, `${scheme}:${opts.host}`));
+					onConnection(createWsConnection(ws, `${scheme}:${opts.host}`, 'ws'));
 				});
 			}),
 	};
@@ -203,51 +203,4 @@ function attachHeartbeat(
 	};
 	ws.on('close', stop);
 	ws.on('error', stop);
-}
-
-function createWsConnection(ws: WebSocket, peer: string): FramedConnection {
-	const frameHandlers = new Set<(frame: unknown) => void>();
-	const closeHandlers = new Set<() => void>();
-	const errorHandlers = new Set<(err: Error) => void>();
-
-	ws.on('message', data => {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(data.toString());
-		} catch {
-			ws.close();
-			return;
-		}
-		traceGatewayFrame('ws', peer, 'in', parsed);
-		for (const handler of frameHandlers) handler(parsed);
-	});
-	ws.on('error', err => {
-		for (const handler of errorHandlers) handler(err);
-	});
-	ws.on('close', () => {
-		for (const handler of closeHandlers) handler();
-	});
-
-	return {
-		kind: 'ws',
-		peer,
-		send: frame => {
-			if (ws.readyState !== ws.OPEN) return;
-			traceGatewayFrame('ws', peer, 'out', frame);
-			ws.send(JSON.stringify(frame));
-		},
-		close: () => ws.close(),
-		onFrame: cb => {
-			frameHandlers.add(cb);
-			return () => frameHandlers.delete(cb);
-		},
-		onClose: cb => {
-			closeHandlers.add(cb);
-			return () => closeHandlers.delete(cb);
-		},
-		onError: cb => {
-			errorHandlers.add(cb);
-			return () => errorHandlers.delete(cb);
-		},
-	};
 }

@@ -5,7 +5,7 @@ import {
 	type ClientTransport,
 	type FramedConnection,
 } from './types';
-import {traceGatewayFrame} from './trace';
+import {createWsConnection} from './wsChannel';
 
 export type WsClientTransportOptions = {
 	url: string;
@@ -67,52 +67,5 @@ async function connectWs(
 		});
 	});
 
-	return createWsConnection(ws, opts.url);
-}
-
-function createWsConnection(ws: WebSocket, peer: string): FramedConnection {
-	const frameHandlers = new Set<(frame: unknown) => void>();
-	const closeHandlers = new Set<() => void>();
-	const errorHandlers = new Set<(err: Error) => void>();
-
-	ws.on('message', data => {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(data.toString());
-		} catch {
-			ws.close();
-			return;
-		}
-		traceGatewayFrame('ws-client', peer, 'in', parsed);
-		for (const handler of frameHandlers) handler(parsed);
-	});
-	ws.on('error', err => {
-		for (const handler of errorHandlers) handler(err);
-	});
-	ws.on('close', () => {
-		for (const handler of closeHandlers) handler();
-	});
-
-	return {
-		kind: 'ws',
-		peer,
-		send: frame => {
-			if (ws.readyState !== ws.OPEN) return;
-			traceGatewayFrame('ws-client', peer, 'out', frame);
-			ws.send(JSON.stringify(frame));
-		},
-		close: () => ws.close(),
-		onFrame: cb => {
-			frameHandlers.add(cb);
-			return () => frameHandlers.delete(cb);
-		},
-		onClose: cb => {
-			closeHandlers.add(cb);
-			return () => closeHandlers.delete(cb);
-		},
-		onError: cb => {
-			errorHandlers.add(cb);
-			return () => errorHandlers.delete(cb);
-		},
-	};
+	return createWsConnection(ws, opts.url, 'ws-client');
 }
