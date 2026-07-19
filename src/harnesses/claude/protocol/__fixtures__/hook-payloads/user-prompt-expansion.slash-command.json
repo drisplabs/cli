@@ -1,0 +1,13 @@
+{
+	"session_id": "00000000-0000-4000-8000-000000000000",
+	"transcript_path": "/fixture/transcript.jsonl",
+	"cwd": "/fixture/workdir",
+	"prompt_id": "88672ead-b676-47fb-b7ae-b278c4139057",
+	"permission_mode": "bypassPermissions",
+	"hook_event_name": "UserPromptExpansion",
+	"expansion_type": "slash_command",
+	"command_name": "greet",
+	"command_args": "",
+	"command_source": "projectSettings",
+	"prompt": "/greet"
+}
