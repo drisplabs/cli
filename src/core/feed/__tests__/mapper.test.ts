@@ -621,6 +621,65 @@ describe('FeedMapper', () => {
 			expect(submitResults.filter(r => r.kind === 'run.start')).toHaveLength(1);
 		});
 
+		// Firing before the matching prompt means the expansion would otherwise be
+		// stamped with the *previous* run's id, filing the slash command that
+		// started a run under the run before it.
+		it('attributes an expansion to the run its own prompt opens, not the previous one', () => {
+			const mapper = createFeedMapper();
+
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p1',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'first prompt',
+					},
+				}),
+			);
+			const firstRunId = mapper.getCurrentRun()?.run_id;
+			expect(firstRunId).toBeDefined();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					promptId: 'p2',
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p2',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+
+			// The pair still yields exactly one run between them.
+			const runStarts = [...expansionResults, ...submitResults].filter(
+				r => r.kind === 'run.start',
+			);
+			expect(runStarts).toHaveLength(1);
+
+			const expansion = expansionResults.find(
+				r => r.kind === 'prompt.expansion',
+			);
+			expect(expansion!.run_id).toBe(runStarts[0]!.run_id);
+			expect(expansion!.run_id).not.toBe(firstRunId);
+		});
+
 		it('emits Codex agent messages when item completion arrives', () => {
 			const mapper = createFeedMapper();
 			const startResults = mapper.mapEvent(
