@@ -4,6 +4,7 @@ import type {HookEventEnvelope} from '../../protocol/envelope';
 import {
 	NON_TOOL_HOOK_EVENTS,
 	TOOL_HOOK_EVENTS,
+	isAsyncHookEvent,
 } from '../../hooks/generateHookSettings';
 
 function makeEnvelope(
@@ -505,5 +506,30 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		const envelope = makeEnvelope();
 		const event = mapEnvelopeToRuntimeEvent(envelope);
 		expect(event.promptId).toBeUndefined();
+	});
+
+	it('dispatches every hook that can decide or block synchronously', () => {
+		// Claude ignores an async hook's stdout, so a hook whose reply can change
+		// what Claude does next must never be registered async. This guards the
+		// two sets against drift: adding a blocking event without adding it to
+		// SYNC_HOOK_EVENTS would silently strip its ability to block.
+		const registeredHooks = [...TOOL_HOOK_EVENTS, ...NON_TOOL_HOOK_EVENTS];
+		const decisionCapable: string[] = [];
+
+		for (const hookName of registeredHooks) {
+			const envelope = makeEnvelope({
+				hook_event_name: hookName as HookEventEnvelope['hook_event_name'],
+				payload: payloadForHook(hookName),
+			});
+			const {interaction} = mapEnvelopeToRuntimeEvent(envelope);
+
+			if (interaction.expectsDecision || interaction.canBlock) {
+				decisionCapable.push(hookName);
+				expect(isAsyncHookEvent(hookName), hookName).toBe(false);
+			}
+		}
+
+		// The guard is only meaningful if it actually covers events.
+		expect(decisionCapable.length).toBeGreaterThan(0);
 	});
 });

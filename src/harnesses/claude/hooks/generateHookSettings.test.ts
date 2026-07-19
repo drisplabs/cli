@@ -3,6 +3,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+	NON_TOOL_HOOK_EVENTS,
+	SYNC_HOOK_EVENTS,
+	TOOL_HOOK_EVENTS,
 	formatHookForwarderCommand,
 	generateHookSettings,
 	quoteShellArg,
@@ -171,6 +174,72 @@ describe('generateHookSettings', () => {
 			settings.hooks.PermissionRequest[0].hooks[0].timeout,
 		).toBeUndefined();
 		expect(settings.hooks.Stop[0].hooks[0].timeout).toBeUndefined();
+	});
+
+	it('takes observation-only hooks off the critical path with async: true', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8'));
+
+		// Observation-only: Claude must not wait for the forwarder.
+		expect(settings.hooks.PostToolUse[0].hooks[0].async).toBe(true);
+		expect(settings.hooks.SessionStart[0].hooks[0].async).toBe(true);
+		expect(settings.hooks.Notification[0].hooks[0].async).toBe(true);
+	});
+
+	it('keeps decision hooks synchronous so they can still block or relay', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8'));
+
+		// A hook marked async has its stdout ignored by Claude, so any hook that
+		// may return a decision must stay synchronous.
+		for (const event of [
+			'PreToolUse',
+			'PermissionRequest',
+			'Stop',
+			'SubagentStop',
+			'Elicitation',
+		]) {
+			expect(settings.hooks[event][0].hooks[0].async).toBeUndefined();
+		}
+	});
+
+	it('keeps SessionEnd synchronous so teardown is not killed mid-flight', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8'));
+
+		// A background hook still running when Claude exits is killed with it.
+		// Measured: with a slow async hook in play, SessionEnd was dropped in 3/3
+		// runs and delivered in 3/3 synchronous runs. Keeping teardown on the
+		// critical path is what preserves the tail of the feed timeline.
+		expect(settings.hooks.SessionEnd[0].hooks[0].async).toBeUndefined();
+	});
+
+	it('classifies every registered hook event as exactly one of async or sync', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const settings = JSON.parse(fs.readFileSync(result.settingsPath, 'utf8'));
+		const registered = [...TOOL_HOOK_EVENTS, ...NON_TOOL_HOOK_EVENTS];
+
+		const asyncEvents = registered.filter(
+			event => settings.hooks[event][0].hooks[0].async === true,
+		);
+		const syncEvents = registered.filter(
+			event => settings.hooks[event][0].hooks[0].async === undefined,
+		);
+
+		// No event may fall through unclassified, and neither side may collapse.
+		expect(asyncEvents.length + syncEvents.length).toBe(registered.length);
+		expect(asyncEvents.length).toBeGreaterThan(0);
+		expect(syncEvents.length).toBeGreaterThan(0);
+		// The emitted file must agree with the declared set, order aside.
+		expect([...syncEvents].sort()).toEqual([...SYNC_HOOK_EVENTS].sort());
 	});
 
 	it('should write valid JSON', () => {
