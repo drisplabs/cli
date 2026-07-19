@@ -58,11 +58,23 @@ export type {
 
 import type {PermissionSuggestion} from '../../../shared/types/permissionSuggestion';
 
+/**
+ * Values Claude can send in `Notification.notification_type`.
+ *
+ * Transcribed verbatim from the Notification hook schema in the Claude binary
+ * (2.1.215), which declares exactly these eight. Kept complete because a
+ * missing member makes a value that Claude really sends look impossible to
+ * anything narrowing on this union.
+ */
 export type NotificationType =
 	| 'permission_prompt'
 	| 'idle_prompt'
 	| 'auth_success'
-	| 'elicitation_dialog';
+	| 'elicitation_dialog'
+	| 'elicitation_complete'
+	| 'elicitation_response'
+	| 'agent_needs_input'
+	| 'agent_completed';
 
 export type SessionEndReason =
 	| 'clear'

@@ -192,13 +192,15 @@ Matcher: matches on `tool_name` (regex).
 
 ### 7. Notification
 
-| Field               | Type   | Required | Description                                                                      |
-| :------------------ | :----- | :------- | :------------------------------------------------------------------------------- |
-| `message`           | string | yes      | Notification text                                                                |
-| `title`             | string | no       | Notification title                                                               |
-| `notification_type` | string | no       | `"permission_prompt"`, `"idle_prompt"`, `"auth_success"`, `"elicitation_dialog"` |
+| Field               | Type   | Required | Description                                                                                                                                                                      |
+| :------------------ | :----- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message`           | string | yes      | Notification text                                                                                                                                                                |
+| `title`             | string | no       | Notification title                                                                                                                                                               |
+| `notification_type` | string | no       | `"permission_prompt"`, `"idle_prompt"`, `"auth_success"`, `"elicitation_dialog"`, `"elicitation_complete"`, `"elicitation_response"`, `"agent_needs_input"`, `"agent_completed"` |
 
 Matcher: matches on `notification_type`.
+
+The eight values above are the complete set declared by the Notification hook schema in the Claude binary (2.1.215).
 
 **NOTE:** `title` is in the Claude Code docs but **missing** from the athena-cli `NotificationEvent` type. See [Missing Items](#missing-items--gaps).
 
