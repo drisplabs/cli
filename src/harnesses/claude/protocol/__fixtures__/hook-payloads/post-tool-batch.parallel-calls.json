@@ -1,0 +1,37 @@
+{
+	"session_id": "00000000-0000-4000-8000-000000000002",
+	"transcript_path": "/fixture/transcript.jsonl",
+	"cwd": "/fixture/workdir",
+	"prompt_id": "ed907e2a-67a9-422b-a26e-c90815f7064c",
+	"permission_mode": "bypassPermissions",
+	"effort": {
+		"level": "high"
+	},
+	"hook_event_name": "PostToolBatch",
+	"tool_calls": [
+		{
+			"tool_name": "Read",
+			"tool_input": {
+				"file_path": "/fixture/workdir/a.txt"
+			},
+			"tool_use_id": "toolu_000000000000000000000001",
+			"tool_response": "1\talpha file contents\n2\t"
+		},
+		{
+			"tool_name": "Read",
+			"tool_input": {
+				"file_path": "/fixture/workdir/b.txt"
+			},
+			"tool_use_id": "toolu_000000000000000000000002",
+			"tool_response": "1\tbeta file contents\n2\t"
+		},
+		{
+			"tool_name": "Read",
+			"tool_input": {
+				"file_path": "/fixture/workdir/c.txt"
+			},
+			"tool_use_id": "toolu_000000000000000000000003",
+			"tool_response": "1\tgamma file contents\n2\t"
+		}
+	]
+}
