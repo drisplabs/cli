@@ -57,6 +57,13 @@ Athena Session        durable work-unit; one ~/.config/athena/sessions/<id>/sess
 | **Workflow Upgrade** | Replacing an installed Workflow's on-disk files in place with a new version                                                                                                                                                                                                                           | Update, sync, install              |
 | **Compaction**       | Summarizing a Turn's conversation history when context fills; the Composed System Prompt survives it because it rides the system-prompt channel                                                                                                                                                       | Summarization, truncation, handoff |
 
+## Capability layers
+
+| Term                    | Definition                                                                                                                   | Aliases to avoid                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **Workflow plugin**     | A plugin dependency declared by a **Workflow** and made available to Agent Sessions for Workflow Runs of that Workflow.      | Global plugin, personal plugin     |
+| **Personal capability** | A user-selected skill or MCP server made available to Athena-spawned Agent Sessions outside of Workflow plugin dependencies. | Global plugin, workflow dependency |
+
 ## Cross-walk to official terminology
 
 How Athena's units map to what Anthropic and OpenAI actually define in their docs. The headline: **Athena's `session` (the `athena-<id>` / `session.db` / `.athena/<id>/` identity) is NOT a vendor session** — it is the durable **Athena Session**, the work-unit container that holds _many_ **Workflow Runs**. A vendor "session"/"thread" is per-Turn and ephemeral here (an **Agent Session**).

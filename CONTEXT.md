@@ -39,7 +39,7 @@ _Avoid_: decision poller (cadence is one detail, not the concept), inbox loop.
 The mapper is internally composed of six named seams; each owns one slice of the mapper's state and has its own test surface.
 
 **RunLifecycle**:
-Owns `currentSession`, `currentRun`, run/session sequence numbers, and per-run counters (tool uses, failures, permission requests, blocks). Decides when a run starts, ends, or rolls over.
+Owns `currentSession`, `currentRun`, run/session sequence numbers, and per-run counters (tool uses, failures, permission requests, blocks). Decides when a run starts, ends, or rolls over — the boundary rolls over on a change of **Prompt** when one is present, falling back to the `session.start`/`user.prompt` heuristic otherwise.
 _Avoid_: run state, session manager.
 
 **ToolCorrelation**:
@@ -86,8 +86,21 @@ assignments** against the same connected dashboard that made the **Attachment**
 mirror current.
 _Avoid_: connection state (too broad), socket context (transport detail).
 
+**Prompt**:
+The harness-native identity (`prompt_id`) of a single user input as it is
+processed. When present, a change of **Prompt** is what bounds a **Run** (the
+authoritative boundary trigger); it is absent before the first user input and on
+harnesses that don't emit it, where the `session.start`/`user.prompt` heuristic
+bounds runs instead. Carried on every **RuntimeEvent** and persisted as a
+correlation key on `feed_events`. Does **not** change the `run_id` format
+(`{session_id}:R{n}` stays positional).
+_Avoid_: prompt id (the wire field name — the domain concept is the **Prompt**),
+turn (collides with **Dispatch turn** and the workflow-execution **Turn**).
+
 **Run**:
-One agent invocation within a **Session**. Triggered by `session.start` or `user.prompt`. Has a status (`running` | `completed`), counters, and an actor tree.
+One agent invocation within a **Session**. Bounded by a **Prompt** when one is
+present; otherwise triggered by `session.start` or `user.prompt`. Has a status
+(`running` | `completed`), counters, and an actor tree.
 
 **Session**:
 A drisp instance lifecycle. Spans many **Runs**. Identified by an adapter session id from the harness.
