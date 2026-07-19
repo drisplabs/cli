@@ -148,6 +148,7 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 			ts: runtimeEvent.timestamp,
 			session_id: runtimeEvent.sessionId,
 			run_id: runId,
+			prompt_id: runtimeEvent.promptId,
 			kind,
 			level,
 			actor_id: actorId,

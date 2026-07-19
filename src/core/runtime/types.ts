@@ -46,6 +46,14 @@ export type RuntimeEvent = {
 	toolUseId?: string;
 	agentId?: string;
 	agentType?: string;
+	/**
+	 * Harness-native Prompt identity (Claude `prompt_id`, a common input field on
+	 * v2.1.196+). Present on every hook event once a user prompt is being
+	 * processed; absent before the first user input and on harnesses/versions
+	 * that don't emit it. The FeedMapper uses a change of this value as the
+	 * authoritative Feed Run boundary trigger when present (ADR 0009).
+	 */
+	promptId?: string;
 
 	/** Base context present on all hook events */
 	context: {

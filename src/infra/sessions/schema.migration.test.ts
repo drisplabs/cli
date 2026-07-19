@@ -88,7 +88,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(6);
+		expect(row.version).toBe(7);
 
 		// Verify token columns exist and can be updated
 		db.prepare(
@@ -138,7 +138,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(6);
+		expect(row.version).toBe(7);
 
 		db.prepare(
 			'INSERT INTO adapter_sessions (session_id, started_at, tokens_context_window_size) VALUES (?, ?, ?)',
@@ -183,7 +183,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(6);
+		expect(row.version).toBe(7);
 
 		db.prepare(
 			`INSERT INTO workflow_runs (id, session_id, started_at, iteration, max_iterations, status)
@@ -250,7 +250,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(6);
+		expect(row.version).toBe(7);
 
 		// channel_outbox: insert + due index works
 		db.prepare(
@@ -279,6 +279,94 @@ describe('schema migrations', () => {
 		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(999);
 
 		expect(() => initSchema(db)).toThrow(/newer schema/i);
+		db.close();
+	});
+
+	it('migrates v6 → v7 by adding a nullable feed_events.prompt_id column', () => {
+		const db = new Database(':memory:');
+		db.exec('PRAGMA foreign_keys = ON');
+		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(6);
+		// v6 feed_events shape: no prompt_id column.
+		db.exec(
+			'CREATE TABLE session (id TEXT PRIMARY KEY, project_dir TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, label TEXT, event_count INTEGER DEFAULT 0)',
+		);
+		db.exec(
+			'CREATE TABLE runtime_events (id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, timestamp INTEGER NOT NULL, hook_name TEXT NOT NULL, adapter_session_id TEXT, payload JSON NOT NULL)',
+		);
+		db.exec(
+			'CREATE TABLE feed_events (event_id TEXT PRIMARY KEY, runtime_event_id TEXT, seq INTEGER NOT NULL, kind TEXT NOT NULL, run_id TEXT NOT NULL, actor_id TEXT NOT NULL, timestamp INTEGER NOT NULL, data JSON NOT NULL, FOREIGN KEY (runtime_event_id) REFERENCES runtime_events(id))',
+		);
+		// A pre-migration feed_event (no prompt_id).
+		db.prepare(
+			'INSERT INTO feed_events (event_id, runtime_event_id, seq, kind, run_id, actor_id, timestamp, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+		).run('fe1', null, 1, 'tool.pre', 'cs-1:R1', 'agent:root', 1000, '{}');
+
+		initSchema(db);
+
+		const row = db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		};
+		expect(row.version).toBe(7);
+
+		// Existing row's prompt_id defaults to NULL...
+		const before = db
+			.prepare('SELECT prompt_id FROM feed_events WHERE event_id = ?')
+			.get('fe1') as {prompt_id: string | null};
+		expect(before.prompt_id).toBeNull();
+
+		// ...and the column is writable for correlation.
+		db.prepare('UPDATE feed_events SET prompt_id = ? WHERE event_id = ?').run(
+			'prompt-xyz',
+			'fe1',
+		);
+		const after = db
+			.prepare('SELECT prompt_id FROM feed_events WHERE event_id = ?')
+			.get('fe1') as {prompt_id: string};
+		expect(after.prompt_id).toBe('prompt-xyz');
+
+		db.close();
+	});
+
+	it('creates feed_events.prompt_id on a fresh database', () => {
+		const db = new Database(':memory:');
+		initSchema(db);
+		// Inserting with prompt_id must succeed on a fresh DB.
+		db.prepare(
+			'INSERT INTO feed_events (event_id, runtime_event_id, seq, kind, run_id, actor_id, timestamp, data, prompt_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+		).run(
+			'fe1',
+			null,
+			1,
+			'tool.pre',
+			'cs-1:R1',
+			'agent:root',
+			1000,
+			'{}',
+			'P1',
+		);
+		const got = db
+			.prepare('SELECT prompt_id FROM feed_events WHERE event_id = ?')
+			.get('fe1') as {prompt_id: string};
+		expect(got.prompt_id).toBe('P1');
+		db.close();
+	});
+
+	it('re-creates a missing idx_feed_prompt on an already-migrated database', () => {
+		const db = new Database(':memory:');
+		initSchema(db);
+		db.exec('DROP INDEX idx_feed_prompt');
+
+		// Re-opening an at-version database must self-heal the index, the same way
+		// the base DDL re-asserts every other index.
+		initSchema(db);
+
+		const indexes = (
+			db.prepare('PRAGMA index_list(feed_events)').all() as Array<{
+				name: string;
+			}>
+		).map(index => index.name);
+		expect(indexes).toContain('idx_feed_prompt');
 		db.close();
 	});
 });

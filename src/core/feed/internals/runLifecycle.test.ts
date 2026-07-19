@@ -241,6 +241,43 @@ describe('runLifecycle', () => {
 			expect(makeEvent).not.toHaveBeenCalled();
 		});
 
+		it('still rolls over on an explicit context trigger that re-states the current prompt', () => {
+			// Auto-compact fires mid-Prompt, so its SessionStart carries the SAME
+			// prompt_id as the open Run. The Prompt has not changed, but the context
+			// has been rebuilt, so per-run state must still be reset — otherwise the
+			// dedup/reasoning state from before the compaction leaks into after it.
+			const {rl, resetPerRunState} = setup();
+			rl.setSession({session_id: 'cs-1', started_at: 100});
+			rl.beginRun(
+				makeRuntimeEvent({timestamp: 200, promptId: 'p-1'}),
+				'user_prompt_submit',
+				'a',
+			);
+			resetPerRunState.mockClear?.();
+			const events = rl.beginRun(
+				makeRuntimeEvent({timestamp: 300, promptId: 'p-1'}),
+				'compact',
+			);
+			expect(events.map(e => e.kind)).toEqual(['run.end', 'run.start']);
+			expect(resetPerRunState).toHaveBeenCalledTimes(1);
+		});
+
+		it('is still a no-op when an implicit event re-states the current prompt', () => {
+			const {rl, makeEvent} = setup();
+			rl.setSession({session_id: 'cs-1', started_at: 100});
+			rl.beginRun(
+				makeRuntimeEvent({timestamp: 200, promptId: 'p-1'}),
+				'user_prompt_submit',
+				'a',
+			);
+			makeEvent.mockClear();
+			const events = rl.beginRun(
+				makeRuntimeEvent({timestamp: 300, promptId: 'p-1'}),
+			);
+			expect(events).toEqual([]);
+			expect(makeEvent).not.toHaveBeenCalled();
+		});
+
 		it('opens an implicit run when none is open (default trigger other)', () => {
 			const {rl} = setup();
 			rl.setSession({session_id: 'cs-1', started_at: 100});

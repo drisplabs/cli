@@ -46,12 +46,19 @@ export function migrateVersionedSchema(
 			)
 		);
 	}
-	schema.migrate(db, existing?.version);
-	if (!existing) {
-		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
-			schema.version,
-		);
-	}
+	// The delta and its version stamp must land together. SQLite auto-commits
+	// every `exec`, so an interrupted migration would otherwise leave the DDL
+	// applied with `schema_version` still on the old value — the next open
+	// replays the same `ALTER` and fails with `duplicate column name`, making
+	// the file permanently unopenable with no repair path.
+	db.transaction(() => {
+		schema.migrate(db, existing?.version);
+		if (!existing) {
+			db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+				schema.version,
+			);
+		}
+	})();
 }
 
 export type OpenVersionedDbOptions = {

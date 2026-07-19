@@ -90,6 +90,14 @@ export type FeedEventBase = {
 	ts: number;
 	session_id: string;
 	run_id: string;
+	/**
+	 * Harness-native Prompt identity (Claude `prompt_id`) the originating event
+	 * belonged to, forwarded from RuntimeEvent.promptId. A correlation field —
+	 * NOT the Run identity (that stays `run_id` = `{session_id}:R{n}`). Unset for
+	 * pre-prompt bootstrap events and harnesses/versions without prompt_id
+	 * (ADR 0009).
+	 */
+	prompt_id?: string;
 	kind: FeedEventKind;
 	level: FeedEventLevel;
 	actor_id: string;

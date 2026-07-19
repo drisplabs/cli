@@ -103,8 +103,8 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 	);
 
 	const insertFeedEvent = db.prepare(
-		`INSERT OR IGNORE INTO feed_events (event_id, runtime_event_id, seq, kind, run_id, actor_id, timestamp, data)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO feed_events (event_id, runtime_event_id, seq, kind, run_id, actor_id, timestamp, data, prompt_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	);
 
 	const insertAdapterSession = db.prepare(
@@ -172,6 +172,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 					fe.actor_id,
 					fe.ts,
 					JSON.stringify(fe),
+					fe.prompt_id ?? null,
 				);
 			}
 			updateEventCount.run(feedEvents.length, opts.sessionId);
@@ -189,6 +190,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 				fe.actor_id,
 				fe.ts,
 				JSON.stringify(fe),
+				fe.prompt_id ?? null,
 			);
 		}
 		updateEventCount.run(feedEvents.length, opts.sessionId);

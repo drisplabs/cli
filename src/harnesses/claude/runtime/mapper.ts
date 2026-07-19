@@ -39,6 +39,9 @@ export function mapEnvelopeToRuntimeEvent(
 		data: translated.data,
 		hookName: envelope.hook_event_name,
 		sessionId: envelope.session_id,
+		// prompt_id is a Claude common input field (v2.1.196+) on every hook
+		// payload; carried harness-neutrally as the Prompt identity (ADR 0009).
+		promptId: safePayloadRecord['prompt_id'] as string | undefined,
 		toolName: translated.toolName,
 		toolUseId: translated.toolUseId,
 		agentId: translated.agentId,

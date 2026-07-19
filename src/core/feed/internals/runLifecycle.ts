@@ -85,6 +85,10 @@ export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
 	let currentRun: Run | null = null;
 	let seq = 0;
 	let runSeq = 0;
+	// The Prompt (Claude `prompt_id`) the currently-open Run belongs to. Undefined
+	// during the pre-prompt bootstrap phase and on harnesses/versions that don't
+	// emit prompt_id, in which case the heuristic trigger bounds Runs (ADR 0009).
+	let currentPromptId: string | undefined;
 
 	function getRunId(): string {
 		const sessId = currentSession?.session_id ?? 'unknown';
@@ -155,7 +159,33 @@ export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
 		triggerType: Run['trigger']['type'] = 'other',
 		promptPreview?: string,
 	): FeedEvent[] {
-		if (currentRun && triggerType === 'other') return [];
+		const promptId = runtimeEvent.promptId;
+
+		// `resume`/`clear`/`compact` are explicit context-lifecycle events, not
+		// implicit ones: the harness rebuilt the context underneath the Run, so the
+		// Run must roll over (and per-run state reset) even when the Prompt is
+		// unchanged — auto-compact fires mid-Prompt and would otherwise leak state
+		// across the compaction.
+		const isExplicitContextTrigger =
+			triggerType === 'resume' ||
+			triggerType === 'clear' ||
+			triggerType === 'compact';
+
+		if (promptId !== undefined && !isExplicitContextTrigger) {
+			// Prompt-driven boundary (ADR 0009): the Run rolls over when the Prompt
+			// _changes_, not when a specific trigger event is observed. Any event
+			// carrying a new prompt_id can establish the boundary, and any other
+			// event re-stating the current Prompt is a no-op.
+			if (currentRun && promptId === currentPromptId) return [];
+		} else if (
+			promptId === undefined &&
+			currentRun &&
+			triggerType === 'other'
+		) {
+			// Heuristic fallback: bootstrap phase / harnesses without prompt_id.
+			// Implicit ('other') triggers never roll over an open Run.
+			return [];
+		}
 
 		const results: FeedEvent[] = [];
 
@@ -171,6 +201,9 @@ export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
 			triggerType,
 			promptPreview,
 		);
+		// Bind the new Run to the Prompt that opened it (undefined on the heuristic
+		// path); a later event re-stating this Prompt is then a no-op.
+		currentPromptId = promptId;
 
 		results.push(
 			makeEvent(
@@ -257,6 +290,10 @@ export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
 					if (e.kind === 'tool.failure') currentRun.counters.tool_failures++;
 					if (e.kind === 'permission.request')
 						currentRun.counters.permission_requests++;
+					// Resume the Prompt the restored Run belongs to (feedEvents are
+					// seq-ordered) so a continuation event re-stating it does not
+					// spuriously roll the Run over.
+					if (e.prompt_id !== undefined) currentPromptId = e.prompt_id;
 				}
 			}
 		},
