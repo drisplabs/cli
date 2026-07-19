@@ -44,13 +44,13 @@ _Avoid_: request index, decision router.
 **AgentMessageStream**:
 Owns pending message buffers, dedup state per actor scope, and reasoning summary accumulation. Decides when an in-flight message is emittable.
 
-**RootPlanTracker**:
-Owns the **Root plan** — the canonical task list surfaced via `FeedMapper.getTasks()`. Knows how to compare a proposed plan against the current one (`differs`) and how to replace it (`set`). Updated from `session.start` bootstrap, `plan.delta`, and `tool.pre` for `TodoWrite`.
-_Avoid_: task store, plan state.
+**TaskStateTracker**:
+Owns the **Root plan** — the canonical task list surfaced via `FeedMapper.getTasks()` — and the Claude task lifecycle. Knows how to compare a proposed plan against the current one and replace it, and how to upsert/complete/update lifecycle tasks. Updated from `session.start` bootstrap, `plan.delta`, `tool.pre` for `TodoWrite`, `TaskCreate`/`TaskUpdate`, and `task.created`/`task.completed`. The former `RootPlanTracker` and `TaskLifecycleTracker` leaves are private state inside this seam.
+_Avoid_: task store, plan state, RootPlanTracker (folded in).
 
-**SubagentTracker**:
-Owns the **Subagent stack** (LIFO of active subagent actor IDs), the **Pending description** handoff, and the per-agent description registry. Caller-prefixes actor IDs (`subagent:<id>`) — the tracker treats them as opaque strings.
-_Avoid_: agent stack, subagent state.
+**SubagentLifecycle**:
+Owns the **Subagent stack** (LIFO of active subagent actor IDs), the **Pending description** handoff, and the per-agent description registry, plus actor-id formation (`subagent:<id>`) and the `ActorRegistry`/run-membership effects. The former `SubagentTracker` leaf is private state inside this seam.
+_Avoid_: agent stack, subagent state, SubagentTracker (folded in).
 
 ### Identity
 
@@ -88,10 +88,10 @@ A drisp instance lifecycle. Spans many **Runs**. Identified by an adapter sessio
 A participant in a **Run** — the root agent or a subagent. Subagents form a stack (LIFO).
 
 **Subagent**:
-A child agent spawned by the root agent via the `Task` (or `Agent`) tool. Pushed onto the **Subagent stack** at `subagent.start`, removed at `subagent.stop`. Tracked by **SubagentTracker** for the duration of its lifecycle.
+A child agent spawned by the root agent via the `Task` (or `Agent`) tool. Pushed onto the **Subagent stack** at `subagent.start`, removed at `subagent.stop`. Tracked by **SubagentLifecycle** for the duration of its lifecycle.
 
 **Root plan**:
-The canonical task list for the current session, sourced from `TodoWrite` tool inputs or `plan.delta` events and surfaced publicly via `FeedMapper.getTasks()`. Owned by **RootPlanTracker**. Survives across **Runs** within a **Session**.
+The canonical task list for the current session, sourced from `TodoWrite` tool inputs or `plan.delta` events and surfaced publicly via `FeedMapper.getTasks()`. Owned by **TaskStateTracker**. Survives across **Runs** within a **Session**.
 _Avoid_: tasks (too generic), todo list (used in tool input but not as a domain term inside core/).
 
 **Pending description**:
@@ -148,8 +148,8 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
 - A **Run** is owned by one root **Actor**, which may spawn subagent **Actors**.
 - A **RuntimeEvent** is mapped to zero or more **FeedEvent**s by the **FeedMapper**.
 - A **RuntimeDecision** is mapped to one **FeedEvent** by the **FeedMapper**, correlated through **DecisionCorrelation**.
-- The **FeedMapper** is composed of **RunLifecycle**, **ToolCorrelation**, **DecisionCorrelation**, **AgentMessageStream**, **RootPlanTracker**, and **SubagentTracker** as internal seams. Their combined interface is the seven-method `FeedMapper` type.
-- The **Pending description** flows from `tool.pre` (Task/Agent) to the next `subagent.start`, where **SubagentTracker** consumes and clears it.
+- The **FeedMapper** is composed of **RunLifecycle**, **ToolCorrelation**, **DecisionCorrelation**, **AgentMessageStream**, **TaskStateTracker**, and **SubagentLifecycle** as internal seams. Their combined interface is the seven-method `FeedMapper` type.
+- The **Pending description** flows from `tool.pre` (Task/Agent) to the next `subagent.start`, where **SubagentLifecycle** consumes and clears it.
 - The **Root plan** persists across **Runs** within a **Session** — only per-run state (subagent stack, tool/decision correlation, message stream) is reset between runs.
 - A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
 - The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
