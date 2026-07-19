@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {isMarketplaceRef, resolveMarketplacePlugin} from './marketplace';
+import {isMarketplaceRef} from './marketplace';
 
 export type AthenaHarness = 'claude-code' | 'openai-codex' | 'opencode';
 
@@ -26,6 +26,12 @@ export type WorkflowSelection = {
 export type WorkflowSelections = Record<string, WorkflowSelection>;
 
 export type AthenaConfig = {
+	/**
+	 * Plugin entries as read from config: local paths (resolved to absolute
+	 * against the config's baseDir) and marketplace refs (left raw). Resolve
+	 * these to plugin directories with `resolvePluginDirs` before use — reading
+	 * config never resolves refs, so it never spawns git.
+	 */
 	plugins: string[];
 	/** Additional directories to grant Claude access to (passed as --add-dir flags) */
 	additionalDirectories: string[];
@@ -57,6 +63,16 @@ export type AthenaConfig = {
 	 */
 	channels?: string[];
 };
+
+/**
+ * Fields that may be written back to a config file. Excludes `plugins` and
+ * `additionalDirectories`: both are resolved on read (raw refs / relative paths
+ * become resolved dirs), so persisting the resolved form would clobber the
+ * user's on-disk refs. No writer needs them today; this keeps that true.
+ */
+export type ConfigWriteUpdates = Partial<
+	Omit<AthenaConfig, 'plugins' | 'additionalDirectories'>
+>;
 
 const EMPTY_CONFIG: AthenaConfig = {plugins: [], additionalDirectories: []};
 
@@ -207,21 +223,13 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		);
 	}
 
-	const plugins = (raw.plugins ?? [])
-		.map((p): string | null => {
-			if (isMarketplaceRef(p)) {
-				try {
-					return resolveMarketplacePlugin(p);
-				} catch (error) {
-					console.error(
-						`Warning: skipping plugin "${p}": ${(error as Error).message}`,
-					);
-					return null;
-				}
-			}
-			return path.isAbsolute(p) ? p : path.resolve(baseDir, p);
-		})
-		.filter((p): p is string => p !== null);
+	// Resolve local paths against baseDir, but leave marketplace refs raw:
+	// resolving them means spawning git, which is the read path's job to avoid.
+	// `resolvePluginDirs` (Plugin ref resolution) resolves the refs downstream.
+	const plugins = (raw.plugins ?? []).map(p => {
+		if (isMarketplaceRef(p)) return p;
+		return path.isAbsolute(p) ? p : path.resolve(baseDir, p);
+	});
 
 	// Resolve relative paths for additional directories
 	const additionalDirectories = (raw.additionalDirectories ?? []).map(dir =>
@@ -292,7 +300,7 @@ const GLOBAL_CONFIG_LEGACY_KEYS = [
  * Write global config to `~/.config/athena/config.json`.
  * Merges with existing config if present. Creates directories as needed.
  */
-export function writeGlobalConfig(updates: Partial<AthenaConfig>): void {
+export function writeGlobalConfig(updates: ConfigWriteUpdates): void {
 	const homeDir = os.homedir();
 	const configDir = path.join(homeDir, '.config', 'athena');
 	const configPath = path.join(configDir, 'config.json');
@@ -305,7 +313,7 @@ export function writeGlobalConfig(updates: Partial<AthenaConfig>): void {
  */
 export function writeProjectConfig(
 	projectDir: string,
-	updates: Partial<AthenaConfig>,
+	updates: ConfigWriteUpdates,
 ): void {
 	const configDir = path.join(projectDir, '.athena');
 	const configPath = path.join(configDir, 'config.json');

@@ -163,6 +163,19 @@ rebuilt), so callers render a marketplace-named cause instead of raw git output.
 Shared by both cache policies; the user-facing wording is not (Ensure says
 "reach", Refresh says "refresh").
 
+**Plugin ref resolution** _(read path)_:
+Turning a config's `plugins` entries into resolved plugin directories. Each
+entry is either a **marketplace ref** (`name@owner/repo`) or a local path.
+`readConfig` resolves local paths against its `baseDir` but leaves marketplace
+refs raw; `resolvePluginDirs` then resolves those refs through the **Ensure**
+cache policy, so `readConfig` itself stays a pure parse with no path to git. A
+ref that fails to resolve is skipped and returned as a warning for the caller to
+surface, never written to stderr. Owned by `resolvePluginDirs` and invoked once,
+at runtime bootstrap. Distinct from **Workflow plugin** resolution
+(`UBIQUITOUS_LANGUAGE.md`), which resolves a **Workflow**'s declared plugin
+dependencies rather than user-config refs.
+_Avoid_: plugin loading (that is `registerPlugins`), plugin install.
+
 ## Relationships
 
 - A **Session** contains many **Runs**.
@@ -185,6 +198,10 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
   **Marketplace cache** and share one **Refresh failure kind** classifier; they
   differ only in whether they pull, whether they self-heal, and whether they
   throw or return an outcome.
+- **Plugin ref resolution** consumes the **Ensure** cache policy and is the only
+  place that resolves a config's plugin refs. Keeping it out of `readConfig` is
+  what lets every other config reader consume non-plugin fields without spawning
+  git; runtime bootstrap is the sole caller.
 
 ## Relationship to workflow-execution language
 

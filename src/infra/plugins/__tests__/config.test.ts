@@ -22,13 +22,9 @@ vi.mock('node:os', () => ({
 	},
 }));
 
-const resolveMarketplacePluginMock = vi.fn();
-
-vi.mock('../marketplace', () => ({
-	isMarketplaceRef: (entry: string) =>
-		/^[a-zA-Z0-9_-]+@[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(entry),
-	resolveMarketplacePlugin: (ref: string) => resolveMarketplacePluginMock(ref),
-}));
+// No `../marketplace` mock: readConfig no longer resolves marketplace refs
+// (that is `resolvePluginDirs`' job), so parsing config never spawns git. The
+// real, pure `isMarketplaceRef` regex decides which entries are left raw.
 
 // Import after mocks are set up
 const {readConfig, readGlobalConfig, writeGlobalConfig} =
@@ -38,7 +34,6 @@ beforeEach(() => {
 	for (const key of Object.keys(files)) {
 		delete files[key];
 	}
-	resolveMarketplacePluginMock.mockReset();
 });
 
 describe('readConfig', () => {
@@ -178,62 +173,23 @@ describe('readGlobalConfig', () => {
 	});
 });
 
-describe('marketplace ref integration', () => {
-	it('delegates marketplace refs to resolveMarketplacePlugin', () => {
-		resolveMarketplacePluginMock.mockReturnValue(
-			'/resolved/marketplace/plugin',
-		);
-
+describe('marketplace refs (left raw for resolvePluginDirs)', () => {
+	it('leaves a marketplace ref unresolved and never spawns git', () => {
 		files['/project/.athena/config.json'] = JSON.stringify({
 			plugins: ['my-plugin@owner/repo'],
 		});
 
-		const result = readConfig('/project');
-
-		expect(resolveMarketplacePluginMock).toHaveBeenCalledWith(
-			'my-plugin@owner/repo',
-		);
-		expect(result.plugins).toEqual(['/resolved/marketplace/plugin']);
+		expect(readConfig('/project').plugins).toEqual(['my-plugin@owner/repo']);
 	});
 
-	it('skips marketplace refs that fail to resolve and warns on stderr', () => {
-		resolveMarketplacePluginMock.mockImplementation(() => {
-			throw new Error('Plugin "bad-plugin" not found in marketplace');
-		});
-
-		const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-		files['/project/.athena/config.json'] = JSON.stringify({
-			plugins: ['/absolute/plugin', 'bad-plugin@owner/repo', 'relative/plugin'],
-		});
-
-		const result = readConfig('/project');
-
-		expect(result.plugins).toEqual([
-			'/absolute/plugin',
-			'/project/relative/plugin',
-		]);
-		expect(stderrSpy).toHaveBeenCalledWith(
-			expect.stringContaining('bad-plugin@owner/repo'),
-		);
-
-		stderrSpy.mockRestore();
-	});
-
-	it('handles mix of paths and marketplace refs', () => {
-		resolveMarketplacePluginMock.mockReturnValue(
-			'/resolved/marketplace/plugin',
-		);
-
+	it('resolves local paths but leaves marketplace refs raw, preserving order', () => {
 		files['/project/.athena/config.json'] = JSON.stringify({
 			plugins: ['/absolute/plugin', 'my-plugin@owner/repo', 'relative/plugin'],
 		});
 
-		const result = readConfig('/project');
-
-		expect(result.plugins).toEqual([
+		expect(readConfig('/project').plugins).toEqual([
 			'/absolute/plugin',
-			'/resolved/marketplace/plugin',
+			'my-plugin@owner/repo',
 			'/project/relative/plugin',
 		]);
 	});

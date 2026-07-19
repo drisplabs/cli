@@ -4,6 +4,7 @@ import {
 	readConfig,
 	readGlobalConfig,
 	resolveActiveWorkflow,
+	resolvePluginDirs,
 	type AthenaConfig,
 	type AthenaHarness,
 } from '../../infra/plugins/index';
@@ -124,12 +125,23 @@ export function bootstrapRuntimeConfig({
 		);
 	}
 
+	// Resolve config plugin refs (Plugin ref resolution) here, at the one place
+	// that needs plugin dirs — so reading config elsewhere never spawns git.
+	// Warnings for unresolved refs surface through the runtime warnings channel
+	// instead of stderr.
+	const globalPluginResolution = resolvePluginDirs(globalConfig.plugins);
+	const projectPluginResolution = resolvePluginDirs(projectConfig.plugins);
+	warnings.push(
+		...globalPluginResolution.warnings,
+		...projectPluginResolution.warnings,
+	);
+
 	const pluginDirs = mergePluginDirs({
 		workflowPluginDirs: pluginDelivery.mergeWorkflowPluginDirs
 			? workflowPluginDirs
 			: [],
-		globalPlugins: globalConfig.plugins,
-		projectPlugins: projectConfig.plugins,
+		globalPlugins: globalPluginResolution.dirs,
+		projectPlugins: projectPluginResolution.dirs,
 		pluginFlags,
 	});
 	const pluginResult =
