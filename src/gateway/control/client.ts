@@ -171,6 +171,12 @@ export async function connect(
 		preHelloResolve = frame => {
 			clearTimeout(timer);
 			preHelloAbort = null;
+			// Mark the hello consumed synchronously. Transports can dispatch several
+			// framed lines from one wire chunk in a single tick; without flipping the
+			// gate here, a frame coalesced right after the hello would still see
+			// helloAcked === false, read the now-nulled preHelloResolve, and be
+			// silently dropped instead of routed to the request/push handlers.
+			helloAcked = true;
 			resolve(frame);
 		};
 		preHelloAbort = err => {
@@ -196,7 +202,8 @@ export async function connect(
 		}
 		throw new GatewayProtocolError(String(msg));
 	}
-	helloAcked = true;
+	// helloAcked was set the instant the hello frame was consumed (see
+	// preHelloResolve above), so no assignment is needed here.
 
 	const request = async <TPayload, TResponse>(
 		kind: string,
@@ -226,9 +233,6 @@ export async function connect(
 		);
 		connection.send(envelope);
 		const res = await responsePromise;
-		if (res.request_id !== requestId) {
-			throw new GatewayProtocolError('response request_id mismatch');
-		}
 		if (!res.ok) {
 			throw new GatewayProtocolError(
 				`${res.error.code}: ${res.error.message}`,

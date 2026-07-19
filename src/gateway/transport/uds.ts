@@ -184,10 +184,17 @@ function udsRawChannel(
 				} catch (err) {
 					if (err instanceof LineReaderOverflowError) {
 						logError?.(`gateway: control connection overflow — closing`);
-						socket.destroy();
-						return;
+					} else {
+						// This runs inside a 'data' listener; rethrowing here would
+						// escape as an uncaught exception and crash the daemon. Treat
+						// any decode/frame error as a fatal connection fault and close.
+						const detail = err instanceof Error ? err.message : String(err);
+						logError?.(
+							`gateway: control connection error — closing: ${detail}`,
+						);
 					}
-					throw err;
+					socket.destroy();
+					return;
 				}
 				for (const line of lines) cb(line);
 			});
