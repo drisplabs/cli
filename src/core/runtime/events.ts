@@ -55,6 +55,7 @@ export type SessionStartRuntimeData = {
 	source?: string;
 	model?: string;
 	agent_type?: string;
+	session_title?: string;
 };
 
 export type SessionEndRuntimeData = {

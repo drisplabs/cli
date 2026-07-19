@@ -100,6 +100,14 @@ describe('generateTitle', () => {
 		expect(generateTitle(event)).toBe('Session started (startup)');
 	});
 
+	it('renders harness-provided session_title as the session.start title', () => {
+		const event = makeFeedEvent('session.start', {
+			source: 'startup',
+			session_title: 'Refactor the translator seam',
+		});
+		expect(generateTitle(event)).toBe('Refactor the translator seam');
+	});
+
 	it('generates subagent.start title', () => {
 		const event = makeFeedEvent('subagent.start', {
 			agent_id: 'a1',

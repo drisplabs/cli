@@ -232,6 +232,26 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(event.display).toBeUndefined();
 	});
 
+	it('carries SessionStart session_title onto runtime data', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+				session_title: 'Refactor the translator seam',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('session.start');
+		expect((event.data as {session_title?: string}).session_title).toBe(
+			'Refactor the translator seam',
+		);
+	});
+
 	it('handles unknown hook names with safe defaults', () => {
 		const envelope = makeEnvelope({
 			hook_event_name: 'FutureEvent' as HookEventEnvelope['hook_event_name'],
