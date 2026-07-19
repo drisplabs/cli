@@ -41,8 +41,12 @@ export function generateTitle(event: FeedEvent, ascii = false): string {
 
 function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 	switch (event.kind) {
-		case 'session.start':
-			return `Session started (${event.data.source})`;
+		case 'session.start': {
+			const sessionTitle = event.data.session_title?.trim();
+			return sessionTitle
+				? truncate(sessionTitle)
+				: `Session started (${event.data.source})`;
+		}
 		case 'session.end':
 			return `Session ended (${event.data.reason})`;
 		case 'run.start':

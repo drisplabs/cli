@@ -88,6 +88,7 @@ export function translateClaudeEnvelope(
 					source: payload['source'] as string | undefined,
 					model: payload['model'] as string | undefined,
 					agent_type: payload['agent_type'] as string | undefined,
+					session_title: payload['session_title'] as string | undefined,
 				},
 			};
 		case 'SessionEnd':

@@ -48,6 +48,42 @@ describe('createFeedMapper', () => {
 		expect(mapper.getCurrentRun()).toBeNull();
 	});
 
+	it('surfaces SessionStart session_title as the session.start feed title', () => {
+		const mapper = createFeedMapper();
+		const events = mapper.mapEvent(
+			makeRuntimeEvent({
+				hookName: 'SessionStart',
+				sessionId: 'cs-1',
+				payload: {
+					session_id: 'cs-1',
+					source: 'startup',
+					session_title: 'Refactor the translator seam',
+				},
+			}),
+		);
+
+		const start = events.find(e => e.kind === 'session.start');
+		expect(start).toBeDefined();
+		expect(start!.title).toBe('Refactor the translator seam');
+		expect((start!.data as {session_title?: string}).session_title).toBe(
+			'Refactor the translator seam',
+		);
+	});
+
+	it('keeps the neutral session.start title when session_title is absent', () => {
+		const mapper = createFeedMapper();
+		const events = mapper.mapEvent(
+			makeRuntimeEvent({
+				hookName: 'SessionStart',
+				sessionId: 'cs-1',
+				payload: {session_id: 'cs-1', source: 'startup'},
+			}),
+		);
+
+		const start = events.find(e => e.kind === 'session.start');
+		expect(start!.title).toBe('Session started (startup)');
+	});
+
 	describe('with stored session', () => {
 		it('bootstraps session state from stored feed events', () => {
 			const bootstrap: MapperBootstrap = {

@@ -296,6 +296,7 @@ export type SessionStartEvent = BaseHookEvent & {
 	hook_event_name: 'SessionStart';
 	source: 'startup' | 'resume' | 'clear' | 'compact';
 	model?: string;
+	session_title?: string;
 };
 
 // SessionEnd: Session ends
