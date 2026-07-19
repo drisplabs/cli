@@ -45,16 +45,16 @@ Athena Session        durable work-unit; one ~/.config/athena/sessions/<id>/sess
 
 ## The runner
 
-| Term                 | Definition                                                                                                                                      | Aliases to avoid                   |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Runner**           | The component that drives the loop: spawns Turns, reads the Tracker between them, and assigns the terminal status                               | Driver, orchestrator, executor     |
-| **Loop Manager**     | The read-only inspector that reads the Tracker and reports the current Loop State                                                               | State manager, tracker reader      |
-| **Loop State**       | The runner's view of progress for a Workflow Run: completed, blocked, skeleton-not-replaced, reached-limit                                      | Status                             |
-| **Stop Reason**      | Why the loop terminated: `completed`, `blocked`, `max_iterations`, `missing_tracker`, `skeleton_not_replaced`                                   | Exit reason                        |
-| **Run Status**       | The terminal outcome of a Workflow Run: `completed`, `blocked`, `exhausted`, `failed`, `cancelled`                                              | State, result                      |
-| **Workflow**         | The reusable, installed definition (instructions + plugins + loop config) that a Workflow Run executes                                          | Recipe, template, pipeline         |
-| **Workflow Upgrade** | Replacing an installed Workflow's on-disk files in place with a new version                                                                     | Update, sync, install              |
-| **Compaction**       | Summarizing a Turn's conversation history when context fills; the Composed System Prompt survives it because it rides the system-prompt channel | Summarization, truncation, handoff |
+| Term                 | Definition                                                                                                                                                                                                                         | Aliases to avoid                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **Runner**           | The component that drives the loop: owns the single Iteration counter, spawns Turns, and assigns the terminal Run Status the Terminal Outcome hands it                                                                             | Driver, orchestrator, executor     |
+| **Tracker Reader**   | The read-only, stateless inspector of the Tracker: pure functions (`parseTrackerState` / `readTracker`, in `trackerReader.ts`) that turn Tracker text into a Tracker State. Holds no loop state of its own                         | Loop Manager, state manager        |
+| **Tracker State**    | What the Tracker's text says about progress — a pure function of the Tracker file: completed, blocked (+ reason), misplaced-terminal-marker, skeleton-not-replaced. The Iteration limit is applied by the Runner, not derived here | Loop State                         |
+| **Terminal Outcome** | The single owner (`resolveTurnOutcome`, `terminalOutcome.ts`) that maps a Tracker end-state to the Runner's decision after a Turn: continue, or stop with a Run Status + human message. Replaces the former `LoopStopReason` enum  | Stop Reason, exit reason           |
+| **Run Status**       | The terminal outcome of a Workflow Run: `completed`, `blocked`, `exhausted`, `failed`, `cancelled`                                                                                                                                 | State, result                      |
+| **Workflow**         | The reusable, installed definition (instructions + plugins + loop config) that a Workflow Run executes                                                                                                                             | Recipe, template, pipeline         |
+| **Workflow Upgrade** | Replacing an installed Workflow's on-disk files in place with a new version                                                                                                                                                        | Update, sync, install              |
+| **Compaction**       | Summarizing a Turn's conversation history when context fills; the Composed System Prompt survives it because it rides the system-prompt channel                                                                                    | Summarization, truncation, handoff |
 
 ## Cross-walk to official terminology
 
@@ -104,7 +104,7 @@ Key consequences:
 
 > **Dev:** "So when does the **Workflow Run** actually stop?"
 
-> **Domain expert:** "When the agent writes a **Terminal Marker** on the **Tracker**'s last line, or the **Loop Manager** hits a **Stop Reason** like `max_iterations`. Either way the **Runner** assigns a **Run Status** — `completed`, `blocked`, `exhausted`, `failed`, or `cancelled`."
+> **Domain expert:** "When the agent writes a **Terminal Marker** on the **Tracker**'s last line, or the run reaches a terminal condition like `max_iterations`. Either way one owner — the **Terminal Outcome** resolver — maps the **Tracker**'s end state to a **Run Status** (`completed`, `blocked`, `exhausted`, `failed`, or `cancelled`), which the **Runner** assigns."
 
 ## Flagged ambiguities
 
