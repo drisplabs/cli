@@ -557,6 +557,129 @@ describe('FeedMapper', () => {
 			expect(userPrompt!.actor_id).toBe('user');
 		});
 
+		it('maps UserPromptExpansion to a prompt.expansion feed row', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					payload: {
+						hook_event_name: 'UserPromptExpansion',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+
+			const expansions = results.filter(r => r.kind === 'prompt.expansion');
+			expect(expansions).toHaveLength(1);
+			expect(expansions[0]!.data.command_name).toBe('greet');
+			expect(expansions[0]!.data.expansion_type).toBe('slash_command');
+		});
+
+		// UserPromptExpansion fires ~32ms BEFORE the matching UserPromptSubmit
+		// with the same prompt_id. If it also opened a run, a single expanded
+		// prompt would produce two runs.
+		it('does not open a run for prompt.expansion; the following prompt opens exactly one', () => {
+			const mapper = createFeedMapper();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			expect(expansionResults.some(r => r.kind === 'run.start')).toBe(false);
+
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+			expect(submitResults.filter(r => r.kind === 'run.start')).toHaveLength(1);
+		});
+
+		// Firing before the matching prompt means the expansion would otherwise be
+		// stamped with the *previous* run's id, filing the slash command that
+		// started a run under the run before it.
+		it('attributes an expansion to the run its own prompt opens, not the previous one', () => {
+			const mapper = createFeedMapper();
+
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p1',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'first prompt',
+					},
+				}),
+			);
+			const firstRunId = mapper.getCurrentRun()?.run_id;
+			expect(firstRunId).toBeDefined();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					promptId: 'p2',
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p2',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+
+			// The pair still yields exactly one run between them.
+			const runStarts = [...expansionResults, ...submitResults].filter(
+				r => r.kind === 'run.start',
+			);
+			expect(runStarts).toHaveLength(1);
+
+			const expansion = expansionResults.find(
+				r => r.kind === 'prompt.expansion',
+			);
+			expect(expansion!.run_id).toBe(runStarts[0]!.run_id);
+			expect(expansion!.run_id).not.toBe(firstRunId);
+		});
+
 		it('emits Codex agent messages when item completion arrives', () => {
 			const mapper = createFeedMapper();
 			const startResults = mapper.mapEvent(

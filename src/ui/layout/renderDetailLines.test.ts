@@ -48,6 +48,22 @@ describe('renderDetailLines', () => {
 		expect(joined).toContain('Critical:');
 	});
 
+	it('renders prompt.expansion detail with its captured fields', () => {
+		const event = makeEvent({
+			kind: 'prompt.expansion',
+			data: {
+				expansion_type: 'slash_command',
+				command_name: 'greet',
+				command_args: '',
+				command_source: 'projectSettings',
+				prompt: '/greet',
+			},
+		});
+		const joined = stripAnsi(renderDetailLines(event, 80).lines.join('\n'));
+		expect(joined).toContain('greet');
+		expect(joined).toContain('slash_command');
+	});
+
 	it('renders user.prompt as markdown', () => {
 		const event = makeEvent({
 			kind: 'user.prompt',

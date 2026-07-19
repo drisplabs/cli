@@ -77,6 +77,16 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: true,
 	},
+	// Observation-only: nothing in the pipeline produces a decision or a block
+	// for an expansion, so it must not claim `canBlock`. The claim is not
+	// cosmetic — hook dispatch keeps every decision-capable event on Claude's
+	// critical path, so a false `canBlock` would make every slash command wait
+	// on the forwarder for a reply that is never sent.
+	'prompt.expansion': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
+	},
 	'turn.start': {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,

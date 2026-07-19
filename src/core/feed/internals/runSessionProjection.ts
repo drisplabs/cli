@@ -112,6 +112,45 @@ export function createRunSessionProjection(args: {
 				return results;
 			}
 
+			// Observation-only, but it fires just before the matching user.prompt
+			// carrying the same prompt_id, so it belongs to the run that prompt
+			// opens — not the one before it. Opening the run here lets the pair
+			// share it: the following 'user_prompt_submit' sees a matching
+			// prompt_id and is a no-op, so an expanded prompt still yields one
+			// run. Without a prompt_id there is nothing to correlate on and
+			// 'user_prompt_submit' would roll over regardless, so leave the run
+			// to the prompt rather than emit two.
+			if (event.kind === 'prompt.expansion') {
+				if (event.promptId !== undefined) {
+					results.push(
+						...ensureRunArray(
+							event,
+							'user_prompt_submit',
+							readString(data['prompt'])?.slice(0, 80),
+						),
+					);
+				}
+				results.push(
+					makeEvent(
+						'prompt.expansion',
+						'info',
+						'user',
+						{
+							expansion_type: readString(data['expansion_type']),
+							command_name: readString(data['command_name']),
+							command_args: readString(data['command_args']),
+							command_source: readString(data['command_source']),
+							prompt: readString(data['prompt']),
+							permission_mode:
+								event.context.permissionMode ??
+								readString(data['permission_mode']),
+						} satisfies import('../types').PromptExpansionData,
+						event,
+					),
+				);
+				return results;
+			}
+
 			if (event.kind === 'turn.start') {
 				agentMessageStream.clearPending();
 				const prompt = readString(data['prompt']);

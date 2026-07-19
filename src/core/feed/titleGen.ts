@@ -53,6 +53,10 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return `Run ${event.data.status}`;
 		case 'user.prompt':
 			return truncate(event.data.prompt);
+		case 'prompt.expansion':
+			return event.data.command_name
+				? truncate(`Expanded /${event.data.command_name}`)
+				: 'Prompt expanded';
 		case 'plan.update':
 			return truncate(
 				event.data.explanation || event.data.delta || 'Plan updated',

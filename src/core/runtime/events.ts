@@ -5,6 +5,7 @@ export type RuntimeEventKind =
 	| 'session.start'
 	| 'session.end'
 	| 'user.prompt'
+	| 'prompt.expansion'
 	| 'turn.start'
 	| 'turn.complete'
 	| 'message.delta'
@@ -62,6 +63,21 @@ export type SessionEndRuntimeData = {
 export type UserPromptRuntimeData = {
 	prompt?: string;
 	cwd?: string;
+	permission_mode?: string;
+};
+
+/**
+ * A typed command (slash command or MCP prompt) expanding into a prompt.
+ * Emitted just before the matching `user.prompt`, sharing its prompt_id.
+ * Field names mirror Claude's `UserPromptExpansion` payload as captured in
+ * the #116 spike.
+ */
+export type PromptExpansionRuntimeData = {
+	expansion_type?: string;
+	command_name?: string;
+	command_args?: string;
+	command_source?: string;
+	prompt?: string;
 	permission_mode?: string;
 };
 
@@ -317,6 +333,7 @@ export type RuntimeEventDataMap = {
 	'session.start': SessionStartRuntimeData;
 	'session.end': SessionEndRuntimeData;
 	'user.prompt': UserPromptRuntimeData;
+	'prompt.expansion': PromptExpansionRuntimeData;
 	'turn.start': TurnStartRuntimeData;
 	'turn.complete': TurnCompleteRuntimeData;
 	'message.delta': MessageDeltaRuntimeData;
@@ -383,6 +400,8 @@ export function mapLegacyHookNameToRuntimeKind(
 			return 'session.end';
 		case 'UserPromptSubmit':
 			return 'user.prompt';
+		case 'UserPromptExpansion':
+			return 'prompt.expansion';
 		case 'TurnStart':
 			return 'turn.start';
 		case 'TurnComplete':
