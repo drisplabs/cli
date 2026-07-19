@@ -63,6 +63,7 @@ export function createRunSessionProjection(args: {
 							source,
 							agent_type: readString(data['agent_type']),
 							model: readString(data['model']),
+							effort_level: readString(data['effort_level']),
 						} satisfies import('../types').SessionStartData,
 						event,
 					),

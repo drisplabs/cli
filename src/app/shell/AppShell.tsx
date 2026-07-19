@@ -1507,6 +1507,7 @@ function AppContent({
 			sessionTotal: sessionScope.total,
 			harness,
 			modelName: metrics.modelName ?? modelName,
+			effortLevel: metrics.effortLevel ?? null,
 			errorReason: startupFailure?.message,
 		});
 		return renderHeaderLines(headerModel, innerWidth, hasColor, theme)[0];

@@ -231,6 +231,43 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(event.interaction.canBlock).toBe(false);
 	});
 
+	it('carries SessionStart effort.level as effort_level on the runtime event', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+				effort: {level: 'high'},
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('session.start');
+		expect((event.data as {effort_level?: string}).effort_level).toBe('high');
+	});
+
+	it('leaves effort_level undefined when SessionStart carries no effort', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('session.start');
+		expect(
+			(event.data as {effort_level?: string}).effort_level,
+		).toBeUndefined();
+	});
+
 	it('maps every registered Claude hook to a first-class runtime kind', () => {
 		const registeredHooks = [...TOOL_HOOK_EVENTS, ...NON_TOOL_HOOK_EVENTS];
 		const seenRuntimeKinds = new Map<string, string>();

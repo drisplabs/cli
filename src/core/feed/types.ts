@@ -121,6 +121,7 @@ export type SessionStartData = {
 	source: 'startup' | 'resume' | 'clear' | 'compact' | string;
 	agent_type?: string;
 	model?: string;
+	effort_level?: string;
 };
 
 export type SessionEndData = {

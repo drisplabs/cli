@@ -37,6 +37,7 @@ export function useHeaderMetrics(events: FeedEvent[]): SessionMetrics {
 		}
 
 		let modelName: string | null = null;
+		let effortLevel: string | null = null;
 		let sessionStartTime: Date | null = null;
 		let toolCallCount = 0;
 		let permissionsAllowed = 0;
@@ -57,6 +58,9 @@ export function useHeaderMetrics(events: FeedEvent[]): SessionMetrics {
 				}
 				if (typeof event.data.model === 'string') {
 					modelName = event.data.model;
+				}
+				if (typeof event.data.effort_level === 'string') {
+					effortLevel = event.data.effort_level;
 				}
 			}
 
@@ -140,6 +144,7 @@ export function useHeaderMetrics(events: FeedEvent[]): SessionMetrics {
 
 		const result: SessionMetrics = {
 			modelName,
+			effortLevel,
 			toolCallCount,
 			totalToolCallCount: toolCallCount + subagentToolTotal,
 			subagentCount: subagentMap.size,

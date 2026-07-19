@@ -123,6 +123,44 @@ describe('createFeedMapper', () => {
 		// events arrive in the new adapter session.
 	});
 
+	describe('session.start effort_level projection', () => {
+		it('carries effort_level onto the projected session.start feed event', () => {
+			const mapper = createFeedMapper();
+			const newEvents = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'SessionStart',
+					sessionId: 'cs-1',
+					payload: {
+						session_id: 'cs-1',
+						source: 'startup',
+						effort_level: 'high',
+					},
+				}),
+			);
+			const startEvent = newEvents.find(e => e.kind === 'session.start');
+			expect(startEvent).toBeDefined();
+			expect((startEvent!.data as {effort_level?: string}).effort_level).toBe(
+				'high',
+			);
+		});
+
+		it('leaves effort_level undefined on session.start when absent', () => {
+			const mapper = createFeedMapper();
+			const newEvents = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'SessionStart',
+					sessionId: 'cs-1',
+					payload: {session_id: 'cs-1', source: 'startup'},
+				}),
+			);
+			const startEvent = newEvents.find(e => e.kind === 'session.start');
+			expect(startEvent).toBeDefined();
+			expect(
+				(startEvent!.data as {effort_level?: string}).effort_level,
+			).toBeUndefined();
+		});
+	});
+
 	describe('getTasks', () => {
 		it('returns empty array by default', () => {
 			const mapper = createFeedMapper();

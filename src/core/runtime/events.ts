@@ -53,6 +53,7 @@ export type SessionStartRuntimeData = {
 	source?: string;
 	model?: string;
 	agent_type?: string;
+	effort_level?: string;
 };
 
 export type SessionEndRuntimeData = {

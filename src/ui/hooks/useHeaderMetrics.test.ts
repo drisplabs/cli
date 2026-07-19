@@ -29,6 +29,7 @@ describe('useHeaderMetrics', () => {
 		const {result} = renderHook(() => useHeaderMetrics([]));
 		expect(result.current).toEqual({
 			modelName: null,
+			effortLevel: null,
 			toolCallCount: 0,
 			totalToolCallCount: 0,
 			subagentCount: 0,
@@ -73,6 +74,32 @@ describe('useHeaderMetrics', () => {
 		expect(result.current.sessionStartTime).toEqual(
 			new Date('2024-01-15T10:00:00Z'),
 		);
+	});
+
+	it('extracts effort level from session.start event', () => {
+		const events = [
+			makeFeedEvent({
+				kind: 'session.start',
+				title: 'Session started',
+				data: {source: 'startup', effort_level: 'high'},
+			}),
+		];
+
+		const {result} = renderHook(() => useHeaderMetrics(events));
+		expect(result.current.effortLevel).toBe('high');
+	});
+
+	it('leaves effortLevel null when session.start has no effort', () => {
+		const events = [
+			makeFeedEvent({
+				kind: 'session.start',
+				title: 'Session started',
+				data: {source: 'startup'},
+			}),
+		];
+
+		const {result} = renderHook(() => useHeaderMetrics(events));
+		expect(result.current.effortLevel).toBeNull();
 	});
 
 	it('counts top-level tool.pre events', () => {

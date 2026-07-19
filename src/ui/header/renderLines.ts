@@ -58,7 +58,10 @@ export function renderHeaderLines(
 	const sidText = `${sidLabel}${sidValue}${style(sidScope, palette.label)}`;
 	const wfText = `${style('Workflow: ', palette.label)}${style(model.workflow, palette.value)}`;
 	const harnessText = `${style('Harness: ', palette.label)}${style(model.harness, palette.value)}`;
-	const modelText = `${style('Model: ', palette.label)}${style(formatModelName(model.model_name), palette.value)}`;
+	const effortSuffix = model.effort_level
+		? style(` with ${model.effort_level} effort`, palette.label)
+		: '';
+	const modelText = `${style('Model: ', palette.label)}${style(formatModelName(model.model_name), palette.value)}${effortSuffix}`;
 	const tokenLabel = model.token_label ?? 'Tokens';
 	const runLabel = model.run_label ?? 'Runs';
 
