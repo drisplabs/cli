@@ -55,6 +55,15 @@ describe('subagentLifecycle', () => {
 			});
 			expect(start.description).toBeUndefined();
 		});
+
+		it('a second observed description overwrites an unconsumed one', () => {
+			const {subagents} = setup();
+			subagents.observeToolInput('Task', {description: 'first'});
+			subagents.observeToolInput('Task', {description: 'second'});
+			expect(
+				subagents.startSubagent({agentId: 'a1', agentType: 't'}).description,
+			).toBe('second');
+		});
 	});
 
 	describe('startSubagent', () => {
@@ -100,6 +109,16 @@ describe('subagentLifecycle', () => {
 			expect(subagents.currentActor()).toBe('subagent:inner');
 			subagents.stopSubagent('inner');
 			expect(subagents.currentActor()).toBe('subagent:outer');
+		});
+
+		it('stop removes only the LAST occurrence of a repeated agent id', () => {
+			const {subagents} = setup();
+			subagents.startSubagent({agentId: 'a1', agentType: 't'});
+			subagents.startSubagent({agentId: 'a1', agentType: 't'});
+			subagents.stopSubagent('a1');
+			// One 'subagent:a1' remains on the active stack.
+			expect(subagents.currentActor()).toBe('subagent:a1');
+			expect(subagents.currentScope()).toBe('subagent');
 		});
 	});
 
