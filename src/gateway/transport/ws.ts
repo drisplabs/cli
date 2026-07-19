@@ -45,13 +45,24 @@ export function createWsServerTransport(
 	let endpoint: WsEndpoint | null = null;
 	const scheme = opts.tls ? 'wss' : 'ws';
 	const rateLimit = createConnectRateLimiter(opts.rateLimitPerMin ?? 10);
+	const readEndpoint = (): WsEndpoint => {
+		if (!endpoint) {
+			throw new Error('gateway: WS transport has not started listening');
+		}
+		return endpoint;
+	};
 	return {
 		kind: 'ws',
-		endpoint: () => {
-			if (!endpoint) {
-				throw new Error('gateway: WS transport has not started listening');
-			}
-			return endpoint;
+		endpoint: readEndpoint,
+		describe: () => {
+			const ep = readEndpoint();
+			return {
+				kind: 'ws',
+				host: ep.host,
+				port: ep.port,
+				url: ep.url,
+				tls: Boolean(opts.tls),
+			};
 		},
 		listen: onConnection =>
 			new Promise((resolve, reject) => {

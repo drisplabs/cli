@@ -26,6 +26,7 @@ export function createUdsServerTransport(
 	return {
 		kind: 'uds',
 		listen: onConnection => listenUds(opts, onConnection),
+		describe: () => ({kind: 'uds', socketPath: opts.socketPath}),
 	};
 }
 

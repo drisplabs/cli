@@ -85,4 +85,23 @@ describe('createWsServerTransport heartbeat', () => {
 		ws.close();
 		await server.close();
 	}, 5_000);
+
+	it('describes the resolved endpoint once listening (tls reported per config)', async () => {
+		const transport = createWsServerTransport({
+			host: '127.0.0.1',
+			port: 0,
+			pingIntervalMs: 0,
+		});
+		expect(() => transport.describe()).toThrow(/has not started listening/);
+		const server = await transport.listen(() => {});
+		const endpoint = transport.endpoint();
+		expect(transport.describe()).toEqual({
+			kind: 'ws',
+			host: endpoint.host,
+			port: endpoint.port,
+			url: endpoint.url,
+			tls: false,
+		});
+		await server.close();
+	}, 5_000);
 });
