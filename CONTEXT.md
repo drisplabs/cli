@@ -26,6 +26,14 @@ _Avoid_: feed item (that's a UI projection of multiple `FeedEvent`s).
 **FeedMapper**:
 The module that converts `RuntimeEvent` → `FeedEvent[]` and `RuntimeDecision` → `FeedEvent`. Stateful: maintains run/session/actor/correlation state across the event stream. Bootstraps from stored events on resume.
 
+**Runtime event loop**:
+The non-React assembly that subscribes to a `Runtime`'s `RuntimeEvent` / `RuntimeDecision` streams, drives each through the **FeedMapper** ingest, feeds any controller-derived `RuntimeDecision` back to the runtime via `sendDecision` **before** handing the resulting `FeedEvent`s to a mode-specific sink. One owner (`attachRuntimeEventLoop`) shared by interactive (`useFeed`) and headless (`runExec`) so the subscribe → ingest → decide → publish assembly cannot drift; each mode injects only its own side effects (perf tracing + React store pushes, or JSONL + final-message tracking). See `docs/adr/0005-one-runtime-event-loop.md`.
+_Avoid_: event handler, runtime subscription (names one listener, not the assembly).
+
+**Dashboard decision drain**:
+The interval loop that forwards pending dashboard `RuntimeDecision`s from the local decision inbox into the `Runtime` (`sendDecision` + `markConsumed`), one batch (`limit` 25) per pass. Shared by both modes via `startDashboardDecisionDrain`; each caller owns only _when_ the drain starts.
+_Avoid_: decision poller (cadence is one detail, not the concept), inbox loop.
+
 ### State inside the FeedMapper
 
 The mapper is internally composed of six named seams; each owns one slice of the mapper's state and has its own test surface.
@@ -154,6 +162,7 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
 - A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
 - The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
 - A **Relay** is initiated by whichever mode is running (interactive or exec); both modes share one relay wiring, so a relay is a CLI-initiated inverse of a channel-initiated **Dispatch turn**.
+- The **Runtime event loop** is the single owner of the subscribe → ingest → `sendDecision` → publish assembly for both interactive and headless modes; each mode is a thin adapter that supplies only its own side effects. The **Dashboard decision drain** is a sibling helper both modes reuse to feed inbound dashboard `RuntimeDecision`s into the same runtime.
 - A **Dashboard assignment** is admitted by the dashboard runtime daemon before
   it launches the corresponding dashboard **Run** locally.
 - A **Dashboard connection context** exists only while the dashboard socket is
