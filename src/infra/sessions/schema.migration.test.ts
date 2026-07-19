@@ -351,4 +351,22 @@ describe('schema migrations', () => {
 		expect(got.prompt_id).toBe('P1');
 		db.close();
 	});
+
+	it('re-creates a missing idx_feed_prompt on an already-migrated database', () => {
+		const db = new Database(':memory:');
+		initSchema(db);
+		db.exec('DROP INDEX idx_feed_prompt');
+
+		// Re-opening an at-version database must self-heal the index, the same way
+		// the base DDL re-asserts every other index.
+		initSchema(db);
+
+		const indexes = (
+			db.prepare('PRAGMA index_list(feed_events)').all() as Array<{
+				name: string;
+			}>
+		).map(index => index.name);
+		expect(indexes).toContain('idx_feed_prompt');
+		db.close();
+	});
 });

@@ -102,11 +102,13 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
 	`);
 
-	// idx_feed_prompt indexes a column added in v7. On a fresh database the base
-	// DDL above already created feed_events.prompt_id, so the index is safe here;
-	// on a pre-v7 database the column doesn't exist yet, so its index is created
-	// in the v6 → v7 delta below (after the ALTER) instead (ADR 0009).
-	if (fromVersion === undefined) {
+	// idx_feed_prompt indexes a column added in v7, so it can't live in the base
+	// DDL block above the way the other indexes do: on a pre-v7 database the
+	// column doesn't exist yet, and its index is created in the v6 → v7 delta
+	// below (after the ALTER) instead (ADR 0009). Once the column exists — fresh
+	// database or already-migrated one — re-assert the index on every open so it
+	// self-heals like every other index here.
+	if (fromVersion === undefined || fromVersion >= 7) {
 		db.exec(
 			'CREATE INDEX IF NOT EXISTS idx_feed_prompt ON feed_events(prompt_id);',
 		);

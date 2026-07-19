@@ -161,13 +161,27 @@ export function createRunLifecycle(boundary: RunBoundaryDeps): RunLifecycle {
 	): FeedEvent[] {
 		const promptId = runtimeEvent.promptId;
 
-		if (promptId !== undefined) {
+		// `resume`/`clear`/`compact` are explicit context-lifecycle events, not
+		// implicit ones: the harness rebuilt the context underneath the Run, so the
+		// Run must roll over (and per-run state reset) even when the Prompt is
+		// unchanged — auto-compact fires mid-Prompt and would otherwise leak state
+		// across the compaction.
+		const isExplicitContextTrigger =
+			triggerType === 'resume' ||
+			triggerType === 'clear' ||
+			triggerType === 'compact';
+
+		if (promptId !== undefined && !isExplicitContextTrigger) {
 			// Prompt-driven boundary (ADR 0009): the Run rolls over when the Prompt
 			// _changes_, not when a specific trigger event is observed. Any event
-			// carrying a new prompt_id can establish the boundary, and any event
-			// re-stating the current Prompt is a no-op regardless of trigger type.
+			// carrying a new prompt_id can establish the boundary, and any other
+			// event re-stating the current Prompt is a no-op.
 			if (currentRun && promptId === currentPromptId) return [];
-		} else if (currentRun && triggerType === 'other') {
+		} else if (
+			promptId === undefined &&
+			currentRun &&
+			triggerType === 'other'
+		) {
 			// Heuristic fallback: bootstrap phase / harnesses without prompt_id.
 			// Implicit ('other') triggers never roll over an open Run.
 			return [];
