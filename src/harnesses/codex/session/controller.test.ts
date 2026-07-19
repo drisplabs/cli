@@ -84,4 +84,30 @@ describe('createCodexSessionController', () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.error?.message).toBe('unexpected status 401 Unauthorized');
 	});
+
+	it('normalizes a non-Error sendPrompt rejection via String(error)', async () => {
+		const emitter = new EventEmitter();
+		// Codex rejects with a bare value (not an Error) — the shared turn runner
+		// normalizes it to `new Error(String(error))`.
+		const sendPrompt = vi.fn(async () => {
+			throw 'codex exploded';
+		});
+		const controller = createCodexSessionController({
+			projectDir: '/tmp',
+			instanceId: 1,
+			runtime: {
+				sendPrompt,
+				sendInterrupt: vi.fn(),
+				onEvent: (handler: (event: Record<string, unknown>) => void) => {
+					emitter.on('event', handler);
+					return () => emitter.off('event', handler);
+				},
+			} as never,
+		});
+
+		const result = await controller.startTurn({prompt: 'hello'});
+
+		expect(result.exitCode).toBeNull();
+		expect(result.error?.message).toBe('codex exploded');
+	});
 });

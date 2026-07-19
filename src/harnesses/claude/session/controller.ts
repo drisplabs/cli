@@ -1,49 +1,15 @@
 import type {ChildProcess} from 'node:child_process';
 import {spawnClaude} from '../process/spawn';
-import {
-	type IsolationConfig,
-	type IsolationPreset,
-	resolveIsolationConfig,
-} from '../config/isolation';
+import type {IsolationConfig, IsolationPreset} from '../config/isolation';
 import {createTokenAccumulator} from '../process/tokenAccumulator';
 import {createAssistantMessageAccumulator} from './assistantMessageAccumulator';
+import {mergeIsolation, resolveClaudeSessionId} from './turnConfig';
 import type {
 	CreateSessionControllerInput,
 	SessionController,
 	SessionControllerTurnResult,
 } from '../../contracts/session';
-import type {TurnContinuation} from '../../../core/runtime/process';
 import type {ClaudeRuntime} from '../runtime';
-
-function mergeIsolation(
-	base: IsolationConfig | IsolationPreset | undefined,
-	pluginMcpConfig: string | undefined,
-	overrides: Partial<IsolationConfig> | undefined,
-): IsolationConfig | IsolationPreset | undefined {
-	if (!pluginMcpConfig && !overrides) return base;
-
-	return {
-		...resolveIsolationConfig(base),
-		...(overrides ?? {}),
-		...(pluginMcpConfig ? {mcpConfig: pluginMcpConfig} : {}),
-	};
-}
-
-function resolveClaudeSessionId(
-	continuation: TurnContinuation | undefined,
-): string | undefined {
-	if (!continuation || continuation.mode === 'fresh') {
-		return undefined;
-	}
-
-	if (continuation.mode === 'resume') {
-		return continuation.handle;
-	}
-
-	throw new Error(
-		'Claude session controller does not support reuse-current continuation',
-	);
-}
 
 export function createClaudeSessionController(
 	input: CreateSessionControllerInput,

@@ -11,7 +11,7 @@ import type {WorkflowPlan} from '../../../core/workflows';
 import type {TokenUsage} from '../../../shared/types/headerMetrics';
 import type {CodexRuntime} from '../runtime/server';
 import {NULL_TOKENS, readTokenUsage} from '../runtime/tokenUsage';
-import {buildCodexPromptOptions} from './promptOptions';
+import {runCodexTurn} from './turnRunner';
 
 /**
  * Hook-backed session controller for Codex.
@@ -75,99 +75,40 @@ export function useCodexSessionController(
 			}
 
 			setIsRunning(true);
-			let streamedMessage = '';
-			let turnTokens = {...NULL_TOKENS};
-			let turnStatus: string | undefined;
-			let turnErrorMessage: string | undefined;
-			const unsubscribe = codexRuntime.onEvent(event => {
-				const data =
-					typeof event.data === 'object'
-						? (event.data as Record<string, unknown>)
-						: {};
 
-				if (event.kind === 'message.delta') {
-					const delta = typeof data['delta'] === 'string' ? data['delta'] : '';
-					streamedMessage += delta;
-				}
-
-				if (event.kind === 'usage.update') {
-					turnTokens = readTokenUsage(data['delta']);
-				}
-
-				if (event.kind === 'turn.complete') {
-					turnStatus =
-						typeof data['status'] === 'string' ? data['status'] : turnStatus;
-				}
-
-				if (event.kind === 'unknown' && event.hookName === 'error') {
-					const payload =
-						typeof data['payload'] === 'object' && data['payload'] !== null
-							? (data['payload'] as Record<string, unknown>)
-							: null;
-					const errorValue =
-						typeof payload?.['error'] === 'object' && payload['error'] !== null
-							? (payload['error'] as Record<string, unknown>)
-							: null;
-					if (typeof errorValue?.['message'] === 'string') {
-						turnErrorMessage = errorValue['message'];
-					}
-				}
-			});
-
-			const turnPromise = (async (): Promise<TurnExecutionResult> => {
-				try {
-					await codexRuntime.sendPrompt(
-						prompt,
-						buildCodexPromptOptions({
-							processConfig,
-							continuation,
-							configOverride: _configOverride,
-							workflowPlan,
-							pluginMcpConfig,
-							ephemeral,
-						}),
-					);
-					if (turnStatus === 'failed') {
-						return {
-							exitCode: 1,
-							error: new Error(turnErrorMessage ?? 'Codex turn failed'),
-							tokens: turnTokens,
-							streamMessage: streamedMessage || null,
-						};
-					}
-					return {
-						exitCode: 0,
-						error: null,
-						tokens: turnTokens,
-						streamMessage: streamedMessage || null,
-					};
-				} catch (error) {
-					if (!abortRef.current.signal.aborted) {
-						onLifecycleEventRef.current?.({
-							type: 'spawn_error',
-							message:
-								error instanceof Error ? error.message : 'Unknown Codex error',
-							failureCode: 'spawn_error',
-						});
-					}
-					return {
-						exitCode: null,
-						error:
-							error instanceof Error ? error : new Error('Unknown Codex error'),
-						tokens: turnTokens,
-						streamMessage: streamedMessage || null,
-					};
-				} finally {
-					activeTurnPromiseRef.current = null;
-					unsubscribe();
-					if (!abortRef.current.signal.aborted) {
-						setIsRunning(false);
-					}
-				}
-			})();
-
+			const turnPromise = runCodexTurn(
+				codexRuntime,
+				prompt,
+				{
+					processConfig,
+					continuation,
+					configOverride: _configOverride,
+					workflowPlan,
+					pluginMcpConfig,
+					ephemeral,
+				},
+				{
+					onError: error => {
+						if (!abortRef.current.signal.aborted) {
+							onLifecycleEventRef.current?.({
+								type: 'spawn_error',
+								message: error.message,
+								failureCode: 'spawn_error',
+							});
+						}
+					},
+				},
+			);
 			activeTurnPromiseRef.current = turnPromise;
-			return await turnPromise;
+
+			try {
+				return await turnPromise;
+			} finally {
+				activeTurnPromiseRef.current = null;
+				if (!abortRef.current.signal.aborted) {
+					setIsRunning(false);
+				}
+			}
 		},
 		[codexRuntime, processConfig, workflowPlan, pluginMcpConfig, ephemeral],
 	);
