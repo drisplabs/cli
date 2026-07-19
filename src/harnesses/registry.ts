@@ -38,6 +38,7 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,
 		supportsConfigurableIsolation: false,
+		emitsStartupDiagnostics: false,
 	},
 	createRuntime: input => claudeHarnessAdapter.createRuntime(input),
 	createSessionController: input =>

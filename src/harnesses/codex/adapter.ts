@@ -27,6 +27,7 @@ export const codexHarnessAdapter: HarnessAdapter = {
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: true,
 		supportsConfigurableIsolation: true,
+		emitsStartupDiagnostics: false,
 	},
 	verify: () => verifyCodexHarness(),
 	createRuntime: input =>

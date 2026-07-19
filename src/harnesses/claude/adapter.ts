@@ -71,6 +71,7 @@ export const claudeHarnessAdapter: HarnessAdapter = {
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,
 		supportsConfigurableIsolation: true,
+		emitsStartupDiagnostics: true,
 	},
 	verify: () => verifyClaudeHarness(),
 	createRuntime: input =>

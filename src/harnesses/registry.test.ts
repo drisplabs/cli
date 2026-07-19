@@ -49,6 +49,7 @@ describe('harness registry', () => {
 			killWaitsForTurnSettlement: true,
 			supportsEphemeralSessions: false,
 			supportsConfigurableIsolation: true,
+			emitsStartupDiagnostics: true,
 		});
 
 		const codex = resolveHarnessAdapter('openai-codex');
@@ -57,6 +58,7 @@ describe('harness registry', () => {
 			killWaitsForTurnSettlement: true,
 			supportsEphemeralSessions: true,
 			supportsConfigurableIsolation: true,
+			emitsStartupDiagnostics: false,
 		});
 	});
 });
@@ -110,5 +112,20 @@ describe('harness model catalog', () => {
 		await expect(
 			resolveHarnessAdapter('opencode').listModels(),
 		).resolves.toEqual([]);
+	});
+});
+
+describe('startup-diagnostics capability', () => {
+	it('is declared per adapter, opt-in for Claude only', () => {
+		expect(
+			resolveHarnessAdapter('claude-code').capabilities.emitsStartupDiagnostics,
+		).toBe(true);
+		expect(
+			resolveHarnessAdapter('openai-codex').capabilities
+				.emitsStartupDiagnostics,
+		).toBe(false);
+		expect(
+			resolveHarnessAdapter('opencode').capabilities.emitsStartupDiagnostics,
+		).toBe(false);
 	});
 });

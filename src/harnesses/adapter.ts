@@ -19,6 +19,11 @@ export type HarnessCapabilities = {
 	killWaitsForTurnSettlement: boolean;
 	supportsEphemeralSessions: boolean;
 	supportsConfigurableIsolation: boolean;
+	/**
+	 * Whether Athena tracks and surfaces startup-failure diagnostics for this
+	 * harness (a Claude-only hook-server handshake concern today).
+	 */
+	emitsStartupDiagnostics: boolean;
 };
 
 /** One selectable model a harness exposes. Owned by the harness seam. */
