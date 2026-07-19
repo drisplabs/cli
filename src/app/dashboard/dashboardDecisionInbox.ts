@@ -1,5 +1,6 @@
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type {RuntimeDecision} from '../../core/runtime/types';
+import {openVersionedDb} from '../../infra/db/openVersionedDb';
 import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
 
 export type DashboardDecisionInboxRow = {
@@ -87,8 +88,6 @@ function migrateLegacyUniqueConstraint(db: Database.Database): void {
 
 function initInboxSchema(db: Database.Database): void {
 	db.exec(`
-		PRAGMA journal_mode = WAL;
-
 		CREATE TABLE IF NOT EXISTS dashboard_decision_inbox (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			athena_session_id TEXT NOT NULL,
@@ -115,8 +114,9 @@ function initInboxSchema(db: Database.Database): void {
 export function createDashboardDecisionInbox(
 	options: CreateDashboardDecisionInboxOptions = {},
 ): DashboardDecisionInbox {
-	const db = new Database(options.dbPath ?? dashboardDecisionInboxPath());
-	initInboxSchema(db);
+	const db = openVersionedDb(options.dbPath ?? dashboardDecisionInboxPath(), {
+		migrate: initInboxSchema,
+	});
 
 	const upsertUnconsumed = db.prepare(`
 		INSERT INTO dashboard_decision_inbox (
