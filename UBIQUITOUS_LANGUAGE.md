@@ -59,10 +59,11 @@ Athena Session        durable work-unit; one ~/.config/athena/sessions/<id>/sess
 
 ## Capability layers
 
-| Term                    | Definition                                                                                                                   | Aliases to avoid                   |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| **Workflow plugin**     | A plugin dependency declared by a **Workflow** and made available to Agent Sessions for Workflow Runs of that Workflow.      | Global plugin, personal plugin     |
-| **Personal capability** | A user-selected skill or MCP server made available to Athena-spawned Agent Sessions outside of Workflow plugin dependencies. | Global plugin, workflow dependency |
+| Term                       | Definition                                                                                                                                                                                                                                                                                                                                                                | Aliases to avoid                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| **Workflow plugin**        | A plugin dependency declared by a **Workflow** and made available to Agent Sessions for Workflow Runs of that Workflow.                                                                                                                                                                                                                                                   | Global plugin, personal plugin     |
+| **Personal capability**    | A user-selected skill or MCP server made available to Athena-spawned Agent Sessions outside of Workflow plugin dependencies.                                                                                                                                                                                                                                              | Global plugin, workflow dependency |
+| **Plugin delivery policy** | The per-harness, pure descriptor on a **Harness config profile** that says how a harness receives **Workflow plugins**: whether workflow plugin dirs are merged and registered as isolation artifacts (Claude), or delivered as a generated MCP config carried on the plan (Codex). The app orchestrates registration off this policy instead of branching on harness id. | Harness switch, plugin mode        |
 
 ## Cross-walk to official terminology
 
