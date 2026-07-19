@@ -4,7 +4,7 @@ import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
-import {TRACKER_SKELETON_MARKER} from './loopManager';
+import {TRACKER_SKELETON_MARKER} from './trackerReader';
 
 const NULL_TOKENS = {
 	input: null,
@@ -345,6 +345,45 @@ describe('createWorkflowRunner', () => {
 			expect.objectContaining({
 				status: 'failed',
 				stopReason: expect.stringContaining('final non-empty line'),
+			}),
+		);
+	});
+
+	it('surfaces a human-readable reason when the tracker disappears mid-run', async () => {
+		const projectDir = makeTempDir();
+		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+
+		// The agent removes the tracker during the turn. The Runner must report a
+		// terminal outcome the user can read — never the raw Stop Reason enum.
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.rmSync(trackerPath, {force: true});
+			return OK_RESULT;
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('failed');
+		expect(result.stopReason).not.toContain('missing_tracker');
+		expect(result.stopReason).toMatch(/tracker/i);
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				status: 'failed',
+				stopReason: expect.stringMatching(/tracker/i),
 			}),
 		);
 	});

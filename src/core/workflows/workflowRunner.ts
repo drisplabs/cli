@@ -13,11 +13,10 @@ import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
 import {
 	createWorkflowRunState,
 	prepareWorkflowTurn,
-	shouldContinueWorkflowRun,
-	cleanupWorkflowRun,
 	resolveTrackerPath,
 } from './sessionPlan';
-import {TRACKER_SKELETON_MARKER} from './loopManager';
+import {resolveTurnOutcome} from './terminalOutcome';
+import {TRACKER_SKELETON_MARKER} from './trackerReader';
 import {substituteVariables} from './templateVars';
 
 export type TurnInput = {
@@ -201,106 +200,95 @@ export function createWorkflowRunner(
 			mode: 'fresh',
 		};
 
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-			while (!cancelled) {
-				iterations++;
-				const prepared = prepareWorkflowTurn(workflowState, {
-					prompt: input.prompt,
-					configOverride: undefined,
-				});
+		const loop = input.workflow?.loop;
 
-				const turnResult = await input.startTurn({
-					prompt: prepared.prompt,
-					continuation: nextContinuation,
-					configOverride: prepared.configOverride,
-				});
+		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
+		while (!cancelled) {
+			iterations++;
+			const prepared = prepareWorkflowTurn(workflowState, {
+				prompt: input.prompt,
+				iteration: iterations,
+				configOverride: undefined,
+			});
 
-				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-				if (cancelled) {
-					status = 'cancelled';
-					persist();
-					break;
-				}
-
-				cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
-
-				if (
-					turnResult.error ||
-					(turnResult.exitCode !== null && turnResult.exitCode !== 0)
-				) {
-					status = 'failed';
-					const parts: string[] = [];
-					if (turnResult.error?.message) {
-						parts.push(turnResult.error.message);
-					} else if (turnResult.exitCode !== null) {
-						parts.push(`Process exited with code ${turnResult.exitCode}`);
-					}
-					if (turnResult.lastStderr) {
-						parts.push(turnResult.lastStderr);
-					}
-					stopReason = parts.join(': ') || 'Turn failed';
-					persist();
-					break;
-				}
-
-				const transport = turnResult.diagnostics?.transport;
-				if (
-					transport &&
-					transport.streamToolUses > 0 &&
-					transport.preToolUseEvents === 0
-				) {
-					status = 'failed';
-					stopReason = `Hook transport broken: observed ${transport.streamToolUses} tool use(s) in Claude stream but received no PreToolUse events.`;
-					persist();
-					break;
-				}
-
-				// Non-looped: single turn, done
-				if (!input.workflow?.loop?.enabled) {
-					status = 'completed';
-					persist();
-					break;
-				}
-
-				const loopStop = shouldContinueWorkflowRun(workflowState);
-				if (loopStop) {
-					if (loopStop.reason === 'completed') {
-						status = 'completed';
-					} else if (loopStop.reason === 'blocked') {
-						status = 'blocked';
-						stopReason = loopStop.blockedReason;
-					} else if (loopStop.reason === 'max_iterations') {
-						status = 'exhausted';
-					} else if (loopStop.reason === 'skeleton_not_replaced') {
-						status = 'failed';
-						stopReason =
-							'tracker skeleton was never replaced — Claude did not bootstrap the tracker';
-					} else if (loopStop.reason === 'misplaced_terminal_marker') {
-						status = 'failed';
-						stopReason =
-							'terminal workflow marker is not the final non-empty line of the tracker; move all summary text above the marker';
-					} else {
-						status = 'failed';
-						stopReason = `Loop stopped: ${loopStop.reason}`;
-					}
-					persist();
-					break;
-				}
-
-				// Continue loop
-				persist();
-				input.onIterationComplete?.(snapshot());
-				nextContinuation = {mode: 'fresh'};
-			}
+			const turnResult = await input.startTurn({
+				prompt: prepared.prompt,
+				continuation: nextContinuation,
+				configOverride: prepared.configOverride,
+			});
 
 			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-			if (cancelled && status === 'running') {
+			if (cancelled) {
 				status = 'cancelled';
 				persist();
+				break;
 			}
-		} finally {
-			cleanupWorkflowRun(workflowState);
+
+			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
+
+			if (
+				turnResult.error ||
+				(turnResult.exitCode !== null && turnResult.exitCode !== 0)
+			) {
+				status = 'failed';
+				const parts: string[] = [];
+				if (turnResult.error?.message) {
+					parts.push(turnResult.error.message);
+				} else if (turnResult.exitCode !== null) {
+					parts.push(`Process exited with code ${turnResult.exitCode}`);
+				}
+				if (turnResult.lastStderr) {
+					parts.push(turnResult.lastStderr);
+				}
+				stopReason = parts.join(': ') || 'Turn failed';
+				persist();
+				break;
+			}
+
+			const transport = turnResult.diagnostics?.transport;
+			if (
+				transport &&
+				transport.streamToolUses > 0 &&
+				transport.preToolUseEvents === 0
+			) {
+				status = 'failed';
+				stopReason = `Hook transport broken: observed ${transport.streamToolUses} tool use(s) in Claude stream but received no PreToolUse events.`;
+				persist();
+				break;
+			}
+
+			// Non-looped: single turn, done.
+			if (!loop?.enabled) {
+				status = 'completed';
+				persist();
+				break;
+			}
+
+			// Looped: one owner maps the Tracker's end-state to a final Run Status.
+			if (trackerAbsPath) {
+				const outcome = resolveTurnOutcome({
+					trackerPath: trackerAbsPath,
+					loop,
+					iteration: iterations,
+				});
+				if (outcome.kind === 'stop') {
+					status = outcome.status;
+					stopReason = outcome.stopReason;
+					persist();
+					break;
+				}
+			}
+
+			// Continue loop
+			persist();
+			input.onIterationComplete?.(snapshot());
+			nextContinuation = {mode: 'fresh'};
+		}
+
+		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
+		if (cancelled && status === 'running') {
+			status = 'cancelled';
+			persist();
 		}
 
 		return {

@@ -5,7 +5,7 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
 	DEFAULT_BLOCKED_MARKER,
 	DEFAULT_COMPLETION_MARKER,
-} from '../loopManager';
+} from '../trackerReader';
 import {resolveBuiltinWorkflow} from './index';
 
 const tempDirs: string[] = [];

@@ -2,11 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
-import {
-	createWorkflowRunState,
-	prepareWorkflowTurn,
-	shouldContinueWorkflowRun,
-} from './sessionPlan';
+import {createWorkflowRunState, prepareWorkflowTurn} from './sessionPlan';
 import {STATE_MACHINE_CONTENT} from './stateMachine';
 
 const tempDirs: string[] = [];
@@ -196,12 +192,8 @@ describe('workflow session planning', () => {
 		expect(instructions).toBe('# Workflow Steps');
 	});
 
-	it('switches to continue prompts and preserves loop trackers at terminal state', () => {
+	it('switches from the orient template to the continue prompt on later iterations', () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 'session-1.md');
-		fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
-		fs.writeFileSync(trackerPath, 'iteration 1', 'utf-8');
-
 		const state = createWorkflowRunState({
 			projectDir,
 			sessionId: 'session-1',
@@ -219,101 +211,14 @@ describe('workflow session planning', () => {
 			},
 		});
 
-		expect(shouldContinueWorkflowRun(state)).toBeNull();
+		expect(
+			prepareWorkflowTurn(state, {prompt: 'first', iteration: 1}).prompt,
+		).toBe('Execute: first');
 		expect(
 			prepareWorkflowTurn(state, {
 				prompt: 'ignored after first turn',
+				iteration: 2,
 			}).prompt,
 		).toBe('Continue with .athena/session-1.md');
-
-		fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
-		const stopInfo = shouldContinueWorkflowRun(state);
-		expect(stopInfo).not.toBeNull();
-		expect(stopInfo!.reason).toBe('completed');
-		expect(fs.existsSync(trackerPath)).toBe(true);
-		expect(state.loopManager).toBeNull();
-	});
-
-	it('stops before scheduling a turn beyond maxIterations', () => {
-		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, 'tracker.md');
-		fs.writeFileSync(trackerPath, 'still running', 'utf-8');
-
-		const state = createWorkflowRunState({
-			projectDir,
-			workflow: {
-				name: 'wf',
-				plugins: [],
-				promptTemplate: 'Execute: {input}',
-				loop: {
-					enabled: true,
-					completionMarker: '<!-- DONE -->',
-					maxIterations: 1,
-					trackerPath: 'tracker.md',
-				},
-			},
-		});
-
-		const stopInfo = shouldContinueWorkflowRun(state);
-		expect(stopInfo).not.toBeNull();
-		expect(stopInfo!.reason).toBe('max_iterations');
-		expect(fs.existsSync(trackerPath)).toBe(true);
-	});
-
-	it('stops when a terminal marker has trailing tracker content', () => {
-		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, 'tracker.md');
-		fs.writeFileSync(
-			trackerPath,
-			[
-				'## Summary',
-				'Done.',
-				'<!-- DONE -->',
-				'Trailing summary after the terminal marker.',
-			].join('\n'),
-			'utf-8',
-		);
-
-		const state = createWorkflowRunState({
-			projectDir,
-			workflow: {
-				name: 'wf',
-				plugins: [],
-				promptTemplate: 'Execute: {input}',
-				loop: {
-					enabled: true,
-					completionMarker: '<!-- DONE -->',
-					maxIterations: 5,
-					trackerPath: 'tracker.md',
-				},
-			},
-		});
-
-		const stopInfo = shouldContinueWorkflowRun(state);
-		expect(stopInfo).not.toBeNull();
-		expect(stopInfo!.reason).toBe('misplaced_terminal_marker');
-		expect(state.loopManager).toBeNull();
-	});
-
-	it('records missing tracker as a loop stop reason', () => {
-		const projectDir = makeTempDir();
-		const state = createWorkflowRunState({
-			projectDir,
-			workflow: {
-				name: 'wf',
-				plugins: [],
-				promptTemplate: 'Execute: {input}',
-				loop: {
-					enabled: true,
-					completionMarker: '<!-- DONE -->',
-					maxIterations: 5,
-					trackerPath: 'tracker.md',
-				},
-			},
-		});
-
-		const stopInfo = shouldContinueWorkflowRun(state);
-		expect(stopInfo).not.toBeNull();
-		expect(stopInfo!.reason).toBe('missing_tracker');
 	});
 });
