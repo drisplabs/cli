@@ -126,6 +126,12 @@ type BaseHookEvent = {
 	permission_mode?: PermissionMode;
 	agent_id?: string;
 	agent_type?: string;
+	/**
+	 * Active reasoning effort. A common input field — the #116 capture runs
+	 * observed it on PostToolUse-class payloads and never on SessionStart.
+	 * See `src/harnesses/claude/protocol/__fixtures__/hook-payloads/`.
+	 */
+	effort?: {level?: string};
 };
 
 // Tool-related fields for PreToolUse, PermissionRequest, PostToolUse,
@@ -246,7 +252,6 @@ export type SessionStartEvent = BaseHookEvent & {
 	hook_event_name: 'SessionStart';
 	source: 'startup' | 'resume' | 'clear' | 'compact';
 	model?: string;
-	effort?: {level?: string};
 };
 
 // SessionEnd: Session ends

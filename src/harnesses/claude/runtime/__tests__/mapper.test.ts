@@ -231,25 +231,29 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(event.interaction.canBlock).toBe(false);
 	});
 
-	it('carries SessionStart effort.level as effort_level on the runtime event', () => {
+	// `effort` is a Claude COMMON input field, not a SessionStart one: the #116
+	// capture runs show it on PostToolUse-class payloads and never on
+	// SessionStart. It is read once from the common base, like prompt_id/cwd.
+	it('carries the common effort.level as effortLevel on any runtime event', () => {
 		const envelope = makeEnvelope({
-			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			hook_event_name: 'PostToolUse' as HookEventEnvelope['hook_event_name'],
 			payload: {
-				hook_event_name: 'SessionStart',
+				hook_event_name: 'PostToolUse',
 				session_id: 'sess-1',
 				transcript_path: '/tmp/t.jsonl',
 				cwd: '/project',
-				source: 'startup',
+				tool_name: 'Read',
+				tool_input: {},
+				tool_response: {},
 				effort: {level: 'high'},
 			},
 		});
 		const event = mapEnvelopeToRuntimeEvent(envelope);
 
-		expect(event.kind).toBe('session.start');
-		expect((event.data as {effort_level?: string}).effort_level).toBe('high');
+		expect(event.effortLevel).toBe('high');
 	});
 
-	it('leaves effort_level undefined when SessionStart carries no effort', () => {
+	it('leaves effortLevel undefined when the payload carries no effort', () => {
 		const envelope = makeEnvelope({
 			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
 			payload: {
@@ -262,10 +266,24 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		});
 		const event = mapEnvelopeToRuntimeEvent(envelope);
 
-		expect(event.kind).toBe('session.start');
-		expect(
-			(event.data as {effort_level?: string}).effort_level,
-		).toBeUndefined();
+		expect(event.effortLevel).toBeUndefined();
+	});
+
+	it('ignores a malformed effort field', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+				effort: 'high',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.effortLevel).toBeUndefined();
 	});
 
 	it('maps every registered Claude hook to a first-class runtime kind', () => {

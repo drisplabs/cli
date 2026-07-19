@@ -61,18 +61,15 @@ export function translateClaudeEnvelope(
 	const hookName = envelope.hook_event_name as string;
 
 	switch (hookName) {
-		case 'SessionStart': {
-			const effort = asRecord(payload['effort']);
+		case 'SessionStart':
 			return {
 				kind: 'session.start',
 				data: {
 					source: payload['source'] as string | undefined,
 					model: payload['model'] as string | undefined,
 					agent_type: payload['agent_type'] as string | undefined,
-					effort_level: effort['level'] as string | undefined,
 				},
 			};
-		}
 		case 'SessionEnd':
 			return {
 				kind: 'session.end',

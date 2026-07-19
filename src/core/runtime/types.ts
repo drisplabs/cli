@@ -54,6 +54,13 @@ export type RuntimeEvent = {
 	 * authoritative Feed Run boundary trigger when present (ADR 0009).
 	 */
 	promptId?: string;
+	/**
+	 * Active reasoning effort level (Claude `effort.level`, a common input field).
+	 * Observation only — the harness reports what it is running with; nothing in
+	 * core sets it. Absent on payloads that don't carry it and on harnesses that
+	 * have no effort concept, in which case the header simply omits it.
+	 */
+	effortLevel?: string;
 
 	/** Base context present on all hook events */
 	context: {

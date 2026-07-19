@@ -59,9 +59,13 @@ export function useHeaderMetrics(events: FeedEvent[]): SessionMetrics {
 				if (typeof event.data.model === 'string') {
 					modelName = event.data.model;
 				}
-				if (typeof event.data.effort_level === 'string') {
-					effortLevel = event.data.effort_level;
-				}
+			}
+
+			// Effort rides the FeedEvent base, not session.start data — the harness
+			// reports it on ordinary hook payloads — so the header shows the most
+			// recent level observed.
+			if (typeof event.effort_level === 'string') {
+				effortLevel = event.effort_level;
 			}
 
 			if (

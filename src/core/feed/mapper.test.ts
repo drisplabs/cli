@@ -123,41 +123,35 @@ describe('createFeedMapper', () => {
 		// events arrive in the new adapter session.
 	});
 
-	describe('session.start effort_level projection', () => {
-		it('carries effort_level onto the projected session.start feed event', () => {
+	describe('effort_level stamping', () => {
+		it('stamps effort_level on every feed event derived from an event that carries it', () => {
 			const mapper = createFeedMapper();
-			const newEvents = mapper.mapEvent(
+			const events = mapper.mapEvent(
 				makeRuntimeEvent({
-					hookName: 'SessionStart',
+					hookName: 'PostToolUse',
 					sessionId: 'cs-1',
-					payload: {
-						session_id: 'cs-1',
-						source: 'startup',
-						effort_level: 'high',
-					},
+					effortLevel: 'high',
+					payload: {tool_name: 'Bash', tool_response: {}},
 				}),
 			);
-			const startEvent = newEvents.find(e => e.kind === 'session.start');
-			expect(startEvent).toBeDefined();
-			expect((startEvent!.data as {effort_level?: string}).effort_level).toBe(
-				'high',
-			);
+			expect(events.length).toBeGreaterThan(0);
+			for (const event of events) {
+				expect(event.effort_level).toBe('high');
+			}
 		});
 
-		it('leaves effort_level undefined on session.start when absent', () => {
+		it('leaves effort_level undefined when the runtime event carries none', () => {
 			const mapper = createFeedMapper();
-			const newEvents = mapper.mapEvent(
+			const events = mapper.mapEvent(
 				makeRuntimeEvent({
 					hookName: 'SessionStart',
 					sessionId: 'cs-1',
 					payload: {session_id: 'cs-1', source: 'startup'},
 				}),
 			);
-			const startEvent = newEvents.find(e => e.kind === 'session.start');
+			const startEvent = events.find(e => e.kind === 'session.start');
 			expect(startEvent).toBeDefined();
-			expect(
-				(startEvent!.data as {effort_level?: string}).effort_level,
-			).toBeUndefined();
+			expect(startEvent!.effort_level).toBeUndefined();
 		});
 	});
 

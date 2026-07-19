@@ -1532,6 +1532,7 @@ function AppContent({
 		harness,
 		modelName,
 		metrics.modelName,
+		metrics.effortLevel,
 		startupFailure?.message,
 		innerWidth,
 		hasColor,

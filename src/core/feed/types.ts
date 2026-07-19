@@ -98,6 +98,12 @@ export type FeedEventBase = {
 	 * (ADR 0009).
 	 */
 	prompt_id?: string;
+	/**
+	 * Active reasoning effort level, forwarded from RuntimeEvent.effortLevel.
+	 * Observation only, and a base field rather than session.start data because
+	 * the harness reports it on ordinary hook payloads, not only at session start.
+	 */
+	effort_level?: string;
 	kind: FeedEventKind;
 	level: FeedEventLevel;
 	actor_id: string;
@@ -121,7 +127,6 @@ export type SessionStartData = {
 	source: 'startup' | 'resume' | 'clear' | 'compact' | string;
 	agent_type?: string;
 	model?: string;
-	effort_level?: string;
 };
 
 export type SessionEndData = {
