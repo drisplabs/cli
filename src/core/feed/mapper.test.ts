@@ -123,6 +123,38 @@ describe('createFeedMapper', () => {
 		// events arrive in the new adapter session.
 	});
 
+	describe('effort_level stamping', () => {
+		it('stamps effort_level on every feed event derived from an event that carries it', () => {
+			const mapper = createFeedMapper();
+			const events = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'PostToolUse',
+					sessionId: 'cs-1',
+					effortLevel: 'high',
+					payload: {tool_name: 'Bash', tool_response: {}},
+				}),
+			);
+			expect(events.length).toBeGreaterThan(0);
+			for (const event of events) {
+				expect(event.effort_level).toBe('high');
+			}
+		});
+
+		it('leaves effort_level undefined when the runtime event carries none', () => {
+			const mapper = createFeedMapper();
+			const events = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'SessionStart',
+					sessionId: 'cs-1',
+					payload: {session_id: 'cs-1', source: 'startup'},
+				}),
+			);
+			const startEvent = events.find(e => e.kind === 'session.start');
+			expect(startEvent).toBeDefined();
+			expect(startEvent!.effort_level).toBeUndefined();
+		});
+	});
+
 	describe('getTasks', () => {
 		it('returns empty array by default', () => {
 			const mapper = createFeedMapper();

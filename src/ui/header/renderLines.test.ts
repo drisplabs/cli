@@ -83,6 +83,25 @@ describe('renderHeaderLines', () => {
 		expect(line).toContain('Runs: 7');
 	});
 
+	it('appends effort level beside the model when present', () => {
+		const m: HeaderModel = {
+			...model,
+			model_name: 'claude-opus-4-6',
+			effort_level: 'high',
+		};
+		const [line] = renderHeaderLines(m, 200, false);
+		const plain = stripAnsi(line);
+		expect(plain).toContain('with high effort');
+		// effort text is attached to the Model token
+		expect(plain).toMatch(/Model:.*with high effort/);
+	});
+
+	it('omits effort text when effort_level is absent', () => {
+		const m: HeaderModel = {...model, model_name: 'claude-opus-4-6'};
+		const [line] = renderHeaderLines(m, 200, false);
+		expect(line).not.toContain('effort');
+	});
+
 	it('uses semantic labels supplied by the header model', () => {
 		const m: HeaderModel = {
 			...model,

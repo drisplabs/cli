@@ -10,6 +10,7 @@ export interface HeaderModel {
 	workflow: string;
 	harness: string;
 	model_name: string | null;
+	effort_level?: string | null;
 	context: {used: number | null; max: number | null};
 	total_tokens: number | null;
 	token_label: string;
@@ -41,6 +42,7 @@ export interface HeaderModelInput {
 	workflowRef?: string;
 	harness?: string;
 	modelName?: string | null;
+	effortLevel?: string | null;
 	contextUsed?: number | null;
 	contextMax?: number | null;
 	totalTokens?: number | null;
@@ -120,6 +122,7 @@ export function buildHeaderModel(input: HeaderModelInput): HeaderModel {
 		workflow: workflowRef ?? 'default',
 		harness: detectHarness(input.harness),
 		model_name: input.modelName ?? null,
+		effort_level: input.effortLevel ?? null,
 		context: {used: input.contextUsed ?? null, max: input.contextMax ?? null},
 		total_tokens: input.totalTokens ?? null,
 		token_label: codexHarness ? 'Billable' : 'Tokens',

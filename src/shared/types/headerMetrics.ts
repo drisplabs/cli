@@ -26,6 +26,7 @@ export type PermissionMetrics = {
 
 export type SessionMetrics = {
 	modelName: string | null;
+	effortLevel?: string | null;
 	toolCallCount: number;
 	totalToolCallCount: number; // main + all subagents
 	subagentCount: number;
