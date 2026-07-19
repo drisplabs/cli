@@ -19,6 +19,19 @@ export type HarnessCapabilities = {
 	killWaitsForTurnSettlement: boolean;
 	supportsEphemeralSessions: boolean;
 	supportsConfigurableIsolation: boolean;
+	/**
+	 * Whether Athena tracks and surfaces startup-failure diagnostics for this
+	 * harness (a Claude-only hook-server handshake concern today).
+	 */
+	emitsStartupDiagnostics: boolean;
+};
+
+/** One selectable model a harness exposes. Owned by the harness seam. */
+export type HarnessModelOption = {
+	value: string;
+	label: string;
+	description: string;
+	isDefault?: boolean;
 };
 
 export type HarnessAdapter = {
@@ -31,4 +44,10 @@ export type HarnessAdapter = {
 	createSessionController: CreateSessionController;
 	useSessionController: UseSessionController;
 	resolveConfigProfile: () => HarnessConfigProfile;
+	/**
+	 * The model catalog this harness offers. Claude serves a static list; Codex
+	 * fetches from its live Runtime. The caller passes the active Runtime when it
+	 * has one.
+	 */
+	listModels: (runtime?: Runtime | null) => Promise<HarnessModelOption[]>;
 };

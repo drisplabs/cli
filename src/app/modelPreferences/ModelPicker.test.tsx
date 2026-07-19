@@ -3,20 +3,22 @@ import {render} from 'ink-testing-library';
 import {describe, expect, it, vi} from 'vitest';
 import ModelPicker from './ModelPicker';
 
-vi.mock('./listAvailableModels', () => ({
-	listAvailableModels: vi.fn(async () => [
-		{
-			value: 'sonnet',
-			label: 'Sonnet',
-			description: 'Balanced default',
-			isDefault: true,
-		},
-		{
-			value: 'opus',
-			label: 'Opus',
-			description: 'Stronger reasoning',
-		},
-	]),
+vi.mock('../../harnesses/registry', () => ({
+	resolveHarnessAdapter: vi.fn(() => ({
+		listModels: vi.fn(async () => [
+			{
+				value: 'sonnet',
+				label: 'Sonnet',
+				description: 'Balanced default',
+				isDefault: true,
+			},
+			{
+				value: 'opus',
+				label: 'Opus',
+				description: 'Stronger reasoning',
+			},
+		]),
+	})),
 }));
 
 const writeProjectConfigMock = vi.fn();

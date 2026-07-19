@@ -65,4 +65,20 @@ describe('resolveHarnessConfigProfile', () => {
 			model: 'opus',
 		});
 	});
+
+	it('declares Claude plugin delivery as registration that builds the MCP config', () => {
+		expect(resolveHarnessConfigProfile('claude-code').pluginDelivery).toEqual({
+			mergeWorkflowPluginDirs: true,
+			registrationBuildsMcpConfig: true,
+			workflowPluginsVia: 'registration',
+		});
+	});
+
+	it('declares Codex plugin delivery as a separately generated MCP config', () => {
+		expect(resolveHarnessConfigProfile('openai-codex').pluginDelivery).toEqual({
+			mergeWorkflowPluginDirs: false,
+			registrationBuildsMcpConfig: false,
+			workflowPluginsVia: 'generated-mcp',
+		});
+	});
 });
