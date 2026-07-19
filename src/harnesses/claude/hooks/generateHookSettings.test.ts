@@ -80,6 +80,19 @@ describe('generateHookSettings', () => {
 		expect(entry.hooks[0].type).toBe('command');
 	});
 
+	it('registers PostToolBatch with a matcher, as the #116 capture proved works', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const content = fs.readFileSync(result.settingsPath, 'utf8');
+		const settings = JSON.parse(content);
+
+		const entry = settings.hooks.PostToolBatch?.[0];
+		expect(entry).toBeDefined();
+		expect(entry.matcher).toBe('*');
+		expect(entry.hooks[0].type).toBe('command');
+	});
+
 	it('should configure tool hooks with matcher and command', () => {
 		const result = generateHookSettings();
 		createdFiles.push(result.settingsPath);

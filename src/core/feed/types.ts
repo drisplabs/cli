@@ -1,7 +1,7 @@
 // src/feed/types.ts
 
 import type {PermissionSuggestion} from '../../shared/types/permissionSuggestion';
-import type {RuntimeEventDataMap} from '../runtime/events';
+import type {RuntimeEventDataMap, ToolBatchCall} from '../runtime/events';
 
 // ── Base ──────────────────────────────────────────────────
 
@@ -18,6 +18,7 @@ export type FeedEventKind =
 	| 'tool.delta'
 	| 'tool.pre'
 	| 'tool.post'
+	| 'tool.batch'
 	| 'tool.failure'
 	| 'permission.request'
 	| 'permission.decision'
@@ -209,6 +210,18 @@ export type ToolPostData = {
 	tool_input: Record<string, unknown>;
 	tool_use_id?: string;
 	tool_response: unknown;
+};
+
+/**
+ * One assistant tool batch, emitted once after all its `tool.post` rows.
+ * `tool_calls[].tool_use_id` correlates 1:1 to those rows.
+ *
+ * 🔴 Each call's `tool_response` is a STRING (the flattened, model-facing
+ * rendering), unlike {@link ToolPostData.tool_response}. See ToolBatchCall.
+ */
+export type ToolBatchData = {
+	tool_calls: ToolBatchCall[];
+	permission_mode?: string;
 };
 
 export type ToolFailureData = {
@@ -563,6 +576,7 @@ export type FeedEvent =
 	| (FeedEventBase & {kind: 'tool.delta'; data: ToolDeltaData})
 	| (FeedEventBase & {kind: 'tool.pre'; data: ToolPreData})
 	| (FeedEventBase & {kind: 'tool.post'; data: ToolPostData})
+	| (FeedEventBase & {kind: 'tool.batch'; data: ToolBatchData})
 	| (FeedEventBase & {kind: 'tool.failure'; data: ToolFailureData})
 	| (FeedEventBase & {kind: 'permission.request'; data: PermissionRequestData})
 	| (FeedEventBase & {
@@ -701,6 +715,7 @@ export type _RuntimeFeedCompatibility = {
 	'tool.delta': AssertFeedExtendsRuntime<ToolDeltaData, 'tool.delta'>;
 	'tool.pre': AssertFeedExtendsRuntime<ToolPreData, 'tool.pre'>;
 	'tool.post': AssertFeedExtendsRuntime<ToolPostData, 'tool.post'>;
+	'tool.batch': AssertFeedExtendsRuntime<ToolBatchData, 'tool.batch'>;
 	'tool.failure': AssertFeedExtendsRuntime<ToolFailureData, 'tool.failure'>;
 	'permission.request': AssertFeedExtendsRuntime<
 		PermissionRequestData,

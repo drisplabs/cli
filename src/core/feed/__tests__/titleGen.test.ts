@@ -152,6 +152,25 @@ describe('generateTitle', () => {
 		expect(generateTitle(event)).toBe('Prompt expanded');
 	});
 
+	it('generates tool.batch title counting the calls', () => {
+		const event = makeFeedEvent('tool.batch', {
+			tool_calls: [
+				{tool_name: 'Read', tool_use_id: 'tu-1', tool_response: 'a'},
+				{tool_name: 'Read', tool_use_id: 'tu-2', tool_response: 'b'},
+			],
+		});
+		expect(generateTitle(event)).toBe('Batch of 2 tool calls');
+	});
+
+	it('singularizes the tool.batch title for a one-call batch', () => {
+		const event = makeFeedEvent('tool.batch', {
+			tool_calls: [
+				{tool_name: 'Read', tool_use_id: 'tu-1', tool_response: 'a'},
+			],
+		});
+		expect(generateTitle(event)).toBe('Batch of 1 tool call');
+	});
+
 	it('truncates long user.prompt title', () => {
 		const longPrompt = 'A'.repeat(100);
 		const event = makeFeedEvent('user.prompt', {prompt: longPrompt, cwd: '/'});

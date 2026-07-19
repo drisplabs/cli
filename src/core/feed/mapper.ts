@@ -69,6 +69,7 @@ const TOOL_EVENT_KINDS = new Set<RuntimeEventKind>([
 	'tool.delta',
 	'tool.pre',
 	'tool.post',
+	'tool.batch',
 	'tool.failure',
 ]);
 

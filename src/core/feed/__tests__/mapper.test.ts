@@ -680,6 +680,91 @@ describe('FeedMapper', () => {
 			expect(expansion!.run_id).not.toBe(firstRunId);
 		});
 
+		it('maps PostToolBatch to a tool.batch feed row carrying every call', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('PostToolBatch', {
+					data: {
+						permission_mode: 'bypassPermissions',
+						tool_calls: [
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/a.txt'},
+								tool_use_id: 'tu-1',
+								tool_response: '1\thello a\n',
+							},
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/b.txt'},
+								tool_use_id: 'tu-2',
+								tool_response: '1\thello b\n',
+							},
+						],
+					},
+				}),
+			);
+
+			const batches = results.filter(r => r.kind === 'tool.batch');
+			expect(batches).toHaveLength(1);
+			expect(batches[0]!.data.tool_calls).toHaveLength(2);
+			expect(batches[0]!.data.tool_calls[0]!.tool_use_id).toBe('tu-1');
+			expect(batches[0]!.data.tool_calls[1]!.tool_response).toBe(
+				'1\thello b\n',
+			);
+			expect(batches[0]!.data.permission_mode).toBe('bypassPermissions');
+		});
+
+		// PostToolBatch closes an existing batch of tool calls — it must never
+		// roll the Feed Run over. Its tool_use_ids correlate 1:1 to the
+		// tool.post rows already emitted inside the same run.
+		it('does not open a second run for tool.batch after a tool call', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'read both files',
+					},
+				}),
+			);
+			const postResults = mapper.mapEvent(
+				makeRuntimeEvent('PostToolUse', {
+					toolName: 'Read',
+					toolUseId: 'tu-1',
+					data: {
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: {type: 'text', file: {filePath: '/tmp/a.txt'}},
+					},
+				}),
+			);
+			const runId = postResults[0]!.run_id;
+
+			const batchResults = mapper.mapEvent(
+				makeRuntimeEvent('PostToolBatch', {
+					data: {
+						tool_calls: [
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/a.txt'},
+								tool_use_id: 'tu-1',
+								tool_response: '1\thello a\n',
+							},
+						],
+					},
+				}),
+			);
+
+			expect(batchResults.some(r => r.kind === 'run.start')).toBe(false);
+			const batch = batchResults.find(r => r.kind === 'tool.batch');
+			expect(batch).toBeDefined();
+			expect(batch!.run_id).toBe(runId);
+		});
+
 		it('emits Codex agent messages when item completion arrives', () => {
 			const mapper = createFeedMapper();
 			const startResults = mapper.mapEvent(

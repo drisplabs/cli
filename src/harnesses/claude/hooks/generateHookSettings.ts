@@ -17,6 +17,10 @@ export const TOOL_HOOK_EVENTS = [
 	'PreToolUse',
 	'PostToolUse',
 	'PostToolUseFailure',
+	// Batch-level, not per-tool, but Claude accepts (and requires) a matcher
+	// here: the #116 capture registered it with `matcher: '*'` and it fired in
+	// every run. Matcher-less registration is unverified.
+	'PostToolBatch',
 	'PermissionRequest',
 	'PermissionDenied',
 	'Elicitation',

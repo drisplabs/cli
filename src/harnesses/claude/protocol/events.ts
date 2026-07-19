@@ -13,6 +13,7 @@
  * - PermissionDenied: Auto-mode classifier denied a tool call
  * - PostToolUse: After tool succeeds
  * - PostToolUseFailure: After tool fails
+ * - PostToolBatch: After every tool call in an assistant batch resolves
  * - SubagentStart: When spawning a subagent
  * - SubagentStop: When subagent finishes
  * - Stop: Claude finishes responding
@@ -174,6 +175,26 @@ export type PostToolUseFailureEvent = ToolEventBase & {
 	exit_code?: number;
 	output?: string;
 	error_code?: string;
+};
+
+// PostToolBatch: Fired once after every tool call in an assistant batch has
+// resolved, after all the individual PostToolUse events. Unlike the tool
+// events above it carries no top-level tool_name/tool_input — the batch is in
+// `tool_calls`, so it extends BaseHookEvent, not ToolEventBase.
+// Shape verified against a real captured payload in the #116 spike; see
+// __fixtures__/hook-payloads/post-tool-batch.parallel-calls.json.
+export type PostToolBatchCall = {
+	tool_name: string;
+	tool_input: Record<string, unknown>;
+	tool_use_id: string;
+	// A STRING — the flattened, model-facing rendering — NOT the structured
+	// object that PostToolUse.tool_response carries for the same call.
+	tool_response: string;
+};
+
+export type PostToolBatchEvent = BaseHookEvent & {
+	hook_event_name: 'PostToolBatch';
+	tool_calls: PostToolBatchCall[];
 };
 
 // Notification: Claude sends a notification
@@ -371,6 +392,7 @@ export type ClaudeHookEvent =
 	| PermissionDeniedEvent
 	| PostToolUseEvent
 	| PostToolUseFailureEvent
+	| PostToolBatchEvent
 	| NotificationEvent
 	| StopEvent
 	| StopFailureEvent
@@ -431,6 +453,14 @@ export function isPostToolUseFailureEvent(
 	event: ClaudeHookEvent,
 ): event is PostToolUseFailureEvent {
 	return event.hook_event_name === 'PostToolUseFailure';
+}
+
+// Deliberately NOT part of isToolEvent(): PostToolBatch carries no top-level
+// tool_name/tool_input, so it does not satisfy that narrowing.
+export function isPostToolBatchEvent(
+	event: ClaudeHookEvent,
+): event is PostToolBatchEvent {
+	return event.hook_event_name === 'PostToolBatch';
 }
 
 export function isNotificationEvent(

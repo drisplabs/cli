@@ -1,6 +1,7 @@
 import type {
 	RuntimeEventDataMap,
 	RuntimeEventKind,
+	ToolBatchCall,
 } from '../../../core/runtime/events';
 import type {HookEventEnvelope} from '../protocol/envelope';
 import {
@@ -15,6 +16,25 @@ function asRecord(value: unknown): Record<string, unknown> {
 		return value as Record<string, unknown>;
 	}
 	return {};
+}
+
+/**
+ * Normalize a `PostToolBatch` payload's `tool_calls`. Anything that is not an
+ * array of objects degrades to `[]` rather than leaking through: an older or
+ * leaner Claude build may omit the key entirely (#116 confirmed unknown hook
+ * keys are silently ignored, so degradation is by absence, not by error).
+ */
+function readToolBatchCalls(value: unknown): ToolBatchCall[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter(entry => typeof entry === 'object' && entry !== null)
+		.map(entry => asRecord(entry))
+		.map(call => ({
+			tool_name: call['tool_name'] as string | undefined,
+			tool_input: call['tool_input'] as Record<string, unknown> | undefined,
+			tool_use_id: call['tool_use_id'] as string | undefined,
+			tool_response: call['tool_response'] as string | undefined,
+		}));
 }
 
 /**
@@ -126,6 +146,18 @@ export function translateClaudeEnvelope(
 						{},
 					tool_use_id: toolUseId,
 					tool_response: payload['tool_response'],
+				},
+			};
+		// Fires once per assistant tool batch, after every PostToolUse in it.
+		// Field names are pinned to the payload captured in the #116 spike;
+		// note that `tool_calls[].tool_response` is a STRING there, unlike
+		// PostToolUse's structured `tool_response`.
+		case 'PostToolBatch':
+			return {
+				kind: 'tool.batch',
+				data: {
+					tool_calls: readToolBatchCalls(payload['tool_calls']),
+					permission_mode: payload['permission_mode'] as string | undefined,
 				},
 			};
 		case 'PostToolUseFailure':

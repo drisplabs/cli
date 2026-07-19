@@ -143,6 +143,7 @@ describe('hooks types', () => {
 				'PreToolUse',
 				'PermissionRequest',
 				'PermissionDenied',
+				'PostToolBatch',
 				'PostToolUse',
 				'PostToolUseFailure',
 				'SubagentStart',
