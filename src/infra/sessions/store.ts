@@ -1,11 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
 import type {MapperBootstrap} from '../../core/feed/bootstrap';
 import type {RuntimeEvent} from '../../core/runtime/types';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
-import {initSchema} from './schema';
+import {openVersionedDb} from '../db/openVersionedDb';
+import {SESSION_SCHEMA} from './schema';
 import type {
 	AthenaSession,
 	AdapterSessionRecord,
@@ -50,17 +48,18 @@ export type SessionStore = {
 };
 
 export function createSessionStore(opts: SessionStoreOptions): SessionStore {
-	// Ensure parent directory exists for file-based databases
-	if (opts.dbPath !== ':memory:') {
-		fs.mkdirSync(path.dirname(opts.dbPath), {recursive: true});
-	}
+	// Open session.db and bring its schema up to date via the shared primitive
+	// (ensures the parent directory, sets WAL + foreign keys, runs migrations).
+	const db = openVersionedDb(opts.dbPath, {
+		...SESSION_SCHEMA,
+		foreignKeys: true,
+		ensureDir: true,
+	});
 
 	// Acquire exclusive write lock via SQLite's locking_mode.
 	// This prevents a second process from accidentally writing to the same DB
 	// and colliding on seq allocation. Read-only consumers (registry) use
 	// separate readonly connections and are unaffected.
-	const db = new Database(opts.dbPath);
-	initSchema(db);
 	if (opts.dbPath !== ':memory:') {
 		db.pragma('locking_mode = EXCLUSIVE');
 		// Force SQLite to acquire the lock immediately by starting a write

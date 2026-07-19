@@ -12,8 +12,9 @@
  *   4. Surface health samples to a single registered listener (M8 wires
  *      these into the parking policy).
  *
- * Persistence of `channel_messages` rows is owned by the session bridge
- * (M5+), since the row's `session_id` is only known after routing.
+ * Inbound/outbound chat is not written to a persistent per-message ledger: the
+ * planned `channel_messages` table was never wired up and has been dropped (see
+ * ADR 0006). Durable delivery state lives in the gateway `channel_outbox`.
  */
 
 import type {

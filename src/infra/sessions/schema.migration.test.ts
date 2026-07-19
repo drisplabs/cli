@@ -216,7 +216,7 @@ describe('schema migrations', () => {
 		db.close();
 	});
 
-	it('migrates v5 → v6 by adding gateway and channel tables', () => {
+	it('migrates v5 → v6 by adding the channel_outbox table', () => {
 		const db = new Database(':memory:');
 		db.exec('PRAGMA foreign_keys = ON');
 		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
@@ -251,61 +251,6 @@ describe('schema migrations', () => {
 			version: number;
 		};
 		expect(row.version).toBe(6);
-
-		// channel_messages: insert + idempotency uniqueness
-		db.prepare(
-			`INSERT INTO channel_messages (channel_id, account_id, peer_id, provider_message_id, direction, session_id, idempotency_key, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run(
-			'telegram',
-			'default',
-			'12345',
-			'msg-1',
-			'in',
-			'as1',
-			'tg-update-1',
-			Date.now(),
-		);
-		expect(() =>
-			db
-				.prepare(
-					`INSERT INTO channel_messages (channel_id, account_id, peer_id, provider_message_id, direction, idempotency_key, created_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				)
-				.run(
-					'telegram',
-					'default',
-					'12345',
-					'msg-2',
-					'in',
-					'tg-update-1',
-					Date.now(),
-				),
-		).toThrow(/UNIQUE/i);
-
-		// direction CHECK constraint
-		expect(() =>
-			db
-				.prepare(
-					`INSERT INTO channel_messages (channel_id, account_id, provider_message_id, direction, created_at)
-					 VALUES (?, ?, ?, ?, ?)`,
-				)
-				.run('telegram', 'default', 'm', 'sideways', Date.now()),
-		).toThrow(/CHECK/i);
-
-		// gateway_function_invocations: caller_kind + status checks
-		db.prepare(
-			`INSERT INTO gateway_function_invocations (name, caller_kind, request_hash, status, started_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-		).run('summarize_pr', 'agent', 'hash-abc', 'ok', Date.now());
-		expect(() =>
-			db
-				.prepare(
-					`INSERT INTO gateway_function_invocations (name, caller_kind, request_hash, status, started_at)
-					 VALUES (?, ?, ?, ?, ?)`,
-				)
-				.run('summarize_pr', 'cron', 'hash-def', 'ok', Date.now()),
-		).toThrow(/CHECK/i);
 
 		// channel_outbox: insert + due index works
 		db.prepare(
