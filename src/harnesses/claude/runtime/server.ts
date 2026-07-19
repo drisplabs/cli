@@ -124,6 +124,38 @@ export function createServer(opts: ServerOptions) {
 		(): void => {
 			transportStats.streamToolUses++;
 		},
+		(messageDelta): void => {
+			emit({
+				id: `stream-msg-delta-${messageDelta.item_id ?? 'unknown'}-${Date.now()}`,
+				timestamp: Date.now(),
+				kind: 'message.delta',
+				data: {
+					item_id: messageDelta.item_id,
+					delta: messageDelta.delta,
+				},
+				hookName: 'stream-json',
+				sessionId,
+				context: {cwd: projectDir, transcriptPath: ''},
+				interaction: getInteractionHints('message.delta'),
+				payload: null,
+			});
+		},
+		(messageComplete): void => {
+			emit({
+				id: `stream-msg-complete-${messageComplete.item_id ?? 'unknown'}-${Date.now()}`,
+				timestamp: Date.now(),
+				kind: 'message.complete',
+				data: {
+					item_id: messageComplete.item_id,
+					message: messageComplete.message,
+				},
+				hookName: 'stream-json',
+				sessionId,
+				context: {cwd: projectDir, transcriptPath: ''},
+				interaction: getInteractionHints('message.complete'),
+				payload: null,
+			});
+		},
 	);
 
 	function emit(event: RuntimeEvent): void {
