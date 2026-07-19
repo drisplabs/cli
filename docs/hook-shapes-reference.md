@@ -192,17 +192,15 @@ Matcher: matches on `tool_name` (regex).
 
 ### 7. Notification
 
-| Field               | Type   | Required | Description                                                                                                                                                                      |
-| :------------------ | :----- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message`           | string | yes      | Notification text                                                                                                                                                                |
-| `title`             | string | no       | Notification title                                                                                                                                                               |
-| `notification_type` | string | no       | `"permission_prompt"`, `"idle_prompt"`, `"auth_success"`, `"elicitation_dialog"`, `"elicitation_complete"`, `"elicitation_response"`, `"agent_needs_input"`, `"agent_completed"` |
+| Field               | Type   | Required | Description                                                                                                                                                                                                    |
+| :------------------ | :----- | :------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message`           | string | yes      | Notification text                                                                                                                                                                                              |
+| `title`             | string | no       | Notification title                                                                                                                                                                                             |
+| `notification_type` | string | no       | `"permission_prompt"`, `"idle_prompt"`, `"auth_success"`, `"elicitation_dialog"`, `"elicitation_complete"`, `"elicitation_response"`, `"agent_needs_input"`, `"agent_completed"`, `"worker_permission_prompt"` |
 
 Matcher: matches on `notification_type`.
 
-The eight values above are the complete set declared by the Notification hook schema in the Claude binary (2.1.215).
-
-**NOTE:** `title` is in the Claude Code docs but **missing** from the athena-cli `NotificationEvent` type. See [Missing Items](#missing-items--gaps).
+The values above are the ones observed in the Claude binary (2.1.215), **not a closed set** — the hook's own input schema declares `notification_type` as a free-form string, and the enumerated values live only in the hook matcher metadata. Narrow on them for known cases, but treat an unlisted value as possible.
 
 ```json
 {
@@ -1238,13 +1236,15 @@ Differences between the Claude Code hooks reference documentation and the athena
 
 ### Missing from athena-cli event types (`src/harnesses/claude/protocol/events.ts`)
 
-1. **`NotificationEvent.title`** — The Claude Code docs show a `title` field on Notification events. The athena-cli type only has `message` and `notification_type`. The `RuntimeEventDataMap` for `notification` does include `title`, so it's handled at the runtime layer but not in the protocol types.
+None outstanding. The four gaps previously listed here have all been closed and are kept only as a record:
 
-2. **`PermissionRequestEvent.permission_suggestions`** — The Claude Code docs show a `permission_suggestions` array on PermissionRequest events. The athena-cli type inherits only from `ToolEventBase` and doesn't include this field. The `RuntimeEventDataMap` for `permission.request` does include it, so it's partially handled.
+1. **`NotificationEvent.title`** — present (`events.ts`, `title?: string`). No gap.
 
-3. **`SessionEndEvent.reason` union** — Missing `"bypass_permissions_disabled"` from the reason union. The athena-cli type has `'clear' | 'logout' | 'prompt_input_exit' | 'other'` but the Claude Code docs also list `"bypass_permissions_disabled"`.
+2. **`PermissionRequestEvent.permission_suggestions`** — present (`events.ts`, `permission_suggestions?: PermissionSuggestion[]`). No gap.
 
-4. **`StopEvent.last_assistant_message`** — Now confirmed documented in the hooks reference. Present in athena-cli type — no gap.
+3. **`SessionEndEvent.reason` union** — `SessionEndReason` now carries `"bypass_permissions_disabled"` (and `"resume"`). No gap.
+
+4. **`StopEvent.last_assistant_message`** — present. No gap.
 
 ### Missing from athena-cli result types (`src/harnesses/claude/protocol/result.ts`)
 
