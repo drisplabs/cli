@@ -66,6 +66,32 @@ describe('resolveHarnessConfigProfile', () => {
 		});
 	});
 
+	it('threads a valid configured effort onto the isolation config', () => {
+		const profile = resolveHarnessConfigProfile('claude-code');
+		const config = profile.buildIsolationConfig({
+			projectDir: '/project',
+			isolationPreset: 'strict',
+			additionalDirectories: [],
+			pluginDirs: [],
+			verbose: false,
+			configuredEffort: 'high',
+		});
+		expect(config.effort).toBe('high');
+	});
+
+	it('omits an unsupported configured effort (no override)', () => {
+		const profile = resolveHarnessConfigProfile('claude-code');
+		const config = profile.buildIsolationConfig({
+			projectDir: '/project',
+			isolationPreset: 'strict',
+			additionalDirectories: [],
+			pluginDirs: [],
+			verbose: false,
+			configuredEffort: 'turbo',
+		});
+		expect(config.effort).toBeUndefined();
+	});
+
 	it('declares Claude plugin delivery as registration that builds the MCP config', () => {
 		expect(resolveHarnessConfigProfile('claude-code').pluginDelivery).toEqual({
 			mergeWorkflowPluginDirs: true,

@@ -78,6 +78,7 @@ export type HarnessProcessConfig = {
 	pluginDirs?: string[];
 	allowedTools?: string[];
 	model?: string;
+	effort?: string;
 	debug?: string | boolean;
 	[key: string]: unknown;
 };

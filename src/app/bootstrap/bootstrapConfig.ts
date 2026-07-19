@@ -190,6 +190,7 @@ export function bootstrapRuntimeConfig({
 
 	const configModel =
 		projectConfig.model || globalConfig.model || activeWorkflow?.model;
+	const configEffort = activeWorkflow?.effort;
 
 	let isolationPreset = initialIsolationPreset;
 	if (activeWorkflow?.isolation) {
@@ -212,6 +213,7 @@ export function bootstrapRuntimeConfig({
 			pluginDirs,
 			verbose,
 			configuredModel: configModel,
+			configuredEffort: configEffort,
 		});
 	const modelName = harnessConfigProfile.resolveModelName({
 		projectDir,

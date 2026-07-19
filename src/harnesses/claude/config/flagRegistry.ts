@@ -67,6 +67,7 @@ export const FLAG_REGISTRY: FlagDef[] = [
 
 	// === Model & Agent ===
 	{field: 'model', flag: '--model', kind: 'value'},
+	{field: 'effort', flag: '--effort', kind: 'value'},
 	{field: 'fallbackModel', flag: '--fallback-model', kind: 'value'},
 	{field: 'agent', flag: '--agent', kind: 'value'},
 	{field: 'agents', flag: '--agents', kind: 'json'},

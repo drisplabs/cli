@@ -61,6 +61,8 @@ export type WorkflowConfig = {
 	loop?: LoopConfig;
 	isolation?: string;
 	model?: string;
+	/** Reasoning effort level to pin for the harness (low/medium/high/xhigh/max) */
+	effort?: string;
 	env?: Record<string, string>;
 	/** Path to workflow orchestration doc, passed as --append-system-prompt-file */
 	workflowFile?: string;
