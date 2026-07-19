@@ -1,6 +1,4 @@
 import {performance} from 'node:perf_hooks';
-import React from 'react';
-import {Box, Text} from 'ink';
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
 import {type TimelineEntry} from '../../core/feed/timeline';
@@ -321,47 +319,5 @@ export function formatFeedRowLine({
 		logVisibleRowFormat(performance.now() - startedAt);
 	}
 }
-
-function FeedRowImpl({
-	entry,
-	cols,
-	focused,
-	expanded,
-	matched,
-	ascii,
-	theme,
-}: Props) {
-	const parts = lineParts({
-		entry,
-		cols,
-		focused,
-		expanded,
-		matched,
-		ascii,
-		theme,
-	});
-
-	return (
-		<>
-			<Box width={1} flexShrink={0}>
-				<Text wrap="truncate-end">{parts.gutter}</Text>
-			</Box>
-			<Box width={5} flexShrink={0}>
-				<Text wrap="truncate-end">{parts.time}</Text>
-			</Box>
-			<Box width={cols.gapW} flexShrink={0} />
-			<Box width={cols.toolW} flexShrink={0}>
-				<Text wrap="truncate-end">{parts.tool}</Text>
-			</Box>
-			<Box width={cols.gapW} flexShrink={0} />
-			<Box width={cols.detailsW} flexShrink={0}>
-				<Text wrap="truncate-end">{parts.detail}</Text>
-			</Box>
-			<Box flexGrow={1} flexShrink={1} />
-		</>
-	);
-}
-
-export const FeedRow = React.memo(FeedRowImpl);
 
 export type {FeedColumnWidths};
