@@ -1,8 +1,13 @@
-import {WebSocketServer, type WebSocket} from 'ws';
+import {WebSocketServer, WebSocket} from 'ws';
 import type {Server as HttpsServer} from 'node:https';
 import {createServer as createHttpsServer} from 'node:https';
 import {readFileSync} from 'node:fs';
-import type {ServerTransport} from './types';
+import {
+	TransportUnreachableError,
+	type ClientTransport,
+	type FramedConnection,
+	type ServerTransport,
+} from './types';
 import {isLoopbackHost, type GatewayTlsConfig} from '../paths';
 import {createWsConnection} from './wsChannel';
 
@@ -203,4 +208,67 @@ function attachHeartbeat(
 	};
 	ws.on('close', stop);
 	ws.on('error', stop);
+}
+
+export type WsClientTransportOptions = {
+	url: string;
+	timeoutMs?: number;
+	/** Custom CA bundle path for self-signed gateway certs. */
+	tlsCaPath?: string;
+};
+
+export function createWsClientTransport(
+	opts: WsClientTransportOptions,
+): ClientTransport {
+	return {
+		kind: 'ws',
+		connect: () => connectWs(opts),
+	};
+}
+
+/**
+ * Build a `WsClientTransportOptions`-shaped object that omits `tlsCaPath`
+ * when undefined, so spreading the result doesn't write the optional key.
+ */
+export function wsClientOptionsForEndpoint(input: {
+	url: string;
+	timeoutMs?: number;
+	tlsCaPath?: string;
+}): WsClientTransportOptions {
+	return {
+		url: input.url,
+		...(input.timeoutMs !== undefined ? {timeoutMs: input.timeoutMs} : {}),
+		...(input.tlsCaPath !== undefined ? {tlsCaPath: input.tlsCaPath} : {}),
+	};
+}
+
+async function connectWs(
+	opts: WsClientTransportOptions,
+): Promise<FramedConnection> {
+	const timeoutMs = opts.timeoutMs ?? 5_000;
+	const wsOpts = opts.tlsCaPath ? {ca: readFileSync(opts.tlsCaPath)} : {};
+	const ws = new WebSocket(opts.url, wsOpts);
+
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			ws.close();
+			reject(
+				new TransportUnreachableError(`connect timed out after ${timeoutMs}ms`),
+			);
+		}, timeoutMs);
+		ws.once('open', () => {
+			clearTimeout(timer);
+			resolve();
+		});
+		ws.once('error', err => {
+			clearTimeout(timer);
+			reject(
+				new TransportUnreachableError(
+					`gateway not reachable at ${opts.url}: ${err.message}`,
+				),
+			);
+		});
+	});
+
+	return createWsConnection(ws, opts.url, 'ws-client');
 }

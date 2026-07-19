@@ -27,7 +27,7 @@ import {
 } from './paths';
 import {RelayCoordinator} from './relay/coordinator';
 import {openGatewayState, type GatewayStateDb} from './state/db';
-import {createWsServerTransport} from './transport/tlsWs';
+import {createWsServerTransport} from './transport/ws';
 import {
 	trackGatewayRuntimeExpired,
 	trackGatewayRuntimeRebind,

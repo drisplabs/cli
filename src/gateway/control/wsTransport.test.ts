@@ -6,8 +6,8 @@ import {ChannelManager} from '../channelManager';
 import {DispatchPipeline} from '../dispatchPipeline';
 import {openGatewayState, type GatewayStateDb} from '../state/db';
 import {RelayCoordinator} from '../relay/coordinator';
-import {createWsClientTransport} from '../transport/wsClient';
-import {createWsServerTransport} from '../transport/tlsWs';
+import {createWsClientTransport} from '../transport/ws';
+import {createWsServerTransport} from '../transport/ws';
 import type {
 	AdapterContext,
 	ChannelAdapter,

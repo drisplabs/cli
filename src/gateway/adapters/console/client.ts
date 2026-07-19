@@ -6,7 +6,7 @@
  * Notes:
  *   - Pairing token travels via the `Authorization: Bearer …` header. It is
  *     never appended to the URL query string and never logged.
- *   - This client is independent from `gateway/transport/wsClient.ts`, which
+ *   - This client is independent from `gateway/transport/ws.ts`, which
  *     speaks `ControlEnvelope` for the runtime control plane.
  *   - Reconnect uses full-jitter backoff, capped at `maxDelayMs`. Reconnect
  *     is silent (no `connect()` reissue from callers); the `onReady`

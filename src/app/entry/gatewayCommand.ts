@@ -14,7 +14,7 @@ import {resolveGatewayPaths} from '../../gateway/paths';
 import {
 	createWsClientTransport,
 	wsClientOptionsForEndpoint,
-} from '../../gateway/transport/wsClient';
+} from '../../gateway/transport/ws';
 import {
 	readGatewayClientConfig,
 	writeGatewayClientConfig,

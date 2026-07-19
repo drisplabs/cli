@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {WebSocket} from 'ws';
-import {createWsServerTransport} from './tlsWs';
+import {createWsServerTransport} from './ws';
 
 describe('createWsServerTransport heartbeat', () => {
 	it('terminates a connection that stops responding to pings', async () => {

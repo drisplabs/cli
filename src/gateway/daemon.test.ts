@@ -5,7 +5,7 @@ import path from 'node:path';
 import {startDaemon} from './daemon';
 import type {GatewayPaths} from './paths';
 import {connect} from './control/client';
-import {createWsClientTransport} from './transport/wsClient';
+import {createWsClientTransport} from './transport/ws';
 import type {
 	AdapterContext,
 	ChannelAdapter,
