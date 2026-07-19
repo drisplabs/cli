@@ -63,10 +63,18 @@ import type {PermissionSuggestion} from '../../../shared/types/permissionSuggest
 /**
  * Values Claude can send in `Notification.notification_type`.
  *
- * Transcribed verbatim from the Notification hook schema in the Claude binary
- * (2.1.215), which declares exactly these eight. Kept complete because a
- * missing member makes a value that Claude really sends look impossible to
- * anything narrowing on this union.
+ * NOT a closed set. The Notification hook's own input schema in the Claude
+ * binary (2.1.215) declares `notification_type` as a free-form
+ * `S.string()`; the enumerated eight below live only in the hook matcher
+ * metadata, and the binary also passes the field through variables at some
+ * call sites. Narrow on this union for known values, but treat an unlisted
+ * one as possible rather than impossible — `worker_permission_prompt` was
+ * exactly such a value, emitted by the binary and absent here.
+ *
+ * Not included deliberately: `push_notification` and
+ * `computer_use_enter`/`computer_use_exit`. They carry the same
+ * `notificationType` key but on `{type: 'os_notification'}` payloads, which
+ * are a different event, not this hook.
  */
 export type NotificationType =
 	| 'permission_prompt'
@@ -76,7 +84,8 @@ export type NotificationType =
 	| 'elicitation_complete'
 	| 'elicitation_response'
 	| 'agent_needs_input'
-	| 'agent_completed';
+	| 'agent_completed'
+	| 'worker_permission_prompt';
 
 export type SessionEndReason =
 	| 'clear'

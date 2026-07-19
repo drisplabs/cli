@@ -7,7 +7,11 @@ vi.mock('node:fs');
 const mockedFs = vi.mocked(fs);
 
 beforeEach(() => {
-	vi.clearAllMocks();
+	// resetAllMocks, not clearAllMocks: clearing drops call history but KEEPS
+	// implementations, so the error-path tests' `mockRejectedValue` leaked into
+	// every test that ran after them. That made this file order-dependent —
+	// green in declaration order, failing under a shuffled run.
+	vi.resetAllMocks();
 });
 
 describe('loadHistory', () => {
