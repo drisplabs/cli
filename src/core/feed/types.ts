@@ -11,6 +11,7 @@ export type FeedEventKind =
 	| 'run.start'
 	| 'run.end'
 	| 'user.prompt'
+	| 'prompt.expansion'
 	| 'plan.update'
 	| 'reasoning.summary'
 	| 'usage.update'
@@ -153,6 +154,15 @@ export type RunEndData = {
 export type UserPromptData = {
 	prompt: string;
 	cwd: string;
+	permission_mode?: string;
+};
+
+export type PromptExpansionData = {
+	expansion_type?: string;
+	command_name?: string;
+	command_args?: string;
+	command_source?: string;
+	prompt?: string;
 	permission_mode?: string;
 };
 
@@ -546,6 +556,7 @@ export type FeedEvent =
 	| (FeedEventBase & {kind: 'run.start'; data: RunStartData})
 	| (FeedEventBase & {kind: 'run.end'; data: RunEndData})
 	| (FeedEventBase & {kind: 'user.prompt'; data: UserPromptData})
+	| (FeedEventBase & {kind: 'prompt.expansion'; data: PromptExpansionData})
 	| (FeedEventBase & {kind: 'plan.update'; data: PlanUpdateData})
 	| (FeedEventBase & {kind: 'reasoning.summary'; data: ReasoningSummaryData})
 	| (FeedEventBase & {kind: 'usage.update'; data: UsageUpdateData})
@@ -682,6 +693,10 @@ export type _RuntimeFeedCompatibility = {
 	'session.start': AssertFeedExtendsRuntime<SessionStartData, 'session.start'>;
 	'session.end': AssertFeedExtendsRuntime<SessionEndData, 'session.end'>;
 	'user.prompt': AssertFeedExtendsRuntime<UserPromptData, 'user.prompt'>;
+	'prompt.expansion': AssertFeedExtendsRuntime<
+		PromptExpansionData,
+		'prompt.expansion'
+	>;
 	'usage.update': AssertFeedExtendsRuntime<UsageUpdateData, 'usage.update'>;
 	'tool.delta': AssertFeedExtendsRuntime<ToolDeltaData, 'tool.delta'>;
 	'tool.pre': AssertFeedExtendsRuntime<ToolPreData, 'tool.pre'>;

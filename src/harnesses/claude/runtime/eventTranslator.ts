@@ -86,6 +86,21 @@ export function translateClaudeEnvelope(
 					permission_mode: payload['permission_mode'] as string | undefined,
 				},
 			};
+		// Fires immediately before UserPromptSubmit, sharing its prompt_id,
+		// when a typed command expands into a prompt. Field names are pinned
+		// to the payload captured in the #116 spike.
+		case 'UserPromptExpansion':
+			return {
+				kind: 'prompt.expansion',
+				data: {
+					expansion_type: payload['expansion_type'] as string | undefined,
+					command_name: payload['command_name'] as string | undefined,
+					command_args: payload['command_args'] as string | undefined,
+					command_source: payload['command_source'] as string | undefined,
+					prompt: payload['prompt'] as string | undefined,
+					permission_mode: payload['permission_mode'] as string | undefined,
+				},
+			};
 		case 'PreToolUse':
 			return {
 				kind: 'tool.pre',

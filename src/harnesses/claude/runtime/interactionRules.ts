@@ -77,6 +77,14 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: true,
 	},
+	// Observation-only, mirroring 'user.prompt': the hook is capable of
+	// blocking, but the forwarder passes it through without waiting for a
+	// human decision.
+	'prompt.expansion': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: true,
+	},
 	'turn.start': {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,

@@ -63,6 +63,15 @@ function payloadForHook(hookName: string): Record<string, unknown> {
 			return {...base, reason: 'other'};
 		case 'UserPromptSubmit':
 			return {...base, prompt: 'hello'};
+		case 'UserPromptExpansion':
+			return {
+				...base,
+				expansion_type: 'slash_command',
+				command_name: 'greet',
+				command_args: '',
+				command_source: 'projectSettings',
+				prompt: '/greet',
+			};
 		case 'PreCompact':
 		case 'PostCompact':
 			return {...base, trigger: 'manual'};
@@ -284,6 +293,78 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		const event = mapEnvelopeToRuntimeEvent(envelope);
 
 		expect(event.effortLevel).toBeUndefined();
+	});
+
+	// Field names below are pinned to the real payload captured in the #116
+	// spike (src/harnesses/claude/protocol/__fixtures__/hook-payloads/
+	// user-prompt-expansion.slash-command.json), not to assumed shapes.
+	it('maps UserPromptExpansion to prompt.expansion with the captured fields', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'UserPromptExpansion',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				permission_mode: 'bypassPermissions',
+				expansion_type: 'slash_command',
+				command_name: 'greet',
+				command_args: '',
+				command_source: 'projectSettings',
+				prompt: '/greet',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('prompt.expansion');
+		expect(event.data).toEqual({
+			expansion_type: 'slash_command',
+			command_name: 'greet',
+			command_args: '',
+			command_source: 'projectSettings',
+			prompt: '/greet',
+			permission_mode: 'bypassPermissions',
+		});
+	});
+
+	// An older Claude never sends this hook at all (#116 confirmed unknown
+	// hook keys are silently ignored). A build that sends a leaner payload
+	// must still translate without throwing.
+	it('tolerates a UserPromptExpansion payload missing every expansion field', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'UserPromptExpansion',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('prompt.expansion');
+		expect(event.data).toEqual({
+			expansion_type: undefined,
+			command_name: undefined,
+			command_args: undefined,
+			command_source: undefined,
+			prompt: undefined,
+			permission_mode: undefined,
+		});
+	});
+
+	it('treats prompt.expansion as observation-only (canBlock, no decision)', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: payloadForHook('UserPromptExpansion'),
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.interaction.expectsDecision).toBe(false);
+		expect(event.interaction.canBlock).toBe(true);
 	});
 
 	it('maps every registered Claude hook to a first-class runtime kind', () => {

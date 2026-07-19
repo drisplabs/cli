@@ -1027,6 +1027,7 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'todo.update':
 		case 'todo.done':
 		case 'teammate.idle':
+		case 'prompt.expansion':
 		case 'task.created':
 		case 'task.completed':
 		case 'config.change':
@@ -1127,6 +1128,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'todo.done':
 		case 'agent.message':
 		case 'teammate.idle':
+		case 'prompt.expansion':
 		case 'task.created':
 		case 'task.completed':
 		case 'config.change':

@@ -28,6 +28,7 @@ export {
 	type SubagentStartEvent,
 	type SubagentStopEvent,
 	type UserPromptSubmitEvent,
+	type UserPromptExpansionEvent,
 	type PreCompactEvent,
 	type PostCompactEvent,
 	type SetupEvent,

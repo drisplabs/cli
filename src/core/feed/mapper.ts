@@ -55,6 +55,7 @@ const RUN_SESSION_EVENT_KINDS = new Set<RuntimeEventKind>([
 	'session.start',
 	'session.end',
 	'user.prompt',
+	'prompt.expansion',
 	'turn.start',
 	'message.delta',
 	'message.complete',

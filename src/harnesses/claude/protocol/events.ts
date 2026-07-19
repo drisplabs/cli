@@ -7,6 +7,7 @@
  * Complete list of Claude Code hooks (per https://code.claude.com/docs/en/hooks.md):
  * - SessionStart: Session begins or resumes
  * - UserPromptSubmit: User submits a prompt
+ * - UserPromptExpansion: A typed command expands into a prompt
  * - PreToolUse: Before tool execution
  * - PermissionRequest: When permission dialog appears
  * - PermissionDenied: Auto-mode classifier denied a tool call
@@ -223,6 +224,19 @@ export type UserPromptSubmitEvent = BaseHookEvent & {
 	prompt: string;
 };
 
+// UserPromptExpansion: A typed command expands into a prompt. Fires just
+// before the matching UserPromptSubmit, sharing its prompt_id.
+// Shape verified against a real captured payload in the #116 spike; see
+// __fixtures__/hook-payloads/user-prompt-expansion.slash-command.json.
+export type UserPromptExpansionEvent = BaseHookEvent & {
+	hook_event_name: 'UserPromptExpansion';
+	expansion_type: 'slash_command' | 'mcp_prompt';
+	command_name: string;
+	command_args: string;
+	command_source: string;
+	prompt: string;
+};
+
 // PreCompact: Before context compaction.
 // `custom_instructions` is not in the current hooks reference but has been
 // observed in practice; kept optional.
@@ -363,6 +377,7 @@ export type ClaudeHookEvent =
 	| SubagentStartEvent
 	| SubagentStopEvent
 	| UserPromptSubmitEvent
+	| UserPromptExpansionEvent
 	| PreCompactEvent
 	| PostCompactEvent
 	| SetupEvent
@@ -480,6 +495,12 @@ export function isUserPromptSubmitEvent(
 	event: ClaudeHookEvent,
 ): event is UserPromptSubmitEvent {
 	return event.hook_event_name === 'UserPromptSubmit';
+}
+
+export function isUserPromptExpansionEvent(
+	event: ClaudeHookEvent,
+): event is UserPromptExpansionEvent {
+	return event.hook_event_name === 'UserPromptExpansion';
 }
 
 export function isPreCompactEvent(

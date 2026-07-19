@@ -557,6 +557,70 @@ describe('FeedMapper', () => {
 			expect(userPrompt!.actor_id).toBe('user');
 		});
 
+		it('maps UserPromptExpansion to a prompt.expansion feed row', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					payload: {
+						hook_event_name: 'UserPromptExpansion',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+
+			const expansions = results.filter(r => r.kind === 'prompt.expansion');
+			expect(expansions).toHaveLength(1);
+			expect(expansions[0]!.data.command_name).toBe('greet');
+			expect(expansions[0]!.data.expansion_type).toBe('slash_command');
+		});
+
+		// UserPromptExpansion fires ~32ms BEFORE the matching UserPromptSubmit
+		// with the same prompt_id. If it also opened a run, a single expanded
+		// prompt would produce two runs.
+		it('does not open a run for prompt.expansion; the following prompt opens exactly one', () => {
+			const mapper = createFeedMapper();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			expect(expansionResults.some(r => r.kind === 'run.start')).toBe(false);
+
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+			expect(submitResults.filter(r => r.kind === 'run.start')).toHaveLength(1);
+		});
+
 		it('emits Codex agent messages when item completion arrives', () => {
 			const mapper = createFeedMapper();
 			const startResults = mapper.mapEvent(

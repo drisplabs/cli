@@ -134,6 +134,24 @@ describe('generateTitle', () => {
 		expect(generateTitle(event)).toContain('Subagent response');
 	});
 
+	it('generates prompt.expansion title naming the command', () => {
+		const event = makeFeedEvent('prompt.expansion', {
+			expansion_type: 'slash_command',
+			command_name: 'greet',
+			command_args: '',
+			command_source: 'projectSettings',
+			prompt: '/greet',
+		});
+		expect(generateTitle(event)).toBe('Expanded /greet');
+	});
+
+	it('falls back to a generic prompt.expansion title without a command name', () => {
+		const event = makeFeedEvent('prompt.expansion', {
+			expansion_type: 'mcp_prompt',
+		});
+		expect(generateTitle(event)).toBe('Prompt expanded');
+	});
+
 	it('truncates long user.prompt title', () => {
 		const longPrompt = 'A'.repeat(100);
 		const event = makeFeedEvent('user.prompt', {prompt: longPrompt, cwd: '/'});

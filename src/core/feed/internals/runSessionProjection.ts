@@ -112,6 +112,32 @@ export function createRunSessionProjection(args: {
 				return results;
 			}
 
+			// Observation-only. Deliberately does NOT open a run: this fires
+			// just before the matching user.prompt with the same prompt_id, and
+			// 'user_prompt_submit' always rolls the run over, so opening one
+			// here would yield two runs per expanded prompt.
+			if (event.kind === 'prompt.expansion') {
+				results.push(
+					makeEvent(
+						'prompt.expansion',
+						'info',
+						'user',
+						{
+							expansion_type: readString(data['expansion_type']),
+							command_name: readString(data['command_name']),
+							command_args: readString(data['command_args']),
+							command_source: readString(data['command_source']),
+							prompt: readString(data['prompt']),
+							permission_mode:
+								event.context.permissionMode ??
+								readString(data['permission_mode']),
+						} satisfies import('../types').PromptExpansionData,
+						event,
+					),
+				);
+				return results;
+			}
+
 			if (event.kind === 'turn.start') {
 				agentMessageStream.clearPending();
 				const prompt = readString(data['prompt']);

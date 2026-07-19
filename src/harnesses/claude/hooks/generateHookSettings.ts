@@ -38,6 +38,7 @@ export const NON_TOOL_HOOK_EVENTS = [
 	'SubagentStart',
 	'SubagentStop',
 	'UserPromptSubmit',
+	'UserPromptExpansion',
 	'PreCompact',
 	'PostCompact',
 	'Setup',

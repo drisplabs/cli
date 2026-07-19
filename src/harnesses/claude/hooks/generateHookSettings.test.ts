@@ -67,6 +67,19 @@ describe('generateHookSettings', () => {
 		expect(settings.hooks.SessionEnd).toBeDefined();
 	});
 
+	it('registers UserPromptExpansion as a non-tool hook', () => {
+		const result = generateHookSettings();
+		createdFiles.push(result.settingsPath);
+
+		const content = fs.readFileSync(result.settingsPath, 'utf8');
+		const settings = JSON.parse(content);
+
+		const entry = settings.hooks.UserPromptExpansion?.[0];
+		expect(entry).toBeDefined();
+		expect(entry.matcher).toBeUndefined();
+		expect(entry.hooks[0].type).toBe('command');
+	});
+
 	it('should configure tool hooks with matcher and command', () => {
 		const result = generateHookSettings();
 		createdFiles.push(result.settingsPath);
