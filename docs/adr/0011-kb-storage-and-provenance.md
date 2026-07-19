@@ -1,4 +1,4 @@
-# ADR 0006 - KB storage & provenance: markdown is the source of truth
+# ADR 0011 - KB storage & provenance: markdown is the source of truth
 
 Status: Active
 Date: 2026-07-19

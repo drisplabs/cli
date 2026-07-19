@@ -1,4 +1,4 @@
-# ADR 0007 - Lint determinism boundary: hygiene gates CI, Drift is advisory
+# ADR 0012 - Lint determinism boundary: hygiene gates CI, Drift is advisory
 
 Status: Active
 Date: 2026-07-19
@@ -67,6 +67,6 @@ Negative / costs:
 ## References
 
 - `KNOWLEDGE_BASE.md` - Lint finding, Drift finding, Page kind
-- ADR 0006 - provenance/tier live in page front-matter (the classifier's input)
+- ADR 0011 - provenance/tier live in page front-matter (the classifier's input)
 - Project rule: tests assert store/finding state, never the agent's generated
   prose; the agent is stubbed at the Runner seam.

@@ -1,4 +1,4 @@
-# ADR 0004 - `prompt_id` as the authoritative Feed Run boundary trigger
+# ADR 0009 - `prompt_id` as the authoritative Feed Run boundary trigger
 
 Status: Active
 Date: 2026-07-19
