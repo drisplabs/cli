@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.25](https://github.com/drisplabs/cli/compare/cli-v0.5.24...cli-v0.5.25) (2026-07-19)
+
+
+### Refactors
+
+* **harnesses:** deepen the HarnessAdapter seam (stop string-switching on harness id) ([#106](https://github.com/drisplabs/cli/issues/106)) ([d0e0031](https://github.com/drisplabs/cli/commit/d0e0031a929714c739a0ed552e0e34e53c872932))
+* **plugins:** resolve plugin refs out of readConfig into a resolvePluginDirs seam ([#108](https://github.com/drisplabs/cli/issues/108)) ([851d1a3](https://github.com/drisplabs/cli/commit/851d1a3fa2226bef803df944784d13b269823503))
+* **transport:** deepen gateway control-plane transport layer (C1–C4) ([#109](https://github.com/drisplabs/cli/issues/109)) ([0ad5046](https://github.com/drisplabs/cli/commit/0ad5046e5e9a9ae23b014d637046307e1e5a2614))
+* **ui:** delete stranded Ink-React feed-render tree (C3) ([#105](https://github.com/drisplabs/cli/issues/105)) ([350cfe7](https://github.com/drisplabs/cli/commit/350cfe760c301d98df012ca11a349207fabd375b))
+
 ## [0.5.24](https://github.com/drisplabs/cli/compare/cli-v0.5.23...cli-v0.5.24) (2026-07-19)
 
 
