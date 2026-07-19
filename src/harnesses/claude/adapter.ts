@@ -62,7 +62,7 @@ const CLAUDE_CONFIG_PROFILE: HarnessConfigProfile = {
 		resolveClaudeModel({projectDir, configuredModel}),
 	pluginDelivery: {
 		mergeWorkflowPluginDirs: true,
-		registerArtifacts: true,
+		registrationBuildsMcpConfig: true,
 		workflowPluginsVia: 'registration',
 	},
 };

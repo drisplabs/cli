@@ -51,7 +51,7 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		resolveModelName: ({configuredModel}) => configuredModel ?? null,
 		pluginDelivery: {
 			mergeWorkflowPluginDirs: true,
-			registerArtifacts: true,
+			registrationBuildsMcpConfig: true,
 			workflowPluginsVia: 'registration',
 		},
 	}),

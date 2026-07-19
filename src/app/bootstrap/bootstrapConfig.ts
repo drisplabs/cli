@@ -140,7 +140,7 @@ export function bootstrapRuntimeConfig({
 						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
 								?.mcpServerOptions
 						: undefined,
-					pluginDelivery.registerArtifacts,
+					pluginDelivery.registrationBuildsMcpConfig,
 				)
 			: {mcpConfig: undefined};
 	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp

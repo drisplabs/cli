@@ -66,18 +66,18 @@ describe('resolveHarnessConfigProfile', () => {
 		});
 	});
 
-	it('declares Claude plugin delivery as registration with artifacts', () => {
+	it('declares Claude plugin delivery as registration that builds the MCP config', () => {
 		expect(resolveHarnessConfigProfile('claude-code').pluginDelivery).toEqual({
 			mergeWorkflowPluginDirs: true,
-			registerArtifacts: true,
+			registrationBuildsMcpConfig: true,
 			workflowPluginsVia: 'registration',
 		});
 	});
 
-	it('declares Codex plugin delivery as a generated MCP config, no artifacts', () => {
+	it('declares Codex plugin delivery as a separately generated MCP config', () => {
 		expect(resolveHarnessConfigProfile('openai-codex').pluginDelivery).toEqual({
 			mergeWorkflowPluginDirs: false,
-			registerArtifacts: false,
+			registrationBuildsMcpConfig: false,
 			workflowPluginsVia: 'generated-mcp',
 		});
 	});

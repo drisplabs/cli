@@ -27,8 +27,8 @@ export type ResolveHarnessModelInput = {
 export type PluginDeliveryPolicy = {
 	/** Merge workflow plugin dirs into the registered plugin dirs. */
 	mergeWorkflowPluginDirs: boolean;
-	/** Register plugin artifact dirs (vs MCP config only). */
-	registerArtifacts: boolean;
+	/** Whether plugin registration also builds the process MCP config (vs the harness receiving MCP separately). */
+	registrationBuildsMcpConfig: boolean;
 	/** Where workflow-plugin MCP comes from: plugin registration, or a config generated for the plan. */
 	workflowPluginsVia: 'registration' | 'generated-mcp';
 };
