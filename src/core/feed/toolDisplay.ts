@@ -1002,6 +1002,7 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'tool.delta':
 		case 'tool.pre':
 		case 'tool.post':
+		case 'tool.batch':
 		case 'tool.failure':
 		case 'permission.decision':
 		case 'permission.denied':
@@ -1101,6 +1102,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'tool.delta':
 		case 'tool.pre':
 		case 'tool.post':
+		case 'tool.batch':
 		case 'tool.failure':
 		case 'permission.decision':
 		case 'permission.denied':

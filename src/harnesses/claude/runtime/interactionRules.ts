@@ -27,6 +27,13 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: false,
 	},
+	// Observation-only: the hook is capable of blocking the next model request,
+	// but the forwarder passes it through without waiting for a decision.
+	'tool.batch': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: true,
+	},
 	'tool.delta': {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,

@@ -16,6 +16,7 @@ export type RuntimeEventKind =
 	| 'tool.delta'
 	| 'tool.pre'
 	| 'tool.post'
+	| 'tool.batch'
 	| 'tool.failure'
 	| 'permission.request'
 	| 'permission.denied'
@@ -148,6 +149,33 @@ export type ToolPreRuntimeData = {
 	tool_name?: string;
 	tool_input?: Record<string, unknown>;
 	tool_use_id?: string;
+};
+
+/**
+ * One entry of a `PostToolBatch` payload's `tool_calls` array.
+ *
+ * 🔴 `tool_response` is a STRING here — the flattened, model-facing rendering
+ * of the result — whereas {@link ToolPostRuntimeData.tool_response} is the
+ * structured object. Verified against the same tool call in the #116 capture:
+ * PostToolUse gave `{type:'text',file:{…}}` while PostToolBatch gave
+ * `"1\thello capture\n"`. Do not assume the two share a type.
+ */
+export type ToolBatchCall = {
+	tool_name?: string;
+	tool_input?: Record<string, unknown>;
+	tool_use_id?: string;
+	tool_response?: string;
+};
+
+/**
+ * Fires exactly once after every tool call in an assistant batch has resolved,
+ * after all the individual `tool.post` events. Only the batch boundary is an
+ * ordering guarantee — Claude's contract explicitly permits PostToolUse to run
+ * concurrently for parallel tool calls (#116 AC4).
+ */
+export type ToolBatchRuntimeData = {
+	tool_calls?: ToolBatchCall[];
+	permission_mode?: string;
 };
 
 export type ToolPostRuntimeData = {
@@ -344,6 +372,7 @@ export type RuntimeEventDataMap = {
 	'tool.delta': ToolDeltaRuntimeData;
 	'tool.pre': ToolPreRuntimeData;
 	'tool.post': ToolPostRuntimeData;
+	'tool.batch': ToolBatchRuntimeData;
 	'tool.failure': ToolFailureRuntimeData;
 	'permission.request': PermissionRequestRuntimeData;
 	'permission.denied': PermissionDeniedRuntimeData;
@@ -410,6 +439,8 @@ export function mapLegacyHookNameToRuntimeKind(
 			return 'tool.pre';
 		case 'PostToolUse':
 			return 'tool.post';
+		case 'PostToolBatch':
+			return 'tool.batch';
 		case 'PostToolUseFailure':
 			return 'tool.failure';
 		case 'PermissionRequest':

@@ -1,4 +1,5 @@
 import type {RuntimeEvent} from '../../runtime/types';
+import type {ToolBatchCall} from '../../runtime/events';
 import type {FeedEvent, FeedEventCause} from '../types';
 import type {RunLifecycle} from './runLifecycle';
 import type {ToolCorrelation} from './toolCorrelation';
@@ -27,6 +28,24 @@ export function toolUseCause(
 		...(toolUseId ? {tool_use_id: toolUseId} : {}),
 		...(parentId ? {parent_event_id: parentId} : {}),
 	};
+}
+
+/**
+ * Normalize a `tool.batch` runtime payload's `tool_calls`. Restored DB rows and
+ * leaner harness builds may carry anything here, so anything that is not an
+ * array of objects degrades to `[]`.
+ */
+function readToolBatchCalls(value: unknown): ToolBatchCall[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter(entry => typeof entry === 'object' && entry !== null)
+		.map(entry => readObject(entry))
+		.map(call => ({
+			tool_name: readString(call['tool_name']),
+			tool_input: readObject(call['tool_input']),
+			tool_use_id: readString(call['tool_use_id']),
+			tool_response: readString(call['tool_response']),
+		}));
 }
 
 export type ToolProjection = {
@@ -133,6 +152,28 @@ export function createToolProjection(args: {
 	return {
 		mapToolEvent(event, data) {
 			const results = ensureRunArray(event);
+
+			// Batch-level, not per-tool: it carries no top-level
+			// tool_name/tool_input, so it is handled before the per-call
+			// derivations below. Observation-only — it closes a batch whose
+			// tool.post rows are already in this run, so ensureRunArray's
+			// default 'other' trigger correctly declines to roll the run over.
+			if (event.kind === 'tool.batch') {
+				results.push(
+					makeEvent(
+						'tool.batch',
+						'info',
+						resolveToolActor(),
+						{
+							tool_calls: readToolBatchCalls(data['tool_calls']),
+							permission_mode: readString(data['permission_mode']),
+						} satisfies import('../types').ToolBatchData,
+						event,
+					),
+				);
+				return results;
+			}
+
 			const toolUseId = resolveToolUseId(event, data);
 			const toolName =
 				event.toolName ?? readString(data['tool_name']) ?? 'Unknown';

@@ -53,6 +53,19 @@ function payloadForHook(hookName: string): Record<string, unknown> {
 				error: 'failed',
 				reason: 'denied',
 			};
+		case 'PostToolBatch':
+			return {
+				...base,
+				permission_mode: 'default',
+				tool_calls: [
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: '1\ta\n',
+					},
+				],
+			};
 		case 'Elicitation':
 			return {...base, mcp_server: 'server', form: {fields: []}};
 		case 'ElicitationResult':
@@ -328,6 +341,58 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		});
 	});
 
+	// Field names below are pinned to the real payload captured in the #116
+	// spike (/run2 parallel-Read capture), not to assumed shapes. Note that
+	// `tool_calls[].tool_response` is a STRING (the flattened, model-facing
+	// rendering) whereas `PostToolUse.tool_response` is a structured object —
+	// the two fields deliberately do NOT share a type.
+	it('maps PostToolBatch to tool.batch with the captured fields', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'PostToolBatch',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				permission_mode: 'bypassPermissions',
+				tool_calls: [
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: '1\thello a\n',
+					},
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/b.txt'},
+						tool_use_id: 'tu-2',
+						tool_response: '1\thello b\n',
+					},
+				],
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('tool.batch');
+		expect(event.data).toEqual({
+			permission_mode: 'bypassPermissions',
+			tool_calls: [
+				{
+					tool_name: 'Read',
+					tool_input: {file_path: '/tmp/a.txt'},
+					tool_use_id: 'tu-1',
+					tool_response: '1\thello a\n',
+				},
+				{
+					tool_name: 'Read',
+					tool_input: {file_path: '/tmp/b.txt'},
+					tool_use_id: 'tu-2',
+					tool_response: '1\thello b\n',
+				},
+			],
+		});
+	});
+
 	// An older Claude never sends this hook at all (#116 confirmed unknown
 	// hook keys are silently ignored). A build that sends a leaner payload
 	// must still translate without throwing.
@@ -355,6 +420,29 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		});
 	});
 
+	// hook keys are silently ignored, with zero diagnostics). A build that
+	// sends a leaner payload must still translate without throwing, and a
+	// non-array `tool_calls` must not leak through as one.
+	it('tolerates a PostToolBatch payload with no usable tool_calls', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'PostToolBatch',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				tool_calls: 'not-an-array',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('tool.batch');
+		expect(event.data).toEqual({
+			tool_calls: [],
+			permission_mode: undefined,
+		});
+	});
+
 	it('treats prompt.expansion as observation-only (no decision, no block)', () => {
 		const envelope = makeEnvelope({
 			hook_event_name:
@@ -365,6 +453,17 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 
 		expect(event.interaction.expectsDecision).toBe(false);
 		expect(event.interaction.canBlock).toBe(false);
+	});
+
+	it('treats tool.batch as observation-only (canBlock, no decision)', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: payloadForHook('PostToolBatch'),
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.interaction.expectsDecision).toBe(false);
+		expect(event.interaction.canBlock).toBe(true);
 	});
 
 	it('maps every registered Claude hook to a first-class runtime kind', () => {

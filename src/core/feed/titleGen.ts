@@ -71,6 +71,10 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return `${g['tool.bullet']} ${event.data.tool_name}`;
 		case 'tool.post':
 			return `${g['tool.gutter']} ${event.data.tool_name} result`;
+		case 'tool.batch': {
+			const n = event.data.tool_calls.length;
+			return `Batch of ${n} tool call${n === 1 ? '' : 's'}`;
+		}
 		case 'tool.failure':
 			return truncate(
 				`${g['status.blocked']} ${event.data.tool_name} failed: ${event.data.error}`,
