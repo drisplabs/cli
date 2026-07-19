@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {WebSocket} from 'ws';
-import {createWsServerTransport} from './tlsWs';
+import {createWsServerTransport} from './ws';
 
 describe('createWsServerTransport heartbeat', () => {
 	it('terminates a connection that stops responding to pings', async () => {
@@ -83,6 +83,25 @@ describe('createWsServerTransport heartbeat', () => {
 		await new Promise(r => setTimeout(r, 150));
 		expect(ws.readyState).toBe(ws.OPEN);
 		ws.close();
+		await server.close();
+	}, 5_000);
+
+	it('describes the resolved endpoint once listening (tls reported per config)', async () => {
+		const transport = createWsServerTransport({
+			host: '127.0.0.1',
+			port: 0,
+			pingIntervalMs: 0,
+		});
+		expect(() => transport.describe()).toThrow(/has not started listening/);
+		const server = await transport.listen(() => {});
+		const endpoint = transport.endpoint();
+		expect(transport.describe()).toEqual({
+			kind: 'ws',
+			host: endpoint.host,
+			port: endpoint.port,
+			url: endpoint.url,
+			tls: false,
+		});
 		await server.close();
 	}, 5_000);
 });

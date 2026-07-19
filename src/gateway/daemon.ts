@@ -10,12 +10,13 @@
  */
 
 import fs from 'node:fs';
-import {loadOrCreateToken, requireTokenForBind} from './auth';
+import {loadOrCreateToken} from './auth';
 import {ChannelManager} from './channelManager';
 import {ChannelSidecarReconciler} from './channelSidecarReconciler';
 import {createDispatcher} from './control/handlers';
 import {startControlServer, type ControlServer} from './control/server';
 import {DispatchPipeline} from './dispatchPipeline';
+import {planListener} from './listenerPlan';
 import {acquireLock, type LockHandle} from './lock';
 import {
 	isLoopbackHost,
@@ -26,7 +27,9 @@ import {
 } from './paths';
 import {RelayCoordinator} from './relay/coordinator';
 import {openGatewayState, type GatewayStateDb} from './state/db';
-import {createWsServerTransport} from './transport/tlsWs';
+import {createUdsServerTransport} from './transport/uds';
+import type {ListenerDescription, ServerTransport} from './transport/types';
+import {createWsServerTransport} from './transport/ws';
 import {
 	trackGatewayRuntimeExpired,
 	trackGatewayRuntimeRebind,
@@ -38,24 +41,27 @@ import type {
 	ListenerStatusEntry,
 } from '../shared/gateway-protocol';
 
-function buildListenerStatus(
+/**
+ * Map a transport-owned {@link ListenerDescription} up to the protocol
+ * `ListenerStatusEntry`, adding the policy fields (`insecure`, `loopback`) the
+ * transport does not own. The transport reports where it is reachable
+ * (host/port/url/tls); the daemon owns how that bind was authorized.
+ */
+function describeToStatus(
+	desc: ListenerDescription,
 	spec: GatewayListenSpec,
-	resolvedPort: number | null,
 ): ListenerStatusEntry {
-	if (spec.kind === 'uds') {
-		return {kind: 'uds', socketPath: spec.socketPath};
+	if (desc.kind === 'uds') {
+		return {kind: 'uds', socketPath: desc.socketPath};
 	}
-	const port = resolvedPort ?? spec.port;
-	const tls = Boolean(spec.tls);
-	const scheme = tls ? 'wss' : 'ws';
 	return {
 		kind: 'tcp',
-		host: spec.host,
-		port,
-		url: `${scheme}://${spec.host}:${port}`,
-		tls,
-		insecure: spec.insecure,
-		loopback: isLoopbackHost(spec.host),
+		host: desc.host,
+		port: desc.port,
+		url: desc.url,
+		tls: desc.tls,
+		insecure: spec.kind === 'tcp' ? spec.insecure : false,
+		loopback: isLoopbackHost(desc.host),
 	};
 }
 
@@ -116,7 +122,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 	const lock: LockHandle = acquireLock(paths.lockPath);
 	const token = loadOrCreateToken(paths.tokenPath);
 	const listenSpec = opts.listenSpec ?? resolveListenSpec({paths});
-	requireTokenForBind(listenSpec, token);
+	const listenerPlan = planListener(listenSpec, token);
 
 	const listenerHints = {
 		transport: (listenSpec.kind === 'tcp' ? 'ws' : 'uds') as 'ws' | 'uds',
@@ -184,33 +190,36 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 		});
 	}
 
+	let transport: ServerTransport;
 	const handler = createDispatcher({
 		startedAt,
 		pipeline,
 		channelManager,
 		relayCoordinator,
-		getListener: () => listenerStatus ?? buildListenerStatus(listenSpec, null),
+		getListener: () =>
+			listenerStatus ?? describeToStatus(transport.describe(), listenSpec),
 		reloadChannels,
 	});
 
 	let server: ControlServer;
 	let listener: DaemonHandle['listener'];
 	try {
-		const transport =
-			listenSpec.kind === 'tcp'
-				? createWsServerTransport({
-						host: listenSpec.host,
-						port: listenSpec.port,
-						allowNonLoopback: listenSpec.insecure || Boolean(listenSpec.tls),
-						...(listenSpec.tls ? {tls: listenSpec.tls} : {}),
-					})
-				: undefined;
+		const tcpPlan =
+			listenerPlan.transport.kind === 'tcp' ? listenerPlan.transport : null;
+		transport = tcpPlan
+			? createWsServerTransport({
+					host: tcpPlan.host,
+					port: tcpPlan.port,
+					allowNonLoopback: tcpPlan.allowNonLoopback,
+					...(tcpPlan.tls ? {tls: tcpPlan.tls} : {}),
+				})
+			: createUdsServerTransport({socketPath: paths.socketPath});
 		server = await startControlServer({
 			socketPath: paths.socketPath,
 			token,
 			startedAt,
 			handler,
-			...(transport !== undefined ? {transport} : {}),
+			transport,
 			onConnect: ctx => {
 				connectionOpenedAt.set(ctx.connectionId, Date.now());
 				trackGatewayTransportConnect({
@@ -231,19 +240,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 				pipeline.notifyConnectionClosed(ctx.connectionId);
 			},
 		});
-		if (listenSpec.kind === 'tcp') {
-			const endpoint = transport!.endpoint();
-			listener = {
-				kind: 'tcp',
-				host: endpoint.host,
-				port: endpoint.port,
-				url: endpoint.url,
-			};
-			listenerStatus = buildListenerStatus(listenSpec, endpoint.port);
-		} else {
-			listener = {kind: 'uds', socketPath: listenSpec.socketPath};
-			listenerStatus = buildListenerStatus(listenSpec, null);
-		}
+		const description = transport.describe();
+		listenerStatus = describeToStatus(description, listenSpec);
+		listener =
+			description.kind === 'uds'
+				? {kind: 'uds', socketPath: description.socketPath}
+				: {
+						kind: 'tcp',
+						host: description.host,
+						port: description.port,
+						url: description.url,
+					};
 	} catch (err) {
 		lock.release();
 		throw err;
@@ -254,16 +261,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			listener.kind === 'tcp' ? listener.url : `socket=${paths.socketPath}`;
 		process.stdout.write(`athena-gateway: ok pid=${pid} ${target}\n`);
 	}
-	if (
-		listenSpec.kind === 'tcp' &&
-		listenSpec.insecure &&
-		!listenSpec.tls &&
-		!isLoopbackHost(listenSpec.host)
-	) {
-		process.stderr.write(
-			`athena-gateway: WARNING --insecure is set on a non-loopback bind (${listenSpec.host}:${listenSpec.port}); ` +
-				`token travels in plaintext. Use only behind TLS-terminating reverse proxy or Tailscale/WireGuard tunnel.\n`,
-		);
+	for (const warning of listenerPlan.warnings) {
+		process.stderr.write(warning + '\n');
 	}
 
 	let stopping = false;

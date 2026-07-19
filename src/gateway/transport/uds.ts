@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import {createFramedConnection, type RawChannel} from './framedConnection';
 import {encodeLine, LineReader, LineReaderOverflowError} from './framing';
-import {traceGatewayFrame} from './trace';
 import {
 	TransportUnreachableError,
 	type ClientTransport,
@@ -26,6 +26,7 @@ export function createUdsServerTransport(
 	return {
 		kind: 'uds',
 		listen: onConnection => listenUds(opts, onConnection),
+		describe: () => ({kind: 'uds', socketPath: opts.socketPath}),
 	};
 }
 
@@ -161,64 +162,41 @@ function createSocketConnection(
 	peer: string,
 	logError?: (message: string) => void,
 ): FramedConnection {
+	return createFramedConnection(peer, udsRawChannel(socket, logError));
+}
+
+function udsRawChannel(
+	socket: net.Socket,
+	logError?: (message: string) => void,
+): RawChannel {
 	const reader = new LineReader();
-	const frameHandlers = new Set<(frame: unknown) => void>();
-	const closeHandlers = new Set<() => void>();
-	const errorHandlers = new Set<(err: Error) => void>();
-
-	socket.on('data', chunk => {
-		let lines: string[];
-		try {
-			lines = reader.push(chunk);
-		} catch (err) {
-			if (err instanceof LineReaderOverflowError) {
-				logError?.(`gateway: control connection overflow — closing`);
-				socket.destroy();
-				return;
-			}
-			throw err;
-		}
-		for (const line of lines) {
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(line);
-			} catch {
-				socket.destroy();
-				return;
-			}
-			traceGatewayFrame('uds', peer, 'in', parsed);
-			for (const handler of frameHandlers) handler(parsed);
-		}
-	});
-
-	socket.on('error', err => {
-		for (const handler of errorHandlers) handler(err);
-	});
-
-	socket.on('close', () => {
-		for (const handler of closeHandlers) handler();
-	});
-
 	return {
 		kind: 'uds',
-		peer,
-		send: frame => {
-			if (!socket.writable) return;
-			traceGatewayFrame('uds', peer, 'out', frame);
-			socket.write(encodeLine(frame));
-		},
+		traceTag: 'uds',
+		isOpen: () => socket.writable,
+		writeFrame: frame => socket.write(encodeLine(frame)),
 		close: () => socket.destroy(),
-		onFrame: cb => {
-			frameHandlers.add(cb);
-			return () => frameHandlers.delete(cb);
+		onMessage: cb => {
+			socket.on('data', chunk => {
+				let lines: string[];
+				try {
+					lines = reader.push(chunk);
+				} catch (err) {
+					if (err instanceof LineReaderOverflowError) {
+						logError?.(`gateway: control connection overflow — closing`);
+						socket.destroy();
+						return;
+					}
+					throw err;
+				}
+				for (const line of lines) cb(line);
+			});
 		},
 		onClose: cb => {
-			closeHandlers.add(cb);
-			return () => closeHandlers.delete(cb);
+			socket.on('close', cb);
 		},
 		onError: cb => {
-			errorHandlers.add(cb);
-			return () => errorHandlers.delete(cb);
+			socket.on('error', cb);
 		},
 	};
 }

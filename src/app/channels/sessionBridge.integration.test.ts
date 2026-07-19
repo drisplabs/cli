@@ -29,7 +29,7 @@ import {DispatchPipeline} from '../../gateway/dispatchPipeline';
 import {openGatewayState, type GatewayStateDb} from '../../gateway/state/db';
 import {RelayCoordinator} from '../../gateway/relay/coordinator';
 import {ChannelManager} from '../../gateway/channelManager';
-import {createWsServerTransport} from '../../gateway/transport/tlsWs';
+import {createWsServerTransport} from '../../gateway/transport/ws';
 import {
 	GatewayProtocolError,
 	type ControlClient,
