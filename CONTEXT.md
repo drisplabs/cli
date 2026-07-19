@@ -170,11 +170,11 @@ This document owns the **feed-pipeline** bounded context (observation / projecti
 
 Cross-walk of the colliding words:
 
-| Bare word | Feed-pipeline meaning (this doc)                    | Workflow-execution meaning (`UBIQUITOUS_LANGUAGE.md`)                                        | Persistence reality                             |
-| --------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| session   | FeedMapper **Session** (drisp instance lifecycle)   | **Athena Session** (durable container) or **Agent Session** (per-Turn vendor session/thread) | `session` table                                 |
-| run       | **Run** / **Feed Run** (trigger-bounded projection) | **Workflow Run** (one loop execution)                                                        | `feed_events.run_id` ≠ `workflow_runs.id`       |
-| turn      | **Dispatch turn** (`dispatchId`)                    | **Turn** (`startTurn`)                                                                       | `gateway_function_invocations` vs no Turn table |
+| Bare word | Feed-pipeline meaning (this doc)                    | Workflow-execution meaning (`UBIQUITOUS_LANGUAGE.md`)                                        | Persistence reality                                                                              |
+| --------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| session   | FeedMapper **Session** (drisp instance lifecycle)   | **Athena Session** (durable container) or **Agent Session** (per-Turn vendor session/thread) | `session` table                                                                                  |
+| run       | **Run** / **Feed Run** (trigger-bounded projection) | **Workflow Run** (one loop execution)                                                        | `feed_events.run_id` ≠ `workflow_runs.id`                                                        |
+| turn      | **Dispatch turn** (`dispatchId`)                    | **Turn** (`startTurn`)                                                                       | neither is persisted (`gateway_function_invocations` was dropped as a dead table — see ADR 0006) |
 
 Legacy DB-name mapping (the persisted identifiers keep their original names; this mapping explains them rather than renaming them — see ADR 0003):
 
