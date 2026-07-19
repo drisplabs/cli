@@ -1,4 +1,4 @@
-# ADR 0008 - The Knowledge Base is a third bounded context
+# ADR 0013 - The Knowledge Base is a third bounded context
 
 Status: Active
 Date: 2026-07-19

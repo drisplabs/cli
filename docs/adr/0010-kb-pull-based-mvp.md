@@ -1,4 +1,4 @@
-# ADR 0005 - The Knowledge Base MVP is pull-based (manual/CI-triggered)
+# ADR 0010 - The Knowledge Base MVP is pull-based (manual/CI-triggered)
 
 Status: Active
 Date: 2026-07-19
@@ -76,4 +76,4 @@ Negative / costs:
 - `src/core/workflows/workflowRunner.ts` - terminal Run Status path (no pub/sub)
 - `src/infra/sessions/schema.ts` - `channel_messages` (table present, unwritten)
 - `KNOWLEDGE_BASE.md` - KB / KB operation / Drift finding glossary
-- ADR 0006 (storage & provenance), ADR 0007 (Lint determinism)
+- ADR 0011 (storage & provenance), ADR 0012 (Lint determinism)
