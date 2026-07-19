@@ -164,6 +164,9 @@ export type PostToolUseFailureEvent = ToolEventBase & {
 	hook_event_name: 'PostToolUseFailure';
 	error: string;
 	is_interrupt?: boolean;
+	exit_code?: number;
+	output?: string;
+	error_code?: string;
 };
 
 // Notification: Claude sends a notification

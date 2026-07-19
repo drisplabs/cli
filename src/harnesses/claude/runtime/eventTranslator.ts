@@ -66,6 +66,7 @@ export function translateClaudeEnvelope(
 				kind: 'session.start',
 				data: {
 					source: payload['source'] as string | undefined,
+					model: payload['model'] as string | undefined,
 					agent_type: payload['agent_type'] as string | undefined,
 				},
 			};
@@ -81,6 +82,7 @@ export function translateClaudeEnvelope(
 				kind: 'user.prompt',
 				data: {
 					prompt: payload['prompt'] as string | undefined,
+					cwd: payload['cwd'] as string | undefined,
 					permission_mode: payload['permission_mode'] as string | undefined,
 				},
 			};
@@ -124,6 +126,9 @@ export function translateClaudeEnvelope(
 					tool_use_id: toolUseId,
 					error: payload['error'] as string | undefined,
 					is_interrupt: payload['is_interrupt'] as boolean | undefined,
+					exit_code: payload['exit_code'] as number | undefined,
+					output: payload['output'] as string | undefined,
+					error_code: payload['error_code'] as string | undefined,
 				},
 			};
 		case 'PermissionRequest':
