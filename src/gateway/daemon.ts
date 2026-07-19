@@ -10,12 +10,13 @@
  */
 
 import fs from 'node:fs';
-import {loadOrCreateToken, requireTokenForBind} from './auth';
+import {loadOrCreateToken} from './auth';
 import {ChannelManager} from './channelManager';
 import {ChannelSidecarReconciler} from './channelSidecarReconciler';
 import {createDispatcher} from './control/handlers';
 import {startControlServer, type ControlServer} from './control/server';
 import {DispatchPipeline} from './dispatchPipeline';
+import {planListener} from './listenerPlan';
 import {acquireLock, type LockHandle} from './lock';
 import {
 	isLoopbackHost,
@@ -116,7 +117,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 	const lock: LockHandle = acquireLock(paths.lockPath);
 	const token = loadOrCreateToken(paths.tokenPath);
 	const listenSpec = opts.listenSpec ?? resolveListenSpec({paths});
-	requireTokenForBind(listenSpec, token);
+	const listenerPlan = planListener(listenSpec, token);
 
 	const listenerHints = {
 		transport: (listenSpec.kind === 'tcp' ? 'ws' : 'uds') as 'ws' | 'uds',
@@ -196,15 +197,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 	let server: ControlServer;
 	let listener: DaemonHandle['listener'];
 	try {
-		const transport =
-			listenSpec.kind === 'tcp'
-				? createWsServerTransport({
-						host: listenSpec.host,
-						port: listenSpec.port,
-						allowNonLoopback: listenSpec.insecure || Boolean(listenSpec.tls),
-						...(listenSpec.tls ? {tls: listenSpec.tls} : {}),
-					})
-				: undefined;
+		const tcpPlan =
+			listenerPlan.transport.kind === 'tcp' ? listenerPlan.transport : null;
+		const transport = tcpPlan
+			? createWsServerTransport({
+					host: tcpPlan.host,
+					port: tcpPlan.port,
+					allowNonLoopback: tcpPlan.allowNonLoopback,
+					...(tcpPlan.tls ? {tls: tcpPlan.tls} : {}),
+				})
+			: undefined;
 		server = await startControlServer({
 			socketPath: paths.socketPath,
 			token,
@@ -254,16 +256,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<DaemonHandle> {
 			listener.kind === 'tcp' ? listener.url : `socket=${paths.socketPath}`;
 		process.stdout.write(`athena-gateway: ok pid=${pid} ${target}\n`);
 	}
-	if (
-		listenSpec.kind === 'tcp' &&
-		listenSpec.insecure &&
-		!listenSpec.tls &&
-		!isLoopbackHost(listenSpec.host)
-	) {
-		process.stderr.write(
-			`athena-gateway: WARNING --insecure is set on a non-loopback bind (${listenSpec.host}:${listenSpec.port}); ` +
-				`token travels in plaintext. Use only behind TLS-terminating reverse proxy or Tailscale/WireGuard tunnel.\n`,
-		);
+	for (const warning of listenerPlan.warnings) {
+		process.stderr.write(warning + '\n');
 	}
 
 	let stopping = false;
