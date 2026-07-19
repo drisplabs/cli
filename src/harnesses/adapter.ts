@@ -24,6 +24,12 @@ export type HarnessCapabilities = {
 	 * harness (a Claude-only hook-server handshake concern today).
 	 */
 	emitsStartupDiagnostics: boolean;
+	/**
+	 * Tool names this harness needs allowed on top of the shared baseline
+	 * (`mcp__*`) — e.g. Codex requires Permissions/Bash/Edit. Empty for harnesses
+	 * that need no extras.
+	 */
+	extraAllowedTools: string[];
 };
 
 /** One selectable model a harness exposes. Owned by the harness seam. */
