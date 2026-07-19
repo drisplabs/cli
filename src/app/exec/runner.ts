@@ -4,10 +4,6 @@ import type {ControllerCallbacks} from '../../core/controller/runtimeController'
 import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
 import {
-	ingestRuntimeDecision,
-	ingestRuntimeEvent,
-} from '../../core/feed/ingest';
-import {
 	type RuntimeDecision,
 	type RuntimeEvent,
 } from '../../core/runtime/types';
@@ -30,6 +26,11 @@ import {
 	createPairedFeedPublisher,
 	type FeedSink,
 } from '../dashboard/pairedFeedPublisher';
+import {
+	attachRuntimeEventLoop,
+	startDashboardDecisionDrain,
+	type DashboardDecisionDrain,
+} from '../runtime/runtimeEventLoop';
 import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
@@ -254,25 +255,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	};
 
 	const dashboardDecisionInbox = options.dashboardDecisionInbox;
-	const applyPendingDashboardDecisions = (): void => {
-		if (!dashboardDecisionInbox) return;
-		const rows = dashboardDecisionInbox.pendingForSession({
-			athenaSessionId,
-			limit: 25,
-		});
-		for (const row of rows) {
-			try {
-				runtime.sendDecision(row.requestId, row.decision);
-				dashboardDecisionInbox.markConsumed({id: row.id});
-			} catch (error) {
-				output.warn(
-					`dashboard decision failed: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				);
-			}
-		}
-	};
 
 	const linkedAdapterSessions = new Set<string>();
 
@@ -344,71 +326,68 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		}
 	};
 
-	const unsubscribeEvent = runtime.onEvent((runtimeEvent: RuntimeEvent) => {
-		adapterSessionId = runtimeEvent.sessionId;
-
-		// Link new adapter sessions to the active workflow run
-		if (
-			runtimeEvent.sessionId &&
-			activeRunId &&
-			!linkedAdapterSessions.has(runtimeEvent.sessionId)
-		) {
-			linkedAdapterSessions.add(runtimeEvent.sessionId);
-			safePersist(
-				store,
-				() => store.linkAdapterSession(runtimeEvent.sessionId!, activeRunId!),
-				message => output.warn(message),
-				'linkAdapterSession failed',
-			);
-		}
-
-		output.emitJsonEvent('runtime.event', {
-			id: runtimeEvent.id,
-			kind: runtimeEvent.kind,
-			hookName: runtimeEvent.hookName,
-			sessionId: runtimeEvent.sessionId,
-			toolName: runtimeEvent.toolName ?? null,
-			data: runtimeEvent.data,
-		});
-
-		if (latch.hasFailure()) return;
-
-		const {feedEvents, decision} = ingestRuntimeEvent(runtimeEvent, {
+	// Headless adapter over the shared runtime-event loop: the loop owns the
+	// subscribe → ingest → sendDecision → publish assembly; exec injects only its
+	// JSONL emission, adapter-session linking, and final-message tracking.
+	const runtimeEventLoop = attachRuntimeEventLoop({
+		runtime,
+		ingest: {
 			mapper,
 			store,
 			controllerCallbacks,
 			onPersistFailure: message => output.warn(message),
-		});
-		if (decision) {
-			runtime.sendDecision(runtimeEvent.id, decision);
-		}
-		for (const event of feedEvents) {
-			if (event.kind === 'agent.message') {
-				mappedFinalMessage = event.data.message;
-			}
-		}
-		publishFeedEvents(feedEvents);
-	});
+		},
+		onEventReceived: (runtimeEvent: RuntimeEvent) => {
+			adapterSessionId = runtimeEvent.sessionId;
 
-	const unsubscribeDecision = runtime.onDecision(
-		(eventId: string, decision: RuntimeDecision) => {
+			// Link new adapter sessions to the active workflow run
+			if (
+				runtimeEvent.sessionId &&
+				activeRunId &&
+				!linkedAdapterSessions.has(runtimeEvent.sessionId)
+			) {
+				linkedAdapterSessions.add(runtimeEvent.sessionId);
+				safePersist(
+					store,
+					() => store.linkAdapterSession(runtimeEvent.sessionId!, activeRunId!),
+					message => output.warn(message),
+					'linkAdapterSession failed',
+				);
+			}
+
+			output.emitJsonEvent('runtime.event', {
+				id: runtimeEvent.id,
+				kind: runtimeEvent.kind,
+				hookName: runtimeEvent.hookName,
+				sessionId: runtimeEvent.sessionId,
+				toolName: runtimeEvent.toolName ?? null,
+				data: runtimeEvent.data,
+			});
+		},
+		skipEvent: () => latch.hasFailure(),
+		emitEventFeed: feedEvents => {
+			for (const event of feedEvents) {
+				if (event.kind === 'agent.message') {
+					mappedFinalMessage = event.data.message;
+				}
+			}
+			publishFeedEvents(feedEvents);
+		},
+		onDecisionReceived: (eventId: string, decision: RuntimeDecision) => {
 			output.emitJsonEvent('runtime.decision', {
 				eventId,
 				decision,
 			});
-			const feedEvent = ingestRuntimeDecision(eventId, decision, {
-				mapper,
-				store,
-				onPersistFailure: message => output.warn(message),
-			});
+		},
+		emitDecisionFeed: feedEvent => {
 			if (feedEvent) {
 				publishFeedEvents([feedEvent]);
 			}
 		},
-	);
+	});
 
 	let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-	let dashboardDecisionTimer: ReturnType<typeof setInterval> | undefined;
+	let dashboardDecisionDrain: DashboardDecisionDrain | undefined;
 	if (typeof options.timeoutMs === 'number' && options.timeoutMs > 0) {
 		timeoutTimer = setTimeout(() => {
 			latch.register({
@@ -431,12 +410,21 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			status: runtime.getStatus(),
 		});
 		if (dashboardDecisionInbox) {
-			applyPendingDashboardDecisions();
-			dashboardDecisionTimer = setInterval(
-				applyPendingDashboardDecisions,
-				options.dashboardDecisionPollIntervalMs ?? 1_000,
-			);
-			dashboardDecisionTimer.unref();
+			dashboardDecisionDrain = startDashboardDecisionDrain({
+				runtime,
+				inbox: dashboardDecisionInbox,
+				athenaSessionId,
+				...(options.dashboardDecisionPollIntervalMs !== undefined
+					? {pollIntervalMs: options.dashboardDecisionPollIntervalMs}
+					: {}),
+				onError: error =>
+					output.warn(
+						`dashboard decision failed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					),
+				configureTimer: timer => timer.unref(),
+			});
 		}
 
 		const workflow = options.workflow;
@@ -541,14 +529,11 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}
-		if (dashboardDecisionTimer) {
-			clearInterval(dashboardDecisionTimer);
-		}
+		dashboardDecisionDrain?.stop();
 		await writeLastMessageBeforeTerminalCompletion();
 		await runBeforeTerminalCompletion();
 		await sessionController.kill();
-		unsubscribeEvent();
-		unsubscribeDecision();
+		runtimeEventLoop.stop();
 		if (runtimeStarted) {
 			runtime.stop();
 		}

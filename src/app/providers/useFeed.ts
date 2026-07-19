@@ -30,11 +30,11 @@ import type {Message} from '../../shared/types/common';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {TodoItem} from '../../core/feed/todo';
 import {createFeedMapper, type FeedMapper} from '../../core/feed/mapper';
-import {
-	ingestRuntimeDecision,
-	ingestRuntimeEvent,
-} from '../../core/feed/ingest';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
+import {
+	attachRuntimeEventLoop,
+	startDashboardDecisionDrain,
+} from '../runtime/runtimeEventLoop';
 import {writeGatewayTrace} from '../../infra/gatewayTrace';
 import {
 	getActivePerfCycleId,
@@ -244,20 +244,16 @@ export function useFeed(
 			dashboardDecisionInboxRef.current = createDashboardDecisionInbox();
 		}
 		const inbox = dashboardDecisionInboxRef.current;
-		const applyPending = (): void => {
-			const rows = inbox.pendingForSession({athenaSessionId, limit: 25});
-			for (const row of rows) {
-				runtime.sendDecision(row.requestId, row.decision);
-				inbox.markConsumed({id: row.id});
-			}
-		};
-		applyPending();
-		const interval = setInterval(
-			applyPending,
-			options?.dashboardDecisionPollIntervalMs ?? 1_000,
-		);
+		const drain = startDashboardDecisionDrain({
+			runtime,
+			inbox,
+			athenaSessionId,
+			...(options?.dashboardDecisionPollIntervalMs !== undefined
+				? {pollIntervalMs: options.dashboardDecisionPollIntervalMs}
+				: {}),
+		});
 		return () => {
-			clearInterval(interval);
+			drain.stop();
 		};
 	}, [
 		runtime,
@@ -496,27 +492,45 @@ export function useFeed(
 			signal: abortRef.current.signal,
 		};
 
-		const unsub = runtime.onEvent((runtimeEvent: RuntimeEvent) => {
-			const parentCycleId = getActivePerfCycleId();
-			const cycleId = startPerfCycle(`feed:${runtimeEvent.kind}`, {
-				parent_cycle_id: parentCycleId ?? undefined,
-				runtime_event_id: runtimeEvent.id,
-				runtime_kind: runtimeEvent.kind,
-				hook_name: runtimeEvent.hookName,
-				tool_name: runtimeEvent.toolName,
-			});
-			logPerfEvent('feed.runtime_event', {
-				cycle_id: cycleId ?? undefined,
-				runtime_event_id: runtimeEvent.id,
-				runtime_kind: runtimeEvent.kind,
-				hook_name: runtimeEvent.hookName,
-				tool_name: runtimeEvent.toolName,
-			});
-			const doneCause = startPerfStage('cause.start', {
-				source: 'runtime.event',
-				runtime_kind: runtimeEvent.kind,
-			});
-			try {
+		// React adapter over the shared runtime-event loop: the loop owns the
+		// subscribe → ingest → sendDecision → publish assembly; useFeed injects
+		// only its perf tracing, React store pushes, and queue dequeues. The
+		// ingest source is resolved per event so a mid-session reset (new mapper)
+		// or store swap is picked up on the next event.
+		const loop = attachRuntimeEventLoop({
+			runtime,
+			ingest: () => ({
+				mapper: mapperRef.current,
+				store: sessionStoreRef.current,
+				controllerCallbacks,
+			}),
+			wrapEvent: (runtimeEvent, run) => {
+				const parentCycleId = getActivePerfCycleId();
+				const cycleId = startPerfCycle(`feed:${runtimeEvent.kind}`, {
+					parent_cycle_id: parentCycleId ?? undefined,
+					runtime_event_id: runtimeEvent.id,
+					runtime_kind: runtimeEvent.kind,
+					hook_name: runtimeEvent.hookName,
+					tool_name: runtimeEvent.toolName,
+				});
+				logPerfEvent('feed.runtime_event', {
+					cycle_id: cycleId ?? undefined,
+					runtime_event_id: runtimeEvent.id,
+					runtime_kind: runtimeEvent.kind,
+					hook_name: runtimeEvent.hookName,
+					tool_name: runtimeEvent.toolName,
+				});
+				const doneCause = startPerfStage('cause.start', {
+					source: 'runtime.event',
+					runtime_kind: runtimeEvent.kind,
+				});
+				try {
+					run();
+				} finally {
+					doneCause();
+				}
+			},
+			onEventReceived: runtimeEvent => {
 				if (
 					options?.relayPermission &&
 					runtimeEvent.kind === 'permission.request'
@@ -525,19 +539,8 @@ export function useFeed(
 						`useFeed permission event relay-enabled id=${runtimeEvent.id} tool=${runtimeEvent.toolName ?? ''}`,
 					);
 				}
-				const {feedEvents: newFeedEvents, decision} = ingestRuntimeEvent(
-					runtimeEvent,
-					{
-						mapper: mapperRef.current,
-						store: sessionStoreRef.current,
-						controllerCallbacks,
-					},
-				);
-
-				if (decision) {
-					runtime.sendDecision(runtimeEvent.id, decision);
-				}
-
+			},
+			emitEventFeed: (newFeedEvents, runtimeEvent) => {
 				if (!abortRef.current.signal.aborted && newFeedEvents.length > 0) {
 					for (const fe of newFeedEvents) {
 						if (
@@ -551,13 +554,8 @@ export function useFeed(
 					feedStoreRef.current!.pushEvents(newFeedEvents);
 					publishDashboardFeedEvents(newFeedEvents, runtimeEvent);
 				}
-			} finally {
-				doneCause();
-			}
-		});
-
-		const unsubDecision = runtime.onDecision(
-			(eventId: string, decision: RuntimeDecision) => {
+			},
+			wrapDecision: (eventId, decision, run) => {
 				const parentCycleId = getActivePerfCycleId();
 				const cycleId = startPerfCycle('feed:decision', {
 					parent_cycle_id: parentCycleId ?? undefined,
@@ -576,41 +574,41 @@ export function useFeed(
 					decision_source: decision.source,
 				});
 				try {
-					if (abortRef.current.signal.aborted) return;
-					if (
-						decision.intent?.kind === 'question_answer' ||
-						decision.source === 'timeout'
-					) {
-						dequeueQuestion(eventId);
-					}
-					const feedEvent = ingestRuntimeDecision(eventId, decision, {
-						mapper: mapperRef.current,
-						store: sessionStoreRef.current,
-					});
-					if (feedEvent) {
-						feedStoreRef.current!.pushEvents([feedEvent]);
-						publishDashboardFeedEvents([feedEvent]);
-
-						// Auto-dequeue permissions/questions when decision arrives
-						if (
-							feedEvent.kind === 'permission.decision' &&
-							feedEvent.cause?.hook_request_id
-						) {
-							dequeuePermission(feedEvent.cause.hook_request_id);
-						}
-					}
+					run();
 				} finally {
 					doneCause();
 				}
 			},
-		);
+			skipDecision: () => abortRef.current.signal.aborted,
+			beforeDecisionIngest: (eventId, decision) => {
+				if (
+					decision.intent?.kind === 'question_answer' ||
+					decision.source === 'timeout'
+				) {
+					dequeueQuestion(eventId);
+				}
+			},
+			emitDecisionFeed: feedEvent => {
+				if (feedEvent) {
+					feedStoreRef.current!.pushEvents([feedEvent]);
+					publishDashboardFeedEvents([feedEvent]);
+
+					// Auto-dequeue permissions/questions when decision arrives
+					if (
+						feedEvent.kind === 'permission.decision' &&
+						feedEvent.cause?.hook_request_id
+					) {
+						dequeuePermission(feedEvent.cause.hook_request_id);
+					}
+				}
+			},
+		});
 
 		refreshRuntimeStatus(true);
 
 		return () => {
 			abortRef.current.abort();
-			unsub();
-			unsubDecision();
+			loop.stop();
 		};
 	}, [
 		runtime,
