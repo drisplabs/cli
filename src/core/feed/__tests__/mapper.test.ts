@@ -2451,4 +2451,148 @@ describe('FeedMapper', () => {
 			}
 		});
 	});
+
+	describe('claude live assistant streaming (message.delta/complete)', () => {
+		function openRun(mapper: ReturnType<typeof createFeedMapper>): void {
+			mapper.mapEvent(
+				makeRuntimeEvent('SessionStart', {
+					payload: {
+						hook_event_name: 'SessionStart',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						source: 'startup',
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					kind: 'user.prompt',
+					data: {prompt: 'hello'},
+				}),
+			);
+		}
+
+		it('streams a message via deltas + a complete into exactly one agent.message with the full text', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: ' world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
+		});
+
+		it('does not double the final message when a turn.complete flush follows', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+			// A trailing turn.complete flushes any pending delta buffers. The
+			// complete already consumed msg-1's bucket, so no second message emits.
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('Stop', {
+						kind: 'turn.complete',
+						data: {},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
+		});
+
+		it('does not double when the Stop-hook last_assistant_message fallback repeats the streamed text', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+			// The Stop hook carries last_assistant_message, a second producer of the
+			// same assistant text. It resolves to the same (agent:root, root) key as
+			// message.complete, so the normalized-text deduper suppresses the repeat.
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('Stop', {
+						payload: {
+							hook_event_name: 'Stop',
+							session_id: 'sess-1',
+							transcript_path: '/tmp/t.jsonl',
+							cwd: '/project',
+							stop_hook_active: false,
+							last_assistant_message: 'Hello world',
+						},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
+		});
+	});
 });
