@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.24](https://github.com/drisplabs/cli/compare/cli-v0.5.23...cli-v0.5.24) (2026-07-19)
+
+
+### Refactors
+
+* **app:** one owner for the runtime-event loop (C2) ([#100](https://github.com/drisplabs/cli/issues/100)) ([713dab0](https://github.com/drisplabs/cli/commit/713dab0eff4f6312463899147a6c56aa53104139))
+* **feed:** fold single-caller FeedMapper leaves into their seams ([#97](https://github.com/drisplabs/cli/issues/97)) ([9560d72](https://github.com/drisplabs/cli/commit/9560d72f5b72bbe44532b02b069353efbe3fc0c3))
+* **harnesses:** one turn-runner per adapter (C5) ([#99](https://github.com/drisplabs/cli/issues/99)) ([f7cc33b](https://github.com/drisplabs/cli/commit/f7cc33b27c173193b348a647d6f1866699a4fe39))
+* **infra:** one owner for session.db + shared openVersionedDb (C3) ([#101](https://github.com/drisplabs/cli/issues/101)) ([cb295ef](https://github.com/drisplabs/cli/commit/cb295efdee6e5e74a66ff6171705a89ea3bca60f))
+* **workflows:** one owner for a Turn's terminal outcome ([#96](https://github.com/drisplabs/cli/issues/96)) ([f878a8e](https://github.com/drisplabs/cli/commit/f878a8e36dd3098fe63e2ef68ae6ae8981014a85))
+
 ## [0.5.23](https://github.com/drisplabs/cli/compare/cli-v0.5.22...cli-v0.5.23) (2026-06-15)
 
 
