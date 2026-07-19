@@ -1,5 +1,28 @@
 import {describe, it, expect} from 'vitest';
-import {ISOLATION_PRESETS, resolveIsolationConfig} from './isolation';
+import {
+	ISOLATION_PRESETS,
+	resolveIsolationConfig,
+	normalizeEffort,
+	CLAUDE_EFFORT_LEVELS,
+} from './isolation';
+
+describe('normalizeEffort', () => {
+	it('returns each supported reasoning level unchanged', () => {
+		for (const level of CLAUDE_EFFORT_LEVELS) {
+			expect(normalizeEffort(level)).toBe(level);
+		}
+	});
+
+	it('returns undefined for an absent value', () => {
+		expect(normalizeEffort(undefined)).toBeUndefined();
+	});
+
+	it('returns undefined for an unsupported level (no override)', () => {
+		expect(normalizeEffort('turbo')).toBeUndefined();
+		expect(normalizeEffort('')).toBeUndefined();
+		expect(normalizeEffort('HIGH')).toBeUndefined();
+	});
+});
 
 describe('ISOLATION_PRESETS', () => {
 	it('strict preset should allow core read/edit/search tools', () => {

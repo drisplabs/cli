@@ -11,6 +11,7 @@ export type BuildHarnessConfigInput = {
 	pluginDirs: string[];
 	verbose: boolean;
 	configuredModel?: string;
+	configuredEffort?: string;
 };
 
 export type ResolveHarnessModelInput = {

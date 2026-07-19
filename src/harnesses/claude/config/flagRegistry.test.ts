@@ -8,8 +8,8 @@ import {
 import {type IsolationConfig, resolveIsolationConfig} from './isolation';
 
 describe('FLAG_REGISTRY', () => {
-	it('should contain exactly 28 flag definitions', () => {
-		expect(FLAG_REGISTRY).toHaveLength(28);
+	it('should contain exactly 29 flag definitions', () => {
+		expect(FLAG_REGISTRY).toHaveLength(29);
 	});
 
 	it('should not include allowedTools (consumed as hook rules, not CLI flags)', () => {
@@ -86,6 +86,16 @@ describe('buildIsolationArgs', () => {
 		it('should emit flag with empty string value', () => {
 			const args = buildIsolationArgs({tools: ''});
 			expect(args).toEqual(['--tools', '']);
+		});
+
+		it('should emit --effort with the reasoning level', () => {
+			const args = buildIsolationArgs({effort: 'high'});
+			expect(args).toEqual(['--effort', 'high']);
+		});
+
+		it('should skip --effort when effort is undefined', () => {
+			const args = buildIsolationArgs({effort: undefined});
+			expect(args).not.toContain('--effort');
 		});
 
 		it('should convert numeric values to string', () => {

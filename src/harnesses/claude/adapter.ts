@@ -14,7 +14,11 @@ import type {
 } from '../contracts/config';
 import type {UseSessionControllerResult} from '../contracts/session';
 import type {HarnessProcessConfig} from '../../core/runtime/process';
-import type {IsolationConfig, IsolationPreset} from './config/isolation';
+import {
+	normalizeEffort,
+	type IsolationConfig,
+	type IsolationPreset,
+} from './config/isolation';
 
 function buildClaudeCompatibleIsolationConfig({
 	isolationPreset,
@@ -22,6 +26,7 @@ function buildClaudeCompatibleIsolationConfig({
 	pluginDirs,
 	verbose,
 	configuredModel,
+	configuredEffort,
 }: BuildHarnessConfigInput): HarnessProcessConfig {
 	return {
 		preset: isolationPreset,
@@ -29,6 +34,7 @@ function buildClaudeCompatibleIsolationConfig({
 		pluginDirs: pluginDirs.length > 0 ? pluginDirs : undefined,
 		debug: verbose,
 		model: configuredModel,
+		effort: normalizeEffort(configuredEffort),
 	};
 }
 
