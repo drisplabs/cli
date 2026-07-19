@@ -254,4 +254,21 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 			seenRuntimeKinds.get('WorktreeRemove'),
 		);
 	});
+
+	// prompt_id is a Claude common input field (v2.1.196+) present on every hook
+	// payload once a user prompt is being processed. Carried onto RuntimeEvent as
+	// the harness-native Prompt identity (ADR 0009).
+	it('carries prompt_id from the payload onto RuntimeEvent.promptId', () => {
+		const envelope = makeEnvelope({
+			payload: {prompt_id: 'prompt-abc'},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+		expect(event.promptId).toBe('prompt-abc');
+	});
+
+	it('leaves promptId undefined when the payload has no prompt_id', () => {
+		const envelope = makeEnvelope();
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+		expect(event.promptId).toBeUndefined();
+	});
 });

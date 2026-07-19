@@ -2,6 +2,7 @@ import {describe, it, expect, afterEach} from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import Database from 'better-sqlite3';
 import {createSessionStore} from './store';
 import {createFeedMapper} from '../../core/feed/mapper';
 import type {RuntimeEvent} from '../../core/runtime/types';
@@ -123,6 +124,38 @@ describe('session store integration', () => {
 			);
 
 			store2.close();
+		});
+
+		it('writes RuntimeEvent.promptId into the feed_events.prompt_id column', () => {
+			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-prompt-id-'));
+			const dbPath = path.join(tmpDir, 'prompt-session', 'session.db');
+
+			const store = createSessionStore({
+				sessionId: 'prompt-1',
+				projectDir: '/proj',
+				dbPath,
+			});
+			const mapper = createFeedMapper();
+			const evt = makeRuntimeEvent({
+				id: 'e1',
+				timestamp: 1000,
+				hookName: 'PreToolUse',
+				promptId: 'prompt-abc',
+				payload: {tool_name: 'Bash'},
+			});
+			store.recordEvent(evt, mapper.mapEvent(evt));
+			store.close();
+
+			// Read the dedicated correlation column directly (not the JSON blob).
+			const raw = new Database(dbPath, {readonly: true});
+			const rows = raw
+				.prepare(
+					'SELECT prompt_id FROM feed_events WHERE prompt_id IS NOT NULL',
+				)
+				.all() as Array<{prompt_id: string}>;
+			raw.close();
+			expect(rows.length).toBeGreaterThan(0);
+			expect(rows.every(r => r.prompt_id === 'prompt-abc')).toBe(true);
 		});
 
 		it('WAL mode is active on file-backed DB', () => {

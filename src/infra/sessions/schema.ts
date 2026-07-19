@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -43,6 +43,10 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			actor_id TEXT NOT NULL,
 			timestamp INTEGER NOT NULL,
 			data JSON NOT NULL,
+			-- Harness-native Prompt identity (Claude prompt_id): a nullable
+			-- correlation key, NOT the Run identity (that stays run_id). Unset for
+			-- pre-prompt bootstrap + harnesses/versions without it (ADR 0009).
+			prompt_id TEXT,
 			FOREIGN KEY (runtime_event_id) REFERENCES runtime_events(id)
 		);
 
@@ -97,6 +101,16 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs(session_id);
 		CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
 	`);
+
+	// idx_feed_prompt indexes a column added in v7. On a fresh database the base
+	// DDL above already created feed_events.prompt_id, so the index is safe here;
+	// on a pre-v7 database the column doesn't exist yet, so its index is created
+	// in the v6 → v7 delta below (after the ALTER) instead (ADR 0009).
+	if (fromVersion === undefined) {
+		db.exec(
+			'CREATE INDEX IF NOT EXISTS idx_feed_prompt ON feed_events(prompt_id);',
+		);
+	}
 
 	// Fresh database: base DDL above is the whole schema; the primitive stamps
 	// the target version.
@@ -180,6 +194,22 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			);
 			CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
 			UPDATE schema_version SET version = 6;
+		`);
+	}
+
+	const versionAfterV6 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV6 === 6) {
+		// v7 adds a nullable `prompt_id` correlation column on feed_events (the
+		// harness-native Prompt identity) plus its lookup index. Run identity
+		// (`run_id`) is unchanged — this is a correlation key only (ADR 0009).
+		db.exec(`
+			ALTER TABLE feed_events ADD COLUMN prompt_id TEXT;
+			CREATE INDEX IF NOT EXISTS idx_feed_prompt ON feed_events(prompt_id);
+			UPDATE schema_version SET version = 7;
 		`);
 	}
 };
