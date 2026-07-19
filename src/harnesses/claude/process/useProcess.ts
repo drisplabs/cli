@@ -2,11 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {type ChildProcess} from 'node:child_process';
 import {spawnClaude} from './spawn';
 import {type UseClaudeProcessResult} from './types';
-import {
-	type IsolationConfig,
-	type IsolationPreset,
-	resolveIsolationConfig,
-} from '../config/isolation';
+import {type IsolationConfig, type IsolationPreset} from '../config/isolation';
 import type {TokenUsage} from '../../../shared/types/headerMetrics';
 import {createTokenAccumulator} from './tokenAccumulator';
 import type {WorkflowConfig} from '../../../core/workflows/types';
@@ -18,27 +14,9 @@ import type {
 	TurnExecutionResult,
 } from '../../../core/runtime/process';
 import {createAssistantMessageAccumulator} from '../session/assistantMessageAccumulator';
+import {mergeIsolation, resolveClaudeSessionId} from '../session/turnConfig';
 
 export type {UseClaudeProcessResult};
-
-/**
- * Merge isolation layers: base preset -> per-command override -> workflow/plugin MCP config.
- * Workflow/plugin mcpConfig must win to ensure selected workflow MCP settings are always applied.
- * Returns the original preset unchanged when no overrides are needed.
- */
-function mergeIsolation(
-	base: IsolationConfig | IsolationPreset | undefined,
-	pluginMcpConfig: string | undefined,
-	perCommand: Partial<IsolationConfig> | undefined,
-): IsolationConfig | IsolationPreset | undefined {
-	if (!pluginMcpConfig && !perCommand) return base;
-
-	return {
-		...resolveIsolationConfig(base),
-		...(perCommand ?? {}),
-		...(pluginMcpConfig ? {mcpConfig: pluginMcpConfig} : {}),
-	};
-}
 
 // Maximum output lines to keep in memory to prevent unbounded growth
 const MAX_OUTPUT = 1000;
@@ -144,22 +122,6 @@ function tokenUsageEquals(a: TokenUsage, b: TokenUsage): boolean {
 // jq filter that extracts text content from assistant messages
 const JQ_ASSISTANT_TEXT_FILTER =
 	'select(.type == "message" and .role == "assistant") | .content[] | select(.type == "text") | .text';
-
-function resolveClaudeSessionId(
-	continuation: TurnContinuation | undefined,
-): string | undefined {
-	if (!continuation || continuation.mode === 'fresh') {
-		return undefined;
-	}
-
-	if (continuation.mode === 'resume') {
-		return continuation.handle;
-	}
-
-	throw new Error(
-		'Claude process hook does not support reuse-current continuation',
-	);
-}
 
 export type UseClaudeProcessOptions = {
 	initialTokens?: TokenUsage | null;

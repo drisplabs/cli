@@ -6,8 +6,8 @@ import type {
 	SessionControllerTurnResult,
 } from '../../contracts/session';
 import type {CodexRuntime} from '../runtime/server';
-import {NULL_TOKENS, readTokenUsage} from '../runtime/tokenUsage';
-import {buildCodexPromptOptions} from './promptOptions';
+import {NULL_TOKENS} from '../runtime/tokenUsage';
+import {runCodexTurn} from './turnRunner';
 
 export function createCodexSessionController(
 	input: CreateSessionControllerInput,
@@ -31,89 +31,20 @@ export function createCodexSessionController(
 				};
 			}
 
-			let message = '';
-			let tokenDelta = {...NULL_TOKENS};
-			let turnStatus: string | undefined;
-			let turnErrorMessage: string | undefined;
-			const unsubscribe = runtime.onEvent(event => {
-				const data =
-					typeof event.data === 'object'
-						? (event.data as Record<string, unknown>)
-						: {};
-
-				if (event.kind === 'message.delta') {
-					const delta = typeof data['delta'] === 'string' ? data['delta'] : '';
-					message += delta;
-				}
-
-				if (event.kind === 'usage.update') {
-					tokenDelta = readTokenUsage(data['delta']);
-				}
-
-				if (event.kind === 'turn.complete') {
-					turnStatus =
-						typeof data['status'] === 'string' ? data['status'] : turnStatus;
-				}
-
-				if (event.kind === 'unknown' && event.hookName === 'error') {
-					const payload =
-						typeof data['payload'] === 'object' && data['payload'] !== null
-							? (data['payload'] as Record<string, unknown>)
-							: null;
-					const errorValue =
-						typeof payload?.['error'] === 'object' && payload['error'] !== null
-							? (payload['error'] as Record<string, unknown>)
-							: null;
-					if (typeof errorValue?.['message'] === 'string') {
-						turnErrorMessage = errorValue['message'];
-					}
-				}
+			const turnPromise = runCodexTurn(runtime, prompt, {
+				processConfig,
+				continuation,
+				configOverride,
+				workflowPlan: input.workflowPlan,
+				pluginMcpConfig: input.pluginMcpConfig,
+				ephemeral: input.ephemeral,
 			});
-
-			const turnPromise = (async (): Promise<SessionControllerTurnResult> => {
-				try {
-					await runtime.sendPrompt(
-						prompt,
-						buildCodexPromptOptions({
-							processConfig,
-							continuation,
-							configOverride,
-							workflowPlan: input.workflowPlan,
-							pluginMcpConfig: input.pluginMcpConfig,
-							ephemeral: input.ephemeral,
-						}),
-					);
-					if (turnStatus === 'failed') {
-						return {
-							exitCode: 1,
-							error: new Error(turnErrorMessage ?? 'Codex turn failed'),
-							tokens: tokenDelta,
-							streamMessage: message || null,
-						};
-					}
-					return {
-						exitCode: 0,
-						error: null,
-						tokens: tokenDelta,
-						streamMessage: message || null,
-					};
-				} catch (error) {
-					return {
-						exitCode: null,
-						error: error instanceof Error ? error : new Error(String(error)),
-						tokens: tokenDelta,
-						streamMessage: message || null,
-					};
-				} finally {
-					activeTurnPromise = null;
-				}
-			})();
 			activeTurnPromise = turnPromise;
 
 			try {
 				return await turnPromise;
 			} finally {
-				unsubscribe();
+				activeTurnPromise = null;
 			}
 		},
 
