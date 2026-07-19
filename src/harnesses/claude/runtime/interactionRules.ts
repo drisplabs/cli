@@ -27,12 +27,15 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: false,
 	},
-	// Observation-only: the hook is capable of blocking the next model request,
-	// but the forwarder passes it through without waiting for a decision.
+	// Observation-only: the batch fires after every call in it has already
+	// resolved, so nothing downstream produces a decision or block for it. The
+	// claim is not cosmetic — hook dispatch keeps every decision-capable event
+	// on Claude's critical path, so a false `canBlock` would make every
+	// parallel tool batch wait on the forwarder for a reply never sent.
 	'tool.batch': {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-		canBlock: true,
+		canBlock: false,
 	},
 	'tool.delta': {
 		expectsDecision: false,

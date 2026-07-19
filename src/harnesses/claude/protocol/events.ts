@@ -182,7 +182,7 @@ export type PostToolUseFailureEvent = ToolEventBase & {
 // events above it carries no top-level tool_name/tool_input — the batch is in
 // `tool_calls`, so it extends BaseHookEvent, not ToolEventBase.
 // Shape verified against a real captured payload in the #116 spike; see
-// __fixtures__/hook-payloads/post-tool-batch.parallel.json.
+// __fixtures__/hook-payloads/post-tool-batch.parallel-calls.json.
 export type PostToolBatchCall = {
 	tool_name: string;
 	tool_input: Record<string, unknown>;

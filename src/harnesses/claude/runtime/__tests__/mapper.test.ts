@@ -455,7 +455,7 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(event.interaction.canBlock).toBe(false);
 	});
 
-	it('treats tool.batch as observation-only (canBlock, no decision)', () => {
+	it('treats tool.batch as observation-only (no decision, no block)', () => {
 		const envelope = makeEnvelope({
 			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
 			payload: payloadForHook('PostToolBatch'),
@@ -463,7 +463,7 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		const event = mapEnvelopeToRuntimeEvent(envelope);
 
 		expect(event.interaction.expectsDecision).toBe(false);
-		expect(event.interaction.canBlock).toBe(true);
+		expect(event.interaction.canBlock).toBe(false);
 	});
 
 	it('maps every registered Claude hook to a first-class runtime kind', () => {
