@@ -65,4 +65,20 @@ describe('resolveHarnessConfigProfile', () => {
 			model: 'opus',
 		});
 	});
+
+	it('declares Claude plugin delivery as registration with artifacts', () => {
+		expect(resolveHarnessConfigProfile('claude-code').pluginDelivery).toEqual({
+			mergeWorkflowPluginDirs: true,
+			registerArtifacts: true,
+			workflowPluginsVia: 'registration',
+		});
+	});
+
+	it('declares Codex plugin delivery as a generated MCP config, no artifacts', () => {
+		expect(resolveHarnessConfigProfile('openai-codex').pluginDelivery).toEqual({
+			mergeWorkflowPluginDirs: false,
+			registerArtifacts: false,
+			workflowPluginsVia: 'generated-mcp',
+		});
+	});
 });

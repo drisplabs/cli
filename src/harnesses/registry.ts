@@ -49,6 +49,11 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		harness: 'opencode',
 		buildIsolationConfig: input => buildClaudeCompatibleIsolationConfig(input),
 		resolveModelName: ({configuredModel}) => configuredModel ?? null,
+		pluginDelivery: {
+			mergeWorkflowPluginDirs: true,
+			registerArtifacts: true,
+			workflowPluginsVia: 'registration',
+		},
 	}),
 	listModels: async () => [],
 };

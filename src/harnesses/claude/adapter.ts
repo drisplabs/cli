@@ -60,6 +60,11 @@ const CLAUDE_CONFIG_PROFILE: HarnessConfigProfile = {
 	buildIsolationConfig: buildClaudeCompatibleIsolationConfig,
 	resolveModelName: ({projectDir, configuredModel}) =>
 		resolveClaudeModel({projectDir, configuredModel}),
+	pluginDelivery: {
+		mergeWorkflowPluginDirs: true,
+		registerArtifacts: true,
+		workflowPluginsVia: 'registration',
+	},
 };
 
 export const claudeHarnessAdapter: HarnessAdapter = {

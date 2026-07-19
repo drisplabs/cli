@@ -16,6 +16,11 @@ const CODEX_CONFIG_PROFILE: HarnessConfigProfile = {
 		model: configuredModel,
 	}),
 	resolveModelName: ({configuredModel}) => configuredModel ?? null,
+	pluginDelivery: {
+		mergeWorkflowPluginDirs: false,
+		registerArtifacts: false,
+		workflowPluginsVia: 'generated-mcp',
+	},
 };
 
 export const codexHarnessAdapter: HarnessAdapter = {

@@ -92,6 +92,10 @@ export function bootstrapRuntimeConfig({
 		projectConfig.harness ??
 		globalConfig.harness ??
 		DEFAULT_HARNESS;
+	const harnessConfigProfile = resolveHarnessConfigProfile(harness);
+	const pluginDelivery = harnessConfigProfile.pluginDelivery;
+	const workflowPluginsAsGeneratedMcp =
+		pluginDelivery.workflowPluginsVia === 'generated-mcp';
 	const activeWorkflowSelection = resolveActiveWorkflow({
 		globalConfig,
 		projectConfig,
@@ -121,7 +125,9 @@ export function bootstrapRuntimeConfig({
 	}
 
 	const pluginDirs = mergePluginDirs({
-		workflowPluginDirs: harness === 'openai-codex' ? [] : workflowPluginDirs,
+		workflowPluginDirs: pluginDelivery.mergeWorkflowPluginDirs
+			? workflowPluginDirs
+			: [],
 		globalPlugins: globalConfig.plugins,
 		projectPlugins: projectConfig.plugins,
 		pluginFlags,
@@ -134,21 +140,21 @@ export function bootstrapRuntimeConfig({
 						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
 								?.mcpServerOptions
 						: undefined,
-					harness !== 'openai-codex',
+					pluginDelivery.registerArtifacts,
 				)
 			: {mcpConfig: undefined};
-	const workflowPluginMcpConfig =
-		harness === 'openai-codex'
-			? buildPluginMcpConfig(
-					workflowPluginDirs,
-					workflowToResolve
-						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
-								?.mcpServerOptions
-						: undefined,
-				)
-			: undefined;
-	const pluginMcpConfig =
-		harness === 'openai-codex' ? undefined : pluginResult.mcpConfig;
+	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
+		? buildPluginMcpConfig(
+				workflowPluginDirs,
+				workflowToResolve
+					? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
+							?.mcpServerOptions
+					: undefined,
+			)
+		: undefined;
+	const pluginMcpConfig = workflowPluginsAsGeneratedMcp
+		? undefined
+		: pluginResult.mcpConfig;
 
 	const activeWorkflow: WorkflowConfig | undefined = resolvedWorkflow;
 
@@ -156,7 +162,6 @@ export function bootstrapRuntimeConfig({
 		...globalConfig.additionalDirectories,
 		...projectConfig.additionalDirectories,
 	];
-	const harnessConfigProfile = resolveHarnessConfigProfile(harness);
 	const workflowPlan = compileWorkflowPlan({
 		workflow: activeWorkflow,
 		resolvedPlugins:
@@ -164,7 +169,7 @@ export function bootstrapRuntimeConfig({
 				? workflowResolvedPlugins
 				: undefined,
 		pluginMcpConfig:
-			harness === 'openai-codex' &&
+			workflowPluginsAsGeneratedMcp &&
 			activeWorkflow &&
 			resolvedWorkflow?.name === activeWorkflow.name
 				? workflowPluginMcpConfig

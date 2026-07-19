@@ -18,10 +18,26 @@ export type ResolveHarnessModelInput = {
 	configuredModel?: string;
 };
 
+/**
+ * How a harness receives plugins and their MCP config. Claude registers plugins
+ * as isolation artifact dirs and threads one MCP config to the process; Codex
+ * takes no artifact dirs and receives workflow plugins as a generated MCP config
+ * carried on the plan. Pure data — the app orchestrates registration off it.
+ */
+export type PluginDeliveryPolicy = {
+	/** Merge workflow plugin dirs into the registered plugin dirs. */
+	mergeWorkflowPluginDirs: boolean;
+	/** Register plugin artifact dirs (vs MCP config only). */
+	registerArtifacts: boolean;
+	/** Where workflow-plugin MCP comes from: plugin registration, or a config generated for the plan. */
+	workflowPluginsVia: 'registration' | 'generated-mcp';
+};
+
 export type HarnessConfigProfile = {
 	harness: AthenaHarness;
 	buildIsolationConfig: (
 		input: BuildHarnessConfigInput,
 	) => HarnessProcessConfig;
 	resolveModelName: (input: ResolveHarnessModelInput) => string | null;
+	pluginDelivery: PluginDeliveryPolicy;
 };
