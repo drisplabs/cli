@@ -33,6 +33,10 @@ export const codexHarnessAdapter: HarnessAdapter = {
 		supportsEphemeralSessions: true,
 		supportsConfigurableIsolation: true,
 		emitsStartupDiagnostics: false,
+		// Codex auto-approves Bash/Edit (outside-sandbox commandExecution /
+		// fileChange) and the scoped 'Permissions' capability, on top of the
+		// shared 'mcp__*' baseline seeded via allowedTools (see buildInitialRules).
+		extraAllowedTools: ['Permissions', 'Bash', 'Edit'],
 	},
 	verify: () => verifyCodexHarness(),
 	createRuntime: input =>

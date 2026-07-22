@@ -50,6 +50,7 @@ describe('harness registry', () => {
 			supportsEphemeralSessions: false,
 			supportsConfigurableIsolation: true,
 			emitsStartupDiagnostics: true,
+			extraAllowedTools: [],
 		});
 
 		const codex = resolveHarnessAdapter('openai-codex');
@@ -59,6 +60,7 @@ describe('harness registry', () => {
 			supportsEphemeralSessions: true,
 			supportsConfigurableIsolation: true,
 			emitsStartupDiagnostics: false,
+			extraAllowedTools: ['Permissions', 'Bash', 'Edit'],
 		});
 	});
 });
@@ -127,5 +129,19 @@ describe('startup-diagnostics capability', () => {
 		expect(
 			resolveHarnessAdapter('opencode').capabilities.emitsStartupDiagnostics,
 		).toBe(false);
+	});
+});
+
+describe('extra allowed tools capability', () => {
+	it('declares Codex-only extra allowed tools', () => {
+		expect(
+			resolveHarnessAdapter('openai-codex').capabilities.extraAllowedTools,
+		).toEqual(['Permissions', 'Bash', 'Edit']);
+		expect(
+			resolveHarnessAdapter('claude-code').capabilities.extraAllowedTools,
+		).toEqual([]);
+		expect(
+			resolveHarnessAdapter('opencode').capabilities.extraAllowedTools,
+		).toEqual([]);
 	});
 });

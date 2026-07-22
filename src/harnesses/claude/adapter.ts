@@ -83,6 +83,7 @@ export const claudeHarnessAdapter: HarnessAdapter = {
 		supportsEphemeralSessions: false,
 		supportsConfigurableIsolation: true,
 		emitsStartupDiagnostics: true,
+		extraAllowedTools: [],
 	},
 	verify: () => verifyClaudeHarness(),
 	createRuntime: input =>
