@@ -26,12 +26,20 @@ _Avoid_: feed item (that's a UI projection of multiple `FeedEvent`s).
 **FeedMapper**:
 The module that converts `RuntimeEvent` → `FeedEvent[]` and `RuntimeDecision` → `FeedEvent`. Stateful: maintains run/session/actor/correlation state across the event stream. Bootstraps from stored events on resume.
 
+**Runtime event loop**:
+The non-React assembly that subscribes to a `Runtime`'s `RuntimeEvent` / `RuntimeDecision` streams, drives each through the **FeedMapper** ingest, feeds any controller-derived `RuntimeDecision` back to the runtime via `sendDecision` **before** handing the resulting `FeedEvent`s to a mode-specific sink. One owner (`attachRuntimeEventLoop`) shared by interactive (`useFeed`) and headless (`runExec`) so the subscribe → ingest → decide → publish assembly cannot drift; each mode injects only its own side effects (perf tracing + React store pushes, or JSONL + final-message tracking). See `docs/adr/0005-one-runtime-event-loop.md`.
+_Avoid_: event handler, runtime subscription (names one listener, not the assembly).
+
+**Dashboard decision drain**:
+The interval loop that forwards pending dashboard `RuntimeDecision`s from the local decision inbox into the `Runtime` (`sendDecision` + `markConsumed`), one batch (`limit` 25) per pass. Shared by both modes via `startDashboardDecisionDrain`; each caller owns only _when_ the drain starts.
+_Avoid_: decision poller (cadence is one detail, not the concept), inbox loop.
+
 ### State inside the FeedMapper
 
 The mapper is internally composed of six named seams; each owns one slice of the mapper's state and has its own test surface.
 
 **RunLifecycle**:
-Owns `currentSession`, `currentRun`, run/session sequence numbers, and per-run counters (tool uses, failures, permission requests, blocks). Decides when a run starts, ends, or rolls over.
+Owns `currentSession`, `currentRun`, run/session sequence numbers, and per-run counters (tool uses, failures, permission requests, blocks). Decides when a run starts, ends, or rolls over — the boundary rolls over on a change of **Prompt** when one is present, falling back to the `session.start`/`user.prompt` heuristic otherwise.
 _Avoid_: run state, session manager.
 
 **ToolCorrelation**:
@@ -78,8 +86,21 @@ assignments** against the same connected dashboard that made the **Attachment**
 mirror current.
 _Avoid_: connection state (too broad), socket context (transport detail).
 
+**Prompt**:
+The harness-native identity (`prompt_id`) of a single user input as it is
+processed. When present, a change of **Prompt** is what bounds a **Run** (the
+authoritative boundary trigger); it is absent before the first user input and on
+harnesses that don't emit it, where the `session.start`/`user.prompt` heuristic
+bounds runs instead. Carried on every **RuntimeEvent** and persisted as a
+correlation key on `feed_events`. Does **not** change the `run_id` format
+(`{session_id}:R{n}` stays positional).
+_Avoid_: prompt id (the wire field name — the domain concept is the **Prompt**),
+turn (collides with **Dispatch turn** and the workflow-execution **Turn**).
+
 **Run**:
-One agent invocation within a **Session**. Triggered by `session.start` or `user.prompt`. Has a status (`running` | `completed`), counters, and an actor tree.
+One agent invocation within a **Session**. Bounded by a **Prompt** when one is
+present; otherwise triggered by `session.start` or `user.prompt`. Has a status
+(`running` | `completed`), counters, and an actor tree.
 
 **Session**:
 A drisp instance lifecycle. Spans many **Runs**. Identified by an adapter session id from the harness.
@@ -142,6 +163,19 @@ rebuilt), so callers render a marketplace-named cause instead of raw git output.
 Shared by both cache policies; the user-facing wording is not (Ensure says
 "reach", Refresh says "refresh").
 
+**Plugin ref resolution** _(read path)_:
+Turning a config's `plugins` entries into resolved plugin directories. Each
+entry is either a **marketplace ref** (`name@owner/repo`) or a local path.
+`readConfig` resolves local paths against its `baseDir` but leaves marketplace
+refs raw; `resolvePluginDirs` then resolves those refs through the **Ensure**
+cache policy, so `readConfig` itself stays a pure parse with no path to git. A
+ref that fails to resolve is skipped and returned as a warning for the caller to
+surface, never written to stderr. Owned by `resolvePluginDirs` and invoked once,
+at runtime bootstrap. Distinct from **Workflow plugin** resolution
+(`UBIQUITOUS_LANGUAGE.md`), which resolves a **Workflow**'s declared plugin
+dependencies rather than user-config refs.
+_Avoid_: plugin loading (that is `registerPlugins`), plugin install.
+
 ## Relationships
 
 - A **Session** contains many **Runs**.
@@ -154,6 +188,7 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
 - A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
 - The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
 - A **Relay** is initiated by whichever mode is running (interactive or exec); both modes share one relay wiring, so a relay is a CLI-initiated inverse of a channel-initiated **Dispatch turn**.
+- The **Runtime event loop** is the single owner of the subscribe → ingest → `sendDecision` → publish assembly for both interactive and headless modes; each mode is a thin adapter that supplies only its own side effects. The **Dashboard decision drain** is a sibling helper both modes reuse to feed inbound dashboard `RuntimeDecision`s into the same runtime.
 - A **Dashboard assignment** is admitted by the dashboard runtime daemon before
   it launches the corresponding dashboard **Run** locally.
 - A **Dashboard connection context** exists only while the dashboard socket is
@@ -163,6 +198,10 @@ Shared by both cache policies; the user-facing wording is not (Ensure says
   **Marketplace cache** and share one **Refresh failure kind** classifier; they
   differ only in whether they pull, whether they self-heal, and whether they
   throw or return an outcome.
+- **Plugin ref resolution** consumes the **Ensure** cache policy and is the only
+  place that resolves a config's plugin refs. Keeping it out of `readConfig` is
+  what lets every other config reader consume non-plugin fields without spawning
+  git; runtime bootstrap is the sole caller.
 
 ## Relationship to workflow-execution language
 

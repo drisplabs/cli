@@ -819,6 +819,19 @@ const permissionDenied: EventRenderer<'permission.denied'> = defaultRenderer(
 		`${event.data.tool_name}${event.data.reason ? `: ${event.data.reason}` : ''}`,
 );
 
+const promptExpansion: EventRenderer<'prompt.expansion'> = defaultRenderer(
+	event =>
+		event.data.command_name
+			? `/${event.data.command_name}${event.data.command_args ? ` ${event.data.command_args}` : ''}`
+			: (event.data.expansion_type ?? ''),
+);
+const toolBatch: EventRenderer<'tool.batch'> = defaultRenderer(event => {
+	const names = event.data.tool_calls
+		.map(call => call.tool_name)
+		.filter((name): name is string => Boolean(name));
+	return names.length > 0 ? names.join(', ') : '';
+});
+
 const elicitationRequest: EventRenderer<'elicitation.request'> =
 	defaultRenderer(event => `elicitation from ${event.data.mcp_server}`);
 
@@ -898,6 +911,7 @@ const RENDERERS = {
 	'tool.delta': toolDelta,
 	'tool.pre': toolPre,
 	'tool.post': toolPost,
+	'tool.batch': toolBatch,
 	'tool.failure': toolFailure,
 	'permission.request': permissionRequest,
 	'permission.decision': permissionDecision,
@@ -937,6 +951,7 @@ const RENDERERS = {
 	'worktree.remove': worktreeRemove,
 	'stop.failure': stopFailure,
 	'permission.denied': permissionDenied,
+	'prompt.expansion': promptExpansion,
 	'elicitation.request': elicitationRequest,
 	'elicitation.result': elicitationResult,
 	'channel.permission.relayed': channelPermissionRelayed,

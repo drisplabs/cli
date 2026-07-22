@@ -17,6 +17,10 @@ export const TOOL_HOOK_EVENTS = [
 	'PreToolUse',
 	'PostToolUse',
 	'PostToolUseFailure',
+	// Batch-level, not per-tool, but Claude accepts (and requires) a matcher
+	// here: the #116 capture registered it with `matcher: '*'` and it fired in
+	// every run. Matcher-less registration is unverified.
+	'PostToolBatch',
 	'PermissionRequest',
 	'PermissionDenied',
 	'Elicitation',
@@ -38,6 +42,7 @@ export const NON_TOOL_HOOK_EVENTS = [
 	'SubagentStart',
 	'SubagentStop',
 	'UserPromptSubmit',
+	'UserPromptExpansion',
 	'PreCompact',
 	'PostCompact',
 	'Setup',
@@ -52,12 +57,55 @@ export const NON_TOOL_HOOK_EVENTS = [
 ] as const;
 
 /**
+ * Hook events that must stay on Claude's critical path.
+ *
+ * A hook marked `async` runs in the background and Claude ignores its stdout,
+ * so any event whose forwarder reply can change what Claude does next has to
+ * be dispatched synchronously. Two reasons put an event in this set:
+ *
+ * 1. Decision/blocking events — the forwarder relays a permission decision or
+ *    a block back to Claude. These are the events whose runtime kind carries
+ *    `expectsDecision` or `canBlock` in `runtime/interactionRules.ts`.
+ * 2. `SessionEnd` — not a decision hook, but a background hook still running
+ *    when Claude exits is killed with it. Keeping session teardown synchronous
+ *    is what guarantees the session-close event actually reaches the feed.
+ */
+export const SYNC_HOOK_EVENTS = [
+	// Decision/blocking — kept in step with `runtime/interactionRules.ts`.
+	'PreToolUse',
+	'PermissionRequest',
+	'UserPromptSubmit',
+	'Stop',
+	'StopFailure',
+	'SubagentStop',
+	'Elicitation',
+	'ElicitationResult',
+	'TeammateIdle',
+	'TaskCreated',
+	'TaskCompleted',
+	'ConfigChange',
+	// Teardown — see (2) above.
+	'SessionEnd',
+] as const;
+
+const SYNC_HOOK_EVENT_SET: ReadonlySet<string> = new Set(SYNC_HOOK_EVENTS);
+
+/**
+ * Whether a hook event is dispatched off Claude's critical path.
+ */
+export function isAsyncHookEvent(event: string): boolean {
+	return !SYNC_HOOK_EVENT_SET.has(event);
+}
+
+/**
  * Claude Code hook command configuration.
  */
 type HookCommand = {
 	type: 'command';
 	command: string;
 	timeout?: number;
+	/** When true, Claude runs the hook in the background without blocking. */
+	async?: true;
 };
 
 export type HookForwarderResolution = {
@@ -184,10 +232,10 @@ export function generateHookSettings(
 		console.error('[athena-debug] Hook forwarder path:', hookForwarder.command);
 	}
 
-	const hookCommand: HookCommand = {
-		type: 'command',
-		command: hookForwarder.command,
-	};
+	const hookCommandFor = (event: string): HookCommand =>
+		isAsyncHookEvent(event)
+			? {type: 'command', command: hookForwarder.command, async: true}
+			: {type: 'command', command: hookForwarder.command};
 
 	// Build hooks configuration for all event types
 	const hooks: ClaudeSettings['hooks'] = {};
@@ -197,7 +245,7 @@ export function generateHookSettings(
 		hooks[event] = [
 			{
 				matcher: '*',
-				hooks: [hookCommand],
+				hooks: [hookCommandFor(event)],
 			},
 		];
 	}
@@ -206,7 +254,7 @@ export function generateHookSettings(
 	for (const event of NON_TOOL_HOOK_EVENTS) {
 		hooks[event] = [
 			{
-				hooks: [hookCommand],
+				hooks: [hookCommandFor(event)],
 			},
 		];
 	}

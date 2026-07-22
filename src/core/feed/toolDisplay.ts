@@ -1002,6 +1002,7 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'tool.delta':
 		case 'tool.pre':
 		case 'tool.post':
+		case 'tool.batch':
 		case 'tool.failure':
 		case 'permission.decision':
 		case 'permission.denied':
@@ -1027,6 +1028,7 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'todo.update':
 		case 'todo.done':
 		case 'teammate.idle':
+		case 'prompt.expansion':
 		case 'task.created':
 		case 'task.completed':
 		case 'config.change':
@@ -1100,6 +1102,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'tool.delta':
 		case 'tool.pre':
 		case 'tool.post':
+		case 'tool.batch':
 		case 'tool.failure':
 		case 'permission.decision':
 		case 'permission.denied':
@@ -1127,6 +1130,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'todo.done':
 		case 'agent.message':
 		case 'teammate.idle':
+		case 'prompt.expansion':
 		case 'task.created':
 		case 'task.completed':
 		case 'config.change':

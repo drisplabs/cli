@@ -48,6 +48,42 @@ describe('createFeedMapper', () => {
 		expect(mapper.getCurrentRun()).toBeNull();
 	});
 
+	it('surfaces SessionStart session_title as the session.start feed title', () => {
+		const mapper = createFeedMapper();
+		const events = mapper.mapEvent(
+			makeRuntimeEvent({
+				hookName: 'SessionStart',
+				sessionId: 'cs-1',
+				payload: {
+					session_id: 'cs-1',
+					source: 'startup',
+					session_title: 'Refactor the translator seam',
+				},
+			}),
+		);
+
+		const start = events.find(e => e.kind === 'session.start');
+		expect(start).toBeDefined();
+		expect(start!.title).toBe('Refactor the translator seam');
+		expect((start!.data as {session_title?: string}).session_title).toBe(
+			'Refactor the translator seam',
+		);
+	});
+
+	it('keeps the neutral session.start title when session_title is absent', () => {
+		const mapper = createFeedMapper();
+		const events = mapper.mapEvent(
+			makeRuntimeEvent({
+				hookName: 'SessionStart',
+				sessionId: 'cs-1',
+				payload: {session_id: 'cs-1', source: 'startup'},
+			}),
+		);
+
+		const start = events.find(e => e.kind === 'session.start');
+		expect(start!.title).toBe('Session started (startup)');
+	});
+
 	describe('with stored session', () => {
 		it('bootstraps session state from stored feed events', () => {
 			const bootstrap: MapperBootstrap = {
@@ -121,6 +157,38 @@ describe('createFeedMapper', () => {
 		// NOTE: Subagent actor reconstruction from stored events is intentionally
 		// NOT done during bootstrap. Actors are registered when SubagentStart
 		// events arrive in the new adapter session.
+	});
+
+	describe('effort_level stamping', () => {
+		it('stamps effort_level on every feed event derived from an event that carries it', () => {
+			const mapper = createFeedMapper();
+			const events = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'PostToolUse',
+					sessionId: 'cs-1',
+					effortLevel: 'high',
+					payload: {tool_name: 'Bash', tool_response: {}},
+				}),
+			);
+			expect(events.length).toBeGreaterThan(0);
+			for (const event of events) {
+				expect(event.effort_level).toBe('high');
+			}
+		});
+
+		it('leaves effort_level undefined when the runtime event carries none', () => {
+			const mapper = createFeedMapper();
+			const events = mapper.mapEvent(
+				makeRuntimeEvent({
+					hookName: 'SessionStart',
+					sessionId: 'cs-1',
+					payload: {session_id: 'cs-1', source: 'startup'},
+				}),
+			);
+			const startEvent = events.find(e => e.kind === 'session.start');
+			expect(startEvent).toBeDefined();
+			expect(startEvent!.effort_level).toBeUndefined();
+		});
 	});
 
 	describe('getTasks', () => {
@@ -513,5 +581,109 @@ describe('createFeedMapper', () => {
 				},
 			]);
 		});
+	});
+});
+
+describe('prompt_id Feed Run boundary (ADR 0009)', () => {
+	function toolPre(promptId: string | undefined, id: string): RuntimeEvent {
+		return makeRuntimeEvent({
+			id,
+			kind: 'tool.pre',
+			hookName: 'PreToolUse',
+			toolName: 'Bash',
+			promptId,
+			payload: {tool_name: 'Bash', tool_input: {command: 'ls'}},
+		});
+	}
+
+	function runStarts(
+		mapper: ReturnType<typeof createFeedMapper>,
+		events: RuntimeEvent[],
+	) {
+		return events
+			.flatMap(e => mapper.mapEvent(e))
+			.filter(e => e.kind === 'run.start');
+	}
+
+	it('rolls over a Feed Run when prompt_id changes, even without a user.prompt event', () => {
+		const mapper = createFeedMapper();
+		const starts = runStarts(mapper, [
+			toolPre('P1', 'e1'), // opens the first Run for Prompt P1
+			toolPre('P1', 'e2'), // same Prompt → no rollover
+			toolPre('P2', 'e3'), // Prompt changed → rollover
+		]);
+		expect(starts).toHaveLength(2);
+		expect(starts[0]!.run_id).toMatch(/:R1$/);
+		expect(starts[1]!.run_id).toMatch(/:R2$/);
+	});
+
+	it('persists prompt_id as a correlation field on every FeedEvent it stamps', () => {
+		const mapper = createFeedMapper();
+		const feed = mapper.mapEvent(toolPre('P1', 'e1'));
+		const toolEvent = feed.find(e => e.kind === 'tool.pre');
+		expect(toolEvent!.prompt_id).toBe('P1');
+	});
+
+	it('produces identical Run boundaries with prompt_id (Prompt-driven) and without (heuristic)', () => {
+		const userPrompt = (
+			promptId: string | undefined,
+			prompt: string,
+			id: string,
+		): RuntimeEvent =>
+			makeRuntimeEvent({
+				id,
+				kind: 'user.prompt',
+				hookName: 'UserPromptSubmit',
+				promptId,
+				payload: {prompt},
+			});
+
+		const runIdsFor = (withPromptId: boolean): string[] => {
+			const p = (v: string): string | undefined =>
+				withPromptId ? v : undefined;
+			const mapper = createFeedMapper();
+			return runStarts(mapper, [
+				userPrompt(p('P1'), 'first', 'a1'),
+				toolPre(p('P1'), 'a2'),
+				userPrompt(p('P2'), 'second', 'a3'),
+				toolPre(p('P2'), 'a4'),
+			]).map(e => e.run_id);
+		};
+
+		const driven = runIdsFor(true);
+		const heuristic = runIdsFor(false);
+		expect(driven).toEqual(heuristic);
+		expect(driven).toHaveLength(2);
+		expect(driven[0]).toMatch(/:R1$/);
+		expect(driven[1]).toMatch(/:R2$/);
+	});
+
+	it('does not roll over on resume when a later event continues the restored Prompt', () => {
+		const bootstrap: MapperBootstrap = {
+			adapterSessionIds: ['cs-1'],
+			createdAt: 1000,
+			feedEvents: [
+				makeFeedEvent({
+					event_id: 'cs-1:R1:E1',
+					seq: 1,
+					run_id: 'cs-1:R1',
+					kind: 'run.start',
+					session_id: 'cs-1',
+					data: {trigger: {type: 'user_prompt_submit'}},
+				}),
+				makeFeedEvent({
+					event_id: 'cs-1:R1:E2',
+					seq: 2,
+					run_id: 'cs-1:R1',
+					kind: 'tool.pre',
+					actor_id: 'agent:root',
+					prompt_id: 'P1',
+				}),
+			],
+		};
+		const mapper = createFeedMapper(bootstrap);
+		const starts = runStarts(mapper, [toolPre('P1', 'e-continue')]);
+		expect(starts).toHaveLength(0);
+		expect(mapper.getCurrentRun()!.run_id).toBe('cs-1:R1');
 	});
 });

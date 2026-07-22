@@ -27,6 +27,16 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: false,
 	},
+	// Observation-only: the batch fires after every call in it has already
+	// resolved, so nothing downstream produces a decision or block for it. The
+	// claim is not cosmetic — hook dispatch keeps every decision-capable event
+	// on Claude's critical path, so a false `canBlock` would make every
+	// parallel tool batch wait on the forwarder for a reply never sent.
+	'tool.batch': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
+	},
 	'tool.delta': {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
@@ -76,6 +86,16 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		expectsDecision: false,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: true,
+	},
+	// Observation-only: nothing in the pipeline produces a decision or a block
+	// for an expansion, so it must not claim `canBlock`. The claim is not
+	// cosmetic — hook dispatch keeps every decision-capable event on Claude's
+	// critical path, so a false `canBlock` would make every slash command wait
+	// on the forwarder for a reply that is never sent.
+	'prompt.expansion': {
+		expectsDecision: false,
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		canBlock: false,
 	},
 	'turn.start': {
 		expectsDecision: false,

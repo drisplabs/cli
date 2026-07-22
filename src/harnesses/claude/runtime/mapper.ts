@@ -11,6 +11,13 @@ import {getInteractionHints} from './interactionRules';
 import {translateClaudeEnvelope} from './eventTranslator';
 import {buildClaudeDisplay} from './displayTitle';
 
+function readEffortLevel(payload: Record<string, unknown>): string | undefined {
+	const effort = payload['effort'];
+	if (typeof effort !== 'object' || effort === null) return undefined;
+	const level = (effort as Record<string, unknown>)['level'];
+	return typeof level === 'string' ? level : undefined;
+}
+
 export function mapEnvelopeToRuntimeEvent(
 	envelope: HookEventEnvelope,
 ): RuntimeEvent {
@@ -39,6 +46,13 @@ export function mapEnvelopeToRuntimeEvent(
 		data: translated.data,
 		hookName: envelope.hook_event_name,
 		sessionId: envelope.session_id,
+		// prompt_id is a Claude common input field (v2.1.196+) on every hook
+		// payload; carried harness-neutrally as the Prompt identity (ADR 0009).
+		promptId: safePayloadRecord['prompt_id'] as string | undefined,
+		// `effort` is likewise a common input field ({level}), observed on
+		// PostToolUse-class payloads and never on SessionStart, so it is read here
+		// rather than in any one hook's translation.
+		effortLevel: readEffortLevel(safePayloadRecord),
 		toolName: translated.toolName,
 		toolUseId: translated.toolUseId,
 		agentId: translated.agentId,

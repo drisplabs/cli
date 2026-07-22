@@ -557,6 +557,214 @@ describe('FeedMapper', () => {
 			expect(userPrompt!.actor_id).toBe('user');
 		});
 
+		it('maps UserPromptExpansion to a prompt.expansion feed row', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					payload: {
+						hook_event_name: 'UserPromptExpansion',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+
+			const expansions = results.filter(r => r.kind === 'prompt.expansion');
+			expect(expansions).toHaveLength(1);
+			expect(expansions[0]!.data.command_name).toBe('greet');
+			expect(expansions[0]!.data.expansion_type).toBe('slash_command');
+		});
+
+		// UserPromptExpansion fires ~32ms BEFORE the matching UserPromptSubmit
+		// with the same prompt_id. If it also opened a run, a single expanded
+		// prompt would produce two runs.
+		it('does not open a run for prompt.expansion; the following prompt opens exactly one', () => {
+			const mapper = createFeedMapper();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			expect(expansionResults.some(r => r.kind === 'run.start')).toBe(false);
+
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+			expect(submitResults.filter(r => r.kind === 'run.start')).toHaveLength(1);
+		});
+
+		// Firing before the matching prompt means the expansion would otherwise be
+		// stamped with the *previous* run's id, filing the slash command that
+		// started a run under the run before it.
+		it('attributes an expansion to the run its own prompt opens, not the previous one', () => {
+			const mapper = createFeedMapper();
+
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p1',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'first prompt',
+					},
+				}),
+			);
+			const firstRunId = mapper.getCurrentRun()?.run_id;
+			expect(firstRunId).toBeDefined();
+
+			const expansionResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptExpansion', {
+					promptId: 'p2',
+					data: {
+						expansion_type: 'slash_command',
+						command_name: 'greet',
+						command_args: '',
+						command_source: 'projectSettings',
+						prompt: '/greet',
+					},
+				}),
+			);
+			const submitResults = mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					promptId: 'p2',
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'Hello there',
+					},
+				}),
+			);
+
+			// The pair still yields exactly one run between them.
+			const runStarts = [...expansionResults, ...submitResults].filter(
+				r => r.kind === 'run.start',
+			);
+			expect(runStarts).toHaveLength(1);
+
+			const expansion = expansionResults.find(
+				r => r.kind === 'prompt.expansion',
+			);
+			expect(expansion!.run_id).toBe(runStarts[0]!.run_id);
+			expect(expansion!.run_id).not.toBe(firstRunId);
+		});
+
+		it('maps PostToolBatch to a tool.batch feed row carrying every call', () => {
+			const mapper = createFeedMapper();
+			const results = mapper.mapEvent(
+				makeRuntimeEvent('PostToolBatch', {
+					data: {
+						permission_mode: 'bypassPermissions',
+						tool_calls: [
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/a.txt'},
+								tool_use_id: 'tu-1',
+								tool_response: '1\thello a\n',
+							},
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/b.txt'},
+								tool_use_id: 'tu-2',
+								tool_response: '1\thello b\n',
+							},
+						],
+					},
+				}),
+			);
+
+			const batches = results.filter(r => r.kind === 'tool.batch');
+			expect(batches).toHaveLength(1);
+			expect(batches[0]!.data.tool_calls).toHaveLength(2);
+			expect(batches[0]!.data.tool_calls[0]!.tool_use_id).toBe('tu-1');
+			expect(batches[0]!.data.tool_calls[1]!.tool_response).toBe(
+				'1\thello b\n',
+			);
+			expect(batches[0]!.data.permission_mode).toBe('bypassPermissions');
+		});
+
+		// PostToolBatch closes an existing batch of tool calls — it must never
+		// roll the Feed Run over. Its tool_use_ids correlate 1:1 to the
+		// tool.post rows already emitted inside the same run.
+		it('does not open a second run for tool.batch after a tool call', () => {
+			const mapper = createFeedMapper();
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					payload: {
+						hook_event_name: 'UserPromptSubmit',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						prompt: 'read both files',
+					},
+				}),
+			);
+			const postResults = mapper.mapEvent(
+				makeRuntimeEvent('PostToolUse', {
+					toolName: 'Read',
+					toolUseId: 'tu-1',
+					data: {
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: {type: 'text', file: {filePath: '/tmp/a.txt'}},
+					},
+				}),
+			);
+			const runId = postResults[0]!.run_id;
+
+			const batchResults = mapper.mapEvent(
+				makeRuntimeEvent('PostToolBatch', {
+					data: {
+						tool_calls: [
+							{
+								tool_name: 'Read',
+								tool_input: {file_path: '/tmp/a.txt'},
+								tool_use_id: 'tu-1',
+								tool_response: '1\thello a\n',
+							},
+						],
+					},
+				}),
+			);
+
+			expect(batchResults.some(r => r.kind === 'run.start')).toBe(false);
+			const batch = batchResults.find(r => r.kind === 'tool.batch');
+			expect(batch).toBeDefined();
+			expect(batch!.run_id).toBe(runId);
+		});
+
 		it('emits Codex agent messages when item completion arrives', () => {
 			const mapper = createFeedMapper();
 			const startResults = mapper.mapEvent(
@@ -2449,6 +2657,150 @@ describe('FeedMapper', () => {
 			for (let i = 1; i < seqs.length; i++) {
 				expect(seqs[i]).toBeGreaterThan(seqs[i - 1]!);
 			}
+		});
+	});
+
+	describe('claude live assistant streaming (message.delta/complete)', () => {
+		function openRun(mapper: ReturnType<typeof createFeedMapper>): void {
+			mapper.mapEvent(
+				makeRuntimeEvent('SessionStart', {
+					payload: {
+						hook_event_name: 'SessionStart',
+						session_id: 'sess-1',
+						transcript_path: '/tmp/t.jsonl',
+						cwd: '/project',
+						source: 'startup',
+					},
+				}),
+			);
+			mapper.mapEvent(
+				makeRuntimeEvent('UserPromptSubmit', {
+					kind: 'user.prompt',
+					data: {prompt: 'hello'},
+				}),
+			);
+		}
+
+		it('streams a message via deltas + a complete into exactly one agent.message with the full text', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: ' world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
+		});
+
+		it('does not double the final message when a turn.complete flush follows', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+			// A trailing turn.complete flushes any pending delta buffers. The
+			// complete already consumed msg-1's bucket, so no second message emits.
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('Stop', {
+						kind: 'turn.complete',
+						data: {},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
+		});
+
+		it('does not double when the Stop-hook last_assistant_message fallback repeats the streamed text', () => {
+			const mapper = createFeedMapper();
+			openRun(mapper);
+
+			const results: FeedEvent[] = [];
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.delta',
+						data: {item_id: 'msg-1', delta: 'Hello world'},
+					}),
+				),
+			);
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('stream-json', {
+						kind: 'message.complete',
+						data: {item_id: 'msg-1', message: 'Hello world'},
+					}),
+				),
+			);
+			// The Stop hook carries last_assistant_message, a second producer of the
+			// same assistant text. It resolves to the same (agent:root, root) key as
+			// message.complete, so the normalized-text deduper suppresses the repeat.
+			results.push(
+				...mapper.mapEvent(
+					makeRuntimeEvent('Stop', {
+						payload: {
+							hook_event_name: 'Stop',
+							session_id: 'sess-1',
+							transcript_path: '/tmp/t.jsonl',
+							cwd: '/project',
+							stop_hook_active: false,
+							last_assistant_message: 'Hello world',
+						},
+					}),
+				),
+			);
+
+			const messages = results.filter(r => r.kind === 'agent.message');
+			expect(messages).toHaveLength(1);
+			expect((messages[0]!.data as {message: string}).message).toBe(
+				'Hello world',
+			);
 		});
 	});
 });

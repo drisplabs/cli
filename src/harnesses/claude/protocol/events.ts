@@ -7,11 +7,13 @@
  * Complete list of Claude Code hooks (per https://code.claude.com/docs/en/hooks.md):
  * - SessionStart: Session begins or resumes
  * - UserPromptSubmit: User submits a prompt
+ * - UserPromptExpansion: A typed command expands into a prompt
  * - PreToolUse: Before tool execution
  * - PermissionRequest: When permission dialog appears
  * - PermissionDenied: Auto-mode classifier denied a tool call
  * - PostToolUse: After tool succeeds
  * - PostToolUseFailure: After tool fails
+ * - PostToolBatch: After every tool call in an assistant batch resolves
  * - SubagentStart: When spawning a subagent
  * - SubagentStop: When subagent finishes
  * - Stop: Claude finishes responding
@@ -58,11 +60,32 @@ export type {
 
 import type {PermissionSuggestion} from '../../../shared/types/permissionSuggestion';
 
+/**
+ * Values Claude can send in `Notification.notification_type`.
+ *
+ * NOT a closed set. The Notification hook's own input schema in the Claude
+ * binary (2.1.215) declares `notification_type` as a free-form
+ * `S.string()`; the enumerated eight below live only in the hook matcher
+ * metadata, and the binary also passes the field through variables at some
+ * call sites. Narrow on this union for known values, but treat an unlisted
+ * one as possible rather than impossible — `worker_permission_prompt` was
+ * exactly such a value, emitted by the binary and absent here.
+ *
+ * Not included deliberately: `push_notification` and
+ * `computer_use_enter`/`computer_use_exit`. They carry the same
+ * `notificationType` key but on `{type: 'os_notification'}` payloads, which
+ * are a different event, not this hook.
+ */
 export type NotificationType =
 	| 'permission_prompt'
 	| 'idle_prompt'
 	| 'auth_success'
-	| 'elicitation_dialog';
+	| 'elicitation_dialog'
+	| 'elicitation_complete'
+	| 'elicitation_response'
+	| 'agent_needs_input'
+	| 'agent_completed'
+	| 'worker_permission_prompt';
 
 export type SessionEndReason =
 	| 'clear'
@@ -114,6 +137,12 @@ type BaseHookEvent = {
 	permission_mode?: PermissionMode;
 	agent_id?: string;
 	agent_type?: string;
+	/**
+	 * Active reasoning effort. A common input field — the #116 capture runs
+	 * observed it on PostToolUse-class payloads and never on SessionStart.
+	 * See `src/harnesses/claude/protocol/__fixtures__/hook-payloads/`.
+	 */
+	effort?: {level?: string};
 };
 
 // Tool-related fields for PreToolUse, PermissionRequest, PostToolUse,
@@ -152,6 +181,29 @@ export type PostToolUseFailureEvent = ToolEventBase & {
 	hook_event_name: 'PostToolUseFailure';
 	error: string;
 	is_interrupt?: boolean;
+	exit_code?: number;
+	output?: string;
+	error_code?: string;
+};
+
+// PostToolBatch: Fired once after every tool call in an assistant batch has
+// resolved, after all the individual PostToolUse events. Unlike the tool
+// events above it carries no top-level tool_name/tool_input — the batch is in
+// `tool_calls`, so it extends BaseHookEvent, not ToolEventBase.
+// Shape verified against a real captured payload in the #116 spike; see
+// __fixtures__/hook-payloads/post-tool-batch.parallel-calls.json.
+export type PostToolBatchCall = {
+	tool_name: string;
+	tool_input: Record<string, unknown>;
+	tool_use_id: string;
+	// A STRING — the flattened, model-facing rendering — NOT the structured
+	// object that PostToolUse.tool_response carries for the same call.
+	tool_response: string;
+};
+
+export type PostToolBatchEvent = BaseHookEvent & {
+	hook_event_name: 'PostToolBatch';
+	tool_calls: PostToolBatchCall[];
 };
 
 // Notification: Claude sends a notification
@@ -202,6 +254,19 @@ export type UserPromptSubmitEvent = BaseHookEvent & {
 	prompt: string;
 };
 
+// UserPromptExpansion: A typed command expands into a prompt. Fires just
+// before the matching UserPromptSubmit, sharing its prompt_id.
+// Shape verified against a real captured payload in the #116 spike; see
+// __fixtures__/hook-payloads/user-prompt-expansion.slash-command.json.
+export type UserPromptExpansionEvent = BaseHookEvent & {
+	hook_event_name: 'UserPromptExpansion';
+	expansion_type: 'slash_command' | 'mcp_prompt';
+	command_name: string;
+	command_args: string;
+	command_source: string;
+	prompt: string;
+};
+
 // PreCompact: Before context compaction.
 // `custom_instructions` is not in the current hooks reference but has been
 // observed in practice; kept optional.
@@ -231,6 +296,7 @@ export type SessionStartEvent = BaseHookEvent & {
 	hook_event_name: 'SessionStart';
 	source: 'startup' | 'resume' | 'clear' | 'compact';
 	model?: string;
+	session_title?: string;
 };
 
 // SessionEnd: Session ends
@@ -336,12 +402,14 @@ export type ClaudeHookEvent =
 	| PermissionDeniedEvent
 	| PostToolUseEvent
 	| PostToolUseFailureEvent
+	| PostToolBatchEvent
 	| NotificationEvent
 	| StopEvent
 	| StopFailureEvent
 	| SubagentStartEvent
 	| SubagentStopEvent
 	| UserPromptSubmitEvent
+	| UserPromptExpansionEvent
 	| PreCompactEvent
 	| PostCompactEvent
 	| SetupEvent
@@ -395,6 +463,14 @@ export function isPostToolUseFailureEvent(
 	event: ClaudeHookEvent,
 ): event is PostToolUseFailureEvent {
 	return event.hook_event_name === 'PostToolUseFailure';
+}
+
+// Deliberately NOT part of isToolEvent(): PostToolBatch carries no top-level
+// tool_name/tool_input, so it does not satisfy that narrowing.
+export function isPostToolBatchEvent(
+	event: ClaudeHookEvent,
+): event is PostToolBatchEvent {
+	return event.hook_event_name === 'PostToolBatch';
 }
 
 export function isNotificationEvent(
@@ -459,6 +535,12 @@ export function isUserPromptSubmitEvent(
 	event: ClaudeHookEvent,
 ): event is UserPromptSubmitEvent {
 	return event.hook_event_name === 'UserPromptSubmit';
+}
+
+export function isUserPromptExpansionEvent(
+	event: ClaudeHookEvent,
+): event is UserPromptExpansionEvent {
+	return event.hook_event_name === 'UserPromptExpansion';
 }
 
 export function isPreCompactEvent(

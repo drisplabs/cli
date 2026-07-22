@@ -100,6 +100,14 @@ describe('generateTitle', () => {
 		expect(generateTitle(event)).toBe('Session started (startup)');
 	});
 
+	it('renders harness-provided session_title as the session.start title', () => {
+		const event = makeFeedEvent('session.start', {
+			source: 'startup',
+			session_title: 'Refactor the translator seam',
+		});
+		expect(generateTitle(event)).toBe('Refactor the translator seam');
+	});
+
 	it('generates subagent.start title', () => {
 		const event = makeFeedEvent('subagent.start', {
 			agent_id: 'a1',
@@ -132,6 +140,43 @@ describe('generateTitle', () => {
 			scope: 'subagent',
 		});
 		expect(generateTitle(event)).toContain('Subagent response');
+	});
+
+	it('generates prompt.expansion title naming the command', () => {
+		const event = makeFeedEvent('prompt.expansion', {
+			expansion_type: 'slash_command',
+			command_name: 'greet',
+			command_args: '',
+			command_source: 'projectSettings',
+			prompt: '/greet',
+		});
+		expect(generateTitle(event)).toBe('Expanded /greet');
+	});
+
+	it('falls back to a generic prompt.expansion title without a command name', () => {
+		const event = makeFeedEvent('prompt.expansion', {
+			expansion_type: 'mcp_prompt',
+		});
+		expect(generateTitle(event)).toBe('Prompt expanded');
+	});
+
+	it('generates tool.batch title counting the calls', () => {
+		const event = makeFeedEvent('tool.batch', {
+			tool_calls: [
+				{tool_name: 'Read', tool_use_id: 'tu-1', tool_response: 'a'},
+				{tool_name: 'Read', tool_use_id: 'tu-2', tool_response: 'b'},
+			],
+		});
+		expect(generateTitle(event)).toBe('Batch of 2 tool calls');
+	});
+
+	it('singularizes the tool.batch title for a one-call batch', () => {
+		const event = makeFeedEvent('tool.batch', {
+			tool_calls: [
+				{tool_name: 'Read', tool_use_id: 'tu-1', tool_response: 'a'},
+			],
+		});
+		expect(generateTitle(event)).toBe('Batch of 1 tool call');
 	});
 
 	it('truncates long user.prompt title', () => {

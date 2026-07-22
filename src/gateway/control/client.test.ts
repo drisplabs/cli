@@ -161,6 +161,44 @@ describe('connect() hello handshake', () => {
 		client.close();
 	});
 
+	it('keeps the handshake and request routing intact when a frame is coalesced into the hello tick', async () => {
+		// A transport can dispatch several framed lines from one wire chunk in a
+		// single synchronous tick. handleFrame gates on helloAcked, which is now
+		// flipped the instant the hello frame is consumed (not a microtask later),
+		// so a frame arriving in the same tick as the hello routes through the
+		// normal path instead of hitting the nulled preHelloResolve. This is a
+		// no-regression guard: the drop itself isn't observable through the public
+		// API here (nothing is pending and no push is subscribed at hello time),
+		// but the handshake must survive the coalesced frame and stay usable.
+		const conn = makeStubConnection();
+		const promise = connect({
+			socketPath: '/unused',
+			token: 't',
+			timeoutMs: 1_000,
+			transport: makeStubTransport(conn),
+		});
+		await Promise.resolve();
+		// hello + a second frame, same tick, before connect()'s continuation runs.
+		conn.emitFrame({ok: true, hello: {daemonPid: 1, startedAt: 0}});
+		conn.emitFrame({push_id: 'p1', kind: 'coalesced-noise', payload: {}});
+		const client = await promise;
+		expect(client).toBeDefined();
+
+		// The request/response path still works after the coalesced frame.
+		const request = client.request<{value: true}, {ok: true}>(
+			'relay.question.request',
+			{value: true},
+		);
+		const sent = conn.sent[1] as {request_id: string};
+		conn.emitFrame({
+			request_id: sent.request_id,
+			ok: true,
+			payload: {ok: true},
+		});
+		await expect(request).resolves.toEqual({ok: true});
+		client.close();
+	});
+
 	it('does not time out a request when timeoutMs is null', async () => {
 		vi.useFakeTimers();
 		try {

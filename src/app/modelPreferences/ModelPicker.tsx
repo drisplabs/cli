@@ -9,10 +9,8 @@ import {
 	writeProjectConfig,
 	type AthenaHarness,
 } from '../../infra/plugins/config';
-import {
-	listAvailableModels,
-	type HarnessModelOption,
-} from './listAvailableModels';
+import {resolveHarnessAdapter} from '../../harnesses/registry';
+import type {HarnessModelOption} from '../../harnesses/adapter';
 import type {Runtime} from '../../core/runtime/types';
 
 type Phase =
@@ -49,7 +47,8 @@ export default function ModelPicker({
 	const loadModels = useCallback(() => {
 		setPhase({type: 'loading'});
 		setTimeout(() => {
-			void listAvailableModels({harness, runtime})
+			void resolveHarnessAdapter(harness)
+				.listModels(runtime)
 				.then(options => {
 					if (options.length === 0) {
 						setPhase({

@@ -41,8 +41,12 @@ export function generateTitle(event: FeedEvent, ascii = false): string {
 
 function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 	switch (event.kind) {
-		case 'session.start':
-			return `Session started (${event.data.source})`;
+		case 'session.start': {
+			const sessionTitle = event.data.session_title?.trim();
+			return sessionTitle
+				? truncate(sessionTitle)
+				: `Session started (${event.data.source})`;
+		}
 		case 'session.end':
 			return `Session ended (${event.data.reason})`;
 		case 'run.start':
@@ -53,6 +57,10 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return `Run ${event.data.status}`;
 		case 'user.prompt':
 			return truncate(event.data.prompt);
+		case 'prompt.expansion':
+			return event.data.command_name
+				? truncate(`Expanded /${event.data.command_name}`)
+				: 'Prompt expanded';
 		case 'plan.update':
 			return truncate(
 				event.data.explanation || event.data.delta || 'Plan updated',
@@ -67,6 +75,10 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			return `${g['tool.bullet']} ${event.data.tool_name}`;
 		case 'tool.post':
 			return `${g['tool.gutter']} ${event.data.tool_name} result`;
+		case 'tool.batch': {
+			const n = event.data.tool_calls.length;
+			return `Batch of ${n} tool call${n === 1 ? '' : 's'}`;
+		}
 		case 'tool.failure':
 			return truncate(
 				`${g['status.blocked']} ${event.data.tool_name} failed: ${event.data.error}`,

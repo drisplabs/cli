@@ -556,9 +556,11 @@ export function renderDetailLines(
 		case 'setup':
 		case 'unknown.hook':
 		case 'todo.add':
+		case 'tool.batch':
 		case 'todo.update':
 		case 'todo.done':
 		case 'teammate.idle':
+		case 'prompt.expansion':
 		case 'task.created':
 		case 'task.completed':
 		case 'config.change':

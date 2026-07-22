@@ -5,6 +5,7 @@ import {
 } from '../../infra/sessions/index';
 import type {RuntimeBootstrapOutput} from '../bootstrap/bootstrapConfig';
 import {runExec, EXEC_EXIT_CODE} from '../exec';
+import {resolveResumeTarget, type ResumeRequest} from './resumeResolution';
 
 export type ExecCliFlags = {
 	continueFlag?: string;
@@ -48,49 +49,15 @@ function isValidTimeout(timeoutMs: number | undefined): boolean {
 	return Number.isFinite(timeoutMs) && timeoutMs > 0;
 }
 
-type ContinueResolution = {
-	athenaSessionId: string;
-	adapterResumeSessionId: string | undefined;
-};
-
-function resolveContinueFlag(input: {
-	projectDir: string;
-	continueFlag: string | undefined;
-	createSessionId: () => string;
-	getMostRecentSessionFn: typeof getMostRecentAthenaSession;
-	getSessionMetaFn: typeof getSessionMeta;
-	logError: (message: string) => void;
-}): ContinueResolution | undefined {
-	if (input.continueFlag === undefined) {
-		return {
-			athenaSessionId: input.createSessionId(),
-			adapterResumeSessionId: undefined,
-		};
-	}
-
-	if (input.continueFlag === '') {
-		const recent = input.getMostRecentSessionFn(input.projectDir);
-		if (!recent) {
-			input.logError(
-				'Error: --continue was provided but no previous Athena sessions exist for this project.',
-			);
-			return undefined;
-		}
-		return {
-			athenaSessionId: recent.id,
-			adapterResumeSessionId: recent.adapterSessionIds.at(-1),
-		};
-	}
-
-	const meta = input.getSessionMetaFn(input.continueFlag);
-	if (!meta) {
-		input.logError(`Error: Unknown Athena session ID: ${input.continueFlag}`);
-		return undefined;
-	}
-	return {
-		athenaSessionId: meta.id,
-		adapterResumeSessionId: meta.adapterSessionIds.at(-1),
-	};
+function continueFlagToRequest(
+	continueFlag: string | undefined,
+): ResumeRequest {
+	// undefined → no --continue → fresh session
+	if (continueFlag === undefined) return {kind: 'fresh'};
+	// '' → bare --continue → resume the most recent session
+	if (continueFlag === '') return {kind: 'most-recent'};
+	// 'id' → --continue <id> → resume that explicit session
+	return {kind: 'explicit', sessionId: continueFlag};
 }
 
 export async function runExecCommand(
@@ -114,11 +81,23 @@ export async function runExecCommand(
 		return EXEC_EXIT_CODE.USAGE;
 	}
 
-	let continueResolution: ContinueResolution | undefined;
+	let continueResolution:
+		| {athenaSessionId: string; adapterResumeSessionId: string | undefined}
+		| undefined;
 	try {
-		continueResolution = resolveContinueFlag({
+		continueResolution = resolveResumeTarget({
 			projectDir: input.projectDir,
-			continueFlag: input.flags.continueFlag,
+			request: continueFlagToRequest(input.flags.continueFlag),
+			// Headless exec treats a missing resume target as a hard error rather
+			// than silently starting fresh, so a resume request that finds nothing
+			// exits non-zero for callers/scripts.
+			missingRecentPolicy: 'error',
+			messages: {
+				unknownExplicit: sessionId =>
+					`Error: Unknown Athena session ID: ${sessionId}`,
+				missingRecent:
+					'Error: --continue was provided but no previous Athena sessions exist for this project.',
+			},
 			createSessionId,
 			getMostRecentSessionFn,
 			getSessionMetaFn,

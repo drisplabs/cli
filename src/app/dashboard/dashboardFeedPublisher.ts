@@ -1,5 +1,6 @@
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
+import {openVersionedDb} from '../../infra/db/openVersionedDb';
 import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
 
 export type DashboardFeedOrigin = 'local' | 'dashboard';
@@ -51,8 +52,6 @@ function dashboardFeedOutboxPath(): string {
 
 function initOutboxSchema(db: Database.Database): void {
 	db.exec(`
-		PRAGMA journal_mode = WAL;
-
 		CREATE TABLE IF NOT EXISTS dashboard_feed_outbox (
 			delivery_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 			instance_id TEXT NOT NULL,
@@ -97,8 +96,9 @@ function makeEnvelope(input: {
 export function createDashboardFeedOutbox(
 	options: CreateDashboardFeedOutboxOptions = {},
 ): DashboardFeedOutbox {
-	const db = new Database(options.dbPath ?? dashboardFeedOutboxPath());
-	initOutboxSchema(db);
+	const db = openVersionedDb(options.dbPath ?? dashboardFeedOutboxPath(), {
+		migrate: initOutboxSchema,
+	});
 
 	const insert = db.prepare(`
 		INSERT OR IGNORE INTO dashboard_feed_outbox (

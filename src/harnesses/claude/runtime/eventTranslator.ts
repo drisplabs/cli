@@ -1,6 +1,7 @@
 import type {
 	RuntimeEventDataMap,
 	RuntimeEventKind,
+	ToolBatchCall,
 } from '../../../core/runtime/events';
 import type {HookEventEnvelope} from '../protocol/envelope';
 import {
@@ -15,6 +16,25 @@ function asRecord(value: unknown): Record<string, unknown> {
 		return value as Record<string, unknown>;
 	}
 	return {};
+}
+
+/**
+ * Normalize a `PostToolBatch` payload's `tool_calls`. Anything that is not an
+ * array of objects degrades to `[]` rather than leaking through: an older or
+ * leaner Claude build may omit the key entirely (#116 confirmed unknown hook
+ * keys are silently ignored, so degradation is by absence, not by error).
+ */
+function readToolBatchCalls(value: unknown): ToolBatchCall[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter(entry => typeof entry === 'object' && entry !== null)
+		.map(entry => asRecord(entry))
+		.map(call => ({
+			tool_name: call['tool_name'] as string | undefined,
+			tool_input: call['tool_input'] as Record<string, unknown> | undefined,
+			tool_use_id: call['tool_use_id'] as string | undefined,
+			tool_response: call['tool_response'] as string | undefined,
+		}));
 }
 
 /**
@@ -66,7 +86,9 @@ export function translateClaudeEnvelope(
 				kind: 'session.start',
 				data: {
 					source: payload['source'] as string | undefined,
+					model: payload['model'] as string | undefined,
 					agent_type: payload['agent_type'] as string | undefined,
+					session_title: payload['session_title'] as string | undefined,
 				},
 			};
 		case 'SessionEnd':
@@ -80,6 +102,22 @@ export function translateClaudeEnvelope(
 			return {
 				kind: 'user.prompt',
 				data: {
+					prompt: payload['prompt'] as string | undefined,
+					cwd: payload['cwd'] as string | undefined,
+					permission_mode: payload['permission_mode'] as string | undefined,
+				},
+			};
+		// Fires immediately before UserPromptSubmit, sharing its prompt_id,
+		// when a typed command expands into a prompt. Field names are pinned
+		// to the payload captured in the #116 spike.
+		case 'UserPromptExpansion':
+			return {
+				kind: 'prompt.expansion',
+				data: {
+					expansion_type: payload['expansion_type'] as string | undefined,
+					command_name: payload['command_name'] as string | undefined,
+					command_args: payload['command_args'] as string | undefined,
+					command_source: payload['command_source'] as string | undefined,
 					prompt: payload['prompt'] as string | undefined,
 					permission_mode: payload['permission_mode'] as string | undefined,
 				},
@@ -111,6 +149,18 @@ export function translateClaudeEnvelope(
 					tool_response: payload['tool_response'],
 				},
 			};
+		// Fires once per assistant tool batch, after every PostToolUse in it.
+		// Field names are pinned to the payload captured in the #116 spike;
+		// note that `tool_calls[].tool_response` is a STRING there, unlike
+		// PostToolUse's structured `tool_response`.
+		case 'PostToolBatch':
+			return {
+				kind: 'tool.batch',
+				data: {
+					tool_calls: readToolBatchCalls(payload['tool_calls']),
+					permission_mode: payload['permission_mode'] as string | undefined,
+				},
+			};
 		case 'PostToolUseFailure':
 			return {
 				kind: 'tool.failure',
@@ -124,6 +174,9 @@ export function translateClaudeEnvelope(
 					tool_use_id: toolUseId,
 					error: payload['error'] as string | undefined,
 					is_interrupt: payload['is_interrupt'] as boolean | undefined,
+					exit_code: payload['exit_code'] as number | undefined,
+					output: payload['output'] as string | undefined,
+					error_code: payload['error_code'] as string | undefined,
 				},
 			};
 		case 'PermissionRequest':

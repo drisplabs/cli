@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
-import type {AthenaSession, SessionRow} from './types';
+import type {AthenaSession} from './types';
 import {rowToAthenaSession} from './types';
 import {SCHEMA_VERSION} from './schema';
+import {openSessionDbReadonly, type SessionDbReader} from './sessionDbReader';
 
 export function sessionsDir(): string {
 	return path.join(os.homedir(), '.config', 'athena', 'sessions');
@@ -17,49 +17,34 @@ function sessionDbPath(sessionId: string): string {
 function readSessionFromDb(dbPath: string): AthenaSession | null {
 	if (!fs.existsSync(dbPath)) return null;
 
-	let db: InstanceType<typeof Database> | undefined;
+	let reader: SessionDbReader | undefined;
 	try {
-		db = new Database(dbPath, {readonly: true});
+		reader = openSessionDbReadonly(dbPath);
 
 		// Bail if schema version is newer than supported
-		const versionRow = db
-			.prepare('SELECT version FROM schema_version')
-			.get() as {version: number} | undefined;
-		if (versionRow && versionRow.version > SCHEMA_VERSION) {
+		const version = reader.schemaVersion();
+		if (version !== undefined && version > SCHEMA_VERSION) {
 			return null;
 		}
 
-		const row = db.prepare('SELECT * FROM session LIMIT 1').get() as
-			| SessionRow
-			| undefined;
-
+		const row = reader.sessionRow();
 		if (!row) return null;
 
-		const adapters = db
-			.prepare('SELECT session_id FROM adapter_sessions ORDER BY started_at')
-			.all() as {session_id: string}[];
+		const adapterSessionIds = reader.adapterSessionIds();
 
 		let firstPrompt: string | undefined;
 		if (!row.label && (row.event_count ?? 0) > 0) {
-			const promptRow = db
-				.prepare(
-					`SELECT json_extract(payload, '$.data.prompt') as prompt FROM runtime_events WHERE hook_name = 'UserPromptSubmit' ORDER BY seq ASC LIMIT 1`,
-				)
-				.get() as {prompt: string} | undefined;
-			if (promptRow?.prompt) {
-				firstPrompt = promptRow.prompt;
+			const prompt = reader.firstUserPrompt();
+			if (prompt) {
+				firstPrompt = prompt;
 			}
 		}
 
-		return rowToAthenaSession(
-			row,
-			adapters.map(a => a.session_id),
-			firstPrompt,
-		);
+		return rowToAthenaSession(row, adapterSessionIds, firstPrompt);
 	} catch {
 		return null;
 	} finally {
-		db?.close();
+		reader?.close();
 	}
 }
 

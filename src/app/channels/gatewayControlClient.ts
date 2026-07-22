@@ -24,7 +24,7 @@ import {resolveGatewayPaths, type GatewayPaths} from '../../gateway/paths';
 import {
 	createWsClientTransport,
 	wsClientOptionsForEndpoint,
-} from '../../gateway/transport/wsClient';
+} from '../../gateway/transport/ws';
 import type {RuntimeEndpoint} from '../../shared/gateway-protocol';
 
 export type ConnectGatewayControlClientOptions = {

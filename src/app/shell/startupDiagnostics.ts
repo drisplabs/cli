@@ -1,6 +1,7 @@
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RuntimeStartupError} from '../../core/runtime/types';
 import type {HarnessProcessFailureCode} from '../../core/runtime/process';
+import {resolveHarnessAdapter} from '../../harnesses/registry';
 
 export type StartupDiagnosticsFailureStage =
 	| 'spawn_error'
@@ -15,7 +16,7 @@ export type PendingStartupDiagnosticsEvent = {
 };
 
 export function shouldTrackStartupDiagnostics(harness: AthenaHarness): boolean {
-	return harness === 'claude-code';
+	return resolveHarnessAdapter(harness).capabilities.emitsStartupDiagnostics;
 }
 
 export function createPendingStartupDiagnosticsEvent(args: {

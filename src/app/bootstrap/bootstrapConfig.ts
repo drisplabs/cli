@@ -4,6 +4,7 @@ import {
 	readConfig,
 	readGlobalConfig,
 	resolveActiveWorkflow,
+	resolvePluginDirs,
 	type AthenaConfig,
 	type AthenaHarness,
 	type CapabilityConflicts,
@@ -108,6 +109,10 @@ export function bootstrapRuntimeConfig({
 		projectConfig.harness ??
 		globalConfig.harness ??
 		DEFAULT_HARNESS;
+	const harnessConfigProfile = resolveHarnessConfigProfile(harness);
+	const pluginDelivery = harnessConfigProfile.pluginDelivery;
+	const workflowPluginsAsGeneratedMcp =
+		pluginDelivery.workflowPluginsVia === 'generated-mcp';
 	const activeWorkflowSelection = resolveActiveWorkflow({
 		globalConfig,
 		projectConfig,
@@ -136,10 +141,23 @@ export function bootstrapRuntimeConfig({
 		);
 	}
 
+	// Resolve config plugin refs (Plugin ref resolution) here, at the one place
+	// that needs plugin dirs — so reading config elsewhere never spawns git.
+	// Warnings for unresolved refs surface through the runtime warnings channel
+	// instead of stderr.
+	const globalPluginResolution = resolvePluginDirs(globalConfig.plugins);
+	const projectPluginResolution = resolvePluginDirs(projectConfig.plugins);
+	warnings.push(
+		...globalPluginResolution.warnings,
+		...projectPluginResolution.warnings,
+	);
+
 	const pluginDirs = mergePluginDirs({
-		workflowPluginDirs: harness === 'openai-codex' ? [] : workflowPluginDirs,
-		globalPlugins: globalConfig.plugins,
-		projectPlugins: projectConfig.plugins,
+		workflowPluginDirs: pluginDelivery.mergeWorkflowPluginDirs
+			? workflowPluginDirs
+			: [],
+		globalPlugins: globalPluginResolution.dirs,
+		projectPlugins: projectPluginResolution.dirs,
 		pluginFlags,
 	});
 	// Personal MCP servers (Issue 2) and personal skills (Issue 3) are injected
@@ -161,23 +179,23 @@ export function bootstrapRuntimeConfig({
 						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
 								?.mcpServerOptions
 						: undefined,
-					harness !== 'openai-codex',
+					pluginDelivery.registrationBuildsMcpConfig,
 					personalMcpServers,
 					personalSkills,
 				)
 			: {mcpConfig: undefined, conflicts: {mcpServers: [], skills: []}};
-	const workflowPluginMcpConfig =
-		harness === 'openai-codex'
-			? buildPluginMcpConfig(
-					workflowPluginDirs,
-					workflowToResolve
-						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
-								?.mcpServerOptions
-						: undefined,
-				).mcpConfig
-			: undefined;
-	const pluginMcpConfig =
-		harness === 'openai-codex' ? undefined : pluginResult.mcpConfig;
+	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
+		? buildPluginMcpConfig(
+				workflowPluginDirs,
+				workflowToResolve
+					? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
+							?.mcpServerOptions
+					: undefined,
+			).mcpConfig
+		: undefined;
+	const pluginMcpConfig = workflowPluginsAsGeneratedMcp
+		? undefined
+		: pluginResult.mcpConfig;
 
 	const activeWorkflow: WorkflowConfig | undefined = resolvedWorkflow;
 
@@ -185,7 +203,6 @@ export function bootstrapRuntimeConfig({
 		...globalConfig.additionalDirectories,
 		...projectConfig.additionalDirectories,
 	];
-	const harnessConfigProfile = resolveHarnessConfigProfile(harness);
 	const workflowPlan = compileWorkflowPlan({
 		workflow: activeWorkflow,
 		resolvedPlugins:
@@ -193,7 +210,7 @@ export function bootstrapRuntimeConfig({
 				? workflowResolvedPlugins
 				: undefined,
 		pluginMcpConfig:
-			harness === 'openai-codex' &&
+			workflowPluginsAsGeneratedMcp &&
 			activeWorkflow &&
 			resolvedWorkflow?.name === activeWorkflow.name
 				? workflowPluginMcpConfig
@@ -202,6 +219,7 @@ export function bootstrapRuntimeConfig({
 
 	const configModel =
 		projectConfig.model || globalConfig.model || activeWorkflow?.model;
+	const configEffort = activeWorkflow?.effort;
 
 	let isolationPreset = initialIsolationPreset;
 	if (activeWorkflow?.isolation) {
@@ -224,6 +242,7 @@ export function bootstrapRuntimeConfig({
 			pluginDirs,
 			verbose,
 			configuredModel: configModel,
+			configuredEffort: configEffort,
 		});
 	const modelName = harnessConfigProfile.resolveModelName({
 		projectDir,

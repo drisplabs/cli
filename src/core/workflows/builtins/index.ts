@@ -13,7 +13,7 @@ import type {ResolvedWorkflowConfig} from '../types';
 import {
 	DEFAULT_BLOCKED_MARKER,
 	DEFAULT_COMPLETION_MARKER,
-} from '../loopManager';
+} from '../trackerReader';
 
 const DEFAULT_BLOCKED_CLOSED_MARKER = `${DEFAULT_BLOCKED_MARKER} -->`;
 const DEFAULT_BLOCKED_REASON_MARKER = `${DEFAULT_BLOCKED_MARKER}: reason -->`;

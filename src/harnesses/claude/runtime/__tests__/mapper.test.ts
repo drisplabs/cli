@@ -4,6 +4,7 @@ import type {HookEventEnvelope} from '../../protocol/envelope';
 import {
 	NON_TOOL_HOOK_EVENTS,
 	TOOL_HOOK_EVENTS,
+	isAsyncHookEvent,
 } from '../../hooks/generateHookSettings';
 
 function makeEnvelope(
@@ -53,6 +54,19 @@ function payloadForHook(hookName: string): Record<string, unknown> {
 				error: 'failed',
 				reason: 'denied',
 			};
+		case 'PostToolBatch':
+			return {
+				...base,
+				permission_mode: 'default',
+				tool_calls: [
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: '1\ta\n',
+					},
+				],
+			};
 		case 'Elicitation':
 			return {...base, mcp_server: 'server', form: {fields: []}};
 		case 'ElicitationResult':
@@ -63,6 +77,15 @@ function payloadForHook(hookName: string): Record<string, unknown> {
 			return {...base, reason: 'other'};
 		case 'UserPromptSubmit':
 			return {...base, prompt: 'hello'};
+		case 'UserPromptExpansion':
+			return {
+				...base,
+				expansion_type: 'slash_command',
+				command_name: 'greet',
+				command_args: '',
+				command_source: 'projectSettings',
+				prompt: '/greet',
+			};
 		case 'PreCompact':
 		case 'PostCompact':
 			return {...base, trigger: 'manual'};
@@ -209,6 +232,26 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(event.display).toBeUndefined();
 	});
 
+	it('carries SessionStart session_title onto runtime data', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+				session_title: 'Refactor the translator seam',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('session.start');
+		expect((event.data as {session_title?: string}).session_title).toBe(
+			'Refactor the translator seam',
+		);
+	});
+
 	it('handles unknown hook names with safe defaults', () => {
 		const envelope = makeEnvelope({
 			hook_event_name: 'FutureEvent' as HookEventEnvelope['hook_event_name'],
@@ -227,6 +270,219 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 			source_event_name: 'FutureEvent',
 			payload: envelope.payload,
 		});
+		expect(event.interaction.expectsDecision).toBe(false);
+		expect(event.interaction.canBlock).toBe(false);
+	});
+
+	// `effort` is a Claude COMMON input field, not a SessionStart one: the #116
+	// capture runs show it on PostToolUse-class payloads and never on
+	// SessionStart. It is read once from the common base, like prompt_id/cwd.
+	it('carries the common effort.level as effortLevel on any runtime event', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolUse' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'PostToolUse',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				tool_name: 'Read',
+				tool_input: {},
+				tool_response: {},
+				effort: {level: 'high'},
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.effortLevel).toBe('high');
+	});
+
+	it('leaves effortLevel undefined when the payload carries no effort', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.effortLevel).toBeUndefined();
+	});
+
+	it('ignores a malformed effort field', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'SessionStart' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'SessionStart',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				source: 'startup',
+				effort: 'high',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.effortLevel).toBeUndefined();
+	});
+
+	// Field names below are pinned to the real payload captured in the #116
+	// spike (src/harnesses/claude/protocol/__fixtures__/hook-payloads/
+	// user-prompt-expansion.slash-command.json), not to assumed shapes.
+	it('maps UserPromptExpansion to prompt.expansion with the captured fields', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'UserPromptExpansion',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				permission_mode: 'bypassPermissions',
+				expansion_type: 'slash_command',
+				command_name: 'greet',
+				command_args: '',
+				command_source: 'projectSettings',
+				prompt: '/greet',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('prompt.expansion');
+		expect(event.data).toEqual({
+			expansion_type: 'slash_command',
+			command_name: 'greet',
+			command_args: '',
+			command_source: 'projectSettings',
+			prompt: '/greet',
+			permission_mode: 'bypassPermissions',
+		});
+	});
+
+	// Field names below are pinned to the real payload captured in the #116
+	// spike (/run2 parallel-Read capture), not to assumed shapes. Note that
+	// `tool_calls[].tool_response` is a STRING (the flattened, model-facing
+	// rendering) whereas `PostToolUse.tool_response` is a structured object —
+	// the two fields deliberately do NOT share a type.
+	it('maps PostToolBatch to tool.batch with the captured fields', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'PostToolBatch',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				permission_mode: 'bypassPermissions',
+				tool_calls: [
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/a.txt'},
+						tool_use_id: 'tu-1',
+						tool_response: '1\thello a\n',
+					},
+					{
+						tool_name: 'Read',
+						tool_input: {file_path: '/tmp/b.txt'},
+						tool_use_id: 'tu-2',
+						tool_response: '1\thello b\n',
+					},
+				],
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('tool.batch');
+		expect(event.data).toEqual({
+			permission_mode: 'bypassPermissions',
+			tool_calls: [
+				{
+					tool_name: 'Read',
+					tool_input: {file_path: '/tmp/a.txt'},
+					tool_use_id: 'tu-1',
+					tool_response: '1\thello a\n',
+				},
+				{
+					tool_name: 'Read',
+					tool_input: {file_path: '/tmp/b.txt'},
+					tool_use_id: 'tu-2',
+					tool_response: '1\thello b\n',
+				},
+			],
+		});
+	});
+
+	// An older Claude never sends this hook at all (#116 confirmed unknown
+	// hook keys are silently ignored). A build that sends a leaner payload
+	// must still translate without throwing.
+	it('tolerates a UserPromptExpansion payload missing every expansion field', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'UserPromptExpansion',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('prompt.expansion');
+		expect(event.data).toEqual({
+			expansion_type: undefined,
+			command_name: undefined,
+			command_args: undefined,
+			command_source: undefined,
+			prompt: undefined,
+			permission_mode: undefined,
+		});
+	});
+
+	// hook keys are silently ignored, with zero diagnostics). A build that
+	// sends a leaner payload must still translate without throwing, and a
+	// non-array `tool_calls` must not leak through as one.
+	it('tolerates a PostToolBatch payload with no usable tool_calls', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: {
+				hook_event_name: 'PostToolBatch',
+				session_id: 'sess-1',
+				transcript_path: '/tmp/t.jsonl',
+				cwd: '/project',
+				tool_calls: 'not-an-array',
+			},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.kind).toBe('tool.batch');
+		expect(event.data).toEqual({
+			tool_calls: [],
+			permission_mode: undefined,
+		});
+	});
+
+	it('treats prompt.expansion as observation-only (no decision, no block)', () => {
+		const envelope = makeEnvelope({
+			hook_event_name:
+				'UserPromptExpansion' as HookEventEnvelope['hook_event_name'],
+			payload: payloadForHook('UserPromptExpansion'),
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
+		expect(event.interaction.expectsDecision).toBe(false);
+		expect(event.interaction.canBlock).toBe(false);
+	});
+
+	it('treats tool.batch as observation-only (no decision, no block)', () => {
+		const envelope = makeEnvelope({
+			hook_event_name: 'PostToolBatch' as HookEventEnvelope['hook_event_name'],
+			payload: payloadForHook('PostToolBatch'),
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+
 		expect(event.interaction.expectsDecision).toBe(false);
 		expect(event.interaction.canBlock).toBe(false);
 	});
@@ -253,5 +509,47 @@ describe('mapEnvelopeToRuntimeEvent', () => {
 		expect(seenRuntimeKinds.get('WorktreeCreate')).not.toBe(
 			seenRuntimeKinds.get('WorktreeRemove'),
 		);
+	});
+
+	// prompt_id is a Claude common input field (v2.1.196+) present on every hook
+	// payload once a user prompt is being processed. Carried onto RuntimeEvent as
+	// the harness-native Prompt identity (ADR 0009).
+	it('carries prompt_id from the payload onto RuntimeEvent.promptId', () => {
+		const envelope = makeEnvelope({
+			payload: {prompt_id: 'prompt-abc'},
+		});
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+		expect(event.promptId).toBe('prompt-abc');
+	});
+
+	it('leaves promptId undefined when the payload has no prompt_id', () => {
+		const envelope = makeEnvelope();
+		const event = mapEnvelopeToRuntimeEvent(envelope);
+		expect(event.promptId).toBeUndefined();
+	});
+
+	it('dispatches every hook that can decide or block synchronously', () => {
+		// Claude ignores an async hook's stdout, so a hook whose reply can change
+		// what Claude does next must never be registered async. This guards the
+		// two sets against drift: adding a blocking event without adding it to
+		// SYNC_HOOK_EVENTS would silently strip its ability to block.
+		const registeredHooks = [...TOOL_HOOK_EVENTS, ...NON_TOOL_HOOK_EVENTS];
+		const decisionCapable: string[] = [];
+
+		for (const hookName of registeredHooks) {
+			const envelope = makeEnvelope({
+				hook_event_name: hookName as HookEventEnvelope['hook_event_name'],
+				payload: payloadForHook(hookName),
+			});
+			const {interaction} = mapEnvelopeToRuntimeEvent(envelope);
+
+			if (interaction.expectsDecision || interaction.canBlock) {
+				decisionCapable.push(hookName);
+				expect(isAsyncHookEvent(hookName), hookName).toBe(false);
+			}
+		}
+
+		// The guard is only meaningful if it actually covers events.
+		expect(decisionCapable.length).toBeGreaterThan(0);
 	});
 });

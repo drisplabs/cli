@@ -107,7 +107,7 @@ describe('gateway control plane', () => {
 		const token = fs.readFileSync(paths.tokenPath, 'utf-8').trim();
 		const wsUrl = daemon.listener.url;
 		expect(wsUrl).toBeDefined();
-		const {createWsClientTransport} = await import('../transport/wsClient');
+		const {createWsClientTransport} = await import('../transport/ws');
 		const client = await connect({
 			socketPath: paths.socketPath,
 			token,

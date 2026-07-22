@@ -139,9 +139,11 @@ describe('hooks types', () => {
 			const validNames = [
 				'SessionStart',
 				'UserPromptSubmit',
+				'UserPromptExpansion',
 				'PreToolUse',
 				'PermissionRequest',
 				'PermissionDenied',
+				'PostToolBatch',
 				'PostToolUse',
 				'PostToolUseFailure',
 				'SubagentStart',

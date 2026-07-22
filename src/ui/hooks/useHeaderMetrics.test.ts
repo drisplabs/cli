@@ -7,7 +7,7 @@ import type {FeedEvent} from '../../core/feed/types';
 let seqCounter = 0;
 
 function makeFeedEvent(
-	overrides: Partial<FeedEvent> & {kind: FeedEvent['kind']; data: unknown},
+	overrides: Partial<FeedEvent> & {kind: FeedEvent['kind']; data?: unknown},
 ): FeedEvent {
 	seqCounter++;
 	return {
@@ -20,7 +20,8 @@ function makeFeedEvent(
 		level: overrides.level ?? 'info',
 		actor_id: overrides.actor_id ?? 'agent:root',
 		title: overrides.title ?? '',
-		data: overrides.data,
+		data: overrides.data ?? {},
+		effort_level: overrides.effort_level,
 	} as FeedEvent;
 }
 
@@ -29,6 +30,7 @@ describe('useHeaderMetrics', () => {
 		const {result} = renderHook(() => useHeaderMetrics([]));
 		expect(result.current).toEqual({
 			modelName: null,
+			effortLevel: null,
 			toolCallCount: 0,
 			totalToolCallCount: 0,
 			subagentCount: 0,
@@ -73,6 +75,49 @@ describe('useHeaderMetrics', () => {
 		expect(result.current.sessionStartTime).toEqual(
 			new Date('2024-01-15T10:00:00Z'),
 		);
+	});
+
+	it('extracts the effort level from any event that carries it', () => {
+		// The harness stamps effort on ordinary hook payloads, not on session.start.
+		const events = [
+			makeFeedEvent({
+				kind: 'session.start',
+				title: 'Session started',
+				data: {source: 'startup'},
+			}),
+			makeFeedEvent({
+				event_id: 't1',
+				kind: 'tool.pre',
+				title: 'Bash',
+				effort_level: 'high',
+			}),
+		];
+
+		const {result} = renderHook(() => useHeaderMetrics(events));
+		expect(result.current.effortLevel).toBe('high');
+	});
+
+	it('tracks the most recent effort level when it changes mid-session', () => {
+		const events = [
+			makeFeedEvent({event_id: 't1', kind: 'tool.pre', effort_level: 'high'}),
+			makeFeedEvent({event_id: 't2', kind: 'tool.pre', effort_level: 'low'}),
+		];
+
+		const {result} = renderHook(() => useHeaderMetrics(events));
+		expect(result.current.effortLevel).toBe('low');
+	});
+
+	it('leaves effortLevel null when no event carries one', () => {
+		const events = [
+			makeFeedEvent({
+				kind: 'session.start',
+				title: 'Session started',
+				data: {source: 'startup'},
+			}),
+		];
+
+		const {result} = renderHook(() => useHeaderMetrics(events));
+		expect(result.current.effortLevel).toBeNull();
 	});
 
 	it('counts top-level tool.pre events', () => {

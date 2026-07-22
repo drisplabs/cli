@@ -4,27 +4,15 @@ import type {AthenaHarness} from '../../infra/plugins/config';
 import type {HarnessProcessOverride} from '../runtime/process';
 import {applyPromptTemplate} from './applyWorkflow';
 import {substituteVariables} from './templateVars';
-import {
-	buildContinuePrompt,
-	createLoopManager,
-	DEFAULT_TRACKER_PATH,
-	type LoopManager,
-} from './loopManager';
+import {buildContinuePrompt, DEFAULT_TRACKER_PATH} from './trackerReader';
 import {buildStateMachineContent} from './stateMachine';
-import type {LoopStopReason, WorkflowConfig} from './types';
+import type {WorkflowConfig} from './types';
 
 export type WorkflowRunState = {
 	workflow?: WorkflowConfig;
-	loopManager: LoopManager | null;
 	trackerPathForPrompt?: string;
 	workflowOverride?: HarnessProcessOverride;
 	warnings: string[];
-};
-
-export type LoopStopInfo = {
-	reason: LoopStopReason;
-	blockedReason?: string;
-	maxIterations: number;
 };
 
 export type PreparedWorkflowTurn = {
@@ -136,10 +124,6 @@ export function createWorkflowRunState(input: {
 }): WorkflowRunState {
 	const {projectDir, sessionId, workflow, harness} = input;
 	const trackerResolved = resolveTrackerPath({projectDir, sessionId, workflow});
-	const loopManager =
-		workflow?.loop?.enabled === true && trackerResolved
-			? createLoopManager(trackerResolved.absolutePath, workflow.loop)
-			: null;
 	const {workflowOverride, warnings} = readWorkflowOverride(
 		projectDir,
 		workflow,
@@ -150,30 +134,36 @@ export function createWorkflowRunState(input: {
 
 	return {
 		workflow,
-		loopManager,
 		trackerPathForPrompt: trackerResolved?.promptPath,
 		workflowOverride,
 		warnings,
 	};
 }
 
+/**
+ * Build the prompt for the Turn at `iteration` (1-based). Turn 1 gets the
+ * Orient prompt from the workflow's template; Turn 2+ of a loop gets the
+ * lightweight Continue Prompt that just points the agent at the Tracker.
+ */
 export function prepareWorkflowTurn(
 	state: WorkflowRunState,
 	input: {
 		prompt: string;
+		iteration?: number;
 		configOverride?: HarnessProcessOverride;
 	},
 ): PreparedWorkflowTurn {
-	const {workflow, loopManager} = state;
-	const prompt =
-		workflow && loopManager && loopManager.getState().iteration > 0
-			? buildContinuePrompt({
-					...workflow.loop!,
-					trackerPath: state.trackerPathForPrompt ?? workflow.loop?.trackerPath,
-				})
-			: workflow
-				? applyPromptTemplate(workflow.promptTemplate, input.prompt)
-				: input.prompt;
+	const {workflow} = state;
+	const iteration = input.iteration ?? 1;
+	const isContinuation = workflow?.loop?.enabled === true && iteration > 1;
+	const prompt = isContinuation
+		? buildContinuePrompt({
+				...workflow.loop!,
+				trackerPath: state.trackerPathForPrompt ?? workflow.loop?.trackerPath,
+			})
+		: workflow
+			? applyPromptTemplate(workflow.promptTemplate, input.prompt)
+			: input.prompt;
 
 	return {
 		prompt,
@@ -183,76 +173,4 @@ export function prepareWorkflowTurn(
 		),
 		warnings: state.warnings,
 	};
-}
-
-/**
- * Check whether the workflow loop should continue.
- *
- * Returns `null` when the loop should run another iteration (and increments
- * the iteration counter). Returns stop info when the loop is done (and
- * cleans up the loop manager).
- */
-export function shouldContinueWorkflowRun(
-	state: WorkflowRunState,
-): LoopStopInfo | null {
-	const {workflow, loopManager} = state;
-	if (!workflow?.loop?.enabled || !loopManager) {
-		return null;
-	}
-
-	const loopState = loopManager.getState();
-
-	if (!fs.existsSync(loopManager.trackerPath)) {
-		cleanupWorkflowRun(state);
-		return {
-			reason: 'missing_tracker',
-			maxIterations: loopState.maxIterations,
-		};
-	}
-
-	if (loopState.skeletonNotReplaced) {
-		cleanupWorkflowRun(state);
-		return {
-			reason: 'skeleton_not_replaced',
-			maxIterations: loopState.maxIterations,
-		};
-	}
-
-	if (loopState.misplacedTerminalMarker) {
-		cleanupWorkflowRun(state);
-		return {
-			reason: 'misplaced_terminal_marker',
-			maxIterations: loopState.maxIterations,
-		};
-	}
-
-	let reason: LoopStopReason | undefined;
-	if (loopState.completed) {
-		reason = 'completed';
-	} else if (loopState.blocked) {
-		reason = 'blocked';
-	} else if (loopState.iteration + 1 >= loopState.maxIterations) {
-		reason = 'max_iterations';
-	}
-
-	if (reason) {
-		cleanupWorkflowRun(state);
-		return {
-			reason,
-			blockedReason: loopState.blockedReason,
-			maxIterations: loopState.maxIterations,
-		};
-	}
-
-	loopManager.incrementIteration();
-	return null;
-}
-
-export function cleanupWorkflowRun(state: WorkflowRunState): void {
-	if (!state.loopManager) {
-		return;
-	}
-
-	state.loopManager.deactivate();
-	state.loopManager = null;
 }

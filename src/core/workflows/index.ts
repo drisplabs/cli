@@ -22,23 +22,14 @@ export type {BulkWorkflowUpgradeReport} from './registry';
 export {installWorkflowPlugins, resolveWorkflowPlugins} from './installer';
 export type {ResolvedWorkflowPlugins} from './installer';
 export {compileWorkflowPlan} from './plan';
-export {
-	cleanupWorkflowRun,
-	createWorkflowRunState,
-	prepareWorkflowTurn,
-	shouldContinueWorkflowRun,
-	type LoopStopInfo,
-} from './sessionPlan';
+export {createWorkflowRunState, prepareWorkflowTurn} from './sessionPlan';
 export {useWorkflowSessionController} from './useWorkflowSessionController';
 export {
-	createLoopManager,
 	buildContinuePrompt,
 	DEFAULT_COMPLETION_MARKER,
 	DEFAULT_BLOCKED_MARKER,
 	DEFAULT_TRACKER_PATH,
-	type LoopState,
-	type LoopManager,
-} from './loopManager';
+} from './trackerReader';
 export {resolveBuiltinWorkflow, listBuiltinWorkflows} from './builtins/index';
 export {createWorkflowRunner} from './workflowRunner';
 export type {

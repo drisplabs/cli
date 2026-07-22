@@ -5,43 +5,25 @@
  * Athena-runtime session DBs. Holds queues that must survive across runtime
  * registrations (inbound parking) and across daemon restarts (outbox, M8).
  *
- * Schema is intentionally narrow — the per-session DB still owns the
- * `channel_messages` audit ledger. This file only stores transient state
- * the gateway needs to do its job when no runtime is attached.
+ * Schema is intentionally narrow: it only stores transient state the gateway
+ * needs to do its job when no runtime is attached. There is no persisted
+ * channel-message audit ledger (a planned `channel_messages` table was never
+ * written and has been dropped — see ADR 0006).
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
+import {
+	openVersionedDb,
+	type SchemaMigrator,
+} from '../../infra/db/openVersionedDb';
 
 export const GATEWAY_STATE_VERSION = 2;
 
 export type GatewayStateDb = Database.Database;
 
-export function openGatewayState(dbPath: string): GatewayStateDb {
-	if (dbPath !== ':memory:') {
-		fs.mkdirSync(path.dirname(dbPath), {recursive: true, mode: 0o700});
-	}
-	const db = new Database(dbPath);
-	db.exec('PRAGMA journal_mode = WAL');
-	db.exec('PRAGMA foreign_keys = ON');
-	initGatewayStateSchema(db);
-	if (dbPath !== ':memory:' && process.platform !== 'win32') {
-		try {
-			fs.chmodSync(dbPath, 0o600);
-		} catch {
-			// best-effort
-		}
-	}
-	return db;
-}
-
-export function initGatewayStateSchema(db: GatewayStateDb): void {
+const migrateGatewayState: SchemaMigrator = (db, fromVersion) => {
 	db.exec(`
-		CREATE TABLE IF NOT EXISTS schema_version (
-			version INTEGER NOT NULL
-		);
-
 		-- Inbound chat messages parked while no runtime is registered. Drained
 		-- in FIFO id order on session.register. Idempotency key prevents the
 		-- same provider message from being parked twice if an adapter retries.
@@ -74,29 +56,42 @@ export function initGatewayStateSchema(db: GatewayStateDb): void {
 			ON channel_outbox(next_attempt_at);
 	`);
 
-	const existing = db.prepare('SELECT version FROM schema_version').get() as
-		| {version: number}
-		| undefined;
-	if (existing && existing.version > GATEWAY_STATE_VERSION) {
-		throw new Error(
-			`Gateway state DB has newer schema version ${existing.version} (expected <= ${GATEWAY_STATE_VERSION}). Update athena-cli.`,
-		);
-	}
-	if (!existing) {
-		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
-			GATEWAY_STATE_VERSION,
-		);
-		return;
-	}
+	// Fresh database: base DDL above is the whole schema; the primitive stamps
+	// the target version.
+	if (fromVersion === undefined) return;
+
+	// v1 shipped inbound_queue without attachment_id; add it in place.
 	const inboundColumns = db
 		.prepare('PRAGMA table_info(inbound_queue)')
 		.all() as Array<{name: string}>;
 	if (!inboundColumns.some(column => column.name === 'attachment_id')) {
 		db.prepare('ALTER TABLE inbound_queue ADD COLUMN attachment_id TEXT').run();
 	}
-	if (existing.version < GATEWAY_STATE_VERSION) {
+	if (fromVersion < GATEWAY_STATE_VERSION) {
 		db.prepare('UPDATE schema_version SET version = ?').run(
 			GATEWAY_STATE_VERSION,
 		);
 	}
+};
+
+export function openGatewayState(dbPath: string): GatewayStateDb {
+	const db = openVersionedDb(dbPath, {
+		version: GATEWAY_STATE_VERSION,
+		migrate: migrateGatewayState,
+		foreignKeys: true,
+		ensureDir: true,
+		dirMode: 0o700,
+		onNewerVersion: (found, expected) =>
+			new Error(
+				`Gateway state DB has newer schema version ${found} (expected <= ${expected}). Update athena-cli.`,
+			),
+	});
+	if (dbPath !== ':memory:' && process.platform !== 'win32') {
+		try {
+			fs.chmodSync(dbPath, 0o600);
+		} catch {
+			// best-effort
+		}
+	}
+	return db;
 }

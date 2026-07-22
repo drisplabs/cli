@@ -155,6 +155,56 @@ describe('createClaudeHookRuntime', () => {
 		client.end();
 	});
 
+	it('emits message.delta and message.complete RuntimeEvents from stream-json stdout', () => {
+		const projectDir = makeTmpDir();
+		cleanup.push(() => fs.rmSync(projectDir, {recursive: true, force: true}));
+
+		const runtime = createClaudeHookRuntime({projectDir, instanceId: 97});
+		const events: RuntimeEvent[] = [];
+		runtime.onEvent(e => events.push(e));
+
+		runtime.feedStdout(
+			JSON.stringify({
+				type: 'stream_event',
+				event: {
+					type: 'message_start',
+					message: {id: 'msg-a', role: 'assistant'},
+				},
+			}) + '\n',
+		);
+		runtime.feedStdout(
+			JSON.stringify({
+				type: 'stream_event',
+				event: {
+					type: 'content_block_delta',
+					index: 0,
+					delta: {type: 'text_delta', text: 'Hi'},
+				},
+			}) + '\n',
+		);
+		runtime.feedStdout(
+			JSON.stringify({
+				type: 'assistant',
+				message: {
+					id: 'msg-a',
+					role: 'assistant',
+					content: [{type: 'text', text: 'Hi there'}],
+				},
+			}) + '\n',
+		);
+
+		const deltas = events.filter(e => e.kind === 'message.delta');
+		const completes = events.filter(e => e.kind === 'message.complete');
+		expect(deltas).toHaveLength(1);
+		expect(deltas[0]!.data).toMatchObject({item_id: 'msg-a', delta: 'Hi'});
+		expect(deltas[0]!.hookName).toBe('stream-json');
+		expect(completes).toHaveLength(1);
+		expect(completes[0]!.data).toMatchObject({
+			item_id: 'msg-a',
+			message: 'Hi there',
+		});
+	});
+
 	it('sends HookResultEnvelope back when decision is provided', async () => {
 		useRuntimeDir();
 		const projectDir = makeTmpDir();

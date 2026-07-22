@@ -1,7 +1,7 @@
 // src/feed/types.ts
 
 import type {PermissionSuggestion} from '../../shared/types/permissionSuggestion';
-import type {RuntimeEventDataMap} from '../runtime/events';
+import type {RuntimeEventDataMap, ToolBatchCall} from '../runtime/events';
 
 // ── Base ──────────────────────────────────────────────────
 
@@ -11,12 +11,14 @@ export type FeedEventKind =
 	| 'run.start'
 	| 'run.end'
 	| 'user.prompt'
+	| 'prompt.expansion'
 	| 'plan.update'
 	| 'reasoning.summary'
 	| 'usage.update'
 	| 'tool.delta'
 	| 'tool.pre'
 	| 'tool.post'
+	| 'tool.batch'
 	| 'tool.failure'
 	| 'permission.request'
 	| 'permission.decision'
@@ -90,6 +92,20 @@ export type FeedEventBase = {
 	ts: number;
 	session_id: string;
 	run_id: string;
+	/**
+	 * Harness-native Prompt identity (Claude `prompt_id`) the originating event
+	 * belonged to, forwarded from RuntimeEvent.promptId. A correlation field —
+	 * NOT the Run identity (that stays `run_id` = `{session_id}:R{n}`). Unset for
+	 * pre-prompt bootstrap events and harnesses/versions without prompt_id
+	 * (ADR 0009).
+	 */
+	prompt_id?: string;
+	/**
+	 * Active reasoning effort level, forwarded from RuntimeEvent.effortLevel.
+	 * Observation only, and a base field rather than session.start data because
+	 * the harness reports it on ordinary hook payloads, not only at session start.
+	 */
+	effort_level?: string;
 	kind: FeedEventKind;
 	level: FeedEventLevel;
 	actor_id: string;
@@ -113,6 +129,7 @@ export type SessionStartData = {
 	source: 'startup' | 'resume' | 'clear' | 'compact' | string;
 	agent_type?: string;
 	model?: string;
+	session_title?: string;
 };
 
 export type SessionEndData = {
@@ -139,6 +156,15 @@ export type RunEndData = {
 export type UserPromptData = {
 	prompt: string;
 	cwd: string;
+	permission_mode?: string;
+};
+
+export type PromptExpansionData = {
+	expansion_type?: string;
+	command_name?: string;
+	command_args?: string;
+	command_source?: string;
+	prompt?: string;
 	permission_mode?: string;
 };
 
@@ -185,6 +211,18 @@ export type ToolPostData = {
 	tool_input: Record<string, unknown>;
 	tool_use_id?: string;
 	tool_response: unknown;
+};
+
+/**
+ * One assistant tool batch, emitted once after all its `tool.post` rows.
+ * `tool_calls[].tool_use_id` correlates 1:1 to those rows.
+ *
+ * 🔴 Each call's `tool_response` is a STRING (the flattened, model-facing
+ * rendering), unlike {@link ToolPostData.tool_response}. See ToolBatchCall.
+ */
+export type ToolBatchData = {
+	tool_calls: ToolBatchCall[];
+	permission_mode?: string;
 };
 
 export type ToolFailureData = {
@@ -532,12 +570,14 @@ export type FeedEvent =
 	| (FeedEventBase & {kind: 'run.start'; data: RunStartData})
 	| (FeedEventBase & {kind: 'run.end'; data: RunEndData})
 	| (FeedEventBase & {kind: 'user.prompt'; data: UserPromptData})
+	| (FeedEventBase & {kind: 'prompt.expansion'; data: PromptExpansionData})
 	| (FeedEventBase & {kind: 'plan.update'; data: PlanUpdateData})
 	| (FeedEventBase & {kind: 'reasoning.summary'; data: ReasoningSummaryData})
 	| (FeedEventBase & {kind: 'usage.update'; data: UsageUpdateData})
 	| (FeedEventBase & {kind: 'tool.delta'; data: ToolDeltaData})
 	| (FeedEventBase & {kind: 'tool.pre'; data: ToolPreData})
 	| (FeedEventBase & {kind: 'tool.post'; data: ToolPostData})
+	| (FeedEventBase & {kind: 'tool.batch'; data: ToolBatchData})
 	| (FeedEventBase & {kind: 'tool.failure'; data: ToolFailureData})
 	| (FeedEventBase & {kind: 'permission.request'; data: PermissionRequestData})
 	| (FeedEventBase & {
@@ -668,10 +708,15 @@ export type _RuntimeFeedCompatibility = {
 	'session.start': AssertFeedExtendsRuntime<SessionStartData, 'session.start'>;
 	'session.end': AssertFeedExtendsRuntime<SessionEndData, 'session.end'>;
 	'user.prompt': AssertFeedExtendsRuntime<UserPromptData, 'user.prompt'>;
+	'prompt.expansion': AssertFeedExtendsRuntime<
+		PromptExpansionData,
+		'prompt.expansion'
+	>;
 	'usage.update': AssertFeedExtendsRuntime<UsageUpdateData, 'usage.update'>;
 	'tool.delta': AssertFeedExtendsRuntime<ToolDeltaData, 'tool.delta'>;
 	'tool.pre': AssertFeedExtendsRuntime<ToolPreData, 'tool.pre'>;
 	'tool.post': AssertFeedExtendsRuntime<ToolPostData, 'tool.post'>;
+	'tool.batch': AssertFeedExtendsRuntime<ToolBatchData, 'tool.batch'>;
 	'tool.failure': AssertFeedExtendsRuntime<ToolFailureData, 'tool.failure'>;
 	'permission.request': AssertFeedExtendsRuntime<
 		PermissionRequestData,

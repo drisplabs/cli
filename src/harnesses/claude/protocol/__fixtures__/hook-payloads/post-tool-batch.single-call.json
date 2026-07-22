@@ -1,0 +1,22 @@
+{
+	"session_id": "00000000-0000-4000-8000-000000000001",
+	"transcript_path": "/fixture/transcript.jsonl",
+	"cwd": "/fixture/workdir",
+	"prompt_id": "ba56e47f-a07b-415a-80a2-72bac3aaa3ac",
+	"permission_mode": "bypassPermissions",
+	"effort": {
+		"level": "high"
+	},
+	"hook_event_name": "PostToolBatch",
+	"tool_calls": [
+		{
+			"tool_name": "Bash",
+			"tool_input": {
+				"command": "ls -la",
+				"description": "List files in working directory"
+			},
+			"tool_use_id": "toolu_000000000000000000000000",
+			"tool_response": "total 8\ndrwxr-xr-x  3 user  staff   96 19 Jul 15:44 .\ndrwxr-xr-x  6 user  staff  192 19 Jul 15:45 ..\n-rw-r--r--  1 user  staff   14 19 Jul 15:45 sample.txt"
+		}
+	]
+}

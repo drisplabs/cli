@@ -1,0 +1,10 @@
+{
+	"session_id": "00000000-0000-4000-8000-000000000003",
+	"transcript_path": "/fixture/transcript.jsonl",
+	"cwd": "/fixture/workdir",
+	"prompt_id": "66eec96c-4d71-41e5-8d1c-59d44e98ee79",
+	"hook_event_name": "ElicitationResult",
+	"mcp_server_name": "elicitstub",
+	"mode": "form",
+	"action": "cancel"
+}

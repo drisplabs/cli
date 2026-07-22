@@ -11,6 +11,8 @@ import type {FeedEventKind} from './types';
  * None of the per-switch case arms in the consumers need updating.
  */
 export type DefaultRenderKind =
+	| 'prompt.expansion'
+	| 'tool.batch'
 	| 'compact.post'
 	| 'task.created'
 	| 'cwd.changed'
@@ -31,6 +33,8 @@ export type DefaultRenderKind =
 
 export const DEFAULT_RENDER: ReadonlySet<DefaultRenderKind> =
 	new Set<DefaultRenderKind>([
+		'prompt.expansion',
+		'tool.batch',
 		'compact.post',
 		'task.created',
 		'cwd.changed',

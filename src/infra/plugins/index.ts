@@ -21,6 +21,8 @@ export {
 	resolveMarketplacePlugin,
 	resolveMarketplaceWorkflow,
 } from './marketplace';
+export {resolvePluginDirs} from './pluginRefResolution';
+export type {PluginDirResolution} from './pluginRefResolution';
 export type {MarketplaceManifest, MarketplaceEntry} from './marketplace';
 export type {
 	PluginManifest,

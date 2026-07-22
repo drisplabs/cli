@@ -16,4 +16,14 @@ describe('UDS transport factories', () => {
 		expect(typeof server.listen).toBe('function');
 		expect(typeof client.connect).toBe('function');
 	});
+
+	it('describes its socket path without needing to listen', () => {
+		const server = createUdsServerTransport({
+			socketPath: '/tmp/athena-describe.sock',
+		});
+		expect(server.describe()).toEqual({
+			kind: 'uds',
+			socketPath: '/tmp/athena-describe.sock',
+		});
+	});
 });

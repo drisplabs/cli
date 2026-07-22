@@ -55,6 +55,7 @@ const RUN_SESSION_EVENT_KINDS = new Set<RuntimeEventKind>([
 	'session.start',
 	'session.end',
 	'user.prompt',
+	'prompt.expansion',
 	'turn.start',
 	'message.delta',
 	'message.complete',
@@ -68,6 +69,7 @@ const TOOL_EVENT_KINDS = new Set<RuntimeEventKind>([
 	'tool.delta',
 	'tool.pre',
 	'tool.post',
+	'tool.batch',
 	'tool.failure',
 ]);
 
@@ -148,6 +150,8 @@ export function createFeedMapper(bootstrap?: MapperBootstrap): FeedMapper {
 			ts: runtimeEvent.timestamp,
 			session_id: runtimeEvent.sessionId,
 			run_id: runId,
+			prompt_id: runtimeEvent.promptId,
+			effort_level: runtimeEvent.effortLevel,
 			kind,
 			level,
 			actor_id: actorId,

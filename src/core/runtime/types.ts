@@ -46,6 +46,21 @@ export type RuntimeEvent = {
 	toolUseId?: string;
 	agentId?: string;
 	agentType?: string;
+	/**
+	 * Harness-native Prompt identity (Claude `prompt_id`, a common input field on
+	 * v2.1.196+). Present on every hook event once a user prompt is being
+	 * processed; absent before the first user input and on harnesses/versions
+	 * that don't emit it. The FeedMapper uses a change of this value as the
+	 * authoritative Feed Run boundary trigger when present (ADR 0009).
+	 */
+	promptId?: string;
+	/**
+	 * Active reasoning effort level (Claude `effort.level`, a common input field).
+	 * Observation only — the harness reports what it is running with; nothing in
+	 * core sets it. Absent on payloads that don't carry it and on harnesses that
+	 * have no effort concept, in which case the header simply omits it.
+	 */
+	effortLevel?: string;
 
 	/** Base context present on all hook events */
 	context: {

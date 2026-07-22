@@ -38,6 +38,8 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,
 		supportsConfigurableIsolation: false,
+		emitsStartupDiagnostics: false,
+		extraAllowedTools: [],
 	},
 	createRuntime: input => claudeHarnessAdapter.createRuntime(input),
 	createSessionController: input =>
@@ -48,7 +50,13 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 		harness: 'opencode',
 		buildIsolationConfig: input => buildClaudeCompatibleIsolationConfig(input),
 		resolveModelName: ({configuredModel}) => configuredModel ?? null,
+		pluginDelivery: {
+			mergeWorkflowPluginDirs: true,
+			registrationBuildsMcpConfig: true,
+			workflowPluginsVia: 'registration',
+		},
 	}),
+	listModels: async () => [],
 };
 
 const HARNESS_ADAPTERS: HarnessAdapter[] = [

@@ -7,14 +7,18 @@ import {
 	type UseClaudeProcessOptions,
 } from './process/useProcess';
 import {createClaudeSessionController} from './session/controller';
-import type {HarnessAdapter} from '../adapter';
+import type {HarnessAdapter, HarnessModelOption} from '../adapter';
 import type {
 	BuildHarnessConfigInput,
 	HarnessConfigProfile,
 } from '../contracts/config';
 import type {UseSessionControllerResult} from '../contracts/session';
 import type {HarnessProcessConfig} from '../../core/runtime/process';
-import type {IsolationConfig, IsolationPreset} from './config/isolation';
+import {
+	normalizeEffort,
+	type IsolationConfig,
+	type IsolationPreset,
+} from './config/isolation';
 
 function buildClaudeCompatibleIsolationConfig({
 	isolationPreset,
@@ -22,6 +26,7 @@ function buildClaudeCompatibleIsolationConfig({
 	pluginDirs,
 	verbose,
 	configuredModel,
+	configuredEffort,
 }: BuildHarnessConfigInput): HarnessProcessConfig {
 	return {
 		preset: isolationPreset,
@@ -29,14 +34,43 @@ function buildClaudeCompatibleIsolationConfig({
 		pluginDirs: pluginDirs.length > 0 ? pluginDirs : undefined,
 		debug: verbose,
 		model: configuredModel,
+		effort: normalizeEffort(configuredEffort),
 	};
 }
+
+const CLAUDE_MODEL_OPTIONS: HarnessModelOption[] = [
+	{
+		value: 'sonnet',
+		label: 'Sonnet',
+		description: 'Balanced default for day-to-day coding work.',
+	},
+	{
+		value: 'opus',
+		label: 'Opus',
+		description: 'Stronger reasoning for complex architecture and debugging.',
+	},
+	{
+		value: 'haiku',
+		label: 'Haiku',
+		description: 'Fastest option for lighter tasks.',
+	},
+	{
+		value: 'opusplan',
+		label: 'OpusPlan',
+		description: 'Uses Opus for planning and Sonnet for execution.',
+	},
+];
 
 const CLAUDE_CONFIG_PROFILE: HarnessConfigProfile = {
 	harness: 'claude-code',
 	buildIsolationConfig: buildClaudeCompatibleIsolationConfig,
 	resolveModelName: ({projectDir, configuredModel}) =>
 		resolveClaudeModel({projectDir, configuredModel}),
+	pluginDelivery: {
+		mergeWorkflowPluginDirs: true,
+		registrationBuildsMcpConfig: true,
+		workflowPluginsVia: 'registration',
+	},
 };
 
 export const claudeHarnessAdapter: HarnessAdapter = {
@@ -48,6 +82,8 @@ export const claudeHarnessAdapter: HarnessAdapter = {
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,
 		supportsConfigurableIsolation: true,
+		emitsStartupDiagnostics: true,
+		extraAllowedTools: [],
 	},
 	verify: () => verifyClaudeHarness(),
 	createRuntime: input =>
@@ -95,4 +131,5 @@ export const claudeHarnessAdapter: HarnessAdapter = {
 		return controller;
 	},
 	resolveConfigProfile: () => CLAUDE_CONFIG_PROFILE,
+	listModels: async () => CLAUDE_MODEL_OPTIONS,
 };

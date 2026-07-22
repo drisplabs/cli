@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.25](https://github.com/drisplabs/cli/compare/cli-v0.5.24...cli-v0.5.25) (2026-07-19)
+
+
+### Refactors
+
+* **harnesses:** deepen the HarnessAdapter seam (stop string-switching on harness id) ([#106](https://github.com/drisplabs/cli/issues/106)) ([d0e0031](https://github.com/drisplabs/cli/commit/d0e0031a929714c739a0ed552e0e34e53c872932))
+* **plugins:** resolve plugin refs out of readConfig into a resolvePluginDirs seam ([#108](https://github.com/drisplabs/cli/issues/108)) ([851d1a3](https://github.com/drisplabs/cli/commit/851d1a3fa2226bef803df944784d13b269823503))
+* **transport:** deepen gateway control-plane transport layer (C1–C4) ([#109](https://github.com/drisplabs/cli/issues/109)) ([0ad5046](https://github.com/drisplabs/cli/commit/0ad5046e5e9a9ae23b014d637046307e1e5a2614))
+* **ui:** delete stranded Ink-React feed-render tree (C3) ([#105](https://github.com/drisplabs/cli/issues/105)) ([350cfe7](https://github.com/drisplabs/cli/commit/350cfe760c301d98df012ca11a349207fabd375b))
+
+## [0.5.24](https://github.com/drisplabs/cli/compare/cli-v0.5.23...cli-v0.5.24) (2026-07-19)
+
+
+### Refactors
+
+* **app:** one owner for the runtime-event loop (C2) ([#100](https://github.com/drisplabs/cli/issues/100)) ([713dab0](https://github.com/drisplabs/cli/commit/713dab0eff4f6312463899147a6c56aa53104139))
+* **feed:** fold single-caller FeedMapper leaves into their seams ([#97](https://github.com/drisplabs/cli/issues/97)) ([9560d72](https://github.com/drisplabs/cli/commit/9560d72f5b72bbe44532b02b069353efbe3fc0c3))
+* **harnesses:** one turn-runner per adapter (C5) ([#99](https://github.com/drisplabs/cli/issues/99)) ([f7cc33b](https://github.com/drisplabs/cli/commit/f7cc33b27c173193b348a647d6f1866699a4fe39))
+* **infra:** one owner for session.db + shared openVersionedDb (C3) ([#101](https://github.com/drisplabs/cli/issues/101)) ([cb295ef](https://github.com/drisplabs/cli/commit/cb295efdee6e5e74a66ff6171705a89ea3bca60f))
+* **workflows:** one owner for a Turn's terminal outcome ([#96](https://github.com/drisplabs/cli/issues/96)) ([f878a8e](https://github.com/drisplabs/cli/commit/f878a8e36dd3098fe63e2ef68ae6ae8981014a85))
+
+## [0.5.23](https://github.com/drisplabs/cli/compare/cli-v0.5.22...cli-v0.5.23) (2026-06-15)
+
+
+### Bug Fixes
+
+* **workflows:** prevent terminal marker loops ([888f75a](https://github.com/drisplabs/cli/commit/888f75a4d9b0ede3e76f40a8931238ac83859a41))
+* **workflows:** prevent terminal marker loops ([#93](https://github.com/drisplabs/cli/issues/93)) ([0c1af3f](https://github.com/drisplabs/cli/commit/0c1af3f3de83986d83a799109771d11dc28afd28))
+
 ## [0.5.22](https://github.com/drisplabs/cli/compare/cli-v0.5.21...cli-v0.5.22) (2026-06-15)
 
 

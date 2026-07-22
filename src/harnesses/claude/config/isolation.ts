@@ -13,6 +13,34 @@
 /** Preset key selecting an isolation profile from {@link ISOLATION_PRESETS}. */
 export type IsolationPreset = 'strict' | 'minimal' | 'permissive';
 
+/** Supported Claude reasoning-effort levels for the `--effort` launch knob. */
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** The reasoning-effort levels Claude accepts, in ascending order. */
+export const CLAUDE_EFFORT_LEVELS: ClaudeEffortLevel[] = [
+	'low',
+	'medium',
+	'high',
+	'xhigh',
+	'max',
+];
+
+/**
+ * Normalize a configured effort value to a supported reasoning level.
+ *
+ * Returns the level when it is one of {@link CLAUDE_EFFORT_LEVELS}; returns
+ * undefined for absent or unsupported values so the `--effort` flag is omitted
+ * (no override) rather than passing through an invalid level.
+ */
+export function normalizeEffort(
+	value: string | undefined,
+): ClaudeEffortLevel | undefined {
+	if (value === undefined) return undefined;
+	return (CLAUDE_EFFORT_LEVELS as string[]).includes(value)
+		? (value as ClaudeEffortLevel)
+		: undefined;
+}
+
 /**
  * Configuration for isolating the spawned Claude Code process.
  *
@@ -52,6 +80,8 @@ export type IsolationConfig = {
 	// === Model & Agent ===
 	/** Model to use (alias like "sonnet"/"opus" or full model name) */
 	model?: string;
+	/** Reasoning effort level to pin (low/medium/high/xhigh/max) */
+	effort?: string;
 	/** Fallback model when default is overloaded */
 	fallbackModel?: string;
 	/** Specify an agent for the session */

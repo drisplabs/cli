@@ -8,6 +8,7 @@ const resolveWorkflowMock = vi.fn();
 const installWorkflowPluginsMock = vi.fn();
 const resolveWorkflowPluginsMock = vi.fn();
 const readClaudeSettingsModelMock = vi.fn();
+const resolvePluginDirsMock = vi.fn();
 
 vi.mock('../../infra/plugins/index', async () => {
 	const actual = await vi.importActual<
@@ -35,6 +36,7 @@ vi.mock('../../infra/plugins/index', async () => {
 			dirs: string[],
 			mcpServerOptions?: Record<string, Record<string, string>>,
 		) => buildPluginMcpConfigMock(dirs, mcpServerOptions),
+		resolvePluginDirs: (entries: string[]) => resolvePluginDirsMock(entries),
 	};
 });
 
@@ -136,6 +138,12 @@ describe('bootstrapRuntimeConfig', () => {
 			codexPlugins: [],
 		});
 		readClaudeSettingsModelMock.mockReset();
+		resolvePluginDirsMock.mockReset();
+		// Default: identity resolution (fixtures are already absolute dirs).
+		resolvePluginDirsMock.mockImplementation((entries: string[]) => ({
+			dirs: entries,
+			warnings: [],
+		}));
 	});
 
 	afterEach(() => {
@@ -144,6 +152,33 @@ describe('bootstrapRuntimeConfig', () => {
 		} else {
 			process.env['ANTHROPIC_MODEL'] = initialAnthropicModel;
 		}
+	});
+
+	it('threads unresolved-plugin-ref warnings into warnings[]', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			plugins: ['bad-plugin@owner/repo'],
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolvePluginDirsMock.mockImplementation((entries: string[]) => ({
+			dirs: entries.filter(entry => !entry.includes('@')),
+			warnings: entries
+				.filter(entry => entry.includes('@'))
+				.map(entry => `Skipping plugin "${entry}": not found in marketplace`),
+		}));
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(resolvePluginDirsMock).toHaveBeenCalledWith([
+			'bad-plugin@owner/repo',
+		]);
+		expect(result.warnings).toContain(
+			'Skipping plugin "bad-plugin@owner/repo": not found in marketplace',
+		);
 	});
 
 	it('re-resolves configured workflow and installs workflow plugins when setup is not shown', () => {

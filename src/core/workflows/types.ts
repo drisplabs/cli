@@ -28,20 +28,6 @@ export type LoopConfig = {
 };
 
 /**
- * Terminal reasons for a workflow loop.
- *
- * The runner uses this to distinguish a clean completion from an execution
- * problem such as the tracker file disappearing.
- */
-export type LoopStopReason =
-	| 'completed'
-	| 'blocked'
-	| 'max_iterations'
-	| 'missing_tracker'
-	| 'skeleton_not_replaced'
-	| 'misplaced_terminal_marker';
-
-/**
  * A plugin dependency with an explicit version pin.
  * Used in workflows to lock a specific plugin version.
  */
@@ -75,6 +61,8 @@ export type WorkflowConfig = {
 	loop?: LoopConfig;
 	isolation?: string;
 	model?: string;
+	/** Reasoning effort level to pin for the harness (low/medium/high/xhigh/max) */
+	effort?: string;
 	env?: Record<string, string>;
 	/** Path to workflow orchestration doc, passed as --append-system-prompt-file */
 	workflowFile?: string;
