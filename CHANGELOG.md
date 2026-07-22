@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.5.26](https://github.com/drisplabs/cli/compare/cli-v0.5.25...cli-v0.5.26) (2026-07-22)
+
+
+### Features
+
+* **claude:** stream live assistant text into the feed via stream-json ([#127](https://github.com/drisplabs/cli/issues/127)) ([765bd15](https://github.com/drisplabs/cli/commit/765bd150ef2ea45baa929294fd0ac63091cd2361)), closes [#117](https://github.com/drisplabs/cli/issues/117)
+* **claude:** translate PostToolBatch end-to-end into the feed ([#130](https://github.com/drisplabs/cli/issues/130)) ([fe70b1d](https://github.com/drisplabs/cli/commit/fe70b1ddde26f2647da0a3c9bfcf69b43290037e))
+* **feed:** thread Claude prompt_id as authoritative Feed Run boundary ([#111](https://github.com/drisplabs/cli/issues/111)) ([#126](https://github.com/drisplabs/cli/issues/126)) ([61d5902](https://github.com/drisplabs/cli/commit/61d5902955b9bba414b81767acbce5dfbb7ac01b))
+* **harnesses:** observe effort level in the session header ([#113](https://github.com/drisplabs/cli/issues/113)) ([#124](https://github.com/drisplabs/cli/issues/124)) ([b8e85c6](https://github.com/drisplabs/cli/commit/b8e85c65f5f5ec230624e8af07ea5a77af634d1c))
+* **harnesses:** pin reasoning effort via --effort launch knob ([#125](https://github.com/drisplabs/cli/issues/125)) ([79c6e10](https://github.com/drisplabs/cli/commit/79c6e108eff50f2de092a87129339a33564bb7de)), closes [#114](https://github.com/drisplabs/cli/issues/114)
+* **harnesses:** support UserPromptExpansion end-to-end (observation-only) ([#129](https://github.com/drisplabs/cli/issues/129)) ([0bc88ad](https://github.com/drisplabs/cli/commit/0bc88adb6fc20d44af03e82fca7409ea8955d835))
+* **harnesses:** surface SessionStart session_title as session display title ([#123](https://github.com/drisplabs/cli/issues/123)) ([8f79e19](https://github.com/drisplabs/cli/commit/8f79e19dc59f0943272e7a740a3206024c13cac0)), closes [#112](https://github.com/drisplabs/cli/issues/112)
+* Personal capabilities (MCP servers + skills) — epic ([#95](https://github.com/drisplabs/cli/issues/95)) ([92a094c](https://github.com/drisplabs/cli/commit/92a094c39d8610dfaed13f79079cdc18493dad97))
+
+
+### Bug Fixes
+
+* **claude:** complete NotificationType and de-flake historyStore tests ([#134](https://github.com/drisplabs/cli/issues/134)) ([f33b684](https://github.com/drisplabs/cli/commit/f33b6842a4fcb39b1bec9ef59272538cbcea3c66))
+* **claude:** complete the NotificationType enum ([#132](https://github.com/drisplabs/cli/issues/132)) ([c371b9d](https://github.com/drisplabs/cli/commit/c371b9d40d790a3575985de99d432402977e06b6))
+* **harnesses:** restore dropped Claude translator fields ([#115](https://github.com/drisplabs/cli/issues/115)) ([#122](https://github.com/drisplabs/cli/issues/122)) ([ab646ba](https://github.com/drisplabs/cli/commit/ab646ba4053e81dec642e99c0c2f305410d2e33f))
+* **transport:** survive split UTF-8 + harden control-plane frame handling ([#121](https://github.com/drisplabs/cli/issues/121)) ([0b558a3](https://github.com/drisplabs/cli/commit/0b558a39acfd30c7d35ad69d8378395289414171))
+
+
+### Performance
+
+* **hooks:** take observation hooks off Claude's critical path ([#131](https://github.com/drisplabs/cli/issues/131)) ([377c33a](https://github.com/drisplabs/cli/commit/377c33a43ae454b2af204dc117645913edeca4a1)), closes [#120](https://github.com/drisplabs/cli/issues/120)
+
+
+### Refactors
+
+* **harnesses:** route extra allowed tools through a capability ([#110](https://github.com/drisplabs/cli/issues/110)) ([10e8a1a](https://github.com/drisplabs/cli/commit/10e8a1aeea1e11a8e4b9ec091edd53ffd862b544))
+
 ## [0.5.25](https://github.com/drisplabs/cli/compare/cli-v0.5.24...cli-v0.5.25) (2026-07-19)
 
 
