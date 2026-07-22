@@ -8,6 +8,9 @@ const BASE_RUNTIME_CONFIG: ExecRuntimeConfig = {
 	pluginMcpConfig: undefined,
 	workflow: undefined,
 	workflowPlan: undefined,
+	personalMcpServers: [],
+	personalSkills: [],
+	capabilityConflicts: {mcpServers: [], skills: []},
 };
 
 const BASE_FLAGS = {
@@ -155,6 +158,106 @@ describe('runExecCommand', () => {
 				athenaSessionId: 'athena-new',
 			}),
 		);
+	});
+
+	it('forwards a stripped personal capabilities summary (name + layer only)', async () => {
+		const runExecFn = vi
+			.fn()
+			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: {
+					...BASE_RUNTIME_CONFIG,
+					personalMcpServers: [
+						{
+							name: 'db',
+							command: 'npx',
+							args: ['-y', 'server'],
+							env: {API_KEY: 'topsecret'},
+							sourceLayer: 'project',
+						},
+					],
+					personalSkills: [
+						{
+							name: 'greet',
+							source: './skills/greet',
+							path: '/abs/secret/path/greet',
+							sourceLayer: 'global',
+						},
+					],
+				},
+			},
+			{runExecFn, createSessionId: () => 'athena-new'},
+		);
+
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				personalCapabilities: {
+					mcpServers: [{name: 'db', sourceLayer: 'project'}],
+					skills: [{name: 'greet', sourceLayer: 'global'}],
+				},
+			}),
+		);
+
+		const passed = JSON.stringify(runExecFn.mock.calls[0]![0]);
+		expect(passed).not.toContain('topsecret');
+		expect(passed).not.toContain('/abs/secret/path/greet');
+		expect(passed).not.toContain('API_KEY');
+	});
+
+	it('forwards a stripped capability-conflicts summary (name + layer only)', async () => {
+		const runExecFn = vi
+			.fn()
+			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: {
+					...BASE_RUNTIME_CONFIG,
+					capabilityConflicts: {
+						mcpServers: [
+							{
+								name: 'db',
+								command: 'npx',
+								args: ['-y', 'server'],
+								env: {API_KEY: 'topsecret'},
+								sourceLayer: 'project',
+							},
+						],
+						skills: [
+							{
+								name: 'greet',
+								source: './skills/greet',
+								path: '/abs/secret/path/greet',
+								sourceLayer: 'global',
+							},
+						],
+					},
+				},
+			},
+			{runExecFn, createSessionId: () => 'athena-new'},
+		);
+
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				capabilityConflicts: {
+					mcpServers: [{name: 'db', sourceLayer: 'project'}],
+					skills: [{name: 'greet', sourceLayer: 'global'}],
+				},
+			}),
+		);
+
+		const passed = JSON.stringify(runExecFn.mock.calls[0]![0]);
+		expect(passed).not.toContain('topsecret');
+		expect(passed).not.toContain('/abs/secret/path/greet');
+		expect(passed).not.toContain('API_KEY');
 	});
 
 	it('uses most recent session when bare --continue is provided', async () => {

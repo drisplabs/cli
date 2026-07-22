@@ -75,6 +75,32 @@ describe('createExecOutputWriter', () => {
 		expect(output).toContain('[athena exec] error: err');
 	});
 
+	it('writes notices to stderr in human mode but stays silent in json mode', () => {
+		const humanStderr = createBufferWriter();
+		const humanWriter = createExecOutputWriter({
+			json: false,
+			verbose: false,
+			stdout: createBufferWriter(),
+			stderr: humanStderr,
+		});
+		humanWriter.notice('personal capabilities active');
+		expect(humanStderr.get()).toContain(
+			'[athena exec] personal capabilities active',
+		);
+
+		const jsonStderr = createBufferWriter();
+		const jsonStdout = createBufferWriter();
+		const jsonWriter = createExecOutputWriter({
+			json: true,
+			verbose: false,
+			stdout: jsonStdout,
+			stderr: jsonStderr,
+		});
+		jsonWriter.notice('personal capabilities active');
+		expect(jsonStderr.get()).toBe('');
+		expect(jsonStdout.get()).toBe('');
+	});
+
 	it('writes output-last-message file', async () => {
 		const stdout = createBufferWriter();
 		const stderr = createBufferWriter();

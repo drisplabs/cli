@@ -52,6 +52,61 @@ const NULL_TOKENS: TokenUsage = {
 	contextWindowSize: null,
 };
 
+/**
+ * Build a concise human-facing startup notice for active personal
+ * capabilities — labeled "personal" to distinguish them from workflow plugins.
+ * Returns null when nothing is active (caller stays silent). Prints name +
+ * source layer ONLY; never command/args/env (MCP) or path (skills).
+ */
+function formatPersonalCapabilityNotice(summary: {
+	mcpServers: ReadonlyArray<{name: string; sourceLayer: string}>;
+	skills: ReadonlyArray<{name: string; sourceLayer: string}>;
+}): string | null {
+	const parts: string[] = [];
+	if (summary.mcpServers.length > 0) {
+		const list = summary.mcpServers
+			.map(server => `${server.name} [${server.sourceLayer}]`)
+			.join(', ');
+		parts.push(`mcp servers: ${list}`);
+	}
+	if (summary.skills.length > 0) {
+		const list = summary.skills
+			.map(skill => `${skill.name} [${skill.sourceLayer}]`)
+			.join(', ');
+		parts.push(`skills: ${list}`);
+	}
+	if (parts.length === 0) return null;
+	return `personal capabilities active — ${parts.join('; ')}`;
+}
+
+/**
+ * Build a human-facing WARNING notice for personal capabilities shadowed by a
+ * same-named workflow plugin (plugin wins, personal skipped). Returns null when
+ * there are no conflicts. Prints name + source layer ONLY.
+ */
+function formatCapabilityConflictNotice(summary: {
+	mcpServers: ReadonlyArray<{name: string; sourceLayer: string}>;
+	skills: ReadonlyArray<{name: string; sourceLayer: string}>;
+}): string | null {
+	const parts: string[] = [];
+	if (summary.mcpServers.length > 0) {
+		const list = summary.mcpServers
+			.map(server => `${server.name} [${server.sourceLayer}]`)
+			.join(', ');
+		parts.push(`mcp servers: ${list}`);
+	}
+	if (summary.skills.length > 0) {
+		const list = summary.skills
+			.map(skill => `${skill.name} [${skill.sourceLayer}]`)
+			.join(', ');
+		parts.push(`skills: ${list}`);
+	}
+	if (parts.length === 0) return null;
+	return `personal capability conflicts — workflow plugin wins; shadowed: ${parts.join(
+		'; ',
+	)}`;
+}
+
 function workflowFailure(
 	state: ExecWorkflowFailureState,
 	message: string,
@@ -397,11 +452,34 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		}, options.timeoutMs);
 	}
 
+	const personalCapabilities = options.personalCapabilities ?? {
+		mcpServers: [],
+		skills: [],
+	};
+	const capabilityConflicts = options.capabilityConflicts ?? {
+		mcpServers: [],
+		skills: [],
+	};
+
 	output.emitJsonEvent('exec.started', {
 		projectDir: options.projectDir,
 		harness: options.harness,
 		athenaSessionId: options.ephemeral ? null : athenaSessionId,
+		personalCapabilities,
+		capabilityConflicts,
 	});
+
+	const personalCapabilityNotice =
+		formatPersonalCapabilityNotice(personalCapabilities);
+	if (personalCapabilityNotice) {
+		output.notice(personalCapabilityNotice);
+	}
+
+	const capabilityConflictNotice =
+		formatCapabilityConflictNotice(capabilityConflicts);
+	if (capabilityConflictNotice) {
+		output.notice(capabilityConflictNotice);
+	}
 
 	try {
 		await runtime.start();

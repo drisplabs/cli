@@ -27,7 +27,7 @@ vi.mock('node:os', () => ({
 // real, pure `isMarketplaceRef` regex decides which entries are left raw.
 
 // Import after mocks are set up
-const {readConfig, readGlobalConfig, writeGlobalConfig} =
+const {readConfig, readGlobalConfig, writeGlobalConfig, writeProjectConfig} =
 	await import('../config');
 
 beforeEach(() => {
@@ -381,5 +381,96 @@ describe('writeGlobalConfig', () => {
 		expect(() => readGlobalConfig()).toThrow(
 			/workflowMarketplaceSources" must be an array of strings/,
 		);
+	});
+});
+
+describe('personal mcpServers field', () => {
+	it('round-trips a personal MCP server through global config (AC1)', () => {
+		writeGlobalConfig({
+			mcpServers: {
+				weather: {command: 'npx', args: ['-y', 'weather-mcp'], env: {KEY: 'v'}},
+			},
+		});
+
+		expect(readGlobalConfig().mcpServers).toEqual({
+			weather: {command: 'npx', args: ['-y', 'weather-mcp'], env: {KEY: 'v'}},
+		});
+	});
+
+	it('round-trips a personal MCP server through project config (AC2)', () => {
+		writeProjectConfig('/project', {
+			mcpServers: {db: {command: 'db-mcp'}},
+		});
+
+		expect(readConfig('/project').mcpServers).toEqual({
+			db: {command: 'db-mcp'},
+		});
+	});
+
+	it('returns undefined mcpServers when not set', () => {
+		files['/project/.athena/config.json'] = JSON.stringify({plugins: []});
+		expect(readConfig('/project').mcpServers).toBeUndefined();
+	});
+});
+
+describe('personal skills field', () => {
+	it('round-trips personal skills through global config (AC3)', () => {
+		writeGlobalConfig({
+			skills: [{name: 'fmt', source: 'owner/repo', path: '/abs/fmt'}],
+		});
+
+		expect(readGlobalConfig().skills).toEqual([
+			{name: 'fmt', source: 'owner/repo', path: '/abs/fmt'},
+		]);
+	});
+
+	it('round-trips personal skills through project config (AC3)', () => {
+		writeProjectConfig('/project', {
+			skills: [
+				{name: 'lint', source: './local', path: '/project/.skills/lint'},
+			],
+		});
+
+		expect(readConfig('/project').skills).toEqual([
+			{name: 'lint', source: './local', path: '/project/.skills/lint'},
+		]);
+	});
+
+	it('does NOT relative-resolve skill path against baseDir (R1)', () => {
+		// A relative-looking path is stored opaque; Issue 3 resolves at install.
+		files['/project/.athena/config.json'] = JSON.stringify({
+			skills: [{name: 's', source: 'src', path: 'relative/skill'}],
+		});
+
+		expect(readConfig('/project').skills).toEqual([
+			{name: 's', source: 'src', path: 'relative/skill'},
+		]);
+	});
+
+	it('returns undefined skills when not set', () => {
+		files['/project/.athena/config.json'] = JSON.stringify({plugins: []});
+		expect(readConfig('/project').skills).toBeUndefined();
+	});
+});
+
+describe('personal capabilities do not clobber existing fields (AC5)', () => {
+	it('writing mcpServers preserves workflowSelections and vice versa', () => {
+		writeGlobalConfig({
+			workflowSelections: {wf: {mcpServerOptions: {s: {A: 'true'}}}},
+		});
+		writeGlobalConfig({mcpServers: {db: {command: 'db-mcp'}}});
+
+		const config = readGlobalConfig();
+		expect(config.workflowSelections).toEqual({
+			wf: {mcpServerOptions: {s: {A: 'true'}}},
+		});
+		expect(config.mcpServers).toEqual({db: {command: 'db-mcp'}});
+
+		writeGlobalConfig({
+			workflowSelections: {wf2: {mcpServerOptions: {s2: {B: 'true'}}}},
+		});
+		const after = readGlobalConfig();
+		expect(after.mcpServers).toEqual({db: {command: 'db-mcp'}});
+		expect(after.skills).toBeUndefined();
 	});
 });

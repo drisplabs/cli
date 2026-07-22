@@ -7,7 +7,13 @@ import {
 	resolvePluginDirs,
 	type AthenaConfig,
 	type AthenaHarness,
+	type CapabilityConflicts,
 } from '../../infra/plugins/index';
+import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
+import type {
+	EffectiveMcpServer,
+	EffectiveSkill,
+} from '../../infra/capabilities/effective';
 import {shouldResolveWorkflow} from '../../setup/shouldResolveWorkflow';
 import type {
 	HarnessProcessConfig,
@@ -50,6 +56,16 @@ export type RuntimeBootstrapOutput = {
 	workflow?: WorkflowConfig;
 	workflowPlan?: WorkflowPlan;
 	modelName: string | null;
+	/** Effective personal MCP servers injected into the session (claude-code only; codex → []). */
+	personalMcpServers: EffectiveMcpServer[];
+	/** Effective personal skills injected into the session (claude-code only; codex → []). */
+	personalSkills: EffectiveSkill[];
+	/**
+	 * Personal capabilities shadowed by a same-named workflow plugin (plugin
+	 * wins, personal skipped). Empty when there are no collisions or no
+	 * personal capabilities (codex → empty).
+	 */
+	capabilityConflicts: CapabilityConflicts;
 	warnings: string[];
 };
 
@@ -144,8 +160,19 @@ export function bootstrapRuntimeConfig({
 		projectPlugins: projectPluginResolution.dirs,
 		pluginFlags,
 	});
+	// Personal MCP servers (Issue 2) and personal skills (Issue 3) are injected
+	// for the claude-code path only. The openai-codex path keeps its separate
+	// workflowPluginMcpConfig flow and its own command-registration semantics.
+	const effectiveCapabilities =
+		harness === 'openai-codex'
+			? {mcpServers: [], skills: []}
+			: resolveEffectiveCapabilities({globalConfig, projectConfig});
+	const personalMcpServers = effectiveCapabilities.mcpServers;
+	const personalSkills = effectiveCapabilities.skills;
 	const pluginResult =
-		pluginDirs.length > 0
+		pluginDirs.length > 0 ||
+		personalMcpServers.length > 0 ||
+		personalSkills.length > 0
 			? registerPlugins(
 					pluginDirs,
 					workflowToResolve
@@ -153,8 +180,10 @@ export function bootstrapRuntimeConfig({
 								?.mcpServerOptions
 						: undefined,
 					pluginDelivery.registrationBuildsMcpConfig,
+					personalMcpServers,
+					personalSkills,
 				)
-			: {mcpConfig: undefined};
+			: {mcpConfig: undefined, conflicts: {mcpServers: [], skills: []}};
 	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
 		? buildPluginMcpConfig(
 				workflowPluginDirs,
@@ -162,7 +191,7 @@ export function bootstrapRuntimeConfig({
 					? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
 							?.mcpServerOptions
 					: undefined,
-			)
+			).mcpConfig
 		: undefined;
 	const pluginMcpConfig = workflowPluginsAsGeneratedMcp
 		? undefined
@@ -230,6 +259,9 @@ export function bootstrapRuntimeConfig({
 		workflow: activeWorkflow,
 		workflowPlan,
 		modelName,
+		personalMcpServers,
+		personalSkills,
+		capabilityConflicts: pluginResult.conflicts,
 		warnings,
 	};
 }

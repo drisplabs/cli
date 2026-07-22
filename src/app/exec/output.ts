@@ -17,6 +17,12 @@ export type ExecOutputWriterOptions = {
 export type ExecOutputWriter = {
 	emitJsonEvent: (type: string, data: unknown) => void;
 	log: (message: string) => void;
+	/**
+	 * Unconditional informational notice to stderr in human mode (NOT
+	 * verbose-gated, no "warning:" prefix). Silent in json mode so it never
+	 * pollutes the JSONL stream.
+	 */
+	notice: (message: string) => void;
 	warn: (message: string) => void;
 	error: (message: string) => void;
 	printFinalMessage: (message: string) => void;
@@ -40,6 +46,10 @@ export function createExecOutputWriter(
 		},
 		log(message) {
 			if (!options.verbose) return;
+			writeLine(options.stderr, `[athena exec] ${message}`);
+		},
+		notice(message) {
+			if (options.json) return;
 			writeLine(options.stderr, `[athena exec] ${message}`);
 		},
 		warn(message) {

@@ -33,6 +33,8 @@ import {EXEC_EXIT_CODE} from '../exec';
 import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
+import {runMcpCommand} from './mcpCommand';
+import {runSkillCommand} from './skillCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
 import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
@@ -74,6 +76,8 @@ const KNOWN_COMMANDS = new Set([
 	'resume',
 	'exec',
 	'workflow',
+	'mcp',
+	'skill',
 	'marketplace',
 	'channel',
 	'gateway',
@@ -174,6 +178,44 @@ function printExecDryRunSummary(
 	lines.push(
 		`  plugin mcp config: ${runtimeConfig.pluginMcpConfig ?? '<none>'}`,
 	);
+	// Personal capabilities are reported separately from workflow plugins so the
+	// user can see exactly what they configured (vs. what the workflow brought).
+	// Print name + source layer ONLY — never env values, command, args, or paths.
+	const mcpLabel = 'personal mcp servers:';
+	const skillLabel = 'personal skills:';
+	const personalLabelWidth = mcpLabel.length;
+	lines.push('  personal capabilities:');
+	if (runtimeConfig.personalMcpServers.length === 0) {
+		lines.push(`    ${mcpLabel.padEnd(personalLabelWidth)} <none>`);
+	} else {
+		lines.push(`    ${mcpLabel}`);
+		for (const server of runtimeConfig.personalMcpServers) {
+			lines.push(`      - ${server.name} [${server.sourceLayer}]`);
+		}
+	}
+	if (runtimeConfig.personalSkills.length === 0) {
+		lines.push(`    ${skillLabel.padEnd(personalLabelWidth)} <none>`);
+	} else {
+		lines.push(`    ${skillLabel}`);
+		for (const skill of runtimeConfig.personalSkills) {
+			lines.push(`      - ${skill.name} [${skill.sourceLayer}]`);
+		}
+	}
+	// Personal capabilities shadowed by a same-named workflow plugin (plugin
+	// wins, personal skipped). Name + layer ONLY, same secret rule as above.
+	const {mcpServers: conflictMcp, skills: conflictSkills} =
+		runtimeConfig.capabilityConflicts;
+	if (conflictMcp.length === 0 && conflictSkills.length === 0) {
+		lines.push('    conflicts (shadowed by workflow plugin): <none>');
+	} else {
+		lines.push('    conflicts (shadowed by workflow plugin):');
+		for (const server of conflictMcp) {
+			lines.push(`      - ${server.name} [${server.sourceLayer}]`);
+		}
+		for (const skill of conflictSkills) {
+			lines.push(`      - ${skill.name} [${skill.sourceLayer}]`);
+		}
+	}
 	for (const line of lines) {
 		console.log(line);
 	}
@@ -216,6 +258,8 @@ const cli = meow(
 			resume [sessionId]    Resume most recent (or specified) session
 			exec "<prompt>"       Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
+			mcp <sub>             Manage personal MCP servers (add, remove, list)
+			skill <sub>           Manage personal skills (install, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
 			channel <sub>         Manage external channels
 			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
@@ -398,6 +442,10 @@ const cli = meow(
 				type: 'boolean',
 				default: false,
 			},
+			env: {
+				type: 'string',
+				isMultiple: true,
+			},
 			printApiKey: {
 				type: 'boolean',
 				default: false,
@@ -481,6 +529,48 @@ async function main(): Promise<void> {
 
 		await exitWith(
 			runWorkflowCommand({subcommand, subcommandArgs, projectDir}),
+		);
+		return;
+	}
+
+	if (command === 'mcp') {
+		// Everything after a literal `--` is the server command + its own args.
+		// meow strips `--` and folds those tokens into cli.input, so recover them
+		// from process.argv and strip the same trailing tokens from commandArgs.
+		const rawArgs = process.argv.slice(2);
+		const dashIdx = rawArgs.indexOf('--');
+		const serverCommandTokens = dashIdx >= 0 ? rawArgs.slice(dashIdx + 1) : [];
+		const cleanArgs =
+			serverCommandTokens.length > 0
+				? commandArgs.slice(0, commandArgs.length - serverCommandTokens.length)
+				: commandArgs;
+		const [subcommand = '', ...subcommandArgs] = cleanArgs;
+		if (cli.flags.project) subcommandArgs.push('--project');
+		if (cli.flags.global) subcommandArgs.push('--global');
+		for (const entry of cli.flags.env ?? []) {
+			subcommandArgs.push('--env', entry);
+		}
+		await exitWith(
+			runMcpCommand({
+				subcommand,
+				subcommandArgs,
+				serverCommandTokens,
+				projectDir,
+			}),
+		);
+		return;
+	}
+
+	if (command === 'skill') {
+		const [subcommand = '', ...subcommandArgs] = commandArgs;
+		if (cli.flags.project) subcommandArgs.push('--project');
+		if (cli.flags.global) subcommandArgs.push('--global');
+		await exitWith(
+			runSkillCommand({
+				subcommand,
+				subcommandArgs,
+				projectDir,
+			}),
 		);
 		return;
 	}

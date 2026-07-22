@@ -1100,6 +1100,54 @@ describe('runWorkflowCommand', () => {
 			expect(logOut).toHaveBeenCalledWith('  global:  (unset)');
 			expect(logOut).toHaveBeenCalledWith('  project: (unset)');
 		});
+
+		it('lists effective personal capabilities with source layer (AC6)', () => {
+			const logOut = vi.fn();
+			const readGlobalConfig = vi.fn().mockReturnValue({
+				...emptyConfig,
+				mcpServers: {weather: {command: 'weather-mcp'}},
+				skills: [{name: 'fmt', source: 'owner/repo', path: '/g/fmt'}],
+			});
+			const readProjectConfig = vi.fn().mockReturnValue({
+				...emptyConfig,
+				mcpServers: {db: {command: 'db-mcp'}},
+			});
+			const resolveWorkflow = vi.fn().mockImplementation(() => {
+				throw new Error('not installed');
+			});
+
+			const code = runCmd(
+				{subcommand: 'status', subcommandArgs: []},
+				{readGlobalConfig, readProjectConfig, resolveWorkflow, logOut},
+			);
+
+			expect(code).toBe(0);
+			const lines = logOut.mock.calls.map(c => c[0] as string);
+			expect(lines).toContain('Personal capabilities:');
+			expect(lines).toContain('  MCP servers:');
+			expect(lines).toContain('    weather [global]');
+			expect(lines).toContain('    db [project]');
+			expect(lines).toContain('  Skills:');
+			expect(lines).toContain('    fmt [global]');
+		});
+
+		it('prints a none-state when no personal capabilities are configured (AC6)', () => {
+			const logOut = vi.fn();
+			const readGlobalConfig = vi.fn().mockReturnValue(emptyConfig);
+			const readProjectConfig = vi.fn().mockReturnValue(emptyConfig);
+			const resolveWorkflow = vi.fn().mockImplementation(() => {
+				throw new Error('not installed');
+			});
+
+			const code = runCmd(
+				{subcommand: 'status', subcommandArgs: []},
+				{readGlobalConfig, readProjectConfig, resolveWorkflow, logOut},
+			);
+
+			expect(code).toBe(0);
+			const lines = logOut.mock.calls.map(c => c[0] as string);
+			expect(lines).toContain('Personal capabilities: none configured');
+		});
 	});
 
 	describe('unknown subcommand', () => {

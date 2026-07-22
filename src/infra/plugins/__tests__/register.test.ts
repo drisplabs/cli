@@ -275,6 +275,203 @@ describe('buildPluginMcpConfig', () => {
 		expect(written.mcpServers).toHaveProperty('serverB');
 		expect(written.mcpServers).not.toHaveProperty('serverA');
 	});
+
+	it('injects personal MCP servers even when there are no plugin dirs', async () => {
+		const fs = await import('node:fs');
+
+		const result = buildPluginMcpConfig([], undefined, [
+			{
+				name: 'fs',
+				command: 'npx',
+				args: ['-y', 'server'],
+				sourceLayer: 'global',
+			},
+		]);
+
+		expect(result).toBeDefined();
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers.fs).toEqual({
+			command: 'npx',
+			args: ['-y', 'server'],
+		});
+		// name/sourceLayer are stripped from the written harness config
+		expect(written.mcpServers.fs).not.toHaveProperty('name');
+		expect(written.mcpServers.fs).not.toHaveProperty('sourceLayer');
+	});
+
+	it('merges personal servers alongside plugin servers', async () => {
+		const fs = await import('node:fs');
+		addPlugin('/plugins/a', {
+			mcpServers: {serverA: {command: 'node', args: ['a.js']}},
+		});
+
+		buildPluginMcpConfig(['/plugins/a'], undefined, [
+			{name: 'fs', command: 'npx', sourceLayer: 'project'},
+		]);
+
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers).toHaveProperty('serverA');
+		expect(written.mcpServers.fs).toEqual({command: 'npx'});
+	});
+
+	it('lets a workflow plugin win on name collision with a personal server (no throw)', async () => {
+		const fs = await import('node:fs');
+		addPlugin('/plugins/a', {
+			mcpServers: {shared: {command: 'plugin-cmd'}},
+		});
+
+		expect(() =>
+			buildPluginMcpConfig(['/plugins/a'], undefined, [
+				{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+			]),
+		).not.toThrow();
+
+		const writeCall = vi.mocked(fs.default.writeFileSync).mock.calls[0];
+		const written = JSON.parse(writeCall![1] as string);
+		expect(written.mcpServers.shared.command).toBe('plugin-cmd');
+	});
+
+	it('returns undefined mcpConfig when there are no plugin or personal servers', () => {
+		expect(buildPluginMcpConfig([], undefined, []).mcpConfig).toBeUndefined();
+	});
+
+	it('reports a personal MCP server shadowed by a plugin as a conflict (AC1)', () => {
+		addPlugin('/plugins/a', {
+			mcpServers: {shared: {command: 'plugin-cmd'}},
+		});
+
+		const result = buildPluginMcpConfig(['/plugins/a'], undefined, [
+			{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+		]);
+
+		expect(result.conflicts).toEqual([
+			{name: 'shared', command: 'personal-cmd', sourceLayer: 'global'},
+		]);
+	});
+
+	it('reports no MCP conflicts when nothing is shadowed (AC1 none)', () => {
+		addPlugin('/plugins/a', {
+			mcpServers: {serverA: {command: 'node', args: ['a.js']}},
+		});
+
+		const result = buildPluginMcpConfig(['/plugins/a'], undefined, [
+			{name: 'fs', command: 'npx', sourceLayer: 'project'},
+		]);
+
+		expect(result.conflicts).toEqual([]);
+	});
+});
+
+function addPersonalSkill(dir: string, name: string): void {
+	files[dir] = '';
+	files[`${dir}/SKILL.md`] =
+		`---\nname: ${name}\ndescription: Personal ${name}\n---\nBody`;
+}
+
+describe('registerPlugins with personal skills', () => {
+	it('registers a personal skill as an invocable command', () => {
+		addPersonalSkill('/personal/greet', 'greet');
+
+		registerPlugins(
+			[],
+			undefined,
+			true,
+			[],
+			[
+				{
+					name: 'greet',
+					source: '/personal/greet',
+					path: '/personal/greet',
+					sourceLayer: 'global',
+				},
+			],
+		);
+
+		expect(get('greet')).toBeDefined();
+		expect(get('greet')!.name).toBe('greet');
+	});
+
+	it('lets a workflow plugin win on a skill name collision (personal skipped, no throw)', () => {
+		addPlugin('/plugins/a', {skillName: 'shared'});
+		addPersonalSkill('/personal/shared', 'shared');
+
+		expect(() =>
+			registerPlugins(
+				['/plugins/a'],
+				undefined,
+				true,
+				[],
+				[
+					{
+						name: 'shared',
+						source: '/personal/shared',
+						path: '/personal/shared',
+						sourceLayer: 'project',
+					},
+				],
+			),
+		).not.toThrow();
+
+		// Plugin command wins — its description differs from the personal one.
+		expect(get('shared')).toBeDefined();
+		expect(get('shared')!.description).toBe('Test');
+	});
+
+	it('reports a personal skill shadowed by a plugin as a conflict (AC2)', () => {
+		addPlugin('/plugins/a', {skillName: 'shared'});
+		addPersonalSkill('/personal/shared', 'shared');
+
+		const result = registerPlugins(
+			['/plugins/a'],
+			undefined,
+			true,
+			[],
+			[
+				{
+					name: 'shared',
+					source: '/personal/shared',
+					path: '/personal/shared',
+					sourceLayer: 'project',
+				},
+			],
+		);
+
+		// Conflict recorded with its source layer; loading behavior unchanged (AC8):
+		// the plugin command still wins.
+		expect(result.conflicts.skills).toEqual([
+			{
+				name: 'shared',
+				source: '/personal/shared',
+				path: '/personal/shared',
+				sourceLayer: 'project',
+			},
+		]);
+		expect(get('shared')!.description).toBe('Test');
+	});
+
+	it('reports no conflicts when no personal capability is shadowed (AC2 none)', () => {
+		addPersonalSkill('/personal/greet', 'greet');
+
+		const result = registerPlugins(
+			[],
+			undefined,
+			true,
+			[],
+			[
+				{
+					name: 'greet',
+					source: '/personal/greet',
+					path: '/personal/greet',
+					sourceLayer: 'global',
+				},
+			],
+		);
+
+		expect(result.conflicts).toEqual({mcpServers: [], skills: []});
+		expect(get('greet')).toBeDefined();
+	});
 });
 
 describe('registerPlugins with MCP disabled', () => {

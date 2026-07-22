@@ -150,6 +150,12 @@ const BASE_RUNTIME_BOOTSTRAP = {
 	workflow: undefined,
 	workflowPlan: undefined,
 	modelName: null,
+	personalMcpServers: [] as Array<Record<string, unknown>>,
+	personalSkills: [] as Array<Record<string, unknown>>,
+	capabilityConflicts: {
+		mcpServers: [] as Array<Record<string, unknown>>,
+		skills: [] as Array<Record<string, unknown>>,
+	},
 	warnings: [] as string[],
 };
 
@@ -496,6 +502,111 @@ describe('cli exec mode', () => {
 			expect(printed).toContain('pretend-workflow [override]');
 			expect(printed).toContain('isolation (final): minimal');
 			expect(printed).toContain('/p1');
+			expect(cli.exitSpy).toHaveBeenCalledWith(0);
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('--dry-run reports configured personal capabilities with source layers (AC2)', async () => {
+		bootstrapRuntimeConfigMock.mockReturnValue({
+			...BASE_RUNTIME_BOOTSTRAP,
+			personalMcpServers: [
+				{
+					name: 'fs',
+					command: 'npx',
+					args: ['-y', 'server'],
+					env: {API_KEY: 'super-secret'},
+					sourceLayer: 'global',
+				},
+				{name: 'db', command: 'dbmcp', sourceLayer: 'project'},
+			],
+			personalSkills: [
+				{
+					name: 'greet',
+					source: './greet',
+					path: '/abs/greet',
+					sourceLayer: 'project',
+				},
+			],
+		});
+		const cli = await runCli(['exec', 'noop', '--dry-run']);
+		try {
+			const printed = cli.logSpy.mock.calls.map(c => String(c[0])).join('\n');
+			expect(printed).toContain('personal capabilities:');
+			expect(printed).toContain('personal mcp servers:');
+			expect(printed).toContain('- fs [global]');
+			expect(printed).toContain('- db [project]');
+			expect(printed).toContain('personal skills:');
+			expect(printed).toContain('- greet [project]');
+			// never leak secrets (env values / command / args / path)
+			expect(printed).not.toContain('super-secret');
+			expect(printed).not.toContain('/abs/greet');
+			expect(cli.exitSpy).toHaveBeenCalledWith(0);
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('--dry-run prints a none-state when no personal capabilities are configured (AC3)', async () => {
+		const cli = await runCli(['exec', 'noop', '--dry-run']);
+		try {
+			const printed = cli.logSpy.mock.calls.map(c => String(c[0])).join('\n');
+			expect(printed).toContain('personal capabilities:');
+			expect(printed).toContain('personal mcp servers: <none>');
+			expect(printed).toContain('personal skills:      <none>');
+			expect(cli.exitSpy).toHaveBeenCalledWith(0);
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('--dry-run reports personal capabilities shadowed by workflow plugins (AC4)', async () => {
+		bootstrapRuntimeConfigMock.mockReturnValue({
+			...BASE_RUNTIME_BOOTSTRAP,
+			capabilityConflicts: {
+				mcpServers: [
+					{
+						name: 'shared-mcp',
+						command: 'personal-cmd',
+						args: ['--x'],
+						env: {API_KEY: 'super-secret'},
+						sourceLayer: 'global',
+					},
+				],
+				skills: [
+					{
+						name: 'shared-skill',
+						source: './shared',
+						path: '/abs/shared',
+						sourceLayer: 'project',
+					},
+				],
+			},
+		});
+		const cli = await runCli(['exec', 'noop', '--dry-run']);
+		try {
+			const printed = cli.logSpy.mock.calls.map(c => String(c[0])).join('\n');
+			expect(printed).toContain('conflicts (shadowed by workflow plugin):');
+			expect(printed).toContain('- shared-mcp [global]');
+			expect(printed).toContain('- shared-skill [project]');
+			// never leak secrets (env values / command / args / path)
+			expect(printed).not.toContain('super-secret');
+			expect(printed).not.toContain('/abs/shared');
+			expect(printed).not.toContain('personal-cmd');
+			expect(cli.exitSpy).toHaveBeenCalledWith(0);
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('--dry-run prints a none-state for conflicts when there are none (AC4 none)', async () => {
+		const cli = await runCli(['exec', 'noop', '--dry-run']);
+		try {
+			const printed = cli.logSpy.mock.calls.map(c => String(c[0])).join('\n');
+			expect(printed).toContain(
+				'conflicts (shadowed by workflow plugin): <none>',
+			);
 			expect(cli.exitSpy).toHaveBeenCalledWith(0);
 		} finally {
 			cli.restore();
