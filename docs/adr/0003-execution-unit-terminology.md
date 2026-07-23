@@ -1,6 +1,6 @@
 # ADR 0003 - Execution-unit terminology: one vocabulary, two bounded contexts
 
-Status: Active
+Status: Active — amended by [ADR 0014](0014-handover-retry-attention-continuation.md) (§1's Agent Session is no longer "the FRESH vendor session/thread per Turn (no `--resume`)": it spans the Turns that resume it and resets at a Handover, so the Tracker is no longer the sole continuity mechanism. §5's "Stateless" name is left in place but is now a partial misnomer.)
 Date: 2026-06-06
 
 ## Context

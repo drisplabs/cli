@@ -1,6 +1,6 @@
 # ADR 0004 - One owner for a Turn's terminal outcome
 
-Status: Active
+Status: Active — amended by [ADR 0014](0014-handover-retry-attention-continuation.md) (the Run Status space gains the non-terminal `awaiting_attention`; `blocked` and `exhausted` are no longer emitted; `TurnOutcome` gains a `suspend` kind; failure-class handling is explicitly the Runner's, not the resolver's, so "one owner" now covers the Tracker-end-state map only)
 Date: 2026-07-19
 
 ## Context
