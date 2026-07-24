@@ -14,7 +14,11 @@ import type {
 	TurnExecutionResult,
 } from '../../../core/runtime/process';
 import {createAssistantMessageAccumulator} from '../session/assistantMessageAccumulator';
-import {mergeIsolation, resolveClaudeSessionId} from '../session/turnConfig';
+import {
+	mergeIsolation,
+	resolveClaudeSessionId,
+	resolveWorkflowSpawnEnv,
+} from '../session/turnConfig';
 
 export type {UseClaudeProcessResult};
 
@@ -344,7 +348,7 @@ export function useClaudeProcess(
 							pluginMcpConfig,
 							perCallIsolation,
 						),
-						env: workflow?.env,
+						env: resolveWorkflowSpawnEnv(workflow),
 						...(verbose
 							? {
 									jqFilter: JQ_ASSISTANT_TEXT_FILTER,

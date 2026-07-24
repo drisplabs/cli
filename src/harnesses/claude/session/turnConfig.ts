@@ -4,6 +4,7 @@ import {
 	resolveIsolationConfig,
 } from '../config/isolation';
 import type {TurnContinuation} from '../../../core/runtime/process';
+import type {WorkflowConfig} from '../../../core/workflows/types';
 
 /**
  * Merge isolation layers: base preset -> per-command override -> workflow/plugin MCP config.
@@ -25,6 +26,30 @@ export function mergeIsolation(
 		...resolveIsolationConfig(base),
 		...(perCommand ?? {}),
 		...(pluginMcpConfig ? {mcpConfig: pluginMcpConfig} : {}),
+	};
+}
+
+/**
+ * Resolve the env for a spawned Claude Turn from the workflow config.
+ *
+ * An explicitly configured `loop.maxTurnTokenCount` (ADR 0014 §5) maps onto
+ * Claude's autocompact knob and is delivered here so it wins over a user's
+ * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var (extraEnv beats process.env in
+ * spawnClaude). When unconfigured, nothing is injected — the spawn-level
+ * default applies and stays env-overridable. Note Claude Code clamps the knob
+ * to a 100k-token floor (measured on 2.1.217; see qa/max-turn-token-count.md).
+ * Shared by both Claude session-controller shapes. See ADR 0007.
+ */
+export function resolveWorkflowSpawnEnv(
+	workflow: WorkflowConfig | undefined,
+): Record<string, string> | undefined {
+	const maxTurnTokenCount = workflow?.loop?.maxTurnTokenCount;
+	if (maxTurnTokenCount === undefined) {
+		return workflow?.env;
+	}
+	return {
+		...workflow?.env,
+		CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(maxTurnTokenCount),
 	};
 }
 

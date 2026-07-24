@@ -127,7 +127,7 @@ describe('spawnClaude', () => {
 				env: expect.objectContaining({
 					ATHENA_INSTANCE_ID: '12345',
 					ATHENA_HOOK_SOCKET: '/tmp/athena-test/run/ink-12345.sock',
-					CLAUDE_CODE_AUTO_COMPACT_WINDOW: '185000',
+					CLAUDE_CODE_AUTO_COMPACT_WINDOW: '130000',
 				}),
 			}),
 		);
