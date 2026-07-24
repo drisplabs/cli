@@ -46,6 +46,13 @@ export type WorkflowRunnerInput = {
 	 * exit code: interrupting the Turn to suspend is not a failure.
 	 */
 	checkSuspension?: () => {reason: string} | null;
+	/**
+	 * Vendor session id (Claude session / Codex thread) of the most recent
+	 * Turn's Agent Session, as observed by the caller's runtime. Snapshotted on
+	 * every persist so a later process can resume or fork the session
+	 * (ADR 0014). Returning null/undefined is safe — the id is simply absent.
+	 */
+	currentAdapterSessionId?: () => string | null | undefined;
 };
 
 export type WorkflowRunResult = {
@@ -157,6 +164,7 @@ export function createWorkflowRunner(
 	const trackerPromptPath = trackerResolved?.promptPath;
 
 	function snapshot(): WorkflowRunSnapshot {
+		const adapterSessionId = input.currentAdapterSessionId?.() ?? undefined;
 		return {
 			runId,
 			sessionId: input.sessionId,
@@ -166,6 +174,7 @@ export function createWorkflowRunner(
 			status,
 			stopReason,
 			trackerPath: trackerPromptPath,
+			...(adapterSessionId ? {adapterSessionId} : {}),
 		};
 	}
 

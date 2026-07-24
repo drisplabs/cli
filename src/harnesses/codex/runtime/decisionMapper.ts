@@ -201,6 +201,10 @@ function mapToV2Decision(
 		case 'stop_block':
 			return {decision: 'cancel'};
 
+		// Claude-specific Handover interception; Codex has no PreCompact
+		// approval, so an (unexpected) compact_block on an approval request
+		// falls through to accept like any other unmappable intent.
+		case 'compact_block':
 		default:
 			return {decision: wantsSessionApproval ? 'acceptForSession' : 'accept'};
 	}

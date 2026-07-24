@@ -614,6 +614,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			},
 			checkSuspension: () =>
 				attentionRequest !== null ? {reason: attentionRequest} : null,
+			currentAdapterSessionId,
 			abortCurrentTurn: () => void sessionController.kill(),
 			onIterationComplete: runSnapshot => {
 				output.emitJsonEvent('iteration.complete', {

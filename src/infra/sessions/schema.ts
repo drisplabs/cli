@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -76,6 +76,11 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			status TEXT NOT NULL DEFAULT 'running',
 			stop_reason TEXT,
 			tracker_path TEXT,
+			-- Vendor session id (Claude Code session / Codex thread) of the Run's
+			-- most recent Turn's Agent Session. Every resume- and fork-based
+			-- transition (Nudge, Retry, human-resume, Handover) depends on it
+			-- surviving a process restart (ADR 0014).
+			adapter_session_id TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
 		);
 
@@ -213,6 +218,30 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			CREATE INDEX IF NOT EXISTS idx_feed_prompt ON feed_events(prompt_id);
 			UPDATE schema_version SET version = 7;
 		`);
+	}
+
+	const versionAfterV7 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV7 === 7) {
+		// v8 adds the nullable vendor session id of the Run's most recent Agent
+		// Session so a later process can resume or fork it (ADR 0014). Guarded:
+		// a database migrating from pre-v5 got workflow_runs from the base DDL
+		// above, which already carries the column.
+		const hasColumn =
+			(
+				db
+					.prepare(
+						`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = 'adapter_session_id'`,
+					)
+					.get() as {n: number}
+			).n > 0;
+		if (!hasColumn) {
+			db.exec('ALTER TABLE workflow_runs ADD COLUMN adapter_session_id TEXT;');
+		}
+		db.exec('UPDATE schema_version SET version = 8;');
 	}
 };
 

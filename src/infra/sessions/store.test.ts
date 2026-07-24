@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {describe, it, expect, afterEach} from 'vitest';
 import {createSessionStore} from './store';
 import type {RuntimeEvent} from '../../core/runtime/types';
@@ -333,6 +336,79 @@ describe('SessionStore', () => {
 			status: 'completed',
 		});
 		expect(store.getLatestRun()!.endedAt).toBeDefined();
+	});
+
+	it('persists the vendor session id on the run and never clobbers it with null', () => {
+		store = createSessionStore({
+			sessionId: 's1',
+			projectDir: '/tmp',
+			dbPath: ':memory:',
+		});
+
+		// First persist happens before any hook event carries a vendor id.
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 1,
+			status: 'running',
+		});
+		expect(store.getLatestRun()!.adapterSessionId).toBeUndefined();
+
+		// The Agent Session reports in.
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 1,
+			status: 'running',
+			adapterSessionId: 'claude-sess-abc',
+		});
+		expect(store.getLatestRun()!.adapterSessionId).toBe('claude-sess-abc');
+
+		// A later snapshot without an id (e.g. taken between Turns) degrades
+		// safely: the captured id survives.
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 2,
+			status: 'awaiting_attention',
+			stopReason: 'agent declared WORKFLOW_BLOCKED',
+		});
+		const run = store.getLatestRun();
+		expect(run!.adapterSessionId).toBe('claude-sess-abc');
+		expect(run!.status).toBe('awaiting_attention');
+	});
+
+	it('the vendor session id survives a process restart (reopened database)', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-store-'));
+		const dbPath = path.join(dir, 'session.db');
+		try {
+			const first = createSessionStore({
+				sessionId: 's1',
+				projectDir: '/tmp',
+				dbPath,
+			});
+			first.persistRun({
+				runId: 'run-1',
+				sessionId: 's1',
+				iteration: 1,
+				status: 'awaiting_attention',
+				stopReason: 'agent declared WORKFLOW_BLOCKED: which env?',
+				adapterSessionId: 'claude-sess-abc',
+			});
+			first.close();
+
+			const reopened = createSessionStore({
+				sessionId: 's1',
+				projectDir: '/tmp',
+				dbPath,
+			});
+			const run = reopened.getLatestRun();
+			expect(run!.adapterSessionId).toBe('claude-sess-abc');
+			expect(run!.status).toBe('awaiting_attention');
+			reopened.close();
+		} finally {
+			fs.rmSync(dir, {recursive: true, force: true});
+		}
 	});
 
 	it('getLatestRun returns the most recent run', () => {

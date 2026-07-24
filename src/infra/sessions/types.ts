@@ -65,6 +65,12 @@ export type WorkflowRunSnapshot = {
 	status: RunStatus;
 	stopReason?: string;
 	trackerPath?: string;
+	/**
+	 * Vendor session id (Claude Code session / Codex thread) of the most recent
+	 * Turn's Agent Session. Absent until the harness reports one; every resume-
+	 * and fork-based transition depends on it (ADR 0014).
+	 */
+	adapterSessionId?: string;
 };
 
 export type PersistedWorkflowRun = {
@@ -78,4 +84,6 @@ export type PersistedWorkflowRun = {
 	status: RunStatus;
 	stopReason?: string;
 	trackerPath?: string;
+	/** Vendor session id of the Run's most recent Agent Session (ADR 0014). */
+	adapterSessionId?: string;
 };
