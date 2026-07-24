@@ -15,13 +15,18 @@ import {
 	prepareWorkflowTurn,
 	resolveTrackerPath,
 } from './sessionPlan';
+import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
 	buildNudgePrompt,
 	readTracker,
 	TRACKER_SKELETON_MARKER,
 } from './trackerReader';
-import {DEFAULT_NUDGE_CAP} from './types';
+import {
+	DEFAULT_NUDGE_CAP,
+	DEFAULT_RETRY_BACKOFF_MS,
+	DEFAULT_RETRY_CAP,
+} from './types';
 import {substituteVariables} from './templateVars';
 
 export type TurnInput = {
@@ -142,6 +147,22 @@ function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 	};
 }
 
+/**
+ * Sleep for `ms`, waking early (in ~250ms slices) if `isCancelled` flips —
+ * a Run being killed must not sit out a full retry backoff.
+ */
+async function delayWithCancel(
+	ms: number,
+	isCancelled: () => boolean,
+): Promise<void> {
+	const slice = 250;
+	for (let waited = 0; waited < ms && !isCancelled(); waited += slice) {
+		await new Promise(resolve =>
+			setTimeout(resolve, Math.min(slice, ms - waited)),
+		);
+	}
+}
+
 function defaultCreateTracker(trackerPath: string, content: string): void {
 	fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
 	try {
@@ -229,6 +250,9 @@ export function createWorkflowRunner(
 		let nudgeStreak = 0;
 		let lastStopTrackerContent: string | null = null;
 		let nextPromptOverride: string | null = null;
+		// Retry state (ADR 0014 §4): consecutive transient Turn failures.
+		// Resets on any Turn that completes without failing.
+		let retryStreak = 0;
 
 		const loop = input.workflow?.loop;
 
@@ -275,18 +299,6 @@ export function createWorkflowRunner(
 				turnResult.error ||
 				(turnResult.exitCode !== null && turnResult.exitCode !== 0)
 			) {
-				// Resume failure degrades to a fresh Turn from the Tracker rather
-				// than failing the Run (ADR 0014): the same iteration is replayed
-				// with a fresh Agent Session. Bounded by construction — the replay
-				// runs in fresh mode, so a second failure lands in the terminal
-				// branch below.
-				if (attemptedContinuation.mode === 'resume') {
-					iterations--;
-					nextContinuation = {mode: 'fresh'};
-					persist();
-					continue;
-				}
-				status = 'failed';
 				const parts: string[] = [];
 				if (turnResult.error?.message) {
 					parts.push(turnResult.error.message);
@@ -296,10 +308,77 @@ export function createWorkflowRunner(
 				if (turnResult.lastStderr) {
 					parts.push(turnResult.lastStderr);
 				}
-				stopReason = parts.join(': ') || 'Turn failed';
+				const failureDetail = parts.join(': ') || 'Turn failed';
+
+				// Failure taxonomy (ADR 0014 §4), looped Runs only: transient →
+				// backoff then resume the same Agent Session; hard (incl.
+				// unclassifiable) → suspend for a human. Non-looped runs keep
+				// the plain terminal failure below.
+				if (loop?.enabled) {
+					const classification = classifyTurnFailure({
+						errorMessage: turnResult.error?.message,
+						lastStderr: turnResult.lastStderr,
+					});
+
+					if (classification.kind === 'transient') {
+						retryStreak++;
+						const retryCap = loop.retryCap ?? DEFAULT_RETRY_CAP;
+						if (retryStreak > retryCap) {
+							status = 'awaiting_attention';
+							stopReason = `retry cap reached: ${retryCap} transient failure${
+								retryCap === 1 ? '' : 's'
+							} (retryCap); last (${classification.code}): ${failureDetail}`;
+							persist();
+							break;
+						}
+						// Backoff, then resume the same Agent Session — it persists
+						// on disk, so resuming preserves in-flight work the Tracker
+						// never checkpointed. The Run stays `running`, and the
+						// failed attempt does not burn an iteration.
+						const backoffBase = loop.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
+						await delayWithCancel(
+							backoffBase * 2 ** (retryStreak - 1),
+							() => cancelled,
+						);
+						// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
+						if (cancelled) break;
+						iterations--;
+						const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
+						nextContinuation = adapterSessionId
+							? {mode: 'resume', handle: adapterSessionId}
+							: attemptedContinuation;
+						persist();
+						continue;
+					}
+
+					// Hard failure on a resumed Turn: degrade to a fresh replay of
+					// the same iteration first (ADR 0014 / #139) — this is the
+					// missing-or-invalid-session recovery. Bounded by construction:
+					// the replay runs fresh, so a second hard failure suspends.
+					if (attemptedContinuation.mode === 'resume') {
+						iterations--;
+						nextContinuation = {mode: 'fresh'};
+						persist();
+						continue;
+					}
+
+					// Hard (or unclassifiable) failure → escalate to a human
+					// rather than retry blindly (ADR 0014 §4, §7).
+					status = 'awaiting_attention';
+					stopReason = `hard failure (${classification.code}): ${failureDetail} — not retried; needs a human`;
+					persist();
+					break;
+				}
+
+				status = 'failed';
+				stopReason = failureDetail;
 				persist();
 				break;
 			}
+
+			// The Turn completed without failing — the transient-failure streak
+			// is over.
+			retryStreak = 0;
 
 			const transport = turnResult.diagnostics?.transport;
 			if (

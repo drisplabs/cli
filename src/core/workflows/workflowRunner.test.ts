@@ -638,6 +638,156 @@ describe('createWorkflowRunner', () => {
 		expect(continuations).toEqual([{mode: 'fresh'}, {mode: 'fresh'}]);
 	});
 
+	it('retries a transient failure by resuming the same Agent Session after a backoff', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const calls: Array<{continuation: unknown}> = [];
+		const statuses: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				return {
+					...OK_RESULT,
+					exitCode: 1,
+					error: new Error('API Error: 429 rate_limit_error'),
+				};
+			})
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5, retryBackoffMs: 1},
+			},
+			startTurn,
+			persistRunState: vi.fn(snapshot => {
+				statuses.push((snapshot as {status: string}).status);
+			}),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The retried attempt reuses the iteration — transient infra failures
+		// don't burn the ceiling.
+		expect(result.iterations).toBe(1);
+		expect(calls[1]!.continuation).toEqual({
+			mode: 'resume',
+			handle: 'claude-sess-abc',
+		});
+		// The Run stayed `running` throughout the retry — it never left it
+		// until completion.
+		expect(statuses).not.toContain('failed');
+		expect(statuses).not.toContain('awaiting_attention');
+	});
+
+	it('suspends when the retry cap is exhausted, naming the retry cap', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 1,
+			error: new Error('API Error: 529 overloaded_error'),
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {
+					enabled: true,
+					maxIterations: 20,
+					retryCap: 2,
+					retryBackoffMs: 1,
+				},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('retry cap');
+		expect(result.stopReason).toContain('retryCap');
+		expect(result.stopReason).toContain('overloaded');
+		// Attempt 1 → retry 1, retry 2, then the cap trips on the third failure.
+		expect(startTurn).toHaveBeenCalledTimes(3);
+	});
+
+	it('suspends immediately on a hard failure without retrying', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 1,
+			error: new Error('API Error: 401 authentication_error'),
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('hard failure (auth)');
+		expect(result.stopReason).toContain('authentication_error');
+		expect(startTurn).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps plain terminal failure for non-looped runs', async () => {
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 1,
+			error: new Error('API Error: 401 authentication_error'),
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir: makeTempDir(),
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('failed');
+	});
+
 	it('degrades a failed nudge resume to a fresh replay of the same iteration', async () => {
 		const projectDir = makeTempDir();
 		const trackerDir = path.join(projectDir, '.athena', 's1');

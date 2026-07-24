@@ -306,8 +306,11 @@ describe('useWorkflowSessionController', () => {
 			return await result.current.startTurn('ship it');
 		});
 
-		// The runner returns exitCode 1 for failed status
-		expect(turnResult.exitCode).toBe(1);
+		// An unclassifiable failure in a looped run is hard (ADR 0014 §4): the
+		// run suspends in awaiting_attention rather than failing, and the loop
+		// does not continue.
+		expect(turnResult.exitCode).toBe(0);
+		expect(turnResult.error).toBeNull();
 		expect(spawn).toHaveBeenCalledTimes(1);
 	});
 
