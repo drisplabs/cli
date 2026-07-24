@@ -465,6 +465,33 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('snapshots the vendor session id from currentAdapterSessionId', async () => {
+		const persistRunState = vi.fn();
+		const startTurn = vi.fn().mockImplementation(async () => {
+			adapterSessionId = 'claude-sess-abc';
+			return OK_RESULT;
+		});
+		let adapterSessionId: string | null = null;
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir: makeTempDir(),
+			prompt: 'do it',
+			startTurn,
+			persistRunState,
+			currentAdapterSessionId: () => adapterSessionId,
+		});
+
+		await handle.result;
+		// The initial persist (before any Turn) has no id; the final one does.
+		expect(persistRunState.mock.calls[0]![0]).not.toHaveProperty(
+			'adapterSessionId',
+		);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({adapterSessionId: 'claude-sess-abc'}),
+		);
+	});
+
 	it('uses injected createTracker instead of fs', async () => {
 		const createTracker = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);

@@ -88,7 +88,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(7);
+		expect(row.version).toBe(8);
 
 		// Verify token columns exist and can be updated
 		db.prepare(
@@ -138,7 +138,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(7);
+		expect(row.version).toBe(8);
 
 		db.prepare(
 			'INSERT INTO adapter_sessions (session_id, started_at, tokens_context_window_size) VALUES (?, ?, ?)',
@@ -183,7 +183,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(7);
+		expect(row.version).toBe(8);
 
 		db.prepare(
 			`INSERT INTO workflow_runs (id, session_id, started_at, iteration, max_iterations, status)
@@ -250,7 +250,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(7);
+		expect(row.version).toBe(8);
 
 		// channel_outbox: insert + due index works
 		db.prepare(
@@ -307,7 +307,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(7);
+		expect(row.version).toBe(8);
 
 		// Existing row's prompt_id defaults to NULL...
 		const before = db
@@ -324,6 +324,50 @@ describe('schema migrations', () => {
 			.prepare('SELECT prompt_id FROM feed_events WHERE event_id = ?')
 			.get('fe1') as {prompt_id: string};
 		expect(after.prompt_id).toBe('prompt-xyz');
+
+		db.close();
+	});
+
+	it('migrates v7 → v8 by adding a nullable workflow_runs.adapter_session_id column', () => {
+		const db = new Database(':memory:');
+		db.exec('PRAGMA foreign_keys = ON');
+		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(7);
+		db.exec(
+			'CREATE TABLE session (id TEXT PRIMARY KEY, project_dir TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, label TEXT, event_count INTEGER DEFAULT 0)',
+		);
+		// v7 workflow_runs shape: no adapter_session_id column.
+		db.exec(
+			"CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, workflow_name TEXT, started_at INTEGER NOT NULL, ended_at INTEGER, iteration INTEGER NOT NULL DEFAULT 0, max_iterations INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'running', stop_reason TEXT, tracker_path TEXT, FOREIGN KEY (session_id) REFERENCES session(id))",
+		);
+		db.prepare(
+			'INSERT INTO session (id, project_dir, created_at, updated_at) VALUES (?, ?, ?, ?)',
+		).run('s1', '/tmp', Date.now(), Date.now());
+		db.prepare(
+			'INSERT INTO workflow_runs (id, session_id, started_at) VALUES (?, ?, ?)',
+		).run('run-1', 's1', Date.now());
+
+		initSchema(db);
+
+		const row = db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		};
+		expect(row.version).toBe(8);
+
+		// Existing row defaults to NULL...
+		const before = db
+			.prepare('SELECT adapter_session_id FROM workflow_runs WHERE id = ?')
+			.get('run-1') as {adapter_session_id: string | null};
+		expect(before.adapter_session_id).toBeNull();
+
+		// ...and the column is writable.
+		db.prepare(
+			'UPDATE workflow_runs SET adapter_session_id = ? WHERE id = ?',
+		).run('claude-sess-abc', 'run-1');
+		const after = db
+			.prepare('SELECT adapter_session_id FROM workflow_runs WHERE id = ?')
+			.get('run-1') as {adapter_session_id: string};
+		expect(after.adapter_session_id).toBe('claude-sess-abc');
 
 		db.close();
 	});

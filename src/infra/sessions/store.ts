@@ -122,14 +122,16 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 
 	// `awaiting_attention` is non-terminal (ADR 0014): a suspended Run has not
 	// ended — it is waiting on a human and remains resumable — so it must not
-	// stamp ended_at.
+	// stamp ended_at. adapter_session_id COALESCEs so a snapshot taken before
+	// the next Turn's Agent Session reports in never clobbers a captured id.
 	const upsertRun = db.prepare(
-		`INSERT INTO workflow_runs (id, session_id, workflow_name, started_at, iteration, max_iterations, status, stop_reason, tracker_path)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO workflow_runs (id, session_id, workflow_name, started_at, iteration, max_iterations, status, stop_reason, tracker_path, adapter_session_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   iteration = excluded.iteration,
 		   status = excluded.status,
 		   stop_reason = excluded.stop_reason,
+		   adapter_session_id = COALESCE(excluded.adapter_session_id, adapter_session_id),
 		   ended_at = CASE WHEN excluded.status NOT IN ('running', 'awaiting_attention') THEN ? ELSE ended_at END`,
 	);
 
@@ -381,6 +383,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 			snapshot.status,
 			snapshot.stopReason ?? null,
 			snapshot.trackerPath ?? null,
+			snapshot.adapterSessionId ?? null,
 			endedAt,
 		);
 	}
@@ -401,6 +404,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 			status: row.status as PersistedWorkflowRun['status'],
 			stopReason: (row.stop_reason as string | null) ?? undefined,
 			trackerPath: (row.tracker_path as string | null) ?? undefined,
+			adapterSessionId: (row.adapter_session_id as string | null) ?? undefined,
 		};
 	}
 

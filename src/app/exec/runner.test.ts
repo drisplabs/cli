@@ -973,6 +973,93 @@ describe('runExec', () => {
 		}
 	});
 
+	it('persists the vendor session id observed on hook events onto the workflow run', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const projectDir = '/tmp/runner-vendor-id-project';
+		const trackerPath = `${projectDir}/.athena/session-1.md`;
+		fs.mkdirSync(`${projectDir}/.athena`, {recursive: true});
+		fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
+
+		const {createSessionStore} = await import('../../infra/sessions');
+		const snapshots: Array<{status: string; adapterSessionId?: string}> = [];
+
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+
+			setImmediate(() => {
+				// A hook event arrives carrying the vendor session id.
+				runtime.emit(
+					makeRuntimeEvent({
+						id: 'evt-notif',
+						kind: 'notification',
+						sessionId: 'claude-sess-abc',
+					}),
+				);
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done message'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+
+			return child;
+		};
+
+		try {
+			const result = await runExec({
+				prompt: 'hello',
+				projectDir,
+				harness: 'claude-code',
+				athenaSessionId: 'session-1',
+				isolationConfig: {},
+				ephemeral: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				sessionStoreFactory: opts => {
+					const store = createSessionStore(opts);
+					const originalPersistRun = store.persistRun.bind(store);
+					return {
+						...store,
+						persistRun(snapshot) {
+							snapshots.push({
+								status: snapshot.status,
+								adapterSessionId: snapshot.adapterSessionId,
+							});
+							originalPersistRun(snapshot);
+						},
+					};
+				},
+				workflow: {
+					name: 'test-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						completionMarker: '<!-- DONE -->',
+						maxIterations: 5,
+						trackerPath: '.athena/{sessionId}.md',
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			const final = snapshots.at(-1);
+			expect(final).toEqual({
+				status: 'completed',
+				adapterSessionId: 'claude-sess-abc',
+			});
+		} finally {
+			fs.rmSync(projectDir, {recursive: true, force: true});
+		}
+	});
+
 	it('fails when a looped workflow exhausts iterations without completion', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
