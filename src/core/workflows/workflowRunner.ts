@@ -53,6 +53,20 @@ export type WorkflowRunnerInput = {
 	 * (ADR 0014). Returning null/undefined is safe — the id is simply absent.
 	 */
 	currentAdapterSessionId?: () => string | null | undefined;
+	/**
+	 * Decide how the next Turn continues after a continue-outcome iteration
+	 * (ADR 0014 §6): return `{mode: 'resume', handle}` to resume the intact
+	 * Agent Session, or `{mode: 'fresh'}` (the default when absent) to spawn a
+	 * new one. The recovery invariant: resume when intact; go fresh only to
+	 * shed context (Handover). A resumed Turn still ticks the Iteration
+	 * counter — a resume is still a Turn.
+	 */
+	nextTurnContinuation?: (context: {
+		/** Iteration (1-based) of the Turn that just completed. */
+		iteration: number;
+		/** Vendor session id of the just-completed Turn's Agent Session. */
+		adapterSessionId: string | null;
+	}) => TurnContinuation;
 };
 
 export type WorkflowRunResult = {
@@ -228,9 +242,10 @@ export function createWorkflowRunner(
 				configOverride: undefined,
 			});
 
+			const attemptedContinuation = nextContinuation;
 			const turnResult = await input.startTurn({
 				prompt: prepared.prompt,
-				continuation: nextContinuation,
+				continuation: attemptedContinuation,
 				configOverride: prepared.configOverride,
 			});
 
@@ -259,6 +274,17 @@ export function createWorkflowRunner(
 				turnResult.error ||
 				(turnResult.exitCode !== null && turnResult.exitCode !== 0)
 			) {
+				// Resume failure degrades to a fresh Turn from the Tracker rather
+				// than failing the Run (ADR 0014): the same iteration is replayed
+				// with a fresh Agent Session. Bounded by construction — the replay
+				// runs in fresh mode, so a second failure lands in the terminal
+				// branch below.
+				if (attemptedContinuation.mode === 'resume') {
+					iterations--;
+					nextContinuation = {mode: 'fresh'};
+					persist();
+					continue;
+				}
 				status = 'failed';
 				const parts: string[] = [];
 				if (turnResult.error?.message) {
@@ -308,10 +334,15 @@ export function createWorkflowRunner(
 				}
 			}
 
-			// Continue loop
+			// Continue loop. The caller decides whether the next Turn resumes the
+			// intact Agent Session or spawns fresh (ADR 0014 §6); fresh remains
+			// the default.
 			persist();
 			input.onIterationComplete?.(snapshot());
-			nextContinuation = {mode: 'fresh'};
+			nextContinuation = input.nextTurnContinuation?.({
+				iteration: iterations,
+				adapterSessionId: input.currentAdapterSessionId?.() ?? null,
+			}) ?? {mode: 'fresh'};
 		}
 
 		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await

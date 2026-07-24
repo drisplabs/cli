@@ -465,6 +465,153 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('resumes the intact Agent Session when nextTurnContinuation asks for it', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const continuations: unknown[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				continuations.push(input.continuation);
+				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				continuations.push(input.continuation);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+			nextTurnContinuation: ({adapterSessionId}) =>
+				adapterSessionId
+					? {mode: 'resume', handle: adapterSessionId}
+					: {mode: 'fresh'},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// A resume is still a Turn: the Iteration counter ticked for it.
+		expect(result.iterations).toBe(2);
+		expect(continuations).toEqual([
+			{mode: 'fresh'},
+			{mode: 'resume', handle: 'claude-sess-abc'},
+		]);
+	});
+
+	it('degrades a failed resume to a fresh replay of the same iteration', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const continuations: unknown[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				continuations.push(input.continuation);
+				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				return OK_RESULT;
+			})
+			// The resume attempt dies at startup (e.g. the vendor session is gone).
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				continuations.push(input.continuation);
+				return {
+					...OK_RESULT,
+					exitCode: 1,
+					error: new Error('No conversation found with session ID'),
+				};
+			})
+			// The fresh replay of the same iteration completes the workflow.
+			.mockImplementationOnce(async (input: {continuation: unknown}) => {
+				continuations.push(input.continuation);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			nextTurnContinuation: () => ({mode: 'resume', handle: 'gone-session'}),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The failed resume attempt never ran an agent — it does not burn an
+		// iteration against the ceiling.
+		expect(result.iterations).toBe(2);
+		expect(continuations).toEqual([
+			{mode: 'fresh'},
+			{mode: 'resume', handle: 'gone-session'},
+			{mode: 'fresh'},
+		]);
+	});
+
+	it('fails the Run when the fresh replay after a degraded resume also fails', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => OK_RESULT)
+			.mockImplementationOnce(async () => ({
+				...OK_RESULT,
+				exitCode: 1,
+				error: new Error('resume failed'),
+			}))
+			.mockImplementationOnce(async () => ({
+				...OK_RESULT,
+				exitCode: 1,
+				error: new Error('fresh replay also failed'),
+			}));
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			nextTurnContinuation: () => ({mode: 'resume', handle: 'gone-session'}),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('failed');
+		expect(result.stopReason).toContain('fresh replay also failed');
+		expect(startTurn).toHaveBeenCalledTimes(3);
+	});
+
 	it('snapshots the vendor session id from currentAdapterSessionId', async () => {
 		const persistRunState = vi.fn();
 		const startTurn = vi.fn().mockImplementation(async () => {
