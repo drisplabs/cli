@@ -108,6 +108,12 @@ vi.mock('../../harnesses/claude/config/readSettingsModel', () => ({
 		readClaudeSettingsModelMock(projectDir),
 }));
 
+const ensureHandoffSkillPluginMock = vi.fn();
+
+vi.mock('../../core/workflows/builtins/handoffSkill', () => ({
+	ensureHandoffSkillPlugin: () => ensureHandoffSkillPluginMock(),
+}));
+
 const {bootstrapRuntimeConfig} = await import('./bootstrapConfig');
 
 const emptyConfig = {plugins: [], additionalDirectories: []};
@@ -138,6 +144,8 @@ describe('bootstrapRuntimeConfig', () => {
 			codexPlugins: [],
 		});
 		readClaudeSettingsModelMock.mockReset();
+		ensureHandoffSkillPluginMock.mockReset();
+		ensureHandoffSkillPluginMock.mockReturnValue('/builtin-handoff-plugin');
 		resolvePluginDirsMock.mockReset();
 		// Default: identity resolution (fixtures are already absolute dirs).
 		resolvePluginDirsMock.mockImplementation((entries: string[]) => ({
@@ -244,7 +252,13 @@ describe('bootstrapRuntimeConfig', () => {
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('e2e-test-builder');
 		expect(registerPluginsMock).toHaveBeenCalledWith(
-			['/workflow-plugin', '/global-plugin', '/project-plugin', '/cli-plugin'],
+			[
+				'/workflow-plugin',
+				'/builtin-handoff-plugin',
+				'/global-plugin',
+				'/project-plugin',
+				'/cli-plugin',
+			],
 			{
 				'agent-web-interface': {AWI_HEADLESS: 'true'},
 			},
@@ -424,12 +438,89 @@ describe('bootstrapRuntimeConfig', () => {
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('project-workflow');
 		expect(registerPluginsMock).toHaveBeenCalledWith(
-			['/global-plugin', '/project-plugin'],
+			['/builtin-handoff-plugin', '/global-plugin', '/project-plugin'],
 			{projectServer: {PROJECT: 'true'}},
 			true,
 			[],
 			[],
 		);
+	});
+
+	it('delivers the first-party handoff skill plugin to Workflow Runs (claude only)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			activeWorkflow: 'claude-workflow',
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolveWorkflowMock.mockReturnValue({
+			name: 'claude-workflow',
+			plugins: [],
+			promptTemplate: '{input}',
+		});
+		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(ensureHandoffSkillPluginMock).toHaveBeenCalled();
+		expect(result.isolationConfig.pluginDirs).toContain(
+			'/builtin-handoff-plugin',
+		);
+	});
+
+	it('degrades to a warning when the handoff skill plugin cannot be materialized', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			activeWorkflow: 'claude-workflow',
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolveWorkflowMock.mockReturnValue({
+			name: 'claude-workflow',
+			plugins: [],
+			promptTemplate: '{input}',
+		});
+		ensureHandoffSkillPluginMock.mockImplementation(() => {
+			throw new Error('read-only home');
+		});
+		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(result.warnings).toEqual([
+			expect.stringContaining('handoff skill plugin'),
+		]);
+		expect(result.isolationConfig.pluginDirs ?? []).not.toContain(
+			'/builtin-handoff-plugin',
+		);
+	});
+
+	it('does not deliver the handoff skill plugin to codex sessions', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			harness: 'openai-codex',
+			activeWorkflow: 'codex-workflow',
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolveWorkflowMock.mockReturnValue({
+			name: 'codex-workflow',
+			plugins: [],
+			promptTemplate: '{input}',
+		});
+
+		bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'strict',
+		});
+
+		expect(ensureHandoffSkillPluginMock).not.toHaveBeenCalled();
 	});
 
 	it('injects effective personal MCP servers even with no plugin dirs', () => {
