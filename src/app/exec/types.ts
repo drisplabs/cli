@@ -109,6 +109,13 @@ export type ExecRunOptions = {
 	now?: () => number;
 };
 
+/**
+ * Historical workflow-failure states. Since ADR 0014 a declared block and the
+ * iteration ceiling suspend the Run (`awaiting_attention`) instead of failing
+ * it, so exec no longer constructs `kind: 'workflow'` failures — the shape and
+ * its exit codes (8/9) are kept so external consumers of the JSON contract
+ * retain their meaning.
+ */
 export type ExecWorkflowFailureState =
 	| 'blocked'
 	| 'exhausted'

@@ -72,12 +72,31 @@ describe('resolveTurnOutcome', () => {
 		);
 	});
 
-	it('stops as exhausted once the iteration reaches the limit', () => {
+	it('suspends as awaiting_attention at the iteration ceiling, naming the bound', () => {
 		const trackerPath = writeTracker('## Plan\n- [ ] still working');
 
-		expect(resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 5})).toEqual(
-			{kind: 'stop', status: 'exhausted', stopReason: undefined},
+		const outcome = resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 5});
+		expect(outcome.kind).toBe('suspend');
+		if (outcome.kind !== 'suspend') return;
+		expect(outcome.status).toBe('awaiting_attention');
+		// Three bounds funnel into one suspended state; the message must name
+		// which one tripped.
+		expect(outcome.stopReason).toContain('iteration ceiling');
+		expect(outcome.stopReason).toContain('maxIterations');
+		expect(outcome.stopReason).toContain('5');
+	});
+
+	it('a declared block wins over the iteration ceiling', () => {
+		const trackerPath = writeTracker(
+			'## Notes\n<!-- BLOCKED: need a decision -->',
 		);
+
+		const outcome = resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 5});
+		expect(outcome).toMatchObject({
+			kind: 'suspend',
+			status: 'awaiting_attention',
+			stopReason: 'agent declared WORKFLOW_BLOCKED: need a decision',
+		});
 	});
 
 	it('fails with a human message — never the raw enum — when the tracker is gone', () => {
