@@ -71,6 +71,28 @@ export type WorkflowRunnerInput = {
 	 * continuation falls back to a fresh Turn.
 	 */
 	currentAdapterSessionId?: () => string | null | undefined;
+	/**
+	 * Handover orchestration seam (ADR 0014 §5). The caller intercepts the
+	 * harness's `compact.pre`, blocks the compaction, interrupts the Turn, and
+	 * records the request; the Runner then forks the live conversation, has
+	 * the `handoff` skill write a Handoff file, discards the fork, and starts
+	 * a fresh Turn seeded with the Handoff file + Tracker — the only
+	 * transition that resets context instead of resuming.
+	 */
+	handover?: {
+		/** Return and clear the pending request, or null when none. */
+		takeRequest: () => {handle: string} | null;
+		/**
+		 * The fork is starting/ending — while true the caller must keep
+		 * blocking `compact.pre` so writing the handoff cannot be compacted.
+		 */
+		onForkStateChange?: (forking: boolean) => void;
+		/**
+		 * Handover failed for this session — degrade: stop intercepting its
+		 * compactions so normal vendor compaction proceeds (never stall).
+		 */
+		onDegraded?: (handle: string) => void;
+	};
 };
 
 export type WorkflowRunResult = {
@@ -152,6 +174,36 @@ function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 		contextSize: next.contextSize ?? base.contextSize,
 		contextWindowSize: next.contextWindowSize ?? base.contextWindowSize,
 	};
+}
+
+/**
+ * Prompt for the forked Agent Session: invoke the first-party `handoff` skill
+ * (delivered to every Workflow Run via the plugin path) to distill the
+ * conversation into a Handoff file at a path the Runner controls.
+ */
+function buildHandoffInvocationPrompt(handoffPath: string): string {
+	return (
+		`Invoke the handoff skill to write a Handoff file to ${handoffPath}. ` +
+		`Do nothing else: no code changes, no tracker updates — only the Handoff file.`
+	);
+}
+
+/**
+ * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
+ * in-flight context the Tracker never checkpointed; the Tracker remains the
+ * durable ledger.
+ */
+function buildHandoverSeedPrompt(
+	handoffPath: string,
+	trackerPath: string | undefined,
+): string {
+	return (
+		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
+		`Read the Handoff file at ${handoffPath}` +
+		(trackerPath ? ` and the tracker at ${trackerPath}` : '') +
+		`, then continue the work from exactly where it stands. ` +
+		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
+	);
 }
 
 /**
@@ -289,6 +341,72 @@ export function createWorkflowRunner(
 			}
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
+
+			// Handover (ADR 0014 §5): this Turn was interrupted because it crossed
+			// maxTurnTokenCount — its compaction was blocked and the conversation
+			// must be distilled instead. Fork the live conversation, have the
+			// handoff skill write the Handoff file, discard the fork, and seed a
+			// fresh Turn with the file + Tracker. Checked before suspension and
+			// failure classification: the interruption is neither.
+			const handoverRequest = input.handover?.takeRequest() ?? null;
+			if (handoverRequest) {
+				const handoffAbsPath = trackerAbsPath
+					? path.join(path.dirname(trackerAbsPath), 'handoff.md')
+					: path.resolve(
+							input.projectDir,
+							'.athena',
+							input.sessionId || 'session',
+							'handoff.md',
+						);
+				try {
+					fs.rmSync(handoffAbsPath, {force: true});
+				} catch {
+					// A stale file that cannot be removed will be overwritten.
+				}
+
+				input.handover?.onForkStateChange?.(true);
+				let forkOk = false;
+				try {
+					const forkResult = await input.startTurn({
+						prompt: buildHandoffInvocationPrompt(handoffAbsPath),
+						continuation: {mode: 'resume', handle: handoverRequest.handle},
+						configOverride: {...prepared.configOverride, forkSession: true},
+					});
+					cumulativeTokens = mergeTokens(cumulativeTokens, forkResult.tokens);
+					forkOk =
+						!forkResult.error &&
+						(forkResult.exitCode === null || forkResult.exitCode === 0) &&
+						fs.existsSync(handoffAbsPath);
+				} catch {
+					forkOk = false;
+				} finally {
+					input.handover?.onForkStateChange?.(false);
+				}
+
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
+				if (cancelled) break;
+
+				if (forkOk) {
+					// The fork is discarded (nothing resumes it); the next Turn is a
+					// fresh Agent Session — the only context-resetting transition —
+					// and ticks the Iteration counter like any Turn.
+					nextContinuation = {mode: 'fresh'};
+					nextPromptOverride = buildHandoverSeedPrompt(
+						handoffAbsPath,
+						trackerAbsPath ?? undefined,
+					);
+					persist();
+					continue;
+				}
+
+				// Degrade, never stall (ADR 0014 §5): stop intercepting this
+				// session's compactions so normal vendor compaction proceeds, and
+				// resume the interrupted conversation in place.
+				input.handover?.onDegraded?.(handoverRequest.handle);
+				nextContinuation = {mode: 'resume', handle: handoverRequest.handle};
+				persist();
+				continue;
+			}
 
 			// Declared attention interrupted this Turn (e.g. an AskUserQuestion no
 			// attached human can answer). Checked before failure classification:

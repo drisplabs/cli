@@ -321,6 +321,32 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				})
 			: null;
 
+	// Handover state (ADR 0014 §5). A compact.pre on the Run's Agent Session
+	// blocks vendor compaction and interrupts the Turn; the workflow runner
+	// then forks, distills, and reseeds. While the fork writes the Handoff
+	// file its compactions stay blocked too; a failed Handover marks the
+	// session degraded so vendor compaction proceeds unhindered.
+	let handoverRequest: {handle: string} | null = null;
+	let handoverForkInProgress = false;
+	const handoverDegradedSessions = new Set<string>();
+	const interceptCompaction = (event: RuntimeEvent): string | null => {
+		const handle = event.sessionId;
+		if (!handle) return null;
+		if (handoverDegradedSessions.has(handle)) return null;
+		if (handoverForkInProgress) {
+			return 'Handover fork in progress — compaction stays blocked while the Handoff file is written.';
+		}
+		if (handoverRequest === null) {
+			handoverRequest = {handle};
+			output.notice(
+				`handover: context bound reached — forking session ${handle} to write a Handoff file`,
+			);
+			output.emitJsonEvent('run.handover', {adapterSessionId: handle});
+			void sessionController.kill();
+		}
+		return 'Handover in progress — Athena forks the conversation instead of compacting.';
+	};
+
 	const controllerCallbacks: ControllerCallbacks = {
 		getRules: () => rules,
 		// No UI queue in exec; with no bridge attached, the runtime never
@@ -332,6 +358,12 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					relayPermission: createRelayPermissionCallback(bridge, runtime),
 					relayQuestion: createRelayQuestionCallback(bridge, runtime),
 				}
+			: {}),
+		// Handover interception is Claude-only for now: the fork transition
+		// rides --fork-session, which Codex has no equivalent for. Non-workflow
+		// sessions never intercept — vendor compaction proceeds unchanged.
+		...(options.harness === 'claude-code' && options.workflow?.loop?.enabled
+			? {interceptCompaction}
 			: {}),
 		...(options.signal ? {signal: options.signal} : {}),
 	};
@@ -600,6 +632,25 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			checkSuspension: () =>
 				attentionRequest !== null ? {reason: attentionRequest} : null,
 			currentAdapterSessionId,
+			handover: {
+				takeRequest: () => {
+					const request = handoverRequest;
+					handoverRequest = null;
+					return request;
+				},
+				onForkStateChange: forking => {
+					handoverForkInProgress = forking;
+				},
+				onDegraded: handle => {
+					handoverDegradedSessions.add(handle);
+					output.warn(
+						`handover failed for session ${handle} — falling back to normal vendor compaction`,
+					);
+					output.emitJsonEvent('run.handover.degraded', {
+						adapterSessionId: handle,
+					});
+				},
+			},
 			abortCurrentTurn: () => void sessionController.kill(),
 			onIterationComplete: runSnapshot => {
 				output.emitJsonEvent('iteration.complete', {

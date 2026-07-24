@@ -1060,6 +1060,122 @@ describe('runExec', () => {
 		}
 	});
 
+	it('orchestrates a Handover: blocks compaction, forks for the Handoff file, reseeds fresh', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
+		const trackerDir = path.join(projectDir, '.athena', 'session-ho');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const handoffPath = path.join(trackerDir, 'handoff.md');
+
+		const spawns: SpawnArgs[] = [];
+		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
+			spawns.push(opts);
+			const spawnIndex = spawns.length;
+			const child = makeChildProcess(() => {
+				// The exec runner kills the primary Turn to hand over.
+				opts.onExit?.(143);
+			});
+
+			setImmediate(() => {
+				if (spawnIndex === 1) {
+					// Primary Turn: works, then crosses the token bound — the
+					// harness announces compaction on this Agent Session.
+					fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
+					runtime.emit(
+						makeRuntimeEvent({
+							id: 'evt-precompact',
+							kind: 'compact.pre',
+							hookName: 'PreCompact',
+							sessionId: 'claude-sess-primary',
+							interaction: {
+								expectsDecision: true,
+								defaultTimeoutMs: 4000,
+								canBlock: true,
+							},
+						}),
+					);
+					// The kill callback ends this turn via opts.onExit(143).
+				} else if (spawnIndex === 2) {
+					// The fork: writes the Handoff file and exits cleanly.
+					fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
+					opts.onExit?.(0);
+				} else {
+					// Post-Handover fresh Turn: completes the workflow.
+					fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'message',
+							role: 'assistant',
+							content: [{type: 'text', text: 'done after handover'}],
+						}) + '\n',
+					);
+					opts.onExit?.(0);
+				}
+			});
+
+			return child;
+		});
+
+		try {
+			const result = await runExec({
+				prompt: 'big task',
+				projectDir,
+				harness: 'claude-code',
+				athenaSessionId: 'session-ho',
+				isolationConfig: {},
+				ephemeral: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				workflow: {
+					name: 'test-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						completionMarker: '<!-- DONE -->',
+						maxIterations: 5,
+						trackerPath: '.athena/{sessionId}/tracker.md',
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+
+			// The compaction was answered with a block decision.
+			const blockDecision = runtime.decisions.find(
+				d => d.eventId === 'evt-precompact',
+			);
+			expect(blockDecision?.decision.intent).toEqual({
+				kind: 'compact_block',
+				reason: expect.stringContaining('Handover'),
+			});
+
+			// Spawn 2 is the fork: resumes the primary session with --fork-session
+			// (surfaced via isolation.forkSession) and invokes the handoff skill.
+			expect(spawns).toHaveLength(3);
+			expect(spawns[1]!.sessionId).toBe('claude-sess-primary');
+			expect(
+				(spawns[1]!.isolation as {forkSession?: boolean}).forkSession,
+			).toBe(true);
+			expect(spawns[1]!.prompt).toContain('handoff skill');
+
+			// Spawn 3 is the fresh post-Handover Turn seeded with file + Tracker.
+			expect(spawns[2]!.sessionId).toBeUndefined();
+			expect(spawns[2]!.prompt).toContain('Handover occurred');
+			expect(spawns[2]!.prompt).toContain(handoffPath);
+
+			expect(stderr.read()).toContain('handover: context bound reached');
+		} finally {
+			fs.rmSync(projectDir, {recursive: true, force: true});
+		}
+	});
+
 	it('suspends after running all iterations without completion (awaiting_attention)', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
