@@ -538,9 +538,10 @@ describe('bootstrapRuntimeConfig', () => {
 			isolationPreset: 'strict',
 		});
 
-		// gate fires despite zero plugin dirs; resolved personal servers forwarded
+		// gate fires despite zero configured plugin dirs (the builtin handoff
+		// plugin always rides along); resolved personal servers forwarded
 		expect(registerPluginsMock).toHaveBeenCalledWith(
-			[],
+			['/builtin-handoff-plugin'],
 			undefined,
 			true,
 			[
@@ -571,9 +572,10 @@ describe('bootstrapRuntimeConfig', () => {
 			isolationPreset: 'strict',
 		});
 
-		// gate fires despite zero plugin dirs + zero personal MCP; skills forwarded
+		// gate fires despite zero configured plugin dirs + zero personal MCP
+		// (the builtin handoff plugin always rides along); skills forwarded
 		expect(registerPluginsMock).toHaveBeenCalledWith(
-			[],
+			['/builtin-handoff-plugin'],
 			undefined,
 			true,
 			[],

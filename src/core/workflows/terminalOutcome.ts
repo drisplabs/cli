@@ -84,6 +84,7 @@ export function resolveTurnOutcome(input: {
 	// "I need a human" — a question or an external blocker. It suspends the Run
 	// in the non-terminal `awaiting_attention` rather than ending it in the
 	// terminal `blocked` (still valid on historical rows, no longer emitted).
+	// Checked before the ceiling: a declared reason beats a generic bound.
 	if (tracker.blocked) {
 		return {
 			kind: 'suspend',
@@ -93,9 +94,18 @@ export function resolveTurnOutcome(input: {
 				: 'agent declared WORKFLOW_BLOCKED',
 		};
 	}
+	// Runaway ceiling (ADR 0014 §7): hitting maxIterations suspends instead of
+	// terminating in `exhausted` (still valid on historical rows, no longer
+	// emitted). The message names which bound tripped — the Nudge and Retry
+	// caps funnel into the same state, and an unnamed give-up is unreadable.
 	if (iteration >= loop.maxIterations) {
-		return {kind: 'stop', status: 'exhausted'};
+		return {
+			kind: 'suspend',
+			status: 'awaiting_attention',
+			stopReason: `iteration ceiling reached: ${loop.maxIterations} iteration${
+				loop.maxIterations === 1 ? '' : 's'
+			} (maxIterations) used without a terminal marker`,
+		};
 	}
-
 	return {kind: 'continue'};
 }

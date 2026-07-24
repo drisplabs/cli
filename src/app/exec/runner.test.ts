@@ -1060,7 +1060,7 @@ describe('runExec', () => {
 		}
 	});
 
-	it('fails when a looped workflow exhausts iterations without completion', async () => {
+	it('suspends after running all iterations without completion (awaiting_attention)', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
@@ -1113,16 +1113,11 @@ describe('runExec', () => {
 				},
 			});
 
-			expect(result.success).toBe(false);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.WORKFLOW_EXHAUSTED);
-			expect(result.failure?.kind).toBe('workflow');
-			expect(result.failure).toEqual(
-				expect.objectContaining({
-					kind: 'workflow',
-					state: 'exhausted',
-				}),
-			);
-			expect(result.finalMessage).toBeNull();
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.failure).toBeUndefined();
+			expect(stderr.read()).toContain('workflow run suspended');
+			expect(stderr.read()).toContain('iteration ceiling');
 		} finally {
 			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
@@ -1270,7 +1265,7 @@ describe('runExec', () => {
 		}
 	});
 
-	it('fails when maxIterations is exhausted', async () => {
+	it('suspends without failure when maxIterations is reached (awaiting_attention)', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
@@ -1318,17 +1313,14 @@ describe('runExec', () => {
 				},
 			});
 
-			expect(result.success).toBe(false);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.WORKFLOW_EXHAUSTED);
-			expect(result.failure?.kind).toBe('workflow');
-			expect(result.failure).toEqual(
-				expect.objectContaining({
-					kind: 'workflow',
-					state: 'exhausted',
-				}),
-			);
-			expect(result.failure?.message).toContain('maximum of 1 iterations');
-			expect(result.finalMessage).toBeNull();
+			// The runaway ceiling suspends the Run (ADR 0014): no failure latch,
+			// no failure exit code — contrast the old terminal `exhausted`. The
+			// notice names the tripped bound.
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.failure).toBeUndefined();
+			expect(stderr.read()).toContain('workflow run suspended');
+			expect(stderr.read()).toContain('iteration ceiling');
 			expect(spawnProcess).toHaveBeenCalledTimes(1);
 		} finally {
 			fs.rmSync(trackerPath, {force: true});

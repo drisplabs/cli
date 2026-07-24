@@ -146,7 +146,7 @@ export function bootstrapRuntimeConfig({
 		// plugins as generated MCP config, which cannot carry a skill).
 		// Failure to materialize it degrades to a warning; the Run then falls
 		// back to vendor compaction at Handover.
-		if (resolvedWorkflow && pluginDelivery.mergeWorkflowPluginDirs) {
+		if (pluginDelivery.mergeWorkflowPluginDirs) {
 			try {
 				workflowPluginDirs.push(ensureHandoffSkillPlugin());
 			} catch (error) {

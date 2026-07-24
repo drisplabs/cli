@@ -34,12 +34,7 @@ import {
 import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
-import type {
-	ExecRunFailure,
-	ExecRunOptions,
-	ExecRunResult,
-	ExecWorkflowFailureState,
-} from './types';
+import type {ExecRunOptions, ExecRunResult} from './types';
 import {EXEC_EXIT_CODE} from './types';
 
 const NULL_TOKENS: TokenUsage = {
@@ -145,17 +140,6 @@ function isQuestionEvent(event: RuntimeEvent): boolean {
 		(event.kind === 'permission.request' && event.toolName === 'user_input') ||
 		event.kind === 'elicitation.request'
 	);
-}
-
-function workflowFailure(
-	state: ExecWorkflowFailureState,
-	message: string,
-): ExecRunFailure {
-	return {
-		kind: 'workflow',
-		state,
-		message,
-	};
 }
 
 function buildEarlyFailureResult(input: {
@@ -636,8 +620,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (!latch.hasFailure()) {
 			if (runResult.status === 'awaiting_attention') {
 				// Suspended, not failed (ADR 0014): the Run waits on a human and
-				// remains resumable. No failure latch — contrast the terminal
-				// `blocked`, which registered one.
+				// remains resumable — a declared block, an unanswerable question,
+				// or a tripped bound (the stopReason names which). No failure
+				// latch — contrast the old terminal `blocked`/`exhausted`, which
+				// registered one. Those statuses are no longer emitted.
 				const reason = runResult.stopReason ?? 'awaiting attention';
 				output.notice(`workflow run suspended — ${reason}`);
 				output.emitJsonEvent('run.suspended', {
@@ -645,22 +631,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					status: 'awaiting_attention',
 					stopReason: runResult.stopReason ?? null,
 				});
-			} else if (runResult.status === 'blocked') {
-				latch.register(
-					workflowFailure(
-						'blocked',
-						runResult.stopReason
-							? `Workflow blocked: ${runResult.stopReason}`
-							: 'Workflow blocked.',
-					),
-				);
-			} else if (runResult.status === 'exhausted') {
-				latch.register(
-					workflowFailure(
-						'exhausted',
-						`Workflow reached the maximum of ${workflow?.loop?.maxIterations ?? 0} iterations.`,
-					),
-				);
 			} else if (runResult.status === 'failed') {
 				latch.register({
 					kind: 'process',
