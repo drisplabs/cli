@@ -54,6 +54,11 @@ export type ExecRunOptions = {
 	instanceId?: number;
 	athenaSessionId?: string;
 	adapterResumeSessionId?: string;
+	/**
+	 * Workflow Run id to resume (ADR 0014 human-resume): the runner reuses it
+	 * so the suspended Run returns to `running` instead of minting a new run.
+	 */
+	resumeRunId?: string;
 	isolationConfig: HarnessProcessConfig;
 	pluginMcpConfig?: string;
 	workflow?: WorkflowConfig;

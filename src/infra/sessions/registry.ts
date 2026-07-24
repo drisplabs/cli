@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type {AthenaSession} from './types';
+import type {AthenaSession, PersistedWorkflowRun} from './types';
 import {rowToAthenaSession} from './types';
 import {SCHEMA_VERSION} from './schema';
 import {openSessionDbReadonly, type SessionDbReader} from './sessionDbReader';
@@ -109,4 +109,77 @@ export function getMostRecentAthenaSession(
 ): AthenaSession | null {
 	const sessions = listSessions(projectDir);
 	return sessions[0] ?? null;
+}
+
+/**
+ * The most recent Workflow Run persisted for an Athena Session, read from its
+ * session.db, or null when the session (or any run) does not exist. Used by
+ * the human-resume path to target the suspended Run's Agent Session and run
+ * id (ADR 0014 §6).
+ */
+export function getLatestRunForSession(
+	sessionId: string,
+	baseDir?: string,
+): PersistedWorkflowRun | null {
+	const dbPath = path.join(baseDir ?? sessionsDir(), sessionId, 'session.db');
+	if (!fs.existsSync(dbPath)) return null;
+	let reader: SessionDbReader | undefined;
+	try {
+		reader = openSessionDbReadonly(dbPath);
+		return reader.latestWorkflowRun() ?? null;
+	} catch {
+		return null;
+	} finally {
+		reader?.close();
+	}
+}
+
+/** A suspended Workflow Run awaiting a human, with why and how to wake it. */
+export type AwaitingAttentionRun = {
+	athenaSessionId: string;
+	projectDir: string;
+	runId: string;
+	workflowName?: string;
+	stopReason?: string;
+	adapterSessionId?: string;
+	startedAt: number;
+	sessionUpdatedAt: number;
+};
+
+/**
+ * Every Workflow Run currently suspended in `awaiting_attention` — the
+ * human-facing inbox of Runs waiting on a reply (ADR 0014 §7). Scans each
+ * session's most recent run; older runs of a session that has since moved on
+ * are not "awaiting" anymore.
+ */
+export function listAwaitingAttentionRuns(
+	projectDir?: string,
+	baseDir?: string,
+): AwaitingAttentionRun[] {
+	const dir = baseDir ?? sessionsDir();
+	if (!fs.existsSync(dir)) return [];
+
+	const results: AwaitingAttentionRun[] = [];
+	for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
+		if (!entry.isDirectory()) continue;
+		const dbPath = path.join(dir, entry.name, 'session.db');
+		const session = readSessionFromDb(dbPath);
+		if (!session) continue;
+		if (projectDir && session.projectDir !== projectDir) continue;
+
+		const run = getLatestRunForSession(entry.name, dir);
+		if (!run || run.status !== 'awaiting_attention') continue;
+		results.push({
+			athenaSessionId: session.id,
+			projectDir: session.projectDir,
+			runId: run.id,
+			workflowName: run.workflowName,
+			stopReason: run.stopReason,
+			adapterSessionId: run.adapterSessionId,
+			startedAt: run.startedAt,
+			sessionUpdatedAt: session.updatedAt,
+		});
+	}
+
+	return results.sort((a, b) => b.sessionUpdatedAt - a.sessionUpdatedAt);
 }

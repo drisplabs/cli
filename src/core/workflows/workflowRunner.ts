@@ -42,6 +42,13 @@ export type WorkflowRunnerInput = {
 	workflow?: WorkflowConfig;
 	prompt: string;
 	initialContinuation?: TurnContinuation;
+	/**
+	 * Reuse an existing Workflow Run id instead of minting a new one — the
+	 * human-resume path (ADR 0014 §6): waking a Run suspended in
+	 * `awaiting_attention` returns that same Run to `running` rather than
+	 * leaving a forever-suspended row beside a new one.
+	 */
+	resumeRunId?: string;
 
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
@@ -175,7 +182,7 @@ function defaultCreateTracker(trackerPath: string, content: string): void {
 export function createWorkflowRunner(
 	input: WorkflowRunnerInput,
 ): WorkflowRunnerHandle {
-	const runId = crypto.randomUUID();
+	const runId = input.resumeRunId ?? crypto.randomUUID();
 	let cancelled = false;
 	let status: RunStatus = 'running';
 	let iterations = 0;

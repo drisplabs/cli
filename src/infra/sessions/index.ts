@@ -20,8 +20,11 @@ export {
 	removeSession,
 	findSessionByAdapterId,
 	getMostRecentAthenaSession,
+	getLatestRunForSession,
+	listAwaitingAttentionRuns,
 	sessionsDir,
 } from './registry';
+export type {AwaitingAttentionRun} from './registry';
 
 // Schema (for advanced usage / migrations)
 export {SCHEMA_VERSION} from './schema';

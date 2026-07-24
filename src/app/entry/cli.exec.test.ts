@@ -79,6 +79,8 @@ vi.mock('../bootstrap/bootstrapConfig', () => ({
 vi.mock('../../infra/sessions/index', () => ({
 	getMostRecentAthenaSession: getMostRecentAthenaSessionMock,
 	getSessionMeta: getSessionMetaMock,
+	getLatestRunForSession: () => null,
+	listAwaitingAttentionRuns: () => [],
 }));
 
 vi.mock('../../setup/shouldShowSetup', () => ({

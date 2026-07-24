@@ -40,6 +40,7 @@ import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
 import {runGatewayCommand} from './gatewayCommand';
 import {runDoctorCommand} from './doctorCommand';
+import {runRunsCommand} from './runsCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
 import {
 	installStdoutWriteMonitor,
@@ -74,6 +75,7 @@ const KNOWN_COMMANDS = new Set([
 	'setup',
 	'sessions',
 	'resume',
+	'runs',
 	'exec',
 	'workflow',
 	'mcp',
@@ -256,6 +258,7 @@ const cli = meow(
 			setup                 Re-run setup wizard
 			sessions              Launch interactive session picker
 			resume [sessionId]    Resume most recent (or specified) session
+			runs                  List workflow runs awaiting attention and how to wake them
 			exec "<prompt>"       Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
@@ -649,6 +652,17 @@ async function main(): Promise<void> {
 						? {limit: cli.flags.limit}
 						: {}),
 				},
+			}),
+		);
+		return;
+	}
+
+	if (command === 'runs') {
+		// The human-resume inbox (ADR 0014): every Workflow Run suspended in
+		// awaiting_attention, across all projects, with how to wake each one.
+		await exitWith(
+			runRunsCommand({
+				json: Boolean(cli.flags.json),
 			}),
 		);
 		return;

@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import {
+	getLatestRunForSession,
 	getMostRecentAthenaSession,
 	getSessionMeta,
 } from '../../infra/sessions/index';
+import type {AthenaSession} from '../../infra/sessions/index';
 
 /**
  * Shared resume-target resolution for the interactive and headless entry
@@ -27,6 +29,13 @@ export type ResumeRequest =
 export type ResumeTarget = {
 	athenaSessionId: string;
 	adapterResumeSessionId: string | undefined;
+	/**
+	 * Set when the resumed session's most recent Workflow Run is suspended in
+	 * `awaiting_attention` (ADR 0014): the Runner reuses this run id so the
+	 * suspended Run itself returns to `running` instead of a new run row
+	 * appearing beside a forever-suspended one.
+	 */
+	resumeRunId?: string;
 };
 
 export type ResumeResolutionMessages = {
@@ -48,6 +57,7 @@ export type ResolveResumeTargetInput = {
 	createSessionId?: () => string;
 	getSessionMetaFn?: typeof getSessionMeta;
 	getMostRecentSessionFn?: typeof getMostRecentAthenaSession;
+	getLatestRunFn?: typeof getLatestRunForSession;
 };
 
 export function resolveResumeTarget(
@@ -57,6 +67,27 @@ export function resolveResumeTarget(
 	const getSessionMetaFn = input.getSessionMetaFn ?? getSessionMeta;
 	const getMostRecentSessionFn =
 		input.getMostRecentSessionFn ?? getMostRecentAthenaSession;
+	const getLatestRunFn = input.getLatestRunFn ?? getLatestRunForSession;
+
+	// A session whose most recent Workflow Run is suspended in
+	// `awaiting_attention` resumes THAT Run's Agent Session (the one that
+	// asked), not merely the last adapter session observed — and carries the
+	// run id so the suspended Run returns to `running` (ADR 0014 §6).
+	function toTarget(meta: AthenaSession): ResumeTarget {
+		const latestRun = getLatestRunFn(meta.id);
+		if (latestRun?.status === 'awaiting_attention') {
+			return {
+				athenaSessionId: meta.id,
+				adapterResumeSessionId:
+					latestRun.adapterSessionId ?? meta.adapterSessionIds.at(-1),
+				resumeRunId: latestRun.id,
+			};
+		}
+		return {
+			athenaSessionId: meta.id,
+			adapterResumeSessionId: meta.adapterSessionIds.at(-1),
+		};
+	}
 
 	const {request} = input;
 
@@ -73,10 +104,7 @@ export function resolveResumeTarget(
 			input.logError(input.messages.unknownExplicit(request.sessionId));
 			return undefined;
 		}
-		return {
-			athenaSessionId: meta.id,
-			adapterResumeSessionId: meta.adapterSessionIds.at(-1),
-		};
+		return toTarget(meta);
 	}
 
 	// request.kind === 'most-recent'
@@ -91,8 +119,5 @@ export function resolveResumeTarget(
 		}
 		return undefined;
 	}
-	return {
-		athenaSessionId: recent.id,
-		adapterResumeSessionId: recent.adapterSessionIds.at(-1),
-	};
+	return toTarget(recent);
 }

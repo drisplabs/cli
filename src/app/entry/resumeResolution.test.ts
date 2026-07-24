@@ -88,6 +88,88 @@ describe('resolveResumeTarget', () => {
 		});
 	});
 
+	it('targets a suspended run: its Agent Session id and run id (ADR 0014)', () => {
+		const result = resolveResumeTarget({
+			projectDir: '/tmp',
+			request: {kind: 'explicit', sessionId: 'athena-x'},
+			missingRecentPolicy: 'error',
+			messages: MESSAGES,
+			logError: vi.fn(),
+			getSessionMetaFn: () =>
+				makeSession({id: 'athena-x', adapterSessionIds: ['a-1', 'a-2']}),
+			getLatestRunFn: () => ({
+				id: 'run-suspended',
+				sessionId: 'athena-x',
+				startedAt: 0,
+				iteration: 3,
+				maxIterations: 20,
+				status: 'awaiting_attention',
+				stopReason: 'agent declared WORKFLOW_BLOCKED: which env?',
+				// The run's own captured session — deliberately NOT the last
+				// adapter session observed on the Athena Session.
+				adapterSessionId: 'a-1',
+			}),
+		});
+
+		expect(result).toEqual({
+			athenaSessionId: 'athena-x',
+			adapterResumeSessionId: 'a-1',
+			resumeRunId: 'run-suspended',
+		});
+	});
+
+	it('falls back to the last adapter session when the suspended run captured no id', () => {
+		const result = resolveResumeTarget({
+			projectDir: '/tmp',
+			request: {kind: 'most-recent'},
+			missingRecentPolicy: 'error',
+			messages: MESSAGES,
+			logError: vi.fn(),
+			getMostRecentSessionFn: () =>
+				makeSession({id: 'athena-r', adapterSessionIds: ['r-1', 'r-2']}),
+			getLatestRunFn: () => ({
+				id: 'run-suspended',
+				sessionId: 'athena-r',
+				startedAt: 0,
+				iteration: 1,
+				maxIterations: 20,
+				status: 'awaiting_attention',
+			}),
+		});
+
+		expect(result).toEqual({
+			athenaSessionId: 'athena-r',
+			adapterResumeSessionId: 'r-2',
+			resumeRunId: 'run-suspended',
+		});
+	});
+
+	it('ignores a non-suspended latest run (plain resume keeps its behaviour)', () => {
+		const result = resolveResumeTarget({
+			projectDir: '/tmp',
+			request: {kind: 'explicit', sessionId: 'athena-x'},
+			missingRecentPolicy: 'error',
+			messages: MESSAGES,
+			logError: vi.fn(),
+			getSessionMetaFn: () =>
+				makeSession({id: 'athena-x', adapterSessionIds: ['a-1', 'a-2']}),
+			getLatestRunFn: () => ({
+				id: 'run-done',
+				sessionId: 'athena-x',
+				startedAt: 0,
+				iteration: 2,
+				maxIterations: 20,
+				status: 'completed',
+				adapterSessionId: 'a-1',
+			}),
+		});
+
+		expect(result).toEqual({
+			athenaSessionId: 'athena-x',
+			adapterResumeSessionId: 'a-2',
+		});
+	});
+
 	// ── The explicit resume-policy divergence (the named fix) ──
 	// Both modes reach the SAME "resume-most-recent, none found" branch; they
 	// only differ in this one policy parameter. Interactive chooses 'fresh',
