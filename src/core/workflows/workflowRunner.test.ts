@@ -465,7 +465,141 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('resumes the intact Agent Session when nextTurnContinuation asks for it', async () => {
+	it('nudges an undeclared markerless stop by resuming the same Agent Session with a corrective prompt', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const calls: Array<{continuation: unknown; prompt: string}> = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(
+				async (input: {continuation: unknown; prompt: string}) => {
+					calls.push(input);
+					fs.writeFileSync(trackerPath, 'working', 'utf-8');
+					return OK_RESULT;
+				},
+			)
+			.mockImplementationOnce(
+				async (input: {continuation: unknown; prompt: string}) => {
+					calls.push(input);
+					fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					return OK_RESULT;
+				},
+			);
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// A nudged (resumed) Turn is still a Turn: the Iteration counter ticked.
+		expect(result.iterations).toBe(2);
+		expect(calls[0]!.continuation).toEqual({mode: 'fresh'});
+		expect(calls[1]!.continuation).toEqual({
+			mode: 'resume',
+			handle: 'claude-sess-abc',
+		});
+		// The corrective prompt states both options: finish, or declare.
+		expect(calls[1]!.prompt).toContain('continue it now');
+		expect(calls[1]!.prompt).toContain('<!-- WORKFLOW_COMPLETE -->');
+		expect(calls[1]!.prompt).toContain('<!-- WORKFLOW_BLOCKED');
+	});
+
+	it('suspends after the nudge cap with no tracker progress, naming the bound', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		// Every Turn stops cleanly without a marker and without touching the
+		// tracker after the first write — pure unproductive spinning.
+		const startTurn = vi.fn().mockImplementation(async () => {
+			fs.writeFileSync(trackerPath, 'stuck', 'utf-8');
+			return OK_RESULT;
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 20, nudgeCap: 2},
+			},
+			startTurn,
+			persistRunState,
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('nudge cap');
+		expect(result.stopReason).toContain('nudgeCap');
+		// Stop 1 → nudge 1, stop 2 → nudge 2, stop 3 → cap exceeded, suspend.
+		expect(startTurn).toHaveBeenCalledTimes(3);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({status: 'awaiting_attention'}),
+		);
+	});
+
+	it('resets the nudge cap whenever the tracker advances between stops', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		// Six markerless stops, each advancing the tracker (a checkpointing
+		// workflow), then completion. With nudgeCap 2 this must NOT suspend —
+		// only unproductive repeated stops escalate.
+		let turn = 0;
+		const startTurn = vi.fn().mockImplementation(async () => {
+			turn++;
+			if (turn <= 6) {
+				fs.writeFileSync(trackerPath, `progress step ${turn}`, 'utf-8');
+			} else {
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+			}
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 20, nudgeCap: 2},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(result.iterations).toBe(7);
+	});
+
+	it('falls back to a fresh Turn on a markerless stop when no vendor session id exists', async () => {
 		const projectDir = makeTempDir();
 		const trackerDir = path.join(projectDir, '.athena', 's1');
 		fs.mkdirSync(trackerDir, {recursive: true});
@@ -497,24 +631,14 @@ describe('createWorkflowRunner', () => {
 			},
 			startTurn,
 			persistRunState: vi.fn(),
-			currentAdapterSessionId: () => 'claude-sess-abc',
-			nextTurnContinuation: ({adapterSessionId}) =>
-				adapterSessionId
-					? {mode: 'resume', handle: adapterSessionId}
-					: {mode: 'fresh'},
 		});
 
 		const result = await handle.result;
 		expect(result.status).toBe('completed');
-		// A resume is still a Turn: the Iteration counter ticked for it.
-		expect(result.iterations).toBe(2);
-		expect(continuations).toEqual([
-			{mode: 'fresh'},
-			{mode: 'resume', handle: 'claude-sess-abc'},
-		]);
+		expect(continuations).toEqual([{mode: 'fresh'}, {mode: 'fresh'}]);
 	});
 
-	it('degrades a failed resume to a fresh replay of the same iteration', async () => {
+	it('degrades a failed nudge resume to a fresh replay of the same iteration', async () => {
 		const projectDir = makeTempDir();
 		const trackerDir = path.join(projectDir, '.athena', 's1');
 		fs.mkdirSync(trackerDir, {recursive: true});
@@ -528,7 +652,7 @@ describe('createWorkflowRunner', () => {
 				fs.writeFileSync(trackerPath, 'working', 'utf-8');
 				return OK_RESULT;
 			})
-			// The resume attempt dies at startup (e.g. the vendor session is gone).
+			// The nudge resume dies at startup (the vendor session is gone).
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				continuations.push(input.continuation);
 				return {
@@ -556,7 +680,7 @@ describe('createWorkflowRunner', () => {
 			},
 			startTurn,
 			persistRunState: vi.fn(),
-			nextTurnContinuation: () => ({mode: 'resume', handle: 'gone-session'}),
+			currentAdapterSessionId: () => 'claude-sess-abc',
 		});
 
 		const result = await handle.result;
@@ -566,50 +690,9 @@ describe('createWorkflowRunner', () => {
 		expect(result.iterations).toBe(2);
 		expect(continuations).toEqual([
 			{mode: 'fresh'},
-			{mode: 'resume', handle: 'gone-session'},
+			{mode: 'resume', handle: 'claude-sess-abc'},
 			{mode: 'fresh'},
 		]);
-	});
-
-	it('fails the Run when the fresh replay after a degraded resume also fails', async () => {
-		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
-
-		const startTurn = vi
-			.fn()
-			.mockImplementationOnce(async () => OK_RESULT)
-			.mockImplementationOnce(async () => ({
-				...OK_RESULT,
-				exitCode: 1,
-				error: new Error('resume failed'),
-			}))
-			.mockImplementationOnce(async () => ({
-				...OK_RESULT,
-				exitCode: 1,
-				error: new Error('fresh replay also failed'),
-			}));
-
-		const handle = createWorkflowRunner({
-			sessionId: 's1',
-			projectDir,
-			prompt: 'do it',
-			workflow: {
-				name: 'wf',
-				plugins: [],
-				promptTemplate: '{input}',
-				loop: {enabled: true, maxIterations: 5},
-			},
-			startTurn,
-			persistRunState: vi.fn(),
-			nextTurnContinuation: () => ({mode: 'resume', handle: 'gone-session'}),
-		});
-
-		const result = await handle.result;
-		expect(result.status).toBe('failed');
-		expect(result.stopReason).toContain('fresh replay also failed');
-		expect(startTurn).toHaveBeenCalledTimes(3);
 	});
 
 	it('snapshots the vendor session id from currentAdapterSessionId', async () => {

@@ -146,3 +146,20 @@ export function buildContinuePrompt(loop: LoopConfig): string {
 		trackerPath: loop.trackerPath ?? DEFAULT_TRACKER_PATH,
 	});
 }
+
+/**
+ * The corrective prompt for a Nudge (ADR 0014 §3): the agent stopped cleanly
+ * without a Terminal Marker, so the Runner resumes the same Agent Session and
+ * tells it both options — finish the remaining work, or declare a marker.
+ */
+export function buildNudgePrompt(loop: LoopConfig): string {
+	const completionMarker = loop.completionMarker ?? DEFAULT_COMPLETION_MARKER;
+	const blockedMarker = loop.blockedMarker ?? DEFAULT_BLOCKED_MARKER;
+	const trackerPath = loop.trackerPath ?? DEFAULT_TRACKER_PATH;
+	return (
+		`You stopped without declaring how this workflow ended. If work remains, continue it now. ` +
+		`If everything is done and verified, write ${completionMarker} as the final non-empty line of the tracker at ${trackerPath}. ` +
+		`If you cannot proceed without a human, write ${blockedMarker}: <reason> --> there instead. ` +
+		`Do not stop again without either finishing the work or declaring one of these markers.`
+	);
+}

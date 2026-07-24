@@ -17,6 +17,14 @@
  */
 export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
 
+/**
+ * Default {@link LoopConfig.nudgeCap}: consecutive undeclared, progress-free
+ * stops tolerated before the Run suspends in `awaiting_attention` (ADR 0014
+ * §3). The cap resets whenever the Tracker advances between stops, so only
+ * unproductive repeated stops escalate.
+ */
+export const DEFAULT_NUDGE_CAP = 3;
+
 export type LoopConfig = {
 	enabled: boolean;
 	/**
@@ -25,6 +33,12 @@ export type LoopConfig = {
 	 */
 	completionMarker?: string;
 	maxIterations: number;
+	/**
+	 * Consecutive Nudges tolerated without Tracker progress before the Run
+	 * suspends (ADR 0014 §3). Resets whenever the Tracker changes between
+	 * stops. Defaults to {@link DEFAULT_NUDGE_CAP} when omitted.
+	 */
+	nudgeCap?: number;
 	/**
 	 * Harness-neutral token bound for one Turn's conversation. Maps onto each
 	 * harness's autocompact knob (Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,

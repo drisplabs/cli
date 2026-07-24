@@ -16,7 +16,12 @@ import {
 	resolveTrackerPath,
 } from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
-import {TRACKER_SKELETON_MARKER} from './trackerReader';
+import {
+	buildNudgePrompt,
+	readTracker,
+	TRACKER_SKELETON_MARKER,
+} from './trackerReader';
+import {DEFAULT_NUDGE_CAP} from './types';
 import {substituteVariables} from './templateVars';
 
 export type TurnInput = {
@@ -49,24 +54,11 @@ export type WorkflowRunnerInput = {
 	/**
 	 * Vendor session id (Claude session / Codex thread) of the most recent
 	 * Turn's Agent Session, as observed by the caller's runtime. Snapshotted on
-	 * every persist so a later process can resume or fork the session
-	 * (ADR 0014). Returning null/undefined is safe — the id is simply absent.
+	 * every persist, and the handle the Runner resumes for a Nudge (ADR 0014
+	 * §3, §6). Returning null/undefined is safe — the id is simply absent and
+	 * continuation falls back to a fresh Turn.
 	 */
 	currentAdapterSessionId?: () => string | null | undefined;
-	/**
-	 * Decide how the next Turn continues after a continue-outcome iteration
-	 * (ADR 0014 §6): return `{mode: 'resume', handle}` to resume the intact
-	 * Agent Session, or `{mode: 'fresh'}` (the default when absent) to spawn a
-	 * new one. The recovery invariant: resume when intact; go fresh only to
-	 * shed context (Handover). A resumed Turn still ticks the Iteration
-	 * counter — a resume is still a Turn.
-	 */
-	nextTurnContinuation?: (context: {
-		/** Iteration (1-based) of the Turn that just completed. */
-		iteration: number;
-		/** Vendor session id of the just-completed Turn's Agent Session. */
-		adapterSessionId: string | null;
-	}) => TurnContinuation;
 };
 
 export type WorkflowRunResult = {
@@ -230,6 +222,13 @@ export function createWorkflowRunner(
 		let nextContinuation: TurnContinuation = input.initialContinuation ?? {
 			mode: 'fresh',
 		};
+		// Nudge state (ADR 0014 §3): consecutive undeclared stops without
+		// Tracker progress, and the Tracker content at the last stop. The
+		// corrective prompt for a nudged (resumed) Turn overrides the prepared
+		// Continue Prompt for exactly one Turn.
+		let nudgeStreak = 0;
+		let lastStopTrackerContent: string | null = null;
+		let nextPromptOverride: string | null = null;
 
 		const loop = input.workflow?.loop;
 
@@ -243,8 +242,10 @@ export function createWorkflowRunner(
 			});
 
 			const attemptedContinuation = nextContinuation;
+			const promptForTurn = nextPromptOverride ?? prepared.prompt;
+			nextPromptOverride = null;
 			const turnResult = await input.startTurn({
-				prompt: prepared.prompt,
+				prompt: promptForTurn,
 				continuation: attemptedContinuation,
 				configOverride: prepared.configOverride,
 			});
@@ -334,15 +335,42 @@ export function createWorkflowRunner(
 				}
 			}
 
-			// Continue loop. The caller decides whether the next Turn resumes the
-			// intact Agent Session or spawns fresh (ADR 0014 §6); fresh remains
-			// the default.
+			// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same
+			// Agent Session with a corrective prompt — finish, or declare a
+			// marker. Bounded by the Nudge cap, which resets whenever the
+			// Tracker advances between stops so only unproductive repeated
+			// stops escalate (checkpointing workflows never trip it).
+			const trackerContent = trackerAbsPath ? readTracker(trackerAbsPath) : '';
+			if (trackerContent !== lastStopTrackerContent) {
+				nudgeStreak = 0;
+			}
+			lastStopTrackerContent = trackerContent;
+
+			const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
+			if (adapterSessionId) {
+				nudgeStreak++;
+				const nudgeCap = loop.nudgeCap ?? DEFAULT_NUDGE_CAP;
+				if (nudgeStreak > nudgeCap) {
+					status = 'awaiting_attention';
+					stopReason = `nudge cap reached: ${nudgeCap} nudge${
+						nudgeCap === 1 ? '' : 's'
+					} (nudgeCap) without tracker progress or a terminal marker`;
+					persist();
+					break;
+				}
+				nextContinuation = {mode: 'resume', handle: adapterSessionId};
+				nextPromptOverride = buildNudgePrompt({
+					...loop,
+					trackerPath: trackerPromptPath ?? loop.trackerPath,
+				});
+			} else {
+				// No vendor session id to resume (harness never reported one):
+				// fall back to the pre-Nudge behaviour — a fresh Turn seeded by
+				// the Continue Prompt.
+				nextContinuation = {mode: 'fresh'};
+			}
 			persist();
 			input.onIterationComplete?.(snapshot());
-			nextContinuation = input.nextTurnContinuation?.({
-				iteration: iterations,
-				adapterSessionId: input.currentAdapterSessionId?.() ?? null,
-			}) ?? {mode: 'fresh'};
 		}
 
 		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
