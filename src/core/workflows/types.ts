@@ -25,6 +25,19 @@ export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
  */
 export const DEFAULT_NUDGE_CAP = 3;
 
+/**
+ * Default {@link LoopConfig.retryCap}: consecutive transient Turn failures
+ * tolerated before the Run suspends in `awaiting_attention` (ADR 0014 §4).
+ * Resets whenever a Turn completes without failing.
+ */
+export const DEFAULT_RETRY_CAP = 3;
+
+/**
+ * Default base for {@link LoopConfig.retryBackoffMs}. Retry N waits
+ * `retryBackoffMs * 2^(N-1)` before resuming the same Agent Session.
+ */
+export const DEFAULT_RETRY_BACKOFF_MS = 10_000;
+
 export type LoopConfig = {
 	enabled: boolean;
 	/**
@@ -39,6 +52,18 @@ export type LoopConfig = {
 	 * stops. Defaults to {@link DEFAULT_NUDGE_CAP} when omitted.
 	 */
 	nudgeCap?: number;
+	/**
+	 * Consecutive transient Turn failures tolerated before the Run suspends
+	 * (ADR 0014 §4). Resets on any Turn that completes without failing.
+	 * Defaults to {@link DEFAULT_RETRY_CAP} when omitted.
+	 */
+	retryCap?: number;
+	/**
+	 * Base backoff before retrying a transient failure; retry N waits
+	 * `retryBackoffMs * 2^(N-1)`. Defaults to
+	 * {@link DEFAULT_RETRY_BACKOFF_MS} when omitted.
+	 */
+	retryBackoffMs?: number;
 	/**
 	 * Harness-neutral token bound for one Turn's conversation. Maps onto each
 	 * harness's autocompact knob (Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
