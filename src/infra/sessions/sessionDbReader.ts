@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
-import type {SessionRow} from './types';
+import type {PersistedWorkflowRun, SessionRow} from './types';
 
 /**
  * The single read-only SQL surface over a `session.db` file.
@@ -26,6 +26,11 @@ export type SessionDbReader = {
 	firstUserPrompt(): string | undefined;
 	/** Count of runtime events grouped by hook name. */
 	runtimeHookCounts(): Record<string, number>;
+	/**
+	 * The most recent workflow run row, or undefined when the session has none
+	 * (or predates the workflow_runs table).
+	 */
+	latestWorkflowRun(): PersistedWorkflowRun | undefined;
 	/** All persisted feed events in seq order. */
 	feedEvents(): FeedEvent[];
 	close(): void;
@@ -85,6 +90,34 @@ export function openSessionDbReadonly(
 			const counts: Record<string, number> = {};
 			for (const row of rows) counts[row.hook_name] = row.count;
 			return counts;
+		},
+		latestWorkflowRun() {
+			try {
+				const row = db
+					.prepare(
+						'SELECT * FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT 1',
+					)
+					.get() as Record<string, unknown> | undefined;
+				if (!row) return undefined;
+				return {
+					id: row['id'] as string,
+					sessionId: row['session_id'] as string,
+					workflowName: (row['workflow_name'] as string | null) ?? undefined,
+					startedAt: row['started_at'] as number,
+					endedAt: (row['ended_at'] as number | null) ?? undefined,
+					iteration: row['iteration'] as number,
+					maxIterations: row['max_iterations'] as number,
+					status: row['status'] as PersistedWorkflowRun['status'],
+					stopReason: (row['stop_reason'] as string | null) ?? undefined,
+					trackerPath: (row['tracker_path'] as string | null) ?? undefined,
+					adapterSessionId:
+						(row['adapter_session_id'] as string | null | undefined) ??
+						undefined,
+				};
+			} catch {
+				// Pre-v5 databases have no workflow_runs table.
+				return undefined;
+			}
 		},
 		feedEvents() {
 			const rows = db

@@ -8,6 +8,8 @@ import {
 	getSessionMeta,
 	removeSession,
 	getMostRecentAthenaSession,
+	getLatestRunForSession,
+	listAwaitingAttentionRuns,
 	findSessionByAdapterId,
 	sessionsDir,
 } from './registry';
@@ -250,5 +252,95 @@ describe('findSessionByAdapterId', () => {
 	it('returns null when adapter ID not found', () => {
 		const result = findSessionByAdapterId('nonexistent', projectDir, tmpDir);
 		expect(result).toBeNull();
+	});
+});
+
+describe('awaiting-attention run discovery (ADR 0014)', () => {
+	let tmpDir: string;
+	let originalHome: string;
+
+	beforeEach(() => {
+		dummySeq = 0;
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-runs-'));
+		originalHome = process.env['HOME']!;
+		process.env['HOME'] = tmpDir;
+		fs.mkdirSync(sessionsDir(), {recursive: true});
+	});
+
+	afterEach(() => {
+		process.env['HOME'] = originalHome;
+		fs.rmSync(tmpDir, {recursive: true, force: true});
+	});
+
+	function seedSession(
+		sessionId: string,
+		runStatus: string,
+		options: {stopReason?: string; adapterSessionId?: string} = {},
+	): void {
+		const store = createSessionStore({
+			sessionId,
+			projectDir: '/proj/a',
+			dbPath: path.join(sessionsDir(), sessionId, 'session.db'),
+		});
+		store.recordEvent(
+			makeDummyEvent(`ev-${sessionId}`, `adapter-${sessionId}`),
+			[makeDummyFeedEvent(`fe-${sessionId}`)],
+		);
+		store.persistRun({
+			runId: `run-${sessionId}`,
+			sessionId,
+			workflowName: 'default',
+			iteration: 2,
+			maxIterations: 20,
+			status: runStatus as never,
+			stopReason: options.stopReason,
+			adapterSessionId: options.adapterSessionId,
+		});
+		store.close();
+	}
+
+	it('getLatestRunForSession reads the persisted run with its vendor session id', () => {
+		seedSession('sess-s', 'awaiting_attention', {
+			stopReason: 'agent declared WORKFLOW_BLOCKED: which env?',
+			adapterSessionId: 'claude-sess-1',
+		});
+
+		const run = getLatestRunForSession('sess-s');
+		expect(run).not.toBeNull();
+		expect(run!.status).toBe('awaiting_attention');
+		expect(run!.stopReason).toContain('which env?');
+		expect(run!.adapterSessionId).toBe('claude-sess-1');
+	});
+
+	it('getLatestRunForSession returns null for an unknown session', () => {
+		expect(getLatestRunForSession('nope')).toBeNull();
+	});
+
+	it('lists only sessions whose latest run awaits attention, newest first', () => {
+		seedSession('sess-done', 'completed');
+		seedSession('sess-waiting', 'awaiting_attention', {
+			stopReason: 'iteration ceiling reached: 20 iterations (maxIterations)',
+			adapterSessionId: 'claude-sess-w',
+		});
+		seedSession('sess-running', 'running');
+
+		const runs = listAwaitingAttentionRuns();
+		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			athenaSessionId: 'sess-waiting',
+			runId: 'run-sess-waiting',
+			workflowName: 'default',
+			stopReason: expect.stringContaining('iteration ceiling'),
+			adapterSessionId: 'claude-sess-w',
+		});
+	});
+
+	it('scopes to a project directory when given', () => {
+		seedSession('sess-waiting', 'awaiting_attention', {
+			stopReason: 'agent declared WORKFLOW_BLOCKED',
+		});
+
+		expect(listAwaitingAttentionRuns('/proj/a')).toHaveLength(1);
+		expect(listAwaitingAttentionRuns('/proj/other')).toHaveLength(0);
 	});
 });

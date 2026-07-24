@@ -872,6 +872,26 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('reuses a resumed run id so the suspended run returns to running', async () => {
+		const persistRunState = vi.fn();
+		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir: makeTempDir(),
+			prompt: 'the human reply',
+			resumeRunId: 'run-suspended',
+			startTurn,
+			persistRunState,
+		});
+
+		expect(handle.runId).toBe('run-suspended');
+		await handle.result;
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({runId: 'run-suspended'}),
+		);
+	});
+
 	it('uses injected createTracker instead of fs', async () => {
 		const createTracker = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);

@@ -5,7 +5,11 @@ import {
 } from '../../infra/sessions/index';
 import type {RuntimeBootstrapOutput} from '../bootstrap/bootstrapConfig';
 import {runExec, EXEC_EXIT_CODE} from '../exec';
-import {resolveResumeTarget, type ResumeRequest} from './resumeResolution';
+import {
+	resolveResumeTarget,
+	type ResumeRequest,
+	type ResumeTarget,
+} from './resumeResolution';
 
 export type ExecCliFlags = {
 	continueFlag?: string;
@@ -81,9 +85,7 @@ export async function runExecCommand(
 		return EXEC_EXIT_CODE.USAGE;
 	}
 
-	let continueResolution:
-		| {athenaSessionId: string; adapterResumeSessionId: string | undefined}
-		| undefined;
+	let continueResolution: ResumeTarget | undefined;
 	try {
 		continueResolution = resolveResumeTarget({
 			projectDir: input.projectDir,
@@ -121,6 +123,7 @@ export async function runExecCommand(
 		harness: input.runtimeConfig.harness,
 		athenaSessionId: continueResolution.athenaSessionId,
 		adapterResumeSessionId: continueResolution.adapterResumeSessionId,
+		resumeRunId: continueResolution.resumeRunId,
 		isolationConfig: input.runtimeConfig.isolationConfig,
 		pluginMcpConfig: input.runtimeConfig.pluginMcpConfig,
 		workflow: input.runtimeConfig.workflow,

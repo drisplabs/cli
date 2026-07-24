@@ -564,6 +564,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			workflow,
 			prompt: options.prompt,
 			initialContinuation: nextContinuation,
+			resumeRunId: options.resumeRunId,
 			startTurn: async turnInput => {
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
