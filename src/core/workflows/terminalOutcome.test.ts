@@ -46,16 +46,28 @@ describe('resolveTurnOutcome', () => {
 		);
 	});
 
-	it('stops as blocked and carries the blocked reason', () => {
+	it('suspends as awaiting_attention on a declared block, carrying the reason', () => {
 		const trackerPath = writeTracker(
 			'## Notes\n<!-- BLOCKED: needs credentials -->',
 		);
 
 		expect(resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 2})).toEqual(
 			{
-				kind: 'stop',
-				status: 'blocked',
-				stopReason: 'needs credentials',
+				kind: 'suspend',
+				status: 'awaiting_attention',
+				stopReason: 'agent declared WORKFLOW_BLOCKED: needs credentials',
+			},
+		);
+	});
+
+	it('suspends on a bare declared block, still naming the declaration', () => {
+		const trackerPath = writeTracker('## Notes\n<!-- BLOCKED -->');
+
+		expect(resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 2})).toEqual(
+			{
+				kind: 'suspend',
+				status: 'awaiting_attention',
+				stopReason: 'agent declared WORKFLOW_BLOCKED',
 			},
 		);
 	});

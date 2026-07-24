@@ -107,6 +107,46 @@ function formatCapabilityConflictNotice(summary: {
 	)}`;
 }
 
+/**
+ * Human-facing description of a question the agent asked when no human is
+ * attached to answer it. Used as the `awaiting_attention` suspension reason so
+ * the question is preserved on the persisted Run (ADR 0014).
+ */
+function describeAttentionRequest(event: RuntimeEvent): string {
+	const data = event.data as Record<string, unknown>;
+	const toolInput = data['tool_input'];
+	const questions =
+		typeof toolInput === 'object' && toolInput !== null
+			? (toolInput as Record<string, unknown>)['questions']
+			: undefined;
+	if (Array.isArray(questions)) {
+		const texts = questions
+			.map(q =>
+				typeof q === 'object' && q !== null
+					? (q as Record<string, unknown>)['question']
+					: undefined,
+			)
+			.filter((q): q is string => typeof q === 'string');
+		if (texts.length > 0) {
+			return `agent asked a question with no human attached to answer: ${texts.join(' | ')}`;
+		}
+	}
+	return 'agent asked a question with no human attached to answer';
+}
+
+/**
+ * A question-shaped event: the agent needs a human answer to proceed. In an
+ * unattended Workflow Run these previously waited forever on a null timeout;
+ * per ADR 0014 they convert to an `awaiting_attention` suspension instead.
+ */
+function isQuestionEvent(event: RuntimeEvent): boolean {
+	return (
+		(event.kind === 'tool.pre' && event.toolName === 'AskUserQuestion') ||
+		(event.kind === 'permission.request' && event.toolName === 'user_input') ||
+		event.kind === 'elicitation.request'
+	);
+}
+
 function workflowFailure(
 	state: ExecWorkflowFailureState,
 	message: string,
@@ -195,6 +235,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
 	let beforeTerminalCompletionRan = false;
+	// Set when a Turn is interrupted because the agent asked a question no
+	// attached human can answer; the runner suspends the Run with this reason.
+	let attentionRequest: string | null = null;
 
 	let store: SessionStore;
 	try {
@@ -395,6 +438,20 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
 
+			// Declared attention (ADR 0014): with no bridge, no human can ever
+			// answer a question — waiting on the null-timeout decision would hang
+			// the Run forever. Interrupt the Turn; the runner suspends the Run in
+			// `awaiting_attention` with the question preserved.
+			if (
+				options.workflow?.loop?.enabled &&
+				!bridge &&
+				attentionRequest === null &&
+				isQuestionEvent(runtimeEvent)
+			) {
+				attentionRequest = describeAttentionRequest(runtimeEvent);
+				void sessionController.kill();
+			}
+
 			// Link new adapter sessions to the active workflow run
 			if (
 				runtimeEvent.sessionId &&
@@ -555,6 +612,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					'persistRun failed',
 				);
 			},
+			checkSuspension: () =>
+				attentionRequest !== null ? {reason: attentionRequest} : null,
 			abortCurrentTurn: () => void sessionController.kill(),
 			onIterationComplete: runSnapshot => {
 				output.emitJsonEvent('iteration.complete', {
@@ -574,7 +633,18 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		// Map runner terminal status to exec failure if applicable.
 		// External failures (from runtime event handler) take precedence — check !latch.hasFailure() first.
 		if (!latch.hasFailure()) {
-			if (runResult.status === 'blocked') {
+			if (runResult.status === 'awaiting_attention') {
+				// Suspended, not failed (ADR 0014): the Run waits on a human and
+				// remains resumable. No failure latch — contrast the terminal
+				// `blocked`, which registered one.
+				const reason = runResult.stopReason ?? 'awaiting attention';
+				output.notice(`workflow run suspended — ${reason}`);
+				output.emitJsonEvent('run.suspended', {
+					runId: runResult.runId,
+					status: 'awaiting_attention',
+					stopReason: runResult.stopReason ?? null,
+				});
+			} else if (runResult.status === 'blocked') {
 				latch.register(
 					workflowFailure(
 						'blocked',

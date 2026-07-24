@@ -295,6 +295,46 @@ describe('SessionStore', () => {
 		expect(run2!.endedAt).toBeDefined();
 	});
 
+	it('keeps a suspended run non-terminal — awaiting_attention never stamps endedAt', () => {
+		store = createSessionStore({
+			sessionId: 's1',
+			projectDir: '/tmp',
+			dbPath: ':memory:',
+		});
+
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 1,
+			status: 'running',
+		});
+
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 2,
+			status: 'awaiting_attention',
+			stopReason: 'agent declared WORKFLOW_BLOCKED: which env?',
+		});
+
+		const suspended = store.getLatestRun();
+		expect(suspended!.status).toBe('awaiting_attention');
+		expect(suspended!.stopReason).toBe(
+			'agent declared WORKFLOW_BLOCKED: which env?',
+		);
+		// Non-terminal: the run is waiting on a human, it has not ended.
+		expect(suspended!.endedAt).toBeUndefined();
+
+		// A later terminal status still closes it out.
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 3,
+			status: 'completed',
+		});
+		expect(store.getLatestRun()!.endedAt).toBeDefined();
+	});
+
 	it('getLatestRun returns the most recent run', () => {
 		store = createSessionStore({
 			sessionId: 's1',

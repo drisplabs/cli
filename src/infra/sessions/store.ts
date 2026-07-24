@@ -120,6 +120,9 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 		'UPDATE session SET event_count = event_count + ? WHERE id = ?',
 	);
 
+	// `awaiting_attention` is non-terminal (ADR 0014): a suspended Run has not
+	// ended — it is waiting on a human and remains resumable — so it must not
+	// stamp ended_at.
 	const upsertRun = db.prepare(
 		`INSERT INTO workflow_runs (id, session_id, workflow_name, started_at, iteration, max_iterations, status, stop_reason, tracker_path)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -127,7 +130,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 		   iteration = excluded.iteration,
 		   status = excluded.status,
 		   stop_reason = excluded.stop_reason,
-		   ended_at = CASE WHEN excluded.status != 'running' THEN ? ELSE ended_at END`,
+		   ended_at = CASE WHEN excluded.status NOT IN ('running', 'awaiting_attention') THEN ? ELSE ended_at END`,
 	);
 
 	const selectLatestRun = db.prepare(
@@ -364,7 +367,10 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 
 	function persistRun(snapshot: WorkflowRunSnapshot): void {
 		const now = Date.now();
-		const endedAt = snapshot.status !== 'running' ? now : null;
+		const endedAt =
+			snapshot.status !== 'running' && snapshot.status !== 'awaiting_attention'
+				? now
+				: null;
 		upsertRun.run(
 			snapshot.runId,
 			snapshot.sessionId,
