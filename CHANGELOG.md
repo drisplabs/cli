@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.27](https://github.com/drisplabs/cli/compare/cli-v0.5.26...cli-v0.5.27) (2026-07-24)
+
+
+### Features
+
+* **runtime:** make PreCompact a synchronous, blockable decision hook ([#147](https://github.com/drisplabs/cli/issues/147)) ([54d7a56](https://github.com/drisplabs/cli/commit/54d7a5639ac2a1e8ddf5413fd424b8d95228d307)), closes [#137](https://github.com/drisplabs/cli/issues/137)
+* **sessions:** persist the vendor session id on the Workflow Run ([#150](https://github.com/drisplabs/cli/issues/150)) ([46ddb46](https://github.com/drisplabs/cli/commit/46ddb466c863d02564ba88e86688e8f691d70316)), closes [#136](https://github.com/drisplabs/cli/issues/136)
+* **workflows:** failure taxonomy — transient failures retry by resuming, hard failures escalate ([#156](https://github.com/drisplabs/cli/issues/156)) ([d0b025f](https://github.com/drisplabs/cli/commit/d0b025f77b0d558129030bb8ff71dc89a624df73)), closes [#143](https://github.com/drisplabs/cli/issues/143)
+* **workflows:** first-party handoff skill that writes a Handoff file ([#151](https://github.com/drisplabs/cli/issues/151)) ([f317a08](https://github.com/drisplabs/cli/commit/f317a080167ff8082b78da2e8826a012d0467327)), closes [#138](https://github.com/drisplabs/cli/issues/138)
+* **workflows:** handover — fork the live conversation, write a Handoff file, seed a fresh Turn ([#158](https://github.com/drisplabs/cli/issues/158)) ([062c040](https://github.com/drisplabs/cli/commit/062c040d539636a16b2c2634ec6492bd2f743247)), closes [#145](https://github.com/drisplabs/cli/issues/145)
+* **workflows:** human resume from awaiting_attention via the CLI ([#157](https://github.com/drisplabs/cli/issues/157)) ([c8b6266](https://github.com/drisplabs/cli/commit/c8b6266a755a3aa7a90d38648a78b8e8113f3d7f)), closes [#144](https://github.com/drisplabs/cli/issues/144)
+* **workflows:** maxTurnTokenCount loop config; defaults drop below the model window ([#154](https://github.com/drisplabs/cli/issues/154)) ([086a0a3](https://github.com/drisplabs/cli/commit/086a0a380eb6b790017ac61fb171614517c1d00b)), closes [#141](https://github.com/drisplabs/cli/issues/141)
+* **workflows:** nudge undeclared markerless stops by resuming with a corrective prompt ([#155](https://github.com/drisplabs/cli/issues/155)) ([48d5e76](https://github.com/drisplabs/cli/commit/48d5e76de5da8a9afc4a58d46c0cddc9c0196606)), closes [#142](https://github.com/drisplabs/cli/issues/142)
+* **workflows:** resume primitive — continue an intact Agent Session across a Turn boundary ([#153](https://github.com/drisplabs/cli/issues/153)) ([04dd84a](https://github.com/drisplabs/cli/commit/04dd84a9e91960b0335701fb16744c4537f01b91)), closes [#139](https://github.com/drisplabs/cli/issues/139)
+* **workflows:** runaway ceiling suspends instead of failing ([#152](https://github.com/drisplabs/cli/issues/152)) ([5309560](https://github.com/drisplabs/cli/commit/530956005c48a9d260fdb670a7f48b5d8624d684)), closes [#140](https://github.com/drisplabs/cli/issues/140)
+* **workflows:** suspend foundation — awaiting_attention Run Status + declared attention ([#149](https://github.com/drisplabs/cli/issues/149)) ([b4038f4](https://github.com/drisplabs/cli/commit/b4038f4c977b840fc3ba5d976b757d84aee58424)), closes [#135](https://github.com/drisplabs/cli/issues/135)
+
 ## [0.5.26](https://github.com/drisplabs/cli/compare/cli-v0.5.25...cli-v0.5.26) (2026-07-22)
 
 
