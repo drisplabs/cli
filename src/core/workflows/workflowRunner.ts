@@ -38,6 +38,14 @@ export type WorkflowRunnerInput = {
 	onIterationComplete?: (snapshot: WorkflowRunSnapshot) => void;
 	abortCurrentTurn?: () => void;
 	createTracker?: (trackerPath: string, content: string) => void;
+	/**
+	 * Consulted after each Turn, before failure classification. A non-null
+	 * result suspends the Run in `awaiting_attention` with the given reason
+	 * (ADR 0014) — used when a Turn was interrupted because the agent asked a
+	 * question no attached human can answer. Takes precedence over the Turn's
+	 * exit code: interrupting the Turn to suspend is not a failure.
+	 */
+	checkSuspension?: () => {reason: string} | null;
 };
 
 export type WorkflowRunResult = {
@@ -226,6 +234,18 @@ export function createWorkflowRunner(
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 
+			// Declared attention interrupted this Turn (e.g. an AskUserQuestion no
+			// attached human can answer). Checked before failure classification:
+			// the interruption ends the harness process abnormally, but the Run is
+			// suspended, not failed.
+			const suspension = input.checkSuspension?.();
+			if (suspension) {
+				status = 'awaiting_attention';
+				stopReason = suspension.reason;
+				persist();
+				break;
+			}
+
 			if (
 				turnResult.error ||
 				(turnResult.exitCode !== null && turnResult.exitCode !== 0)
@@ -271,7 +291,7 @@ export function createWorkflowRunner(
 					loop,
 					iteration: iterations,
 				});
-				if (outcome.kind === 'stop') {
+				if (outcome.kind === 'stop' || outcome.kind === 'suspend') {
 					status = outcome.status;
 					stopReason = outcome.stopReason;
 					persist();

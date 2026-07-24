@@ -216,6 +216,83 @@ describe('createWorkflowRunner', () => {
 		expect(result.status).toBe('cancelled');
 	});
 
+	it('suspends as awaiting_attention when the tracker declares a block', async () => {
+		const projectDir = makeTempDir();
+		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				trackerPath,
+				'## Notes\nNeed a human.\n<!-- WORKFLOW_BLOCKED: which env? -->',
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toBe(
+			'agent declared WORKFLOW_BLOCKED: which env?',
+		);
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({status: 'awaiting_attention'}),
+		);
+	});
+
+	it('suspends via checkSuspension even when the interrupted turn exited abnormally', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+
+		// The Turn was killed to suspend (e.g. an unanswerable AskUserQuestion),
+		// so the harness process exited non-zero — that must not read as failure.
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 143,
+			error: new Error('killed'),
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+			checkSuspension: () => ({
+				reason: 'agent asked a question with no human attached to answer',
+			}),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('asked a question');
+		expect(startTurn).toHaveBeenCalledTimes(1);
+	});
+
 	it('reports failed when turn exits non-zero', async () => {
 		const startTurn = vi.fn().mockResolvedValue({
 			...OK_RESULT,

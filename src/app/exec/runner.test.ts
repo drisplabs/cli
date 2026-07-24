@@ -1041,7 +1041,7 @@ describe('runExec', () => {
 		}
 	});
 
-	it('fails when a looped workflow is blocked', async () => {
+	it('suspends without failure when a looped workflow declares a block (awaiting_attention)', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
@@ -1094,17 +1094,90 @@ describe('runExec', () => {
 				},
 			});
 
-			expect(result.success).toBe(false);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.WORKFLOW_BLOCKED);
-			expect(result.failure?.kind).toBe('workflow');
-			expect(result.failure).toEqual(
-				expect.objectContaining({
-					kind: 'workflow',
-					state: 'blocked',
-				}),
+			// A declared block suspends the Run (ADR 0014): no failure latch,
+			// no failure exit code — contrast the old terminal `blocked`.
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.failure).toBeUndefined();
+			expect(stderr.read()).toContain('workflow run suspended');
+			expect(stderr.read()).toContain(
+				'agent declared WORKFLOW_BLOCKED: browser initialization failed',
 			);
-			expect(result.failure?.message).toContain('Workflow blocked');
-			expect(result.finalMessage).toBeNull();
+		} finally {
+			fs.rmSync(trackerPath, {force: true});
+		}
+	});
+
+	it('converts an unanswerable AskUserQuestion into awaiting_attention instead of hanging', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const trackerPath = '/tmp/runner-question-tracker.md';
+
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess(() => {
+				// The exec runner interrupts the Turn to suspend; the harness
+				// process dies with a non-zero exit.
+				opts.onExit?.(143);
+			});
+
+			setImmediate(() => {
+				fs.writeFileSync(trackerPath, 'still working', 'utf-8');
+				// AskUserQuestion arrives with no bridge attached — previously this
+				// waited forever on the null-timeout decision.
+				runtime.emit(
+					makeRuntimeEvent({
+						id: 'evt-question',
+						kind: 'tool.pre',
+						hookName: 'PreToolUse',
+						toolName: 'AskUserQuestion',
+						data: {
+							tool_name: 'AskUserQuestion',
+							tool_input: {
+								questions: [{question: 'Deploy to prod or staging?'}],
+							},
+						},
+						interaction: {
+							expectsDecision: true,
+							defaultTimeoutMs: null,
+							canBlock: true,
+						},
+					}),
+				);
+			});
+
+			return child;
+		};
+
+		try {
+			const result = await runExec({
+				prompt: 'hello',
+				projectDir: '/tmp',
+				harness: 'claude-code',
+				isolationConfig: {},
+				ephemeral: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				workflow: {
+					name: 'test-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						completionMarker: '<!-- DONE -->',
+						maxIterations: 5,
+						trackerPath: 'runner-question-tracker.md',
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.failure).toBeUndefined();
+			expect(stderr.read()).toContain('workflow run suspended');
+			expect(stderr.read()).toContain('Deploy to prod or staging?');
 		} finally {
 			fs.rmSync(trackerPath, {force: true});
 		}

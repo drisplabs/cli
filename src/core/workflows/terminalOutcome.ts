@@ -18,12 +18,16 @@ import {parseTrackerState, readTracker} from './trackerReader';
 import type {LoopConfig, RunStatus} from './types';
 
 /**
- * The Runner's decision after a Turn: keep looping, or stop with a final
- * {@link RunStatus} and (for terminal states worth explaining) a human message.
+ * The Runner's decision after a Turn: keep looping, stop with a final
+ * {@link RunStatus}, or suspend the Run in the non-terminal
+ * `awaiting_attention` until a human replies (ADR 0014). Suspend messages must
+ * name what tripped — several bounds funnel into the one suspended state, and
+ * an unnamed give-up state is unreadable in practice.
  */
 export type TurnOutcome =
 	| {kind: 'continue'}
-	| {kind: 'stop'; status: RunStatus; stopReason?: string};
+	| {kind: 'stop'; status: RunStatus; stopReason?: string}
+	| {kind: 'suspend'; status: RunStatus; stopReason: string};
 
 const MISSING_TRACKER_MESSAGE =
 	'the tracker file went missing during the run — the workflow can no longer verify progress';
@@ -76,8 +80,18 @@ export function resolveTurnOutcome(input: {
 	if (tracker.completed) {
 		return {kind: 'stop', status: 'completed'};
 	}
+	// Declared attention (ADR 0014): WORKFLOW_BLOCKED is the agent's explicit
+	// "I need a human" — a question or an external blocker. It suspends the Run
+	// in the non-terminal `awaiting_attention` rather than ending it in the
+	// terminal `blocked` (still valid on historical rows, no longer emitted).
 	if (tracker.blocked) {
-		return {kind: 'stop', status: 'blocked', stopReason: tracker.blockedReason};
+		return {
+			kind: 'suspend',
+			status: 'awaiting_attention',
+			stopReason: tracker.blockedReason
+				? `agent declared WORKFLOW_BLOCKED: ${tracker.blockedReason}`
+				: 'agent declared WORKFLOW_BLOCKED',
+		};
 	}
 	if (iteration >= loop.maxIterations) {
 		return {kind: 'stop', status: 'exhausted'};

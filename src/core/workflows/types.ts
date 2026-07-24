@@ -109,9 +109,16 @@ export type CodexWorkflowPluginRef = {
 
 /**
  * Terminal and non-terminal states for a workflow run.
+ *
+ * `awaiting_attention` is the one non-terminal give-up state (ADR 0014): the
+ * Run is suspended until a human replies. `blocked` and `exhausted` are no
+ * longer emitted — a declared `WORKFLOW_BLOCKED` and the `maxIterations`
+ * ceiling both resolve to `awaiting_attention` — but they remain valid values
+ * for historical `workflow_runs` rows.
  */
 export type RunStatus =
 	| 'running'
+	| 'awaiting_attention'
 	| 'completed'
 	| 'blocked'
 	| 'exhausted'
