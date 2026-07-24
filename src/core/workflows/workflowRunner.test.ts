@@ -872,6 +872,152 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('runs a Handover: fork writes the Handoff file, then a fresh Turn is seeded with it', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const handoffPath = path.join(trackerDir, 'handoff.md');
+
+		let pendingHandover: {handle: string} | null = null;
+		const forkStates: boolean[] = [];
+		const calls: Array<{
+			prompt: string;
+			continuation: unknown;
+			configOverride?: Record<string, unknown>;
+		}> = [];
+
+		const startTurn = vi
+			.fn()
+			// Turn 1: interrupted mid-work by the Handover (compaction blocked,
+			// process killed) — exits abnormally with a pending request.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// The fork: resumes the primary conversation, writes the Handoff file.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(handoffPath, '# Handoff\nwhere things stand', 'utf-8');
+				return OK_RESULT;
+			})
+			// The fresh post-Handover Turn completes the workflow.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onForkStateChange: forking => forkStates.push(forking),
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// Turn 1 (interrupted) + post-Handover Turn tick; the fork does not.
+		expect(result.iterations).toBe(2);
+		expect(startTurn).toHaveBeenCalledTimes(3);
+
+		// The fork resumed the primary conversation with --fork-session.
+		expect(calls[1]!.continuation).toEqual({
+			mode: 'resume',
+			handle: 'claude-sess-primary',
+		});
+		expect(calls[1]!.configOverride).toMatchObject({forkSession: true});
+		expect(calls[1]!.prompt).toContain('handoff skill');
+		expect(calls[1]!.prompt).toContain(handoffPath);
+
+		// Compaction stayed blocked exactly while the fork ran.
+		expect(forkStates).toEqual([true, false]);
+
+		// The post-Handover Turn is fresh and seeded with Handoff file + Tracker.
+		expect(calls[2]!.continuation).toEqual({mode: 'fresh'});
+		expect(calls[2]!.prompt).toContain('Handover occurred');
+		expect(calls[2]!.prompt).toContain(handoffPath);
+		expect(calls[2]!.prompt).toContain(trackerPath);
+	});
+
+	it('degrades a failed Handover to vendor compaction: resume in place, stop intercepting', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		let pendingHandover: {handle: string} | null = null;
+		const degraded: string[] = [];
+		const calls: Array<{continuation: unknown}> = [];
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// The fork fails — no Handoff file is written.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				return {...OK_RESULT, exitCode: 1, error: new Error('fork died')};
+			})
+			// Degraded continuation: resume the interrupted conversation in place.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onDegraded: handle_ => degraded.push(handle_),
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(degraded).toEqual(['claude-sess-primary']);
+		expect(calls[2]!.continuation).toEqual({
+			mode: 'resume',
+			handle: 'claude-sess-primary',
+		});
+	});
+
 	it('reuses a resumed run id so the suspended run returns to running', async () => {
 		const persistRunState = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
