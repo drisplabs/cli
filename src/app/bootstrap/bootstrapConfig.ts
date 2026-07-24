@@ -24,6 +24,7 @@ import {
 	resolveWorkflowPlugins,
 	resolveWorkflow,
 } from '../../core/workflows/index';
+import {ensureHandoffSkillPlugin} from '../../core/workflows/builtins/handoffSkill';
 import type {
 	ResolvedWorkflowPlugin,
 	WorkflowConfig,
@@ -139,6 +140,23 @@ export function bootstrapRuntimeConfig({
 		workflowPluginDirs = workflowResolvedPlugins.map(
 			plugin => plugin.claudeArtifactDir,
 		);
+		// First-party handoff skill (ADR 0014): every Workflow Run's Agent
+		// Session gets the `handoff` skill through the same plugin-delivery
+		// path as workflow plugins (merged-dir harnesses only — Codex delivers
+		// plugins as generated MCP config, which cannot carry a skill).
+		// Failure to materialize it degrades to a warning; the Run then falls
+		// back to vendor compaction at Handover.
+		if (resolvedWorkflow && pluginDelivery.mergeWorkflowPluginDirs) {
+			try {
+				workflowPluginDirs.push(ensureHandoffSkillPlugin());
+			} catch (error) {
+				warnings.push(
+					`Failed to materialize the handoff skill plugin: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		}
 	}
 
 	// Resolve config plugin refs (Plugin ref resolution) here, at the one place
