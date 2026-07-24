@@ -24,6 +24,15 @@ export type ControllerCallbacks = {
 	relayPermission?: (event: RuntimeEvent) => void;
 	/** Optional fan-out for AskUserQuestion / user_input prompts. */
 	relayQuestion?: (event: RuntimeEvent) => void;
+	/**
+	 * Optional Handover interception (ADR 0014). Called when the harness is
+	 * about to compact a Workflow Run's conversation (`compact.pre`). Return a
+	 * reason string to block the compaction so the orchestrator can run a
+	 * Handover instead; return null to let normal vendor compaction proceed.
+	 * When absent (non-workflow session) the event is not handled and the
+	 * adapter's timeout fires a passthrough — compaction proceeds unchanged.
+	 */
+	interceptCompaction?: (event: RuntimeEvent) => string | null;
 	signal?: AbortSignal;
 };
 
@@ -123,6 +132,25 @@ export function handleEvent(
 				intent: {kind: 'pre_tool_allow'},
 			},
 		};
+	}
+
+	// ── PreCompact: a Handover orchestrator may block vendor compaction ──
+	// Degrade, never hang: with no interceptor (or a null verdict) the event is
+	// left unhandled, the adapter timeout fires a passthrough, and normal
+	// vendor compaction proceeds.
+	if (eventKind === 'compact.pre' && cb.interceptCompaction) {
+		const reason = cb.interceptCompaction(event);
+		if (reason !== null) {
+			return {
+				handled: true,
+				decision: {
+					type: 'json',
+					source: 'rule',
+					intent: {kind: 'compact_block', reason},
+				},
+			};
+		}
+		return {handled: false};
 	}
 
 	// Default: not handled — adapter timeout will auto-passthrough

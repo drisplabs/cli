@@ -11,6 +11,7 @@ import {
 	createAskUserQuestionResult,
 	createPermissionRequestAllowResult,
 	createPermissionRequestDenyResult,
+	createCompactBlockResult,
 	createPreToolUseAllowResult,
 	createPreToolUseDenyResult,
 	createStopBlockResult,
@@ -54,6 +55,8 @@ export function mapDecisionToResult(
 			return createPreToolUseDenyResult(intent.reason);
 		case 'stop_block':
 			return createStopBlockResult(intent.reason);
+		case 'compact_block':
+			return createCompactBlockResult(intent.reason);
 		default:
 			return {action: 'passthrough'};
 	}

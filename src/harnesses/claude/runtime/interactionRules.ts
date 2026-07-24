@@ -77,10 +77,17 @@ const RULES: Record<RuntimeEventKind, InteractionHints> = {
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		canBlock: false,
 	},
+	// Decision-bearing for Handover (ADR 0014): a Workflow Run's orchestrator
+	// blocks the compaction and forks the conversation instead. Both claims are
+	// required — `canBlock` alone leaves the event off the decision-waiting
+	// path and the block reply is never sent. The timeout is deliberately a
+	// number, not null: with no decision (non-workflow session, orchestration
+	// failure) the adapter fires a passthrough and Claude proceeds with normal
+	// vendor compaction — Handover degrades, it never hangs.
 	'compact.pre': {
-		expectsDecision: false,
+		expectsDecision: true,
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
-		canBlock: false,
+		canBlock: true,
 	},
 	'user.prompt': {
 		expectsDecision: false,

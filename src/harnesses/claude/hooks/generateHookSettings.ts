@@ -84,6 +84,10 @@ export const SYNC_HOOK_EVENTS = [
 	'TaskCreated',
 	'TaskCompleted',
 	'ConfigChange',
+	// Handover interception (ADR 0014): the forwarder may reply with a
+	// compaction block. Dispatched async, Claude would ignore the stdout and
+	// silently drop the block.
+	'PreCompact',
 	// Teardown — see (2) above.
 	'SessionEnd',
 ] as const;
