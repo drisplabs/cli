@@ -234,4 +234,38 @@ describe('hookController handleEvent', () => {
 		const result = handleEvent(makeEvent('Stop'), cb);
 		expect(result.handled).toBe(false);
 	});
+
+	it('blocks PreCompact with a compact_block decision when the interceptor claims it', () => {
+		const cb = {
+			...makeCallbacks(),
+			interceptCompaction: vi.fn(() => 'Handover in progress'),
+		};
+		const event = makeEvent('PreCompact');
+		const result = handleEvent(event, cb);
+
+		expect(cb.interceptCompaction).toHaveBeenCalledWith(event);
+		expect(result.handled).toBe(true);
+		expect(result.decision).toEqual({
+			type: 'json',
+			source: 'rule',
+			intent: {kind: 'compact_block', reason: 'Handover in progress'},
+		});
+	});
+
+	it('leaves PreCompact unhandled when the interceptor declines (degrade to vendor compaction)', () => {
+		const cb = {
+			...makeCallbacks(),
+			interceptCompaction: vi.fn(() => null),
+		};
+		const result = handleEvent(makeEvent('PreCompact'), cb);
+
+		expect(result.handled).toBe(false);
+	});
+
+	it('leaves PreCompact unhandled when no interceptor is registered (non-workflow session)', () => {
+		const cb = makeCallbacks();
+		const result = handleEvent(makeEvent('PreCompact'), cb);
+
+		expect(result.handled).toBe(false);
+	});
 });

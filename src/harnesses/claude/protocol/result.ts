@@ -361,3 +361,19 @@ export function createStopBlockResult(reason: string): HookResultPayload {
 		} satisfies StopOutput,
 	};
 }
+
+/**
+ * Helper to block a PreCompact event with a reason. Used by the Handover
+ * interception path (ADR 0014): blocking the compaction is what lets the
+ * orchestrator fork the live conversation instead of letting the vendor
+ * summarize it in place.
+ */
+export function createCompactBlockResult(reason: string): HookResultPayload {
+	return {
+		action: 'json_output',
+		stdout_json: {
+			decision: 'block',
+			reason,
+		} satisfies PreCompactOutput,
+	};
+}

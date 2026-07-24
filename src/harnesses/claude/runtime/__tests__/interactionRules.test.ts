@@ -41,6 +41,16 @@ describe('getInteractionHints', () => {
 		expect(bashPre.defaultTimeoutMs).toBeNull();
 	});
 
+	it('compact.pre is decision-bearing and blockable, with a finite timeout', () => {
+		// Handover interception (ADR 0014). Both claims are required — canBlock
+		// alone leaves the event off the decision-waiting path. The timeout must
+		// stay finite: it is the degrade-to-vendor-compaction safety fallback.
+		const compactPre = getInteractionHints('compact.pre');
+		expect(compactPre.expectsDecision).toBe(true);
+		expect(compactPre.canBlock).toBe(true);
+		expect(compactPre.defaultTimeoutMs).toBe(4000);
+	});
+
 	it('elicitation requests wait indefinitely', () => {
 		const elicitation = getInteractionHints('elicitation.request');
 		expect(elicitation.expectsDecision).toBe(true);

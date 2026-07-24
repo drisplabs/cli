@@ -111,6 +111,22 @@ describe('mapDecisionToResult', () => {
 		});
 	});
 
+	it('maps compact_block intent to top-level decision block', () => {
+		const result = mapDecisionToResult(makeEvent('PreCompact'), {
+			type: 'json',
+			source: 'rule',
+			intent: {
+				kind: 'compact_block',
+				reason: 'Handover in progress — compaction intercepted.',
+			},
+		});
+		expect(result.action).toBe('json_output');
+		expect(result.stdout_json).toEqual({
+			decision: 'block',
+			reason: 'Handover in progress — compaction intercepted.',
+		});
+	});
+
 	it('maps pre_tool_deny intent', () => {
 		const result = mapDecisionToResult(makeEvent('PreToolUse'), {
 			type: 'json',

@@ -202,6 +202,9 @@ describe('generateHookSettings', () => {
 			'Stop',
 			'SubagentStop',
 			'Elicitation',
+			// Handover interception (ADR 0014): async dispatch would silently
+			// drop the compaction-block reply.
+			'PreCompact',
 		]) {
 			expect(settings.hooks[event][0].hooks[0].async).toBeUndefined();
 		}
