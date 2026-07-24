@@ -3,7 +3,11 @@ import {spawnClaude} from '../process/spawn';
 import type {IsolationConfig, IsolationPreset} from '../config/isolation';
 import {createTokenAccumulator} from '../process/tokenAccumulator';
 import {createAssistantMessageAccumulator} from './assistantMessageAccumulator';
-import {mergeIsolation, resolveClaudeSessionId} from './turnConfig';
+import {
+	mergeIsolation,
+	resolveClaudeSessionId,
+	resolveWorkflowSpawnEnv,
+} from './turnConfig';
 import type {
 	CreateSessionControllerInput,
 	SessionController,
@@ -74,7 +78,7 @@ export function createClaudeSessionController(
 							input.pluginMcpConfig,
 							configOverride as Partial<IsolationConfig> | undefined,
 						),
-						env: input.workflow?.env,
+						env: resolveWorkflowSpawnEnv(input.workflow),
 						onStdout: (data: string) => {
 							tokenAccumulator.feed(data);
 							messageAccumulator.feed(data);

@@ -10,6 +10,7 @@ import {
 	resolveCodexWorkflowPlugins,
 } from './sessionAssets';
 import {HANDOFF_COMPACT_PROMPT} from '../../../core/compaction/handoffInstructions';
+import {DEFAULT_MAX_TURN_TOKEN_COUNT} from '../../../core/workflows/types';
 
 export type CodexApprovalPolicy = 'on-request' | 'auto-edit' | 'full-auto';
 export type CodexSandbox =
@@ -86,7 +87,13 @@ export function buildCodexPromptOptions(input: {
 				: undefined,
 		plugins: resolveCodexWorkflowPlugins(input.workflowPlan),
 		config: {
-			model_auto_compact_token_limit: 175000,
+			// The harness-neutral maxTurnTokenCount (ADR 0014 §5): the bound sits
+			// well under the model window so a Handover has headroom to hold the
+			// conversation and emit a Handoff file — the old 175k default sat at
+			// the window and defeated that.
+			model_auto_compact_token_limit:
+				input.workflowPlan?.workflow.loop?.maxTurnTokenCount ??
+				DEFAULT_MAX_TURN_TOKEN_COUNT,
 			// Steer Codex's history compaction toward a handoff-style summary.
 			// `compact_prompt` replaces the default summarization prompt.
 			compact_prompt: HANDOFF_COMPACT_PROMPT,

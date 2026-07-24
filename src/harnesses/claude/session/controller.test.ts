@@ -101,6 +101,45 @@ describe('createClaudeSessionController', () => {
 		);
 	});
 
+	it('maps an explicit workflow maxTurnTokenCount onto the Claude autocompact env knob', async () => {
+		const {controller, getOptions, callbacks} = setup({
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				env: {CUSTOM: 'yes'},
+				loop: {enabled: true, maxIterations: 5, maxTurnTokenCount: 120000},
+			},
+		});
+
+		const turn = controller.startTurn({prompt: 'p'});
+		expect(getOptions()['env']).toEqual({
+			CUSTOM: 'yes',
+			CLAUDE_CODE_AUTO_COMPACT_WINDOW: '120000',
+		});
+
+		callbacks.onExit?.(0);
+		await turn;
+	});
+
+	it('injects no autocompact env when maxTurnTokenCount is unconfigured (spawn default applies)', async () => {
+		const {controller, getOptions, callbacks} = setup({
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				env: {CUSTOM: 'yes'},
+				loop: {enabled: true, maxIterations: 5},
+			},
+		});
+
+		const turn = controller.startTurn({prompt: 'p'});
+		expect(getOptions()['env']).toEqual({CUSTOM: 'yes'});
+
+		callbacks.onExit?.(0);
+		await turn;
+	});
+
 	it('lets plugin MCP config win over a per-command mcpConfig override', async () => {
 		const {controller, getOptions, callbacks} = setup({
 			processConfig: 'strict',

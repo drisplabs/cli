@@ -5,6 +5,18 @@
  * and orchestrate multiple plugins via marketplace refs.
  */
 
+/**
+ * Default {@link LoopConfig.maxTurnTokenCount}: ~65% of a 200k model window.
+ *
+ * The bound must sit well under the window (ADR 0014 §5): a Handover fork
+ * inherits the full conversation and summarizing N tokens requires ingesting
+ * ~N, so headroom to hold the conversation *and* emit the Handoff file can
+ * only come from triggering early — forking creates no room. Claude Code
+ * additionally clamps its knob to a 100k floor (measured on 2.1.217; see
+ * qa/max-turn-token-count.md), so values below 100k are silently raised there.
+ */
+export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
+
 export type LoopConfig = {
 	enabled: boolean;
 	/**
@@ -13,6 +25,15 @@ export type LoopConfig = {
 	 */
 	completionMarker?: string;
 	maxIterations: number;
+	/**
+	 * Harness-neutral token bound for one Turn's conversation. Maps onto each
+	 * harness's autocompact knob (Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+	 * Codex `model_auto_compact_token_limit`) so `PreCompact` fires — and
+	 * Handover can intercept it — at a configured point well under the model
+	 * window. Defaults to {@link DEFAULT_MAX_TURN_TOKEN_COUNT} when omitted.
+	 * The dial trading context freshness against Handover frequency.
+	 */
+	maxTurnTokenCount?: number;
 	/**
 	 * Prefix that signals the workflow is blocked.
 	 * Defaults to `<!-- WORKFLOW_BLOCKED` when omitted.
