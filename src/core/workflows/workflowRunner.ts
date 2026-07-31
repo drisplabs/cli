@@ -442,7 +442,10 @@ export function createWorkflowRunner(
 				if (loop?.enabled) {
 					const classification = classifyTurnFailure({
 						errorMessage: turnResult.error?.message,
-						lastStderr: turnResult.lastStderr,
+						// Prefer the stderr tail: the first stderr line is often
+						// teardown noise (e.g. a cancelled SessionEnd hook) while the
+						// real cause — a 401, a rate limit — is printed later.
+						lastStderr: turnResult.stderrTail ?? turnResult.lastStderr,
 					});
 
 					if (classification.kind === 'transient') {

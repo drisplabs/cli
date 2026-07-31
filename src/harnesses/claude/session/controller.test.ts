@@ -212,6 +212,39 @@ describe('createClaudeSessionController', () => {
 		expect(result.lastStderr).toBe('first failure');
 	});
 
+	it('captures a bounded stderr tail carrying lines after the first', async () => {
+		const {controller, callbacks} = setup();
+
+		// Real-world shape: the first stderr line is teardown noise, the real
+		// cause (a 401) is printed later. Classification reads the tail.
+		const turn = controller.startTurn({prompt: 'p'});
+		callbacks.onStderr?.('SessionEnd hook failed: Hook cancelled');
+		callbacks.onStderr?.(
+			'Failed to authenticate. API Error: 401 OAuth access token has expired.',
+		);
+		callbacks.onExit?.(1);
+
+		const result = await turn;
+		expect(result.lastStderr).toBe('SessionEnd hook failed: Hook cancelled');
+		expect(result.stderrTail).toContain('Hook cancelled');
+		expect(result.stderrTail).toContain('401 OAuth access token has expired');
+	});
+
+	it('bounds the stderr tail to its last ~2KB', async () => {
+		const {controller, callbacks} = setup();
+
+		const turn = controller.startTurn({prompt: 'p'});
+		for (let i = 0; i < 100; i++) {
+			callbacks.onStderr?.(`line-${i} ${'x'.repeat(100)}`);
+		}
+		callbacks.onExit?.(1);
+
+		const result = await turn;
+		expect(result.stderrTail!.length).toBeLessThanOrEqual(2048);
+		expect(result.stderrTail).toContain('line-99');
+		expect(result.stderrTail).not.toContain('line-0 ');
+	});
+
 	it('forwards stderr lines to onStderrLine only when verbose', async () => {
 		const verboseLines: string[] = [];
 		const verbose = setup({verbose: true});

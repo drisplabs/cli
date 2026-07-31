@@ -769,6 +769,43 @@ describe('createWorkflowRunner', () => {
 		expect(startTurn).toHaveBeenCalledTimes(1);
 	});
 
+	it('classifies from the stderr tail when the first line is teardown noise', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+
+		// Observed live: the first stderr line was a cancelled SessionEnd hook,
+		// and the 401 arrived later. Classification must see the tail — this is
+		// an auth failure, not `unclassified`.
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 1,
+			lastStderr: 'SessionEnd hook failed: Hook cancelled',
+			stderrTail:
+				'SessionEnd hook failed: Hook cancelled\nFailed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.',
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('hard failure (auth)');
+		expect(startTurn).toHaveBeenCalledTimes(1);
+	});
+
 	it('keeps plain terminal failure for non-looped runs', async () => {
 		const startTurn = vi.fn().mockResolvedValue({
 			...OK_RESULT,
