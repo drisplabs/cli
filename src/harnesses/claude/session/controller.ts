@@ -42,6 +42,7 @@ export function createClaudeSessionController(
 			const tokenAccumulator = createTokenAccumulator();
 			const messageAccumulator = createAssistantMessageAccumulator();
 			let lastStderr = '';
+			let stderrTail = '';
 			if (supportsTransportDiagnostics) {
 				runtime.beginTurn();
 			}
@@ -61,6 +62,7 @@ export function createClaudeSessionController(
 						tokens: tokenAccumulator.getUsage(),
 						streamMessage: messageAccumulator.getLastMessage(),
 						lastStderr,
+						stderrTail,
 						diagnostics: supportsTransportDiagnostics
 							? {transport: runtime.getTransportStats()}
 							: undefined,
@@ -91,6 +93,10 @@ export function createClaudeSessionController(
 							if (!lastStderr) {
 								lastStderr = trimmed;
 							}
+							// Bounded tail for failure classification: the first line is
+							// often teardown noise (a cancelled SessionEnd hook) while the
+							// real cause (a 401, a rate limit) is printed later.
+							stderrTail = (stderrTail + '\n' + trimmed).slice(-2048).trim();
 							if (!input.verbose) return;
 							onStderrLine?.(trimmed);
 						},

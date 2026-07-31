@@ -12,6 +12,13 @@ export type TurnExecutionResult = {
 	streamMessage: string | null;
 	/** First stderr line captured from the harness process (root-cause diagnostics). */
 	lastStderr?: string;
+	/**
+	 * Bounded tail of the harness process's stderr (last ~2 KB). Failure
+	 * classification reads this rather than `lastStderr`: the first line is
+	 * often teardown noise (e.g. a cancelled SessionEnd hook) while the real
+	 * cause — a 401, a rate limit — is printed later.
+	 */
+	stderrTail?: string;
 	diagnostics?: {
 		transport?: {
 			streamToolUses: number;
