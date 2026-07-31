@@ -31,8 +31,6 @@ export type TurnOutcome =
 
 const MISSING_TRACKER_MESSAGE =
 	'the tracker file went missing during the run — the workflow can no longer verify progress';
-const SKELETON_NOT_REPLACED_MESSAGE =
-	'tracker skeleton was never replaced — Claude did not bootstrap the tracker';
 const MISPLACED_TERMINAL_MARKER_MESSAGE =
 	'terminal workflow marker is not the final non-empty line of the tracker; move all summary text above the marker';
 
@@ -63,13 +61,12 @@ export function resolveTurnOutcome(input: {
 
 	const tracker = parseTrackerState(readTracker(trackerPath), loop);
 
-	if (tracker.skeletonNotReplaced) {
-		return {
-			kind: 'stop',
-			status: 'failed',
-			stopReason: SKELETON_NOT_REPLACED_MESSAGE,
-		};
-	}
+	// An untouched skeleton after a clean Turn is an undeclared premature stop
+	// (ADR 0014 §3), not a terminal bootstrap failure: the common live shape is
+	// the agent answering a trivial ask in chat before any tool work. Falling
+	// through to `continue` routes it into the Nudge path, whose cap — the
+	// tracker content isn't advancing — bounds a genuinely broken bootstrap and
+	// escalates it to `awaiting_attention` instead of a dead `failed`.
 	if (tracker.misplacedTerminalMarker) {
 		return {
 			kind: 'stop',

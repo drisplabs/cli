@@ -349,7 +349,59 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('fails when the tracker skeleton is never replaced', async () => {
+	it('nudges an untouched skeleton with a bootstrap corrective, then honors the declaration', async () => {
+		const projectDir = makeTempDir();
+		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+
+		// Turn 1: the agent asked its question in chat and never touched the
+		// tracker. Turn 2 (the nudged resume) declares it properly.
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (turnInput: {prompt: string}) => {
+				prompts.push(turnInput.prompt);
+				if (prompts.length === 2) {
+					fs.writeFileSync(
+						trackerPath,
+						'## Status\nNeed the operator.\n<!-- WORKFLOW_BLOCKED: English or French? -->',
+						'utf-8',
+					);
+				}
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-1',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain(
+			'agent declared WORKFLOW_BLOCKED: English or French?',
+		);
+		expect(startTurn).toHaveBeenCalledTimes(2);
+		// The corrective names the bootstrap duty and the declare-don't-chat rule.
+		expect(prompts[1]).toContain("still contains the runner's skeleton");
+		expect(prompts[1]).toContain('do not ask it in chat');
+		// And it resumes the same Agent Session that has the question in context.
+		expect(startTurn.mock.calls[1]![0].continuation).toEqual({
+			mode: 'resume',
+			handle: 'claude-sess-1',
+		});
+	});
+
+	it('suspends at the nudge cap when the skeleton never advances', async () => {
 		const projectDir = makeTempDir();
 
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
@@ -363,22 +415,19 @@ describe('createWorkflowRunner', () => {
 				name: 'wf',
 				plugins: [],
 				promptTemplate: '{input}',
-				loop: {enabled: true, maxIterations: 5},
+				loop: {enabled: true, maxIterations: 10, nudgeCap: 2},
 			},
 			startTurn,
 			persistRunState,
+			currentAdapterSessionId: () => 'claude-sess-1',
 		});
 
 		const result = await handle.result;
-		expect(result.status).toBe('failed');
-		expect(result.stopReason).toMatch(/tracker skeleton.*never.*replaced/i);
-		expect(startTurn).toHaveBeenCalledTimes(1);
-		expect(persistRunState).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				status: 'failed',
-				stopReason: expect.stringMatching(/tracker skeleton.*never.*replaced/i),
-			}),
-		);
+		// A genuinely broken bootstrap is still bounded — but it escalates to a
+		// resumable suspension naming the tripped bound, not a dead `failed`.
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain('nudge cap reached');
+		expect(startTurn).toHaveBeenCalledTimes(3);
 	});
 
 	it('fails fast when a terminal marker is not the final tracker line', async () => {
@@ -1053,6 +1102,47 @@ describe('createWorkflowRunner', () => {
 			mode: 'resume',
 			handle: 'claude-sess-primary',
 		});
+	});
+
+	it('frames the human reply with wake context on the first Turn of a woken run', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'French, please.',
+			resumeRunId: 'run-suspended',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// Not the bare reply: the wake framing carries the reply, points at the
+		// tracker, and demands the protocol bookkeeping even on a degraded
+		// fresh session.
+		expect(prompts[0]).toContain('suspended awaiting a human');
+		expect(prompts[0]).toContain('French, please.');
+		expect(prompts[0]).toContain('tracker');
+		expect(prompts[0]).toContain('terminal marker');
 	});
 
 	it('reuses a resumed run id so the suspended run returns to running', async () => {

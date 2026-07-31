@@ -152,12 +152,22 @@ export function buildContinuePrompt(loop: LoopConfig): string {
  * without a Terminal Marker, so the Runner resumes the same Agent Session and
  * tells it both options — finish the remaining work, or declare a marker.
  */
-export function buildNudgePrompt(loop: LoopConfig): string {
+export function buildNudgePrompt(
+	loop: LoopConfig,
+	opts?: {skeletonNotReplaced?: boolean},
+): string {
 	const completionMarker = loop.completionMarker ?? DEFAULT_COMPLETION_MARKER;
 	const blockedMarker = loop.blockedMarker ?? DEFAULT_BLOCKED_MARKER;
 	const trackerPath = loop.trackerPath ?? DEFAULT_TRACKER_PATH;
+	// The Turn-1 variant: nothing was ever written — the runner's skeleton is
+	// still in place. The live failure shape this corrects is a question asked
+	// in chat instead of declared on the tracker.
+	const bootstrapPreamble = opts?.skeletonNotReplaced
+		? `You stopped without writing the tracker at ${trackerPath} — it still contains the runner's skeleton. ` +
+			`If you were asking the human a question, do not ask it in chat: write it to the tracker and declare ${blockedMarker}: <your question> --> as the final non-empty line. Otherwise replace the skeleton with the real plan and continue. `
+		: `You stopped without declaring how this workflow ended. If work remains, continue it now. `;
 	return (
-		`You stopped without declaring how this workflow ended. If work remains, continue it now. ` +
+		bootstrapPreamble +
 		`If everything is done and verified, write ${completionMarker} as the final non-empty line of the tracker at ${trackerPath}. ` +
 		`If you cannot proceed without a human, write ${blockedMarker}: <reason> --> there instead. ` +
 		`Do not stop again without either finishing the work or declaring one of these markers.`
