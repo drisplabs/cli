@@ -207,6 +207,28 @@ function buildHandoverSeedPrompt(
 }
 
 /**
+ * First prompt of a woken (previously suspended) Run: the human's reply plus
+ * enough framing that even a degraded fresh Agent Session — the session that
+ * asked may be gone — re-orients from the Tracker instead of treating the
+ * reply as a brand-new one-line task. Observed live without this: a wake of a
+ * Run whose Turn 1 had died pre-orientation acted on the bare reply, never
+ * bootstrapped the Tracker, and failed the skeleton check despite doing the
+ * work.
+ */
+function buildWakePrompt(
+	reply: string,
+	trackerPath: string | undefined,
+): string {
+	return (
+		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
+		(trackerPath
+			? `Read the tracker at ${trackerPath} for the task and its current state, apply the reply, and continue the workflow. `
+			: `Apply the reply and continue the workflow. `) +
+		`Keep the tracker current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
+	);
+}
+
+/**
  * Sleep for `ms`, waking early (in ~250ms slices) if `isCancelled` flips —
  * a Run being killed must not sit out a full retry backoff.
  */
@@ -314,6 +336,14 @@ export function createWorkflowRunner(
 		let retryStreak = 0;
 
 		const loop = input.workflow?.loop;
+
+		// Waking a suspended Run (ADR 0014 §6): frame the human's reply for the
+		// first Turn instead of running the bare reply through the Orient
+		// template. Works for both the intact-session resume and the degraded
+		// fresh Turn.
+		if (input.resumeRunId && loop?.enabled) {
+			nextPromptOverride = buildWakePrompt(input.prompt, trackerPromptPath);
+		}
 
 		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
 		while (!cancelled) {
@@ -566,10 +596,20 @@ export function createWorkflowRunner(
 					break;
 				}
 				nextContinuation = {mode: 'resume', handle: adapterSessionId};
-				nextPromptOverride = buildNudgePrompt({
-					...loop,
-					trackerPath: trackerPromptPath ?? loop.trackerPath,
-				});
+				nextPromptOverride = buildNudgePrompt(
+					{
+						...loop,
+						trackerPath: trackerPromptPath ?? loop.trackerPath,
+					},
+					// Turn-1 variant: nothing was ever written. The corrective must
+					// name the bootstrap duty — the common live shape is a question
+					// asked in chat instead of declared on the tracker.
+					{
+						skeletonNotReplaced: trackerContent.includes(
+							TRACKER_SKELETON_MARKER,
+						),
+					},
+				);
 			} else {
 				// No vendor session id to resume (harness never reported one):
 				// fall back to the pre-Nudge behaviour — a fresh Turn seeded by

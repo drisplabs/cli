@@ -62,7 +62,7 @@ The loop's contract with you:
 4. Run the workflow's orientation steps exactly as written. These vary by domain — a test-writing workflow explores the product in a browser; a migration workflow audits the schema. The workflow defines what orientation means. Do not skip, reorder, reinterpret, or replace workflow steps with a generic approach unless the workflow explicitly allows it or the tracker records a concrete blocker that makes the written step impossible.
 5. Refine the tracker into a granular plan. Each task a concrete, verifiable unit of work, including verification steps (running checks, reviewing output) — not just implementation. Vague tasks ("write tests") cannot be meaningfully resumed by a future Turn that has no idea what they mean here.
 6. Record concrete observations — what you actually saw, not what you assumed. Wrong assumptions burn entire future Turns on rework.
-7. **Single-Turn requests still go through this phase.** If the entire request is satisfied quickly, write a minimal tracker (what was asked, what was done, the outcome) and append `<!-- WORKFLOW_COMPLETE -->`. Leaving the skeleton in place causes the runner to classify the Turn as a failure.
+7. **Single-Turn requests still go through this phase.** If the entire request is satisfied quickly, write a minimal tracker (what was asked, what was done, the outcome) and append `<!-- WORKFLOW_COMPLETE -->`. Leaving the skeleton in place gets you nudged — the runner cannot trust work it can't read from the tracker — and repeated stops with an untouched skeleton escalate to a human.
 
 ### Execute (continuation)
 

@@ -113,17 +113,18 @@ describe('resolveTurnOutcome', () => {
 		expect(outcome.stopReason).toMatch(/tracker/i);
 	});
 
-	it('fails when the runner skeleton was never replaced', () => {
+	it('continues on an untouched skeleton — an undeclared stop, handled by the Nudge path', () => {
+		// The common live shape: the agent answered a trivial ask in chat before
+		// any tool work. That is a premature stop (ADR 0014 §3), not a terminal
+		// bootstrap failure; the Nudge cap bounds a genuinely broken bootstrap
+		// because the tracker content never advances.
 		const trackerPath = writeTracker(
 			`${TRACKER_SKELETON_MARKER}\n# Workflow Tracker\nOrientation in progress.`,
 		);
 
-		const outcome = resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 2});
-
-		expect(outcome.kind).toBe('stop');
-		if (outcome.kind !== 'stop') return;
-		expect(outcome.status).toBe('failed');
-		expect(outcome.stopReason).toMatch(/skeleton.*never.*replaced/i);
+		expect(resolveTurnOutcome({trackerPath, loop: LOOP, iteration: 2})).toEqual(
+			{kind: 'continue'},
+		);
 	});
 
 	it('fails when a terminal marker is not the final tracker line', () => {
