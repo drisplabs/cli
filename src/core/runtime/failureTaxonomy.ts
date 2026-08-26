@@ -90,8 +90,15 @@ const RULES: ReadonlyArray<{
 export function classifyTurnFailure(input: {
 	errorMessage?: string | null;
 	lastStderr?: string | null;
+	/**
+	 * Final stream message of the failed Turn. In headless stream-json mode
+	 * Claude prints API errors ("API Error: Connection refused …") to stdout
+	 * as the last message and leaves stderr empty, so this is often the only
+	 * place the failure class is visible.
+	 */
+	lastMessage?: string | null;
 }): TurnFailureClassification {
-	const haystack = [input.errorMessage, input.lastStderr]
+	const haystack = [input.errorMessage, input.lastStderr, input.lastMessage]
 		.filter((part): part is string => typeof part === 'string')
 		.join('\n');
 

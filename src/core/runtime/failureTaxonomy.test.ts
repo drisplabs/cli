@@ -57,6 +57,27 @@ describe('classifyTurnFailure', () => {
 		).toEqual({kind: 'transient', code: 'rate_limit'});
 	});
 
+	it('reads the final stream message when stderr is empty — Claude prints API errors to stdout in headless stream-json mode', () => {
+		// Observed live (Claude Code 2.1.246): a dead API endpoint produced
+		// exit code 1, an EMPTY stderr, and the error text only as the final
+		// stream message. Without this fallback every transient network/API
+		// failure classifies as hard/unclassified and suspends instead of
+		// retrying (ADR 0014 §4).
+		expect(
+			classifyTurnFailure({
+				errorMessage: 'Process exited with code 1',
+				lastMessage:
+					'API Error: Connection refused — a firewall or proxy may be blocking it (ConnectionRefused)',
+			}),
+		).toEqual({kind: 'transient', code: 'network'});
+		expect(
+			classifyTurnFailure({
+				errorMessage: 'Process exited with code 1',
+				lastMessage: 'API Error: 529 {"error":{"type":"overloaded_error"}}',
+			}),
+		).toEqual({kind: 'transient', code: 'overloaded'});
+	});
+
 	it('specific hard classes win over generic status patterns', () => {
 		// 401 inside a message that also says "request" must be auth, not
 		// invalid_request; billing language wins over a bare 400.
