@@ -209,6 +209,9 @@ describe('buildCodexPromptOptions', () => {
 			}),
 		);
 
+		// 'never', not the legacy 'auto-edit': codex-cli 0.142+ rejects
+		// 'auto-edit' as an unknown AskForApproval variant (-32600), which
+		// killed every permissive run at spawn (observed live).
 		expect(
 			buildCodexPromptOptions({
 				processConfig: {preset: 'permissive'},
@@ -216,7 +219,7 @@ describe('buildCodexPromptOptions', () => {
 		).toEqual(
 			expect.objectContaining({
 				plugins: [],
-				approvalPolicy: 'auto-edit',
+				approvalPolicy: 'never',
 				sandbox: 'danger-full-access',
 			}),
 		);

@@ -1381,6 +1381,80 @@ describe('runExec', () => {
 		}
 	});
 
+	it('converts an unanswerable sandbox approval request into awaiting_attention instead of hanging', async () => {
+		// Codex under a restrictive sandbox asks for file-change approval via a
+		// permission.request event with the tool name (not 'user_input').
+		// Observed live: a headless codex workflow run hung forever on the
+		// null-timeout decision. Degrade, never hang (ADR 0014).
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const trackerPath = '/tmp/runner-approval-tracker.md';
+
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess(() => {
+				opts.onExit?.(143);
+			});
+
+			setImmediate(() => {
+				fs.writeFileSync(trackerPath, 'still working', 'utf-8');
+				runtime.emit(
+					makeRuntimeEvent({
+						id: 'evt-approval',
+						kind: 'permission.request',
+						hookName: 'item/fileChange/requestApproval',
+						toolName: 'Edit',
+						data: {
+							tool_name: 'Edit',
+							tool_input: {reason: null, grantRoot: null},
+						},
+						interaction: {
+							expectsDecision: true,
+							defaultTimeoutMs: null,
+							canBlock: true,
+						},
+					}),
+				);
+			});
+
+			return child;
+		};
+
+		try {
+			const result = await runExec({
+				prompt: 'hello',
+				projectDir: '/tmp',
+				harness: 'claude-code',
+				isolationConfig: {},
+				ephemeral: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				workflow: {
+					name: 'test-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						completionMarker: '<!-- DONE -->',
+						maxIterations: 5,
+						trackerPath: 'runner-approval-tracker.md',
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.failure).toBeUndefined();
+			expect(stderr.read()).toContain('workflow run suspended');
+			expect(stderr.read()).toContain('approval');
+			expect(stderr.read()).toContain('Edit');
+		} finally {
+			fs.rmSync(trackerPath, {force: true});
+		}
+	});
+
 	it('suspends without failure when maxIterations is reached (awaiting_attention)', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
