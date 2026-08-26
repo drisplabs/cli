@@ -1,7 +1,3 @@
-dist
-.claude
-.athena
-.worktrees
-node_modules
+CLAUDE.md
 CHANGELOG.md
 docs/mockup.html
