@@ -12,7 +12,16 @@ import {
 import {HANDOFF_COMPACT_PROMPT} from '../../../core/compaction/handoffInstructions';
 import {DEFAULT_MAX_TURN_TOKEN_COUNT} from '../../../core/workflows/types';
 
-export type CodexApprovalPolicy = 'on-request' | 'auto-edit' | 'full-auto';
+/**
+ * String variants of the app-server's `AskForApproval` (see the generated
+ * protocol type). The legacy 'auto-edit' / 'full-auto' names are rejected by
+ * codex-cli 0.142+ with -32600 "unknown variant".
+ */
+export type CodexApprovalPolicy =
+	| 'untrusted'
+	| 'on-failure'
+	| 'on-request'
+	| 'never';
 export type CodexSandbox =
 	| 'read-only'
 	| 'workspace-write'
@@ -49,7 +58,10 @@ function resolveIsolation(preset?: HarnessProcessPreset): {
 		case 'strict':
 			return {approvalPolicy: 'on-request', sandbox: 'read-only'};
 		case 'permissive':
-			return {approvalPolicy: 'auto-edit', sandbox: 'danger-full-access'};
+			// Codex parity with the Claude harness's bypassPermissions: full
+			// access, never ask. ('auto-edit' is not a valid AskForApproval
+			// variant in codex-cli 0.142+ — it failed every spawn.)
+			return {approvalPolicy: 'never', sandbox: 'danger-full-access'};
 		case 'minimal':
 		case undefined:
 			return {approvalPolicy: 'on-request', sandbox: 'workspace-write'};

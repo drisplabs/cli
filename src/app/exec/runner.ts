@@ -126,6 +126,12 @@ function describeAttentionRequest(event: RuntimeEvent): string {
 			return `agent asked a question with no human attached to answer: ${texts.join(' | ')}`;
 		}
 	}
+	if (event.kind === 'permission.request' && event.toolName !== 'user_input') {
+		return (
+			`agent requested sandbox approval (${event.toolName ?? 'unknown tool'}) with no human attached to answer` +
+			` — rerun with a more permissive --isolation, or wake with guidance`
+		);
+	}
 	return 'agent asked a question with no human attached to answer';
 }
 
@@ -137,7 +143,11 @@ function describeAttentionRequest(event: RuntimeEvent): string {
 function isQuestionEvent(event: RuntimeEvent): boolean {
 	return (
 		(event.kind === 'tool.pre' && event.toolName === 'AskUserQuestion') ||
-		(event.kind === 'permission.request' && event.toolName === 'user_input') ||
+		// ANY permission request, not just Codex's 'user_input': a sandbox
+		// approval (e.g. item/fileChange/requestApproval under a read-only
+		// sandbox) is equally unanswerable unattended — observed live hanging a
+		// headless codex workflow run forever on the null-timeout decision.
+		event.kind === 'permission.request' ||
 		event.kind === 'elicitation.request'
 	);
 }
