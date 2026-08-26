@@ -48,7 +48,7 @@
 		"protocol:codex": "node scripts/update-codex-protocol-snapshot.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"lint:format": "git ls-files -z | xargs -0 prettier --check --ignore-unknown",
+		"lint:format": "prettier --check .",
 		"lint:eslint": "eslint .",
 		"lint:staged": "lint-staged",
 		"lint:dead": "knip --strict --exclude dependencies,unlisted,binaries",
