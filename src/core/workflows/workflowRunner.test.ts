@@ -744,6 +744,49 @@ describe('createWorkflowRunner', () => {
 		expect(statuses).not.toContain('awaiting_attention');
 	});
 
+	it('retries when the API error reaches only the stream message (empty stderr)', async () => {
+		// Live shape (Claude Code 2.1.246, stream-json): an API failure exits 1
+		// with NOTHING on stderr — the error text arrives as the final stream
+		// message on stdout. The classifier must see it, or every transient
+		// failure suspends as hard/unclassified.
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => ({
+				...OK_RESULT,
+				exitCode: 1,
+				streamMessage:
+					'API Error: Connection refused — a firewall or proxy may be blocking it (ConnectionRefused)',
+			}))
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5, retryBackoffMs: 1},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentAdapterSessionId: () => 'claude-sess-abc',
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(2);
+	});
+
 	it('suspends when the retry cap is exhausted, naming the retry cap', async () => {
 		const projectDir = makeTempDir();
 		const trackerDir = path.join(projectDir, '.athena', 's1');

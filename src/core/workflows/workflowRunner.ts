@@ -462,6 +462,11 @@ export function createWorkflowRunner(
 				}
 				if (turnResult.lastStderr) {
 					parts.push(turnResult.lastStderr);
+				} else if (turnResult.streamMessage) {
+					// Headless Claude prints API errors to stdout as the final
+					// stream message with an empty stderr — without this the
+					// human-facing reason is a bare exit code.
+					parts.push(turnResult.streamMessage.slice(0, 300));
 				}
 				const failureDetail = parts.join(': ') || 'Turn failed';
 
@@ -476,6 +481,9 @@ export function createWorkflowRunner(
 						// teardown noise (e.g. a cancelled SessionEnd hook) while the
 						// real cause — a 401, a rate limit — is printed later.
 						lastStderr: turnResult.stderrTail ?? turnResult.lastStderr,
+						// Claude's headless stream-json mode prints API errors to
+						// stdout as the final stream message and leaves stderr empty.
+						lastMessage: turnResult.streamMessage,
 					});
 
 					if (classification.kind === 'transient') {
