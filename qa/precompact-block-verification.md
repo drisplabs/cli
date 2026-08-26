@@ -64,8 +64,14 @@ Everything below runs from a scratch directory.
 
 3. **Context filler** — auto-compaction cannot be triggered cheaply below the
    100k clamp, so generate ~4 × 250 KB files of dictionary words
-   (`/usr/share/dict/words`, 2000 lines × 12 words each): reading them via the
-   Read tool adds ~30k tokens apiece.
+   (`/usr/share/dict/words`, 2000 lines × 12 words each).
+
+   > **Round-2 correction (2026-08-26):** files of _random_ dictionary words
+   > tokenize at ~3 tokens/word — a 250 KB file is **~75k tokens**, not the
+   > ~30k this doc originally assumed. Size context-bound fixtures off a real
+   > token count, or the trigger fires far earlier than planned (this
+   > mis-estimate is what exposed the handover-loop gap, issue #164). One such
+   > file plus the ~20k workflow baseline already crosses a 95k trigger.
 
 4. **Case A (sync + block):**
 
