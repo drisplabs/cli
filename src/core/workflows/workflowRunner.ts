@@ -10,6 +10,7 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
+import type {TrackerMarkers} from './trackerReader';
 import {
 	createWorkflowRunState,
 	prepareWorkflowTurn,
@@ -21,6 +22,7 @@ import {
 	buildNudgePrompt,
 	readTracker,
 	TRACKER_SKELETON_MARKER,
+	demoteTerminalMarkers,
 } from './trackerReader';
 import {
 	DEFAULT_NUDGE_CAP,
@@ -144,6 +146,47 @@ _To be created during orientation._
 
 _No progress yet._
 `;
+
+/**
+ * Open a new Workflow Run's section on an existing Tracker.
+ *
+ * `DEFAULT_TRACKER_PATH` is keyed on the Athena Session, so every Workflow Run
+ * in a Session shares one Tracker and the skeleton — the only place the Run's
+ * `{input}` goal is recorded — is written just once, for the first Run. Later
+ * Runs then worked against a Tracker that never said what they had been asked
+ * to do, and inherited their predecessor's Terminal Marker along with it.
+ *
+ * Opening a section fixes both: it records this Run's goal, and it demotes the
+ * prior Run's markers so they neither end this Run at its first Turn nor read
+ * as misplaced once it writes below them.
+ */
+function openRunSection(
+	trackerPath: string,
+	opts: {runId: string; goal: string; markers: TrackerMarkers},
+): void {
+	let existing: string;
+	try {
+		existing = fs.readFileSync(trackerPath, 'utf-8');
+	} catch {
+		return;
+	}
+
+	const banner =
+		`\n\n---\n\n## New Workflow Run\n\n` +
+		`**Run**: ${opts.runId}\n` +
+		`**Goal**: ${opts.goal}\n\n` +
+		`_Sections above belong to earlier Workflow Runs in this Athena Session._\n`;
+
+	try {
+		fs.writeFileSync(
+			trackerPath,
+			demoteTerminalMarkers(existing.trimEnd(), opts.markers) + banner,
+			'utf-8',
+		);
+	} catch {
+		// A Tracker that cannot be rewritten is left as-is; the Run still starts.
+	}
+}
 
 function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 	const input = (base.input ?? 0) + (next.input ?? 0);
@@ -359,7 +402,20 @@ export function createWorkflowRunner(
 				input: input.prompt,
 			});
 			const write = input.createTracker ?? defaultCreateTracker;
+			// Write-if-absent: the skeleton belongs to the Session's first Run.
+			const trackerExisted = fs.existsSync(trackerAbsPath);
 			write(trackerAbsPath, content);
+			// A wake continues the same Run, so it opens no new section.
+			if (trackerExisted && !input.resumeRunId) {
+				openRunSection(trackerAbsPath, {
+					runId,
+					goal: input.prompt,
+					markers: {
+						completionMarker: input.workflow.loop.completionMarker,
+						blockedMarker: input.workflow.loop.blockedMarker,
+					},
+				});
+			}
 		}
 
 		persist();

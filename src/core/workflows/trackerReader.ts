@@ -25,7 +25,10 @@ const DEFAULT_CONTINUE_PROMPT =
 	'Continue the task. Read the tracker at {trackerPath} for current progress. If the work is complete or blocked, the terminal marker must be the final non-empty line of the tracker; do not write any prose after it.';
 
 /** The Terminal Markers that resolve a Workflow Run, as configured for a loop. */
-type TrackerMarkers = Pick<LoopConfig, 'completionMarker' | 'blockedMarker'>;
+export type TrackerMarkers = Pick<
+	LoopConfig,
+	'completionMarker' | 'blockedMarker'
+>;
 
 /**
  * What the Tracker's text says about the Workflow Run's progress — the part of
@@ -138,6 +141,43 @@ export function parseTrackerState(
 		),
 		skeletonNotReplaced: content.includes(TRACKER_SKELETON_MARKER),
 	};
+}
+
+/**
+ * Rewrite every Terminal Marker line into an inert historical note.
+ *
+ * The Tracker is keyed on the Athena Session, so a second Workflow Run in the
+ * same Session inherits the Tracker its predecessor left behind. Leaving that
+ * predecessor's marker in place breaks the new Run two ways: while it is still
+ * the final non-empty line the new Run resolves terminal at its first Turn, and
+ * once the new Run writes below it, it is reported as a misplaced marker and
+ * nudges the agent to "move" a marker that belongs to finished work.
+ *
+ * Only lines that are exactly a Terminal Marker are touched; marker-like text
+ * inside notes or examples is left alone, matching {@link parseTrackerState}.
+ */
+export function demoteTerminalMarkers(
+	content: string,
+	markers: TrackerMarkers = {},
+): string {
+	const completionMarker =
+		markers.completionMarker ?? DEFAULT_COMPLETION_MARKER;
+	const blockedMarker = markers.blockedMarker ?? DEFAULT_BLOCKED_MARKER;
+
+	return content
+		.split('\n')
+		.map(line => {
+			const trimmed = line.trim();
+			if (trimmed === completionMarker) return '> _Prior Run ended: complete._';
+			if (isBlockedLine(trimmed, blockedMarker)) {
+				const reason = extractBlockedReason(trimmed, blockedMarker);
+				return reason
+					? `> _Prior Run ended: needed attention — ${reason}._`
+					: '> _Prior Run ended: needed attention._';
+			}
+			return line;
+		})
+		.join('\n');
 }
 
 export function buildContinuePrompt(loop: LoopConfig): string {

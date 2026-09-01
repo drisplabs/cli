@@ -1358,6 +1358,139 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
+	it('records each Workflow Run goal when the Tracker already exists', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		// A prior Workflow Run in the same Athena Session left this behind.
+		fs.writeFileSync(
+			trackerPath,
+			'# Workflow Tracker\n\nprior run work\n',
+			'utf-8',
+		);
+
+		const startTurn = vi.fn().mockImplementation(async () => {
+			fs.appendFileSync(trackerPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the second goal',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 3},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		await handle.result;
+
+		const tracker = fs.readFileSync(trackerPath, 'utf-8');
+		// The new Run's goal is on the Tracker, and the prior Run's work survives.
+		expect(tracker).toContain('the second goal');
+		expect(tracker).toContain('prior run work');
+	});
+
+	it('does not inherit a prior Run terminal marker', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		// The prior Run finished and left its completion marker as the last line.
+		fs.writeFileSync(
+			trackerPath,
+			'# Workflow Tracker\n\nprior run work\n\n<!-- WORKFLOW_COMPLETE -->\n',
+			'utf-8',
+		);
+
+		// Turn 1 does real work but declares nothing; Turn 2 completes.
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.appendFileSync(trackerPath, '\nworking on the new goal\n', 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.appendFileSync(
+					trackerPath,
+					'\n<!-- WORKFLOW_COMPLETE -->\n',
+					'utf-8',
+				);
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the second goal',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 3},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+
+		// The stale marker did not end the new Run at its first Turn...
+		expect(startTurn).toHaveBeenCalledTimes(2);
+		expect(result.status).toBe('completed');
+		// ...and it was demoted rather than left to read as a misplaced marker.
+		const afterBanner = fs
+			.readFileSync(trackerPath, 'utf-8')
+			.split('the second goal')[0]!;
+		expect(afterBanner).not.toContain('<!-- WORKFLOW_COMPLETE -->');
+		expect(afterBanner).toContain('Prior Run ended');
+	});
+
+	it('does not open a new Run section when waking a suspended Run', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		fs.writeFileSync(
+			trackerPath,
+			'# Workflow Tracker\n\nmid-run work\n',
+			'utf-8',
+		);
+
+		const startTurn = vi.fn().mockImplementation(async () => {
+			fs.appendFileSync(trackerPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the human reply',
+			resumeRunId: 'run-1',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 3},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		await handle.result;
+
+		// A wake continues the same Run, so it opens no new Run section.
+		expect(fs.readFileSync(trackerPath, 'utf-8')).not.toContain(
+			'New Workflow Run',
+		);
+	});
+
 	it('uses injected createTracker instead of fs', async () => {
 		const createTracker = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
