@@ -244,6 +244,56 @@ async function delayWithCancel(
 	}
 }
 
+/** Handoff files form a numbered chain: `handoff/001.md`, `002.md`, … */
+const HANDOFF_DIR_NAME = 'handoff';
+
+/** How many Handoff files to retain; older ones are purged after a Handover. */
+const HANDOFF_RETAIN = 2;
+
+function listHandoffSeqs(dir: string): number[] {
+	try {
+		return fs
+			.readdirSync(dir)
+			.map(name => /^(\d{3})\.md$/.exec(name)?.[1])
+			.filter((seq): seq is string => seq !== undefined)
+			.map(Number)
+			.sort((a, b) => a - b);
+	} catch {
+		return [];
+	}
+}
+
+function handoffPathFor(dir: string, seq: number): string {
+	return path.join(dir, `${String(seq).padStart(3, '0')}.md`);
+}
+
+/**
+ * Allocate the path for the next Handoff file.
+ *
+ * A fresh sequence number per Handover is what lets `existsSync` prove that
+ * *this* fork wrote the file — the job the pre-Handover `rmSync` used to do,
+ * at the cost of destroying Handoff N before N+1 was written. Past the second
+ * Handover that left the Tracker as the sole carrier again, which is the
+ * condition ADR 0014 §5 exists to relieve.
+ */
+function nextHandoffPath(dir: string): string {
+	const next = (listHandoffSeqs(dir).at(-1) ?? 0) + 1;
+	fs.mkdirSync(dir, {recursive: true});
+	return handoffPathFor(dir, next);
+}
+
+/** Drop all but the `keep` most recent Handoff files. Best-effort. */
+function purgeHandoffs(dir: string, keep: number): void {
+	const seqs = listHandoffSeqs(dir);
+	for (const seq of seqs.slice(0, Math.max(0, seqs.length - keep))) {
+		try {
+			fs.rmSync(handoffPathFor(dir, seq), {force: true});
+		} catch {
+			// A file that cannot be removed is left behind; retention is advisory.
+		}
+	}
+}
+
 function defaultCreateTracker(trackerPath: string, content: string): void {
 	fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
 	try {
@@ -380,19 +430,17 @@ export function createWorkflowRunner(
 			// failure classification: the interruption is neither.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
-				const handoffAbsPath = trackerAbsPath
-					? path.join(path.dirname(trackerAbsPath), 'handoff.md')
-					: path.resolve(
-							input.projectDir,
-							'.athena',
-							input.sessionId || 'session',
-							'handoff.md',
-						);
-				try {
-					fs.rmSync(handoffAbsPath, {force: true});
-				} catch {
-					// A stale file that cannot be removed will be overwritten.
-				}
+				const handoffDir = path.join(
+					trackerAbsPath
+						? path.dirname(trackerAbsPath)
+						: path.resolve(
+								input.projectDir,
+								'.athena',
+								input.sessionId || 'session',
+							),
+					HANDOFF_DIR_NAME,
+				);
+				const handoffAbsPath = nextHandoffPath(handoffDir);
 
 				input.handover?.onForkStateChange?.(true);
 				let forkOk = false;
@@ -417,6 +465,7 @@ export function createWorkflowRunner(
 				if (cancelled) break;
 
 				if (forkOk) {
+					purgeHandoffs(handoffDir, HANDOFF_RETAIN);
 					// The fork is discarded (nothing resumes it); the next Turn is a
 					// fresh Agent Session — the only context-resetting transition —
 					// and ticks the Iteration counter like any Turn.
