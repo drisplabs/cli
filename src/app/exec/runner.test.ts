@@ -980,7 +980,10 @@ describe('runExec', () => {
 		const projectDir = '/tmp/runner-vendor-id-project';
 		const trackerPath = `${projectDir}/.athena/session-1.md`;
 		fs.mkdirSync(`${projectDir}/.athena`, {recursive: true});
-		fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
+		// Seeded WITHOUT a Terminal Marker: a Run starting against an already
+		// terminal Tracker has those markers demoted, since no Run inherits a
+		// predecessor's verdict. The agent declares completion below instead.
+		fs.writeFileSync(trackerPath, '# Tracker\n', 'utf-8');
 
 		const {createSessionStore} = await import('../../infra/sessions');
 		const snapshots: Array<{status: string; adapterSessionId?: string}> = [];
@@ -1004,6 +1007,7 @@ describe('runExec', () => {
 						content: [{type: 'text', text: 'done message'}],
 					}) + '\n',
 				);
+				fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
 				opts.onExit?.(0);
 			});
 

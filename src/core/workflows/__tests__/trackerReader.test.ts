@@ -8,6 +8,7 @@ import {
 	buildContinuePrompt,
 	DEFAULT_TRACKER_PATH,
 	TRACKER_SKELETON_MARKER,
+	demoteTerminalMarkers,
 } from '../trackerReader';
 
 const DEFAULT_MARKERS = {
@@ -220,5 +221,48 @@ describe('buildContinuePrompt', () => {
 		});
 		expect(result).toContain('final non-empty line');
 		expect(result).toContain('do not write any prose after it');
+	});
+});
+
+describe('demoteTerminalMarkers', () => {
+	it('rewrites a completion marker into an inert note', () => {
+		const out = demoteTerminalMarkers('work\n\n<!-- WORKFLOW_COMPLETE -->\n');
+		expect(out).not.toContain('<!-- WORKFLOW_COMPLETE -->');
+		expect(out).toContain('Prior Run ended: complete');
+		expect(out).toContain('work');
+	});
+
+	it('carries a blocked marker reason into the note', () => {
+		const out = demoteTerminalMarkers(
+			'work\n<!-- WORKFLOW_BLOCKED: need the API key -->\n',
+		);
+		expect(out).not.toContain('WORKFLOW_BLOCKED:');
+		expect(out).toContain('need the API key');
+	});
+
+	it('leaves marker-like text inside prose alone', () => {
+		const prose = 'Write `<!-- WORKFLOW_COMPLETE -->` when the work is done.';
+		expect(demoteTerminalMarkers(prose)).toBe(prose);
+	});
+
+	it('demotes a marker wherever it sits, not just the last line', () => {
+		const out = demoteTerminalMarkers(
+			'<!-- WORKFLOW_COMPLETE -->\nmore work below\n',
+		);
+		expect(out).not.toContain('<!-- WORKFLOW_COMPLETE -->');
+		expect(out).toContain('more work below');
+	});
+
+	it('honours configured markers', () => {
+		const out = demoteTerminalMarkers('done\n<!-- ALL_DONE -->\n', {
+			completionMarker: '<!-- ALL_DONE -->',
+		});
+		expect(out).not.toContain('<!-- ALL_DONE -->');
+		expect(out).toContain('Prior Run ended: complete');
+	});
+
+	it('leaves a Tracker with no markers untouched', () => {
+		const content = '# Workflow Tracker\n\nstill working\n';
+		expect(demoteTerminalMarkers(content)).toBe(content);
 	});
 });
