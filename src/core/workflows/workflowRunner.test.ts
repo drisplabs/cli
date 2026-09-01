@@ -1006,7 +1006,8 @@ describe('createWorkflowRunner', () => {
 		const trackerDir = path.join(projectDir, '.athena', 's1');
 		fs.mkdirSync(trackerDir, {recursive: true});
 		const trackerPath = path.join(trackerDir, 'tracker.md');
-		const handoffPath = path.join(trackerDir, 'handoff.md');
+		// The Handoff chain starts at 001 (ADR 0014 §5).
+		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
 
 		let pendingHandover: {handle: string} | null = null;
 		const forkStates: boolean[] = [];
@@ -1029,6 +1030,7 @@ describe('createWorkflowRunner', () => {
 			// The fork: resumes the primary conversation, writes the Handoff file.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
+				fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
 				fs.writeFileSync(handoffPath, '# Handoff\nwhere things stand', 'utf-8');
 				return OK_RESULT;
 			})
@@ -1084,6 +1086,154 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('Handover occurred');
 		expect(calls[2]!.prompt).toContain(handoffPath);
 		expect(calls[2]!.prompt).toContain(trackerPath);
+	});
+
+	it('keeps prior Handoff files: each Handover writes the next numbered file', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const handoffDir = path.join(trackerDir, 'handoff');
+
+		let pendingHandover: {handle: string} | null = null;
+		const calls: Array<{prompt: string; continuation: unknown}> = [];
+
+		// The fork writes to whichever path the invocation prompt names.
+		const writeHandoffFromPrompt = (prompt: string, body: string): void => {
+			const named = /(\S*handoff\S*\.md)/.exec(prompt);
+			if (!named) throw new Error(`no Handoff path in prompt: ${prompt}`);
+			fs.mkdirSync(path.dirname(named[1]!), {recursive: true});
+			fs.writeFileSync(named[1]!, body, 'utf-8');
+		};
+
+		const startTurn = vi
+			.fn()
+			// Turn 1 → first Handover.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, 'work in progress', 'utf-8');
+				pendingHandover = {handle: 'sess-a'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// Fork 1 writes Handoff 001.
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input as never);
+				writeHandoffFromPrompt(input.prompt, '# Handoff one');
+				return OK_RESULT;
+			})
+			// Turn 2 (fresh, seeded) → second Handover.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				pendingHandover = {handle: 'sess-b'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// Fork 2 writes Handoff 002.
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input as never);
+				writeHandoffFromPrompt(input.prompt, '# Handoff two');
+				return OK_RESULT;
+			})
+			// Turn 3 finishes.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+
+		// Both Handoff files survive: the second Handover did not destroy the first.
+		expect(fs.readdirSync(handoffDir).sort()).toEqual(['001.md', '002.md']);
+		expect(fs.readFileSync(path.join(handoffDir, '001.md'), 'utf-8')).toContain(
+			'Handoff one',
+		);
+		expect(fs.readFileSync(path.join(handoffDir, '002.md'), 'utf-8')).toContain(
+			'Handoff two',
+		);
+
+		// Each Handover targets and seeds from its own file.
+		expect(calls[1]!.prompt).toContain(path.join(handoffDir, '001.md'));
+		expect(calls[2]!.prompt).toContain(path.join(handoffDir, '001.md'));
+		expect(calls[3]!.prompt).toContain(path.join(handoffDir, '002.md'));
+		expect(calls[4]!.prompt).toContain(path.join(handoffDir, '002.md'));
+	});
+
+	it('purges old Handoff files, keeping the two most recent', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const handoffDir = path.join(trackerDir, 'handoff');
+
+		let pendingHandover: {handle: string} | null = null;
+		let handovers = 0;
+
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				const named = /(\S*handoff\S*\.md)/.exec(input.prompt);
+				if (named && input.prompt.includes('handoff skill')) {
+					fs.mkdirSync(path.dirname(named[1]!), {recursive: true});
+					fs.writeFileSync(named[1]!, `# Handoff ${named[1]!}`, 'utf-8');
+					return OK_RESULT;
+				}
+				if (handovers < 3) {
+					handovers += 1;
+					fs.writeFileSync(trackerPath, `work ${handovers}`, 'utf-8');
+					pendingHandover = {handle: `sess-${handovers}`};
+					return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+				}
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 9},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// Three Handovers wrote 001-003; only the newest two are retained.
+		expect(fs.readdirSync(handoffDir).sort()).toEqual(['002.md', '003.md']);
 	});
 
 	it('degrades a failed Handover to vendor compaction: resume in place, stop intercepting', async () => {

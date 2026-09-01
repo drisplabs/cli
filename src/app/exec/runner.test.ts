@@ -1068,7 +1068,8 @@ describe('runExec', () => {
 		const trackerDir = path.join(projectDir, '.athena', 'session-ho');
 		fs.mkdirSync(trackerDir, {recursive: true});
 		const trackerPath = path.join(trackerDir, 'tracker.md');
-		const handoffPath = path.join(trackerDir, 'handoff.md');
+		// The Handoff chain starts at 001 (ADR 0014 §5).
+		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
 
 		const spawns: SpawnArgs[] = [];
 		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
@@ -1100,6 +1101,7 @@ describe('runExec', () => {
 					// The kill callback ends this turn via opts.onExit(143).
 				} else if (spawnIndex === 2) {
 					// The fork: writes the Handoff file and exits cleanly.
+					fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
 					fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
 					opts.onExit?.(0);
 				} else {
