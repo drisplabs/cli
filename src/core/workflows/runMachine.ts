@@ -37,7 +37,11 @@ import {
 	DEFAULT_RETRY_BACKOFF_MS,
 } from './types';
 import type {TurnOutcome} from './terminalOutcome';
-import {buildNudgePrompt, TRACKER_SKELETON_MARKER} from './trackerReader';
+import {
+	buildContinuePrompt,
+	buildNudgePrompt,
+	TRACKER_SKELETON_MARKER,
+} from './trackerReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 
@@ -58,10 +62,32 @@ export type RunPhase =
 	| {
 			kind: 'backing_off';
 			ms: number;
-			prompt: string;
-			continuation: TurnContinuation;
+			/**
+			 * What to re-issue once the backoff elapses — a discriminated union
+			 * rather than the flat `prompt`/`continuation` this phase used to
+			 * carry, because a fork retry (ADR 0016 §8) backs off the same way a
+			 * Turn retry does but must re-issue `start_fork_turn`, not
+			 * `start_turn`, once it elapses.
+			 */
+			resume:
+				| {
+						kind: 'turn';
+						prompt: string;
+						continuation: TurnContinuation;
+				  }
+				| {
+						kind: 'fork';
+						handle: string;
+						configOverride?: HarnessProcessOverride;
+				  };
 	  }
-	| {kind: 'handing_over'; handle: string}
+	| {
+			kind: 'handing_over';
+			handle: string;
+			configOverride?: HarnessProcessOverride;
+			/** Set once this fork has already been retried once (ADR 0016 §8). */
+			retried?: boolean;
+	  }
 	| {kind: 'awaiting_attention'; stopReason: string}
 	| {kind: 'completed'}
 	| {kind: 'failed'; stopReason?: string}
@@ -128,6 +154,21 @@ export type RunEvent =
 			ok: boolean;
 			cancelled: boolean;
 			handoffPath: string;
+			/**
+			 * Whether a failed fork looks retryable (ADR 0016 §8) — unused when
+			 * `ok` is true. Ignored by the reducer when `ok` is true.
+			 */
+			transient: boolean;
+	  }
+	| {
+			/**
+			 * Fed once, synthetically, when an `awaiting_attention` Run is woken
+			 * (ADR 0016 §6/§7): the interpreter's bootstrap for a resumed Run
+			 * whose persisted phase was `awaiting_attention` produces this event
+			 * instead of replaying whatever ended the prior process.
+			 */
+			type: 'woken';
+			continuation: TurnContinuation;
 	  };
 
 /** What the interpreter must do before the next Turn/backoff/fork can start. */
@@ -240,15 +281,43 @@ export function createInitialRun(
 		/** `input.resumeRunId` truthy and the loop is enabled (ADR 0014 §6). */
 		waking: boolean;
 		resumedMemory?: RunMemory;
+		/**
+		 * The persisted `stop_reason` of the resumed run, when `waking` and
+		 * `resumedMemory` are both present. Only meaningful for that case.
+		 */
+		awaitingAttentionStopReason?: string;
 	},
 ): {phase: RunPhase; memory: RunMemory} {
+	// A wake (ADR 0014 §6) of a Run whose persisted phase was
+	// `awaiting_attention`: rehydrate straight back into that phase rather
+	// than replaying whatever prompt/continuation last ran (§3/§6) — `step()`
+	// advances it on the next `woken` event via `handleAwaitingAttention`,
+	// which is what actually carries `resumedMemory.iteration` forward as the
+	// Run's budget across wakes (§2).
+	if (opts.waking && opts.resumedMemory) {
+		return {
+			phase: {
+				kind: 'awaiting_attention',
+				stopReason: opts.awaitingAttentionStopReason ?? '',
+			},
+			memory: opts.resumedMemory,
+		};
+	}
+
+	// A process restart mid-Turn (crash recovery): `turn_in_flight` itself is
+	// never persisted (§6), so the interpreter reconstructs a zero-wait
+	// `backing_off` phase from the persisted prompt/continuation and
+	// re-issues the same Turn once fed a synthetic `backoff_elapsed` event.
 	if (opts.resumedMemory) {
 		return {
 			phase: {
 				kind: 'backing_off',
 				ms: 0,
-				prompt: opts.resumedMemory.lastStopPrompt,
-				continuation: opts.resumedMemory.lastStopContinuation,
+				resume: {
+					kind: 'turn',
+					prompt: opts.resumedMemory.lastStopPrompt,
+					continuation: opts.resumedMemory.lastStopContinuation,
+				},
 			},
 			memory: opts.resumedMemory,
 		};
@@ -295,16 +364,22 @@ function handleTurnInFlight(
 
 	if (event.handoverRequestHandle !== null) {
 		return {
-			phase: {kind: 'handing_over', handle: event.handoverRequestHandle},
+			phase: {
+				kind: 'handing_over',
+				handle: event.handoverRequestHandle,
+				// Reuse this Turn's own prepared configOverride (the same object
+				// the primary `start_turn` action used) rather than recomputing —
+				// matches workflowRunner.ts's original `prepared.configOverride`
+				// reuse at the fork call site exactly. Stored on the phase too
+				// (not just the action) so a transient-retry (§8) can re-issue the
+				// fork with the same override.
+				configOverride: phase.configOverride,
+			},
 			memory,
 			actions: [
 				{
 					type: 'start_fork_turn',
 					handle: event.handoverRequestHandle,
-					// Reuse this Turn's own prepared configOverride (the same object
-					// the primary `start_turn` action used) rather than recomputing —
-					// matches workflowRunner.ts's original `prepared.configOverride`
-					// reuse at the fork call site exactly.
 					configOverride: phase.configOverride,
 				},
 			],
@@ -352,8 +427,11 @@ function handleTurnInFlight(
 					phase: {
 						kind: 'backing_off',
 						ms,
-						prompt: phase.prompt,
-						continuation: phase.continuation,
+						resume: {
+							kind: 'turn',
+							prompt: phase.prompt,
+							continuation: phase.continuation,
+						},
 					},
 					memory: {...memory, retryStreak},
 					actions: [{type: 'wait', ms}],
@@ -574,12 +652,47 @@ function handleBackingOff(
 	if (event.cancelled) {
 		return {phase: {kind: 'cancelled'}, memory, actions: [{type: 'persist'}]};
 	}
+
+	if (phase.resume.kind === 'fork') {
+		// A transient fork failure's backoff elapsed (ADR 0016 §8): re-issue the
+		// same fork once, marking it retried so a second transient failure
+		// degrades instead of retrying again.
+		return {
+			phase: {
+				kind: 'handing_over',
+				handle: phase.resume.handle,
+				configOverride: phase.resume.configOverride,
+				retried: true,
+			},
+			memory,
+			actions: [
+				{
+					type: 'start_fork_turn',
+					handle: phase.resume.handle,
+					configOverride: phase.resume.configOverride,
+				},
+			],
+		};
+	}
+
 	// Resume the same Agent Session if it reported one — it persists on disk,
 	// so resuming preserves in-flight work the Tracker never checkpointed.
 	// Otherwise fall back to whichever continuation this attempt used.
 	const continuation: TurnContinuation = event.adapterSessionId
 		? {mode: 'resume', handle: event.adapterSessionId}
-		: phase.continuation;
+		: phase.resume.continuation;
+
+	// Replay invariant (ADR 0016 §3): replay the in-flight prompt iff this
+	// attempt is a fresh Agent Session. A `resume`d session already contains
+	// the prior instruction and failure record on disk — replaying it would
+	// duplicate that content — while a fresh session contains neither, so it
+	// needs the bare Continue Prompt to re-orient from the Tracker.
+	const prompt =
+		continuation.mode === 'fresh'
+			? phase.resume.prompt
+			: cfg.loop
+				? buildContinuePrompt(cfg.loop)
+				: 'Continue.';
 	const prepared = prepareWorkflowTurn(cfg.workflowState, {
 		prompt: cfg.initialPrompt,
 		iteration: memory.iteration,
@@ -588,20 +701,20 @@ function handleBackingOff(
 	return {
 		phase: {
 			kind: 'turn_in_flight',
-			prompt: prepared.prompt,
+			prompt,
 			continuation,
 			configOverride: prepared.configOverride,
 		},
 		memory: {
 			...memory,
-			lastStopPrompt: prepared.prompt,
+			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
 		},
 		actions: [
 			{type: 'persist'},
 			{
 				type: 'start_turn',
-				prompt: prepared.prompt,
+				prompt,
 				continuation,
 				configOverride: prepared.configOverride,
 			},
@@ -661,6 +774,25 @@ function handleHandingOver(
 		};
 	}
 
+	// A transient fork failure retries once with backoff before degrading
+	// (ADR 0016 §8) — `phase.retried` guards against retrying a second time.
+	if (event.transient && !phase.retried) {
+		const ms = cfg.loop?.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
+		return {
+			phase: {
+				kind: 'backing_off',
+				ms,
+				resume: {
+					kind: 'fork',
+					handle: phase.handle,
+					configOverride: phase.configOverride,
+				},
+			},
+			memory,
+			actions: [{type: 'wait', ms}],
+		};
+	}
+
 	// Degrade, never stall (ADR 0014 §5): resume the interrupted conversation
 	// in place; the caller stops intercepting this session's compactions.
 	const continuation: TurnContinuation = {mode: 'resume', handle: phase.handle};
@@ -696,17 +828,64 @@ function handleHandingOver(
 }
 
 /**
+ * Wake-from-attention as a row of the transition table (ADR 0016 §7): the
+ * interpreter feeds a synthetic `woken` event once a suspended Run resumes,
+ * and this — like every other transition — runs through `step()` rather than
+ * being special-cased outside the reducer. It advances the Iteration counter
+ * (so `maxIterations` is a budget across wakes, not per-wake, §2) and frames
+ * the human's reply with `buildWakePrompt`.
+ */
+function handleAwaitingAttention(
+	memory: RunMemory,
+	event: Extract<RunEvent, {type: 'woken'}>,
+	cfg: StepConfig,
+): StepResult {
+	const nextIteration = memory.iteration + 1;
+	const prompt = buildWakePrompt(cfg.initialPrompt, cfg.trackerPromptPath);
+	const prepared = prepareWorkflowTurn(cfg.workflowState, {
+		prompt: cfg.initialPrompt,
+		iteration: nextIteration,
+		configOverride: undefined,
+	});
+	return {
+		phase: {
+			kind: 'turn_in_flight',
+			prompt,
+			continuation: event.continuation,
+			configOverride: prepared.configOverride,
+		},
+		memory: {
+			...memory,
+			iteration: nextIteration,
+			lastStopPrompt: prompt,
+			lastStopContinuation: event.continuation,
+		},
+		actions: [
+			{type: 'persist'},
+			{
+				type: 'start_turn',
+				prompt,
+				continuation: event.continuation,
+				configOverride: prepared.configOverride,
+			},
+		],
+	};
+}
+
+/**
  * The reducer (ADR 0016 §1): given the current phase, the persisted memory,
  * and exactly one event describing what just happened, decides the next
  * phase/memory and the actions the interpreter must perform. Pure — no I/O,
  * no timers, no randomness.
  *
- * `step` is never called on a terminal phase; the interpreter's loop ends
- * once `phase.kind` is one of the four terminal kinds. Calling it on one
- * anyway is a programmer error — the `default` arm below both handles that
- * and gives TypeScript an exhaustiveness check on `RunPhase` (§4): adding a
- * new phase variant without a case above fails `_exhaustive: never` at
- * compile time.
+ * `step` is never called on `completed`/`failed`/`cancelled` — the
+ * interpreter's loop ends there. `awaiting_attention` is terminal for that
+ * loop too (it stops and waits for a human) but is not a dead end for the
+ * reducer: a wake feeds it exactly one `woken` event (ADR 0016 §7) and it
+ * transitions like any other row. Calling `step` on a truly terminal phase is
+ * a programmer error — the `default` arm below both handles that and gives
+ * TypeScript an exhaustiveness check on `RunPhase` (§4): adding a new phase
+ * variant without a case above fails `_exhaustive: never` at compile time.
  */
 export function step(
 	phase: RunPhase,
@@ -739,7 +918,14 @@ export function step(
 			}
 			return handleHandingOver(phase, memory, event, cfg);
 		}
-		case 'awaiting_attention':
+		case 'awaiting_attention': {
+			if (event.type !== 'woken') {
+				throw new Error(
+					`runMachine: phase 'awaiting_attention' received unexpected event '${event.type}'`,
+				);
+			}
+			return handleAwaitingAttention(memory, event, cfg);
+		}
 		case 'completed':
 		case 'failed':
 		case 'cancelled': {

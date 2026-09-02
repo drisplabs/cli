@@ -17,7 +17,11 @@ import {
 	TRACKER_SKELETON_MARKER,
 } from './trackerReader';
 import type {WorkflowRunState} from './sessionPlan';
-import type {LoopConfig, WorkflowConfig} from './types';
+import {
+	DEFAULT_RETRY_BACKOFF_MS,
+	type LoopConfig,
+	type WorkflowConfig,
+} from './types';
 import crypto from 'node:crypto';
 
 const LOOP: LoopConfig = {
@@ -86,8 +90,11 @@ function backingOff(
 	return {
 		kind: 'backing_off',
 		ms: 10_000,
-		prompt: 'do the task',
-		continuation: {mode: 'fresh'},
+		resume: {
+			kind: 'turn',
+			prompt: 'do the task',
+			continuation: {mode: 'fresh'},
+		},
 		...overrides,
 	};
 }
@@ -96,6 +103,16 @@ function handingOver(
 	overrides?: Partial<Extract<RunPhase, {kind: 'handing_over'}>>,
 ): Extract<RunPhase, {kind: 'handing_over'}> {
 	return {kind: 'handing_over', handle: 'sess-1', ...overrides};
+}
+
+function awaitingAttention(
+	overrides?: Partial<Extract<RunPhase, {kind: 'awaiting_attention'}>>,
+): Extract<RunPhase, {kind: 'awaiting_attention'}> {
+	return {
+		kind: 'awaiting_attention',
+		stopReason: 'needs a human',
+		...overrides,
+	};
 }
 
 function turnFinished(
@@ -136,8 +153,15 @@ function forkFinished(
 		ok: true,
 		cancelled: false,
 		handoffPath: '/proj/.athena/s1/handoff/001.md',
+		transient: false,
 		...overrides,
 	};
+}
+
+function woken(
+	overrides?: Partial<Extract<RunEvent, {type: 'woken'}>>,
+): Extract<RunEvent, {type: 'woken'}> {
+	return {type: 'woken', continuation: {mode: 'fresh'}, ...overrides};
 }
 
 describe('runMachine.step — turn_in_flight', () => {
@@ -163,6 +187,7 @@ describe('runMachine.step — turn_in_flight', () => {
 		expect(result.phase).toEqual({
 			kind: 'handing_over',
 			handle: 'vendor-handle-1',
+			configOverride: {marker: 'reused'},
 		});
 		expect(result.actions).toEqual([
 			{
@@ -455,9 +480,15 @@ describe('runMachine.step — backing_off', () => {
 		expect(result.actions).toEqual([{type: 'persist'}]);
 	});
 
-	it('resumes the reported Agent Session once the backoff elapses', () => {
+	it('resumes the reported Agent Session once the backoff elapses, replaying nothing (replay invariant)', () => {
 		const result = step(
-			backingOff({continuation: {mode: 'fresh'}}),
+			backingOff({
+				resume: {
+					kind: 'turn',
+					prompt: 'do the task',
+					continuation: {mode: 'fresh'},
+				},
+			}),
 			makeMemory(),
 			backoffElapsed({adapterSessionId: 'sess-resumed'}),
 			makeCfg(),
@@ -471,12 +502,45 @@ describe('runMachine.step — backing_off', () => {
 			mode: 'resume',
 			handle: 'sess-resumed',
 		});
+		// ADR 0016 §3: continuation.mode === 'resume' → do not replay the
+		// carried in-flight prompt (it's already on disk in that session) —
+		// use the bare Continue Prompt instead.
+		expect(nextPhase.prompt).toBe(buildContinuePrompt(LOOP));
 		expect(result.actions.map(a => a.type)).toEqual(['persist', 'start_turn']);
 	});
 
-	it('falls back to the attempted continuation when no Agent Session id is reported', () => {
+	it('falls back to the attempted continuation when no Agent Session id is reported, replaying the in-flight prompt (replay invariant)', () => {
 		const result = step(
-			backingOff({continuation: {mode: 'resume', handle: 'sess-old'}}),
+			backingOff({
+				resume: {
+					kind: 'turn',
+					prompt: 'the exact prompt that was in flight',
+					continuation: {mode: 'fresh'},
+				},
+			}),
+			makeMemory(),
+			backoffElapsed({adapterSessionId: null}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.continuation).toEqual({mode: 'fresh'});
+		// ADR 0016 §3: continuation.mode === 'fresh' → replay the carried
+		// in-flight prompt — a fresh session has nothing on disk yet.
+		expect(nextPhase.prompt).toBe('the exact prompt that was in flight');
+	});
+
+	it('resuming an explicit prior session (not freshly reported) also does not replay (replay invariant)', () => {
+		const result = step(
+			backingOff({
+				resume: {
+					kind: 'turn',
+					prompt: 'the exact prompt that was in flight',
+					continuation: {mode: 'resume', handle: 'sess-old'},
+				},
+			}),
 			makeMemory(),
 			backoffElapsed({adapterSessionId: null}),
 			makeCfg(),
@@ -489,6 +553,35 @@ describe('runMachine.step — backing_off', () => {
 			mode: 'resume',
 			handle: 'sess-old',
 		});
+		expect(nextPhase.prompt).toBe(buildContinuePrompt(LOOP));
+	});
+
+	it('re-issues a retried fork once its backoff elapses', () => {
+		const result = step(
+			backingOff({
+				resume: {
+					kind: 'fork',
+					handle: 'sess-fork',
+					configOverride: {marker: 'fork-cfg'},
+				},
+			}),
+			makeMemory(),
+			backoffElapsed({adapterSessionId: null}),
+			makeCfg(),
+		);
+		expect(result.phase).toEqual({
+			kind: 'handing_over',
+			handle: 'sess-fork',
+			configOverride: {marker: 'fork-cfg'},
+			retried: true,
+		});
+		expect(result.actions).toEqual([
+			{
+				type: 'start_fork_turn',
+				handle: 'sess-fork',
+				configOverride: {marker: 'fork-cfg'},
+			},
+		]);
 	});
 });
 
@@ -531,11 +624,11 @@ describe('runMachine.step — handing_over', () => {
 		]);
 	});
 
-	it('a failed fork degrades to resuming the original conversation in place', () => {
+	it('a non-transient failed fork degrades immediately to resuming the original conversation in place', () => {
 		const result = step(
 			handingOver({handle: 'sess-orig'}),
 			makeMemory({iteration: 2}),
-			forkFinished({ok: false}),
+			forkFinished({ok: false, transient: false}),
 			makeCfg(),
 		);
 		expect(result.phase.kind).toBe('turn_in_flight');
@@ -554,6 +647,85 @@ describe('runMachine.step — handing_over', () => {
 			expect.objectContaining({type: 'start_turn'}),
 		]);
 	});
+
+	it('a transient failed fork retries once with backoff instead of degrading (ADR 0016 §8)', () => {
+		const result = step(
+			handingOver({handle: 'sess-orig', configOverride: {marker: 'fork-cfg'}}),
+			makeMemory({iteration: 2}),
+			forkFinished({ok: false, transient: true}),
+			makeCfg(),
+		);
+		expect(result.phase).toEqual({
+			kind: 'backing_off',
+			ms: DEFAULT_RETRY_BACKOFF_MS,
+			resume: {
+				kind: 'fork',
+				handle: 'sess-orig',
+				configOverride: {marker: 'fork-cfg'},
+			},
+		});
+		expect(result.memory.iteration).toBe(2); // unchanged — not consumed by a retry
+		expect(result.actions).toEqual([
+			{type: 'wait', ms: DEFAULT_RETRY_BACKOFF_MS},
+		]);
+	});
+
+	it('a second transient failure on an already-retried fork degrades instead of retrying again', () => {
+		const result = step(
+			handingOver({handle: 'sess-orig', retried: true}),
+			makeMemory({iteration: 2}),
+			forkFinished({ok: false, transient: true}),
+			makeCfg(),
+		);
+		expect(result.phase.kind).toBe('turn_in_flight');
+		expect(result.actions).toEqual([
+			{type: 'degrade_handover', handle: 'sess-orig'},
+			{type: 'persist'},
+			expect.objectContaining({type: 'start_turn'}),
+		]);
+	});
+});
+
+describe('runMachine.step — awaiting_attention', () => {
+	it('a wake starts a fresh turn with the wake prompt and advances the Iteration budget across the wake (ADR 0016 §2/§7)', () => {
+		const result = step(
+			awaitingAttention({stopReason: 'nudge cap reached'}),
+			makeMemory({iteration: 5}),
+			woken({continuation: {mode: 'fresh'}}),
+			makeCfg(),
+		);
+		expect(result.phase.kind).toBe('turn_in_flight');
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.continuation).toEqual({mode: 'fresh'});
+		expect(nextPhase.prompt).toBe(
+			buildWakePrompt('do the task', '.athena/s1/tracker.md'),
+		);
+		// Iteration keeps climbing across the wake — this is what makes
+		// maxIterations a Run budget across wakes rather than resetting
+		// per-wake (the pre-fix bug this ticket closes).
+		expect(result.memory.iteration).toBe(6);
+		expect(result.actions.map(a => a.type)).toEqual(['persist', 'start_turn']);
+	});
+
+	it('a wake resuming a reported Agent Session carries that continuation into the new turn', () => {
+		const result = step(
+			awaitingAttention(),
+			makeMemory({iteration: 5}),
+			woken({continuation: {mode: 'resume', handle: 'sess-woken'}}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.continuation).toEqual({
+			mode: 'resume',
+			handle: 'sess-woken',
+		});
+	});
 });
 
 describe('runMachine.step — programmer errors', () => {
@@ -566,6 +738,12 @@ describe('runMachine.step — programmer errors', () => {
 	it('throws when the event does not match the phase', () => {
 		expect(() =>
 			step(turnInFlight(), makeMemory(), backoffElapsed(), makeCfg()),
+		).toThrow(/unexpected event/);
+	});
+
+	it('throws when awaiting_attention receives an event other than woken', () => {
+		expect(() =>
+			step(awaitingAttention(), makeMemory(), backoffElapsed(), makeCfg()),
 		).toThrow(/unexpected event/);
 	});
 });
@@ -591,7 +769,7 @@ describe('createInitialRun', () => {
 		);
 	});
 
-	it('rehydrates from a persisted RunMemory as a zero-wait backoff instead of restarting budgets', () => {
+	it('rehydrates a mid-turn process restart as a zero-wait backoff instead of restarting budgets', () => {
 		const resumedMemory = makeMemory({
 			iteration: 5,
 			nudgeStreak: 2,
@@ -606,10 +784,37 @@ describe('createInitialRun', () => {
 		expect(phase).toEqual({
 			kind: 'backing_off',
 			ms: 0,
-			prompt: 'resume this',
-			continuation: {mode: 'resume', handle: 'sess-persisted'},
+			resume: {
+				kind: 'turn',
+				prompt: 'resume this',
+				continuation: {mode: 'resume', handle: 'sess-persisted'},
+			},
 		});
 		expect(memory).toBe(resumedMemory);
+	});
+
+	it('rehydrates a wake with persisted memory straight into awaiting_attention, carrying the Iteration budget forward (ADR 0016 §2/§7)', () => {
+		const resumedMemory = makeMemory({
+			iteration: 5,
+			nudgeStreak: 2,
+			retryStreak: 1,
+			lastStopPrompt: 'resume this',
+			lastStopContinuation: {mode: 'resume', handle: 'sess-persisted'},
+		});
+		const {phase, memory} = createInitialRun(makeCfg(), {
+			waking: true,
+			resumedMemory,
+			awaitingAttentionStopReason: 'nudge cap reached: 3 nudges (nudgeCap)',
+		});
+		expect(phase).toEqual({
+			kind: 'awaiting_attention',
+			stopReason: 'nudge cap reached: 3 nudges (nudgeCap)',
+		});
+		// The wake does not itself advance Iteration — that happens once
+		// `handleAwaitingAttention` processes the `woken` event — but the
+		// budget carries forward as-is rather than resetting to 1.
+		expect(memory).toBe(resumedMemory);
+		expect(memory.iteration).toBe(5);
 	});
 });
 
