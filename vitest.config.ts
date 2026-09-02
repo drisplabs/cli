@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {defaultServerConditions} from 'vite';
 import {defineConfig} from 'vitest/config';
 
 export default defineConfig({
@@ -17,6 +18,18 @@ export default defineConfig({
 		__POSTHOG_API_KEY__: JSON.stringify(
 			process.env['POSTHOG_API_KEY'] || 'phc_test_key',
 		),
+	},
+	ssr: {
+		resolve: {
+			// Workspace packages (`@drisp/protocol`) expose a `source` export
+			// condition pointing at their TypeScript entry, so tests exercise
+			// the source directly and never need a prior `dist` build. Vitest
+			// resolves test modules through the SSR environment, so the
+			// condition must be set here (not top-level `resolve`). Mirrors
+			// `customConditions` in tsconfig.json and `conditions` in
+			// tsup.config.ts.
+			conditions: ['source', ...defaultServerConditions],
+		},
 	},
 	esbuild: {
 		jsx: 'automatic',

@@ -50,4 +50,14 @@ export default defineConfig({
 		'@inkjs/ui',
 		'react-devtools-core',
 	],
+	// The workspace protocol package is inlined into the CLI bundle so the
+	// published @drisp/cli has no registry dependency on @drisp/protocol.
+	noExternal: ['@drisp/protocol'],
+	esbuildOptions(options) {
+		// Resolve `@drisp/protocol` through its `source` export condition (the
+		// TypeScript entry) so the CLI build never depends on a prior
+		// `packages/protocol/dist`. Mirrors tsconfig `customConditions` and the
+		// vitest `resolve.conditions`.
+		options.conditions = [...(options.conditions ?? []), 'source'];
+	},
 });

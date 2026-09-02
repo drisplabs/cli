@@ -15,7 +15,8 @@
 		"noEmit": true,
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
-		"isolatedModules": true
+		"isolatedModules": true,
+		"customConditions": ["source"]
 	},
 	"include": ["src"],
 	"exclude": [
