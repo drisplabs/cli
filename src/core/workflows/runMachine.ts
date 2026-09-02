@@ -37,7 +37,13 @@ import {
 	DEFAULT_RETRY_BACKOFF_MS,
 } from './types';
 import type {TurnOutcome} from './terminalOutcome';
-import {buildNudgePrompt, TRACKER_SKELETON_MARKER} from './trackerReader';
+import {
+	buildNudgePrompt,
+	buildTrackerSizeNudgeSuffix,
+	DEFAULT_TRACKER_TOKEN_BOUND,
+	estimateTokenCount,
+	TRACKER_SKELETON_MARKER,
+} from './trackerReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 
@@ -93,6 +99,16 @@ export type RunMemory = {
 	lastTrackerHash: string | null;
 	lastStopPrompt: string;
 	lastStopContinuation: TurnContinuation;
+	/**
+	 * Size in bytes of the most recent Handoff file written at a Handover
+	 * (ADR 0015 §8: Handoff size is a fidelity metric the Runner records), or
+	 * `null` before any Handover has occurred or when the stat failed.
+	 * Absent (`undefined` at runtime) on `RunMemory` persisted before this
+	 * field existed — `deserializeRunMemory` does not require it, so read it
+	 * defensively (`memory.lastHandoffSizeBytes ?? null`) rather than assuming
+	 * presence.
+	 */
+	lastHandoffSizeBytes: number | null;
 };
 
 /**
@@ -128,6 +144,8 @@ export type RunEvent =
 			ok: boolean;
 			cancelled: boolean;
 			handoffPath: string;
+			/** Size in bytes of the written Handoff file, or `null` if unknown (ADR 0015 §8). */
+			handoffSizeBytes: number | null;
 	  };
 
 /** What the interpreter must do before the next Turn/backoff/fork can start. */
@@ -182,7 +200,10 @@ export function buildHandoverSeedPrompt(
 		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
 		`Read the Handoff file at ${handoffPath}` +
 		(trackerPath ? ` and the tracker at ${trackerPath}` : '') +
-		`, then continue the work from exactly where it stands. ` +
+		`. Before any domain work: fold whatever durable content the Handoff file records into the tracker` +
+		(trackerPath ? ` at ${trackerPath}` : '') +
+		` and the open unit's record (ADR 0015 §8) — that fold-in is itself the tracker's next edit. ` +
+		`Only once it is written should you continue the work from exactly where it stands. ` +
 		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
 	);
 }
@@ -279,6 +300,7 @@ export function createInitialRun(
 			lastTrackerHash: null,
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
+			lastHandoffSizeBytes: null,
 		},
 	};
 }
@@ -470,6 +492,14 @@ function handleTurnInFlight(
 		nudgeStreak,
 	};
 
+	// Size nudge (ADR 0015 §3): never blocks, never edits the tracker — just a
+	// suffix appended to whichever prompt starts the next Turn, computed from
+	// the content already on the event (no new I/O).
+	const sizeNudgeSuffix =
+		estimateTokenCount(event.trackerContent) > DEFAULT_TRACKER_TOKEN_BOUND
+			? buildTrackerSizeNudgeSuffix(cfg.trackerPromptPath)
+			: '';
+
 	if (event.adapterSessionId) {
 		const nextNudgeStreak = nudgeStreak + 1;
 		const nudgeCap = loop.nudgeCap ?? DEFAULT_NUDGE_CAP;
@@ -485,14 +515,15 @@ function handleTurnInFlight(
 				actions: [{type: 'persist'}],
 			};
 		}
-		const promptOverride = buildNudgePrompt(
-			{...loop, trackerPath: cfg.trackerPromptPath ?? loop.trackerPath},
-			{
-				skeletonNotReplaced: event.trackerContent.includes(
-					TRACKER_SKELETON_MARKER,
-				),
-			},
-		);
+		const promptOverride =
+			buildNudgePrompt(
+				{...loop, trackerPath: cfg.trackerPromptPath ?? loop.trackerPath},
+				{
+					skeletonNotReplaced: event.trackerContent.includes(
+						TRACKER_SKELETON_MARKER,
+					),
+				},
+			) + sizeNudgeSuffix;
 		const nextIteration = memoryWithHash.iteration + 1;
 		const continuation: TurnContinuation = {
 			mode: 'resume',
@@ -539,17 +570,18 @@ function handleTurnInFlight(
 		iteration: nextIteration,
 		configOverride: undefined,
 	});
+	const promptWithSizeNudge = prepared.prompt + sizeNudgeSuffix;
 	return {
 		phase: {
 			kind: 'turn_in_flight',
-			prompt: prepared.prompt,
+			prompt: promptWithSizeNudge,
 			continuation,
 			configOverride: prepared.configOverride,
 		},
 		memory: {
 			...memoryWithHash,
 			iteration: nextIteration,
-			lastStopPrompt: prepared.prompt,
+			lastStopPrompt: promptWithSizeNudge,
 			lastStopContinuation: continuation,
 		},
 		actions: [
@@ -557,7 +589,7 @@ function handleTurnInFlight(
 			{type: 'notify_iteration_complete'},
 			{
 				type: 'start_turn',
-				prompt: prepared.prompt,
+				prompt: promptWithSizeNudge,
 				continuation,
 				configOverride: prepared.configOverride,
 			},
@@ -647,6 +679,7 @@ function handleHandingOver(
 				iteration: nextIteration,
 				lastStopPrompt: seedPrompt,
 				lastStopContinuation: continuation,
+				lastHandoffSizeBytes: event.handoffSizeBytes,
 			},
 			actions: [
 				{type: 'purge_handoffs'},
