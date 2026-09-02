@@ -18,7 +18,12 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
+      # Root package (`.`, component `cli`). release-please mirrors the root
+      # path's outputs onto the un-prefixed names.
       release_created: ${{ steps.release.outputs.release_created }}
+      # Workspace package `packages/protocol` (component `protocol`). Outputs
+      # for non-root paths are prefixed `<path>--`.
+      protocol_release_created: ${{ steps.release.outputs['packages/protocol--release_created'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -35,7 +40,9 @@ jobs:
 
   publish:
     needs: [release-please, ci]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: |
+      needs.release-please.outputs.release_created == 'true' ||
+      needs.release-please.outputs.protocol_release_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -47,9 +54,24 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
+
+      # @drisp/protocol publishes on its own release. It goes first so a
+      # release that bumps both packages puts the protocol on the registry
+      # before the CLI that inlines it. Its prepublishOnly builds dist.
+      - name: Publish @drisp/protocol
+        if: needs.release-please.outputs.protocol_release_created == 'true'
+        run: npm publish -w packages/protocol
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build @drisp/cli
+        if: needs.release-please.outputs.release_created == 'true'
+        run: npm run build
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-      - run: npm publish
+
+      - name: Publish @drisp/cli
+        if: needs.release-please.outputs.release_created == 'true'
+        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

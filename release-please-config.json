@@ -16,6 +16,13 @@
 	],
 	"packages": {
 		".": {
+			"component": "cli",
+			"changelog-path": "CHANGELOG.md",
+			"bump-minor-pre-major": true,
+			"bump-patch-for-minor-pre-major": true
+		},
+		"packages/protocol": {
+			"component": "protocol",
 			"changelog-path": "CHANGELOG.md",
 			"bump-minor-pre-major": true,
 			"bump-patch-for-minor-pre-major": true
