@@ -128,6 +128,10 @@ drisp workflow install e2e-test-builder@lespaceman/athena-workflow-marketplace
 
 `drisp exec` is built for pipelines. Safe by default -- permission and question hooks fail unless you opt in.
 
+### Permissions with no hub attached
+
+drisp has a single door. A permission request or a question is answered by whoever is attached to the Run: the interactive terminal, or a paired dashboard delivering decisions. With no hub attached (a headless `drisp exec` with no dashboard paired) there is nobody to ask, so the request **waits**: the Run holds on the pending decision, and nothing is auto-approved or auto-denied on its behalf. The hold ends one of two ways. If you set `--timeout-ms`, the run exits with the timeout exit code when it expires. If the Run belongs to a workflow and the agent asked a question, the Turn is interrupted and the Run is parked in `awaiting_attention`, where `drisp runs` lists it and a human wakes it with the answer (see [human resume](docs/guides/human-resume.md)). The hold-then-park rules are refined in #190.
+
 ```bash
 drisp exec "summarize risk in this PR"                                        # plain text
 drisp exec "run checks" --json --on-permission=deny --on-question=empty       # JSONL

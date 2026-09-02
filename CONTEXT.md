@@ -67,8 +67,7 @@ The binding between a paired CLI instance and one dashboard-side **runner**.
 Owned by the dashboard (the CLI never creates or deletes one — it only
 mirrors). Surfaced locally in `~/.config/athena/attachments.json`. Each
 Attachment may receive dashboard assignments through the dashboard runtime
-daemon and console traffic through a gateway sidecar. The Attachment does not
-own a local harness process; dashboard assignment execution is owned by the
+daemon. The Attachment does not own a local harness process; dashboard assignment execution is owned by the
 dashboard runtime daemon. See `docs/adr/0001-attachment-supervisor.md`.
 _Avoid_: pairing (overloaded with the auth handshake), runner binding (verb
 phrase, not a noun for the resulting state).
@@ -117,23 +116,6 @@ _Avoid_: tasks (too generic), todo list (used in tool input but not as a domain 
 
 **Pending description**:
 A description string captured from a subagent-spawning tool's input (`tool.pre` for `Task`/`Agent`) and consumed by the next `subagent.start` to populate the event payload and description registry. Single-slot buffer, cleared on consume or on a subsequent subagent `tool.pre` without a description.
-
-### Gateway
-
-**Dispatch turn**:
-One inbound channel message routed to the **Registered runtime** and whose reply is routed back. Identified by a `dispatchId` minted on entry and resolved on `session.turn.complete`. Durable on both sides — parked in the **inbound queue** if no runtime is bound, parked in the **outbox** if the channel send fails.
-_Avoid_: turn (overloaded with the FeedMapper "run"), dispatch (verb only).
-
-**Registered runtime**:
-The single Athena runtime currently bound to the gateway. Owns a `defaultAgentId`, a connection, a binding state (`active` | `stale` | absent), and a push handle the gateway uses to deliver `session.dispatch.turn` frames. Single-runtime in v1 — multi-runtime is a future change.
-
-**DispatchPipeline**:
-The gateway module that owns the **Dispatch turn** end-to-end. Wraps the binding store, the inbound queue, the outbox + drain loop, and the runtime push handle behind one interface. Owns the stale-binding grace timer and emits observer notifications for telemetry and external dispose.
-_Avoid_: dispatcher (the historical class is now an internal collaborator), message pipeline (too generic).
-
-**Relay**:
-The round-trip that resolves a **RuntimeEvent** requiring user input (a `permission.request`, a question) by sending it out to the paired dashboard channel via the session bridge and feeding the answer back as a **RuntimeDecision**. CLI→channel→CLI — the interactive inverse of a **Dispatch turn** (channel→CLI→channel). The same relay wiring serves both interactive (Ink) and headless (exec) modes, so neither mode owns it.
-_Avoid_: relay adapter (the module, not the concept), permission proxy.
 
 ### Marketplace cache
 
@@ -185,9 +167,6 @@ _Avoid_: plugin loading (that is `registerPlugins`), plugin install.
 - The **FeedMapper** is composed of **RunLifecycle**, **ToolCorrelation**, **DecisionCorrelation**, **AgentMessageStream**, **RootPlanTracker**, and **SubagentTracker** as internal seams. Their combined interface is the seven-method `FeedMapper` type.
 - The **Pending description** flows from `tool.pre` (Task/Agent) to the next `subagent.start`, where **SubagentTracker** consumes and clears it.
 - The **Root plan** persists across **Runs** within a **Session** — only per-run state (subagent stack, tool/decision correlation, message stream) is reset between runs.
-- A **Dispatch turn** is created by the **DispatchPipeline** when an inbound channel message arrives with a **Registered runtime** bound; resolved on the matching `session.turn.complete`.
-- The **DispatchPipeline** owns the **Registered runtime** binding state — `Run`/`Session` (the FeedMapper concepts) live one layer up and are unrelated to the gateway-side runtime registration.
-- A **Relay** is initiated by whichever mode is running (interactive or exec); both modes share one relay wiring, so a relay is a CLI-initiated inverse of a channel-initiated **Dispatch turn**.
 - The **Runtime event loop** is the single owner of the subscribe → ingest → `sendDecision` → publish assembly for both interactive and headless modes; each mode is a thin adapter that supplies only its own side effects. The **Dashboard decision drain** is a sibling helper both modes reuse to feed inbound dashboard `RuntimeDecision`s into the same runtime.
 - A **Dashboard assignment** is admitted by the dashboard runtime daemon before
   it launches the corresponding dashboard **Run** locally.
@@ -209,11 +188,11 @@ This document owns the **feed-pipeline** bounded context (observation / projecti
 
 Cross-walk of the colliding words:
 
-| Bare word | Feed-pipeline meaning (this doc)                    | Workflow-execution meaning (`UBIQUITOUS_LANGUAGE.md`)                                        | Persistence reality                             |
-| --------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| session   | FeedMapper **Session** (drisp instance lifecycle)   | **Athena Session** (durable container) or **Agent Session** (per-Turn vendor session/thread) | `session` table                                 |
-| run       | **Run** / **Feed Run** (trigger-bounded projection) | **Workflow Run** (one loop execution)                                                        | `feed_events.run_id` ≠ `workflow_runs.id`       |
-| turn      | **Dispatch turn** (`dispatchId`)                    | **Turn** (`startTurn`)                                                                       | `gateway_function_invocations` vs no Turn table |
+| Bare word | Feed-pipeline meaning (this doc)                                                  | Workflow-execution meaning (`UBIQUITOUS_LANGUAGE.md`)                                        | Persistence reality                       |
+| --------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| session   | FeedMapper **Session** (drisp instance lifecycle)                                 | **Athena Session** (durable container) or **Agent Session** (per-Turn vendor session/thread) | `session` table                           |
+| run       | **Run** / **Feed Run** (trigger-bounded projection)                               | **Workflow Run** (one loop execution)                                                        | `feed_events.run_id` ≠ `workflow_runs.id` |
+| turn      | — (no feed-pipeline concept; the Dispatch turn left with the second runner, #183) | **Turn** (`startTurn`)                                                                       | no Turn table                             |
 
 Legacy DB-name mapping (the persisted identifiers keep their original names; this mapping explains them rather than renaming them — see ADR 0003):
 
