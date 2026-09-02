@@ -11,7 +11,6 @@ import type {
 	RuntimeEvent,
 	RuntimeEventHandler,
 } from '../../core/runtime/types';
-import type {SessionBridge} from '../channels/sessionBridge';
 import {runExec} from './runner';
 import {EXEC_EXIT_CODE} from './types';
 
@@ -103,30 +102,6 @@ function createWriteCapture() {
 		},
 		read: () => value,
 	};
-}
-
-type FakeBridge = Pick<
-	SessionBridge,
-	'relayPermission' | 'relayQuestion' | 'stop'
->;
-
-function makeFakeBridge(overrides: Partial<FakeBridge> = {}): SessionBridge {
-	const defaults: FakeBridge = {
-		relayPermission: vi.fn().mockResolvedValue({
-			channelRequestId: 'chan-1',
-			result: {
-				kind: 'verdict',
-				channelId: 'telegram',
-				behavior: 'allow',
-			},
-		}),
-		relayQuestion: vi.fn().mockResolvedValue({
-			channelRequestId: 'chan-q-1',
-			result: {kind: 'no_relay'},
-		}),
-		stop: vi.fn().mockResolvedValue(undefined),
-	};
-	return {...defaults, ...overrides} as unknown as SessionBridge;
 }
 
 describe('runExec', () => {
@@ -704,7 +679,7 @@ describe('runExec', () => {
 		expect(runtime.decisions.length).toBe(0);
 	});
 
-	it('times out waiting for a pending permission decision when no bridge is attached', async () => {
+	it('times out waiting for a pending permission decision when no hub is attached', async () => {
 		vi.useFakeTimers();
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
@@ -753,70 +728,6 @@ describe('runExec', () => {
 		} finally {
 			vi.useRealTimers();
 		}
-	});
-
-	it('relays a permission request through the bridge and applies the verdict', async () => {
-		const runtime = new MockRuntime();
-		const stdout = createWriteCapture();
-		const stderr = createWriteCapture();
-		const bridge = makeFakeBridge();
-
-		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
-			const child = makeChildProcess();
-
-			setImmediate(() => {
-				runtime.emit(
-					makeRuntimeEvent({
-						id: 'perm-bridge',
-						kind: 'permission.request',
-						hookName: 'PermissionRequest',
-						toolName: 'Bash',
-						interaction: {expectsDecision: true},
-						data: {tool_name: 'Bash', tool_input: {command: 'pwd'}},
-					}),
-				);
-				setImmediate(() => {
-					opts.onStdout?.(
-						JSON.stringify({
-							type: 'message',
-							role: 'assistant',
-							content: [{type: 'text', text: 'permission granted'}],
-						}) + '\n',
-					);
-					opts.onExit?.(0);
-				});
-			});
-
-			return child;
-		};
-
-		const result = await runExec({
-			prompt: 'hello',
-			projectDir: '/tmp',
-			harness: 'claude-code',
-			isolationConfig: {},
-			channels: ['telegram'],
-			ephemeral: true,
-			stdout: stdout.writer,
-			stderr: stderr.writer,
-			runtimeFactory: () => runtime,
-			spawnProcess,
-			bridgeFactory: () => Promise.resolve(bridge),
-		});
-
-		expect(result.success).toBe(true);
-		expect(bridge.relayPermission).toHaveBeenCalledWith(
-			expect.objectContaining({toolName: 'Bash'}),
-		);
-		expect(bridge.stop).toHaveBeenCalledTimes(1);
-		expect(runtime.decisions).toContainEqual(
-			expect.objectContaining({
-				eventId: 'perm-bridge',
-				decision: expect.objectContaining({
-					intent: {kind: 'permission_allow'},
-				}),
-			}),
-		);
 	});
 
 	it('applies pending dashboard decisions for the active Athena session', async () => {
@@ -1327,7 +1238,7 @@ describe('runExec', () => {
 
 			setImmediate(() => {
 				fs.writeFileSync(trackerPath, 'still working', 'utf-8');
-				// AskUserQuestion arrives with no bridge attached — previously this
+				// AskUserQuestion arrives with no hub attached — previously this
 				// waited forever on the null-timeout decision.
 				runtime.emit(
 					makeRuntimeEvent({

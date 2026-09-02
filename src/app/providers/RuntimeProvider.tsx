@@ -13,17 +13,10 @@ import {type HookContextValue, type HookProviderProps} from './types';
 import {createRuntime} from '../runtime/createRuntime';
 import type {Runtime} from '../../core/runtime/types';
 import type {SessionStore} from '../../infra/sessions/store';
-import {SessionBridge} from '../channels/sessionBridge';
-import {
-	createRelayPermissionCallback,
-	createRelayQuestionCallback,
-} from '../channels/relayAdapter';
-import {startSessionBridge} from '../channels/sessionBridgeLifecycle';
 
 const HookContext = createContext<HookContextValue | null>(null);
 const RuntimeRefContext = createContext<Runtime | null>(null);
 const SessionStoreContext = createContext<SessionStore | null>(null);
-const SessionBridgeContext = createContext<SessionBridge | null>(null);
 const EMPTY_MESSAGES: never[] = [];
 const MISSING_CONTEXT = Symbol('missing-hook-context');
 
@@ -31,39 +24,18 @@ function HookProviderContent({
 	runtime,
 	allowedTools,
 	sessionStore,
-	sessionBridge,
 	children,
 }: {
 	runtime: ReturnType<typeof createRuntime>;
 	allowedTools?: string[];
 	sessionStore: ReturnType<typeof createSessionStore>;
-	sessionBridge: SessionBridge | null;
 	children: HookProviderProps['children'];
 }) {
-	const relayPermission = useMemo(
-		() =>
-			sessionBridge
-				? createRelayPermissionCallback(sessionBridge, runtime)
-				: undefined,
-		[runtime, sessionBridge],
-	);
-	const relayQuestion = useMemo(
-		() =>
-			sessionBridge
-				? createRelayQuestionCallback(sessionBridge, runtime)
-				: undefined,
-		[runtime, sessionBridge],
-	);
-
 	const hookServer = useFeed(
 		runtime,
 		EMPTY_MESSAGES,
 		allowedTools,
 		sessionStore,
-		{
-			...(relayPermission ? {relayPermission} : {}),
-			...(relayQuestion ? {relayQuestion} : {}),
-		},
 	);
 
 	return (
@@ -80,7 +52,6 @@ export function HookProvider({
 	runtimeFactory = createRuntime,
 	allowedTools,
 	athenaSessionId,
-	attachmentId,
 	children,
 }: HookProviderProps) {
 	// Runtime must be stable (memoized) — useFeed assumes it doesn't change
@@ -114,9 +85,6 @@ export function HookProvider({
 	);
 
 	const [readyRuntime, setReadyRuntime] = useState<Runtime | null>(null);
-	const [sessionBridge, setSessionBridge] = useState<SessionBridge | null>(
-		null,
-	);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -130,32 +98,6 @@ export function HookProvider({
 			cancelled = true;
 		};
 	}, [runtime]);
-
-	// Best-effort gateway connection. Falls through silently when the daemon
-	// isn't running so dev/test sessions still work without a gateway.
-	useEffect(() => {
-		const controller = new AbortController();
-		void startSessionBridge({
-			runtimeId: athenaSessionId,
-			defaultAgentId: 'main',
-			...(attachmentId !== undefined ? {attachmentId} : {}),
-			signal: controller.signal,
-		}).then(bridge => {
-			if (!bridge) return;
-			if (controller.signal.aborted) {
-				void bridge.stop();
-				return;
-			}
-			setSessionBridge(bridge);
-		});
-		return () => {
-			controller.abort();
-			setSessionBridge(prev => {
-				void prev?.stop();
-				return null;
-			});
-		};
-	}, [athenaSessionId, attachmentId]);
 
 	// Separate lifecycle effects: closing sessionStore must only happen when
 	// sessionStore itself is recreated (or on unmount), NOT when runtime changes.
@@ -180,16 +122,13 @@ export function HookProvider({
 	return (
 		<RuntimeRefContext.Provider value={runtime}>
 			<SessionStoreContext.Provider value={sessionStore}>
-				<SessionBridgeContext.Provider value={sessionBridge}>
-					<HookProviderContent
-						runtime={runtime}
-						allowedTools={allowedTools}
-						sessionStore={sessionStore}
-						sessionBridge={sessionBridge}
-					>
-						{children}
-					</HookProviderContent>
-				</SessionBridgeContext.Provider>
+				<HookProviderContent
+					runtime={runtime}
+					allowedTools={allowedTools}
+					sessionStore={sessionStore}
+				>
+					{children}
+				</HookProviderContent>
 			</SessionStoreContext.Provider>
 		</RuntimeRefContext.Provider>
 	);
@@ -234,14 +173,4 @@ export function useRuntime(): Runtime | null {
 
 export function useSessionStore(): SessionStore | null {
 	return useContext(SessionStoreContext);
-}
-
-/**
- * Access the SessionBridge for the current session. Returns `null` when the
- * gateway daemon is unreachable or while the bridge is still connecting. Code
- * that depends on the bridge must handle the null case (channel-driven flows
- * are inactive in that state).
- */
-export function useSessionBridge(): SessionBridge | null {
-	return useContext(SessionBridgeContext);
 }

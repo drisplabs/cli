@@ -35,7 +35,6 @@ import {
 	attachRuntimeEventLoop,
 	startDashboardDecisionDrain,
 } from '../runtime/runtimeEventLoop';
-import {writeGatewayTrace} from '../../infra/gatewayTrace';
 import {
 	getActivePerfCycleId,
 	logPerfEvent,
@@ -139,8 +138,6 @@ export function useFeed(
 	initialAllowedTools?: string[],
 	sessionStore?: SessionStore,
 	options?: {
-		relayPermission?: (event: RuntimeEvent) => void;
-		relayQuestion?: (event: RuntimeEvent) => void;
 		dashboardFeedPublisher?: PairedFeedPublisher;
 		dashboardOrigin?: DashboardFeedOrigin;
 		athenaSessionId?: string;
@@ -485,10 +482,6 @@ export function useFeed(
 			getRules: () => rulesRef.current,
 			enqueuePermission,
 			enqueueQuestion,
-			...(options?.relayPermission
-				? {relayPermission: options.relayPermission}
-				: {}),
-			...(options?.relayQuestion ? {relayQuestion: options.relayQuestion} : {}),
 			signal: abortRef.current.signal,
 		};
 
@@ -528,16 +521,6 @@ export function useFeed(
 					run();
 				} finally {
 					doneCause();
-				}
-			},
-			onEventReceived: runtimeEvent => {
-				if (
-					options?.relayPermission &&
-					runtimeEvent.kind === 'permission.request'
-				) {
-					writeGatewayTrace(
-						`useFeed permission event relay-enabled id=${runtimeEvent.id} tool=${runtimeEvent.toolName ?? ''}`,
-					);
 				}
 			},
 			emitEventFeed: (newFeedEvents, runtimeEvent) => {
@@ -617,8 +600,6 @@ export function useFeed(
 		dequeuePermission,
 		dequeueQuestion,
 		refreshRuntimeStatus,
-		options?.relayPermission,
-		options?.relayQuestion,
 		publishDashboardFeedEvents,
 	]);
 

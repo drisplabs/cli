@@ -7,8 +7,6 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {SessionStore} from '../../infra/sessions/store';
 import type {RuntimeFactory} from '../runtime/createRuntime';
 import type {SpawnClaudeOptions} from '../../harnesses/claude/process/types';
-import type {SessionBridge} from '../channels/sessionBridge';
-import type {StartSessionBridgeOptions} from '../channels/sessionBridgeLifecycle';
 import type {DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
 import type {FeedSink} from '../dashboard/pairedFeedPublisher';
 import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
@@ -70,13 +68,6 @@ export type ExecRunOptions = {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	/**
-	 * Channel ids passed via `--channel`. When non-empty, exec connects to the
-	 * gateway daemon and relays permission/question requests through it. When
-	 * empty, exec runs without a bridge — permission requests block until
-	 * `timeoutMs` (or forever if no timeout).
-	 */
-	channels?: readonly string[];
-	/**
 	 * Reporting-only summary of the effective personal capabilities active for
 	 * this session (name + source layer only). Surfaced in the `exec.started`
 	 * event and a human-facing startup notice; does NOT affect what loads.
@@ -107,10 +98,6 @@ export type ExecRunOptions = {
 		result: ExecRunResult;
 		runId: string | null;
 	}) => Promise<readonly FeedEvent[] | void>;
-	/** Test seam: override the gateway connect step. */
-	bridgeFactory?: (
-		opts: StartSessionBridgeOptions,
-	) => Promise<SessionBridge | null>;
 	now?: () => number;
 };
 

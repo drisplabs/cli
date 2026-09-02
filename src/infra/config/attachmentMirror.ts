@@ -2,7 +2,7 @@
  * Read-only mirror of the dashboard's runner-attachment list for this
  * paired instance. The dashboard is the source of truth — this file is
  * written by `dashboard pair` (and later by the runtime daemon when it
- * receives change pushes) so the gateway and CLI surface can answer
+ * receives change pushes) so the CLI surface can answer
  * "which runners are bound to this instance?" without round-tripping
  * to the server.
  *
