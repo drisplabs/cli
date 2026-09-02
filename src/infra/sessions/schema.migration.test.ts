@@ -260,7 +260,7 @@ describe('schema migrations', () => {
 		};
 		expect(row.version).toBe(8);
 
-		// The gateway's queues went with the gateway (#183): no code path
+		// The channel queues went with the second runner (#183): no code path
 		// creates them any more. The feed outbox (feed_events) is untouched.
 		expect(tableNames(db)).not.toContain('channel_outbox');
 		expect(tableNames(db)).not.toContain('inbound_queue');

@@ -170,13 +170,12 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		}
 	).version;
 	if (versionAfterV5 === 5) {
-		// v6 originally created `channel_messages` and
-		// `gateway_function_invocations` (dropped in ADR 0006: no reader or
-		// writer ever shipped) and the channel `channel_outbox` retry queue
-		// (dropped with the second runner in #183). Nothing reads or writes any
-		// of them, so v5 → v6 is now a pure version bump. Databases already
-		// migrated to v6 keep those empty tables harmlessly; the feed outbox
-		// (`feed_events`) is unrelated and untouched.
+		// v6 originally created two audit tables that never got a reader or
+		// writer (dropped in ADR 0006) and the channel `channel_outbox` retry
+		// queue (dropped with the second runner in #183). Nothing reads or
+		// writes any of them, so v5 → v6 is now a pure version bump. Databases
+		// already migrated to v6 keep those empty tables harmlessly; the feed
+		// outbox (`feed_events`) is unrelated and untouched.
 		db.exec('UPDATE schema_version SET version = 6;');
 	}
 

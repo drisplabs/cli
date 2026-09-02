@@ -107,9 +107,10 @@ const EMPTY_CONFIG: AthenaConfig = {plugins: [], additionalDirectories: []};
 
 /**
  * Keys that older configs may still carry but drisp no longer reads. The
- * channel surface (Telegram, console, the gateway) was removed in #183;
- * a config that still names channels must keep loading, so the key is
- * ignored with a one-line stderr warning rather than rejected.
+ * channel surface (the Telegram and console adapters and the daemon that
+ * hosted them) was removed in #183; a config that still names channels
+ * must keep loading, so the key is ignored with a one-line stderr warning
+ * rather than rejected.
  */
 const STALE_CONFIG_KEYS = ['channels'] as const;
 
