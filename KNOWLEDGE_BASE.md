@@ -32,8 +32,13 @@ _Avoid_: page type, category, tag.
 **KB Source**:
 The immutable input a **Provenance link** points back to; the KB is a projection
 of it. Two kinds in the MVP: a manually supplied file (PRD, transcript, spec),
-or a completed **Workflow Run** taken as its final **Tracker** plus run outcome.
-_Avoid_: input, document. _(Future kind: an inbound channel message.)_
+or a completed **Workflow Run** taken as its final **Tracker** plus the
+**transitive closure** of Dossier files it points to — unit records,
+`orientation.md`, the Handoff chain — resolved recursively and passed through
+the **Redaction gate** before ingest. A closure is one KB Source: it is cited,
+re-ingested, and redacted as a whole, never as its individual files.
+_Avoid_: input, document, single file. _(Future kind: an inbound channel
+message.)_
 
 **Provenance link**:
 A citation from a single **Wiki Page** claim to the **KB Source** that produced
@@ -53,9 +58,25 @@ One of **Ingest**, **Query**, **Lint**. Each executes as a **KB Workflow**.
 
 **Ingest**:
 Fold a **KB Source** into the KB — update the relevant **Wiki Pages** and record
-**Provenance links**. Idempotent per source: re-ingesting a known source updates,
-never duplicates.
+**Provenance links**. A Workflow-Run source is first resolved to its transitive
+closure, then passed through the **Redaction gate**; only what survives is
+folded. Idempotent per source: re-ingesting a known source updates, never
+duplicates.
 _Avoid_: import, load.
+
+**Redaction gate**:
+A mandatory scrub step inside **Ingest**, run before any Workflow-Run source's
+closure is folded into the KB. Every file in the closure is scanned for
+secret-shaped spans (credentials, tokens, keys); each match is replaced with a
+`[REDACTED:<kind>]` placeholder before the content is stored or cited. A file
+that still matches after scrubbing is not folded — Ingest refuses that file
+and reports why, instead of folding it unredacted. The gate exists because
+`.athena/` (where Dossier files live) is gitignored but the KB is
+git-versioned: honour-system redaction at the producer has already failed once
+(a plaintext credential reached a Handoff file despite an explicit rule
+against it), so the boundary where files become durable and shared enforces it
+instead. Not skippable per source or per KB Workflow.
+_Avoid_: honour-system redaction, sanitization (bare), scrubbing (bare).
 
 **Query**:
 Answer a question from the KB, with **Provenance links** to the sources behind
