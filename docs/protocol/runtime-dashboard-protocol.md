@@ -329,7 +329,30 @@ Every failure should map to:
 | queued   | CLI durable receipt ACK | received |
 | received | runtime consumes        | consumed |
 
-## 17. Current Compatibility Notes
+## 17. Frame Names and `@drisp/protocol`
+
+The frame contract is owned by the `@drisp/protocol` workspace package
+(`packages/protocol`): zod schemas, inferred types, and a JSON Schema export
+under `packages/protocol/schema/`. It accepts two frame-name sets side by side
+and normalises both to one typed value (`normalizeFrame()`):
+
+| Legacy name (current wire) | Canonical name                                          |
+| -------------------------- | ------------------------------------------------------- |
+| `job_assignment`           | `run.start`                                             |
+| `dashboard_decision`       | `answer`                                                |
+| `cancel`                   | `stop`                                                  |
+| `run_event`                | `event` + `stream: 'run'`                               |
+| `feed_event`               | `event` + `stream: 'feed'`                              |
+| all other frames           | unchanged                                               |
+| —                          | `hello` (new; carries `protocolVersion`)                |
+| —                          | `steer` (new; a human turn text)                        |
+| —                          | `needs_human` (new; a Run parking with an Interruption) |
+
+Each legacy name maps to exactly one canonical name. The CLI keeps emitting the
+legacy names until it is rewired to the package; see the package README for the
+full table and the direction of each frame.
+
+## 18. Current Compatibility Notes
 
 The following are current-state realities, not the target shape:
 
