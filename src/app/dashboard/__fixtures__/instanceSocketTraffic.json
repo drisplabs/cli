@@ -1,0 +1,176 @@
+{
+	"description": "Recorded instance-socket traffic under the legacy frame names, one entry per frame the CLI sends or receives today. Bodies are taken verbatim from instanceSocketClient.test.ts, dashboardFrameRouter.test.ts, pairedFeedPublisher.test.ts, runtimeDaemon.ts, and liveTransportHarness.ts.",
+	"frames": [
+		{
+			"direction": "runner->hub",
+			"frame": {"type": "ping", "ts": 42}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {"type": "pong", "ts": 42}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "job_assignment",
+				"runId": "run_42",
+				"runSpec": {"goal": "noop"}
+			}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "job_assignment",
+				"runId": "run_live_harness_1",
+				"runnerId": "runner_1",
+				"runSpec": {
+					"prompt": "live-transport harness probe",
+					"projectDir": "/tmp/athena-live-transport-harness-x",
+					"workflow": {"ref": "issue-fix@1.2.0", "source": "marketplace"},
+					"harness": "claude",
+					"env": {"CI": "1"},
+					"timeoutSec": 900,
+					"callbackWsUrl": "wss://hub.example/runs/run_live_harness_1/stream",
+					"callbackToken": "cb-token",
+					"artifacts": {"upload": {"bucket": "runs"}}
+				}
+			}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {"type": "assignment_accepted", "runId": "run_42"}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {
+				"type": "assignment_rejected",
+				"runId": "run_42",
+				"reason": "local_capacity",
+				"message": "runtime daemon at concurrency cap"
+			}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {
+				"type": "run_event",
+				"runId": "run_42",
+				"seq": 1,
+				"ts": 1234,
+				"kind": "progress",
+				"payload": {"message": "assignment received"}
+			}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {
+				"type": "run_event",
+				"runId": "run_42",
+				"seq": 2,
+				"ts": 1235,
+				"kind": "error",
+				"payload": {"message": "remote execution failed"}
+			}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {
+				"type": "feed_event",
+				"deliverySeq": 1,
+				"envelope": {
+					"instanceId": "inst_1",
+					"athenaSessionId": "athena-1",
+					"runId": "athena-1:R1",
+					"origin": "local",
+					"eventId": "athena-1:feed-1",
+					"feedSeq": 1,
+					"emittedAt": 1700000000000,
+					"feedEvent": {
+						"event_id": "feed-1",
+						"seq": 1,
+						"ts": 1700000000000,
+						"session_id": "athena-1",
+						"run_id": "athena-1:R1",
+						"kind": "notification",
+						"level": "info",
+						"actor_id": "root",
+						"title": "hello",
+						"data": {"message": "hello"}
+					}
+				}
+			}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {"type": "feed_ack", "deliverySeq": 1}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {"type": "feed_ack", "eventId": "athena-1:feed-1"}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "dashboard_decision",
+				"athenaSessionId": "athena-1",
+				"requestId": "req-1",
+				"decision": {
+					"type": "json",
+					"source": "user",
+					"intent": {"kind": "permission_allow"}
+				}
+			}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "dashboard_decision",
+				"athenaSessionId": "athena-1",
+				"requestId": "req-2",
+				"decision": {
+					"type": "json",
+					"source": "user",
+					"intent": {
+						"kind": "question_answer",
+						"answers": {"Which branch?": "main"}
+					}
+				}
+			}
+		},
+		{
+			"direction": "runner->hub",
+			"frame": {
+				"type": "decision_ack",
+				"athenaSessionId": "athena-1",
+				"requestId": "req-1"
+			}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {"type": "cancel", "runId": "run_cancel"}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "attachments.changed",
+				"attachments": [
+					{
+						"runnerId": "runner_1",
+						"name": "Runner One",
+						"slug": "runner-one",
+						"executionTarget": "local",
+						"remoteInstanceId": "inst_remote"
+					},
+					{"runnerId": "runner_2"}
+				]
+			}
+		},
+		{
+			"direction": "hub->runner",
+			"frame": {
+				"type": "error",
+				"code": "instance_mismatch",
+				"message": "token is for another instance"
+			}
+		}
+	]
+}
