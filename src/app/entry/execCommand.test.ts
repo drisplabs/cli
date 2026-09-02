@@ -291,24 +291,4 @@ describe('runExecCommand', () => {
 			}),
 		);
 	});
-
-	it('forwards --channel values to runExec', async () => {
-		const runExecFn = vi
-			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
-
-		await runExecCommand(
-			{
-				projectDir: '/tmp',
-				prompt: 'hello',
-				flags: {...BASE_FLAGS, channels: ['telegram']},
-				runtimeConfig: BASE_RUNTIME_CONFIG,
-			},
-			{runExecFn, createSessionId: () => 'athena-new'},
-		);
-
-		expect(runExecFn).toHaveBeenCalledWith(
-			expect.objectContaining({channels: ['telegram']}),
-		);
-	});
 });

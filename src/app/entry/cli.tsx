@@ -36,9 +36,7 @@ import {runWorkflowCommand} from './workflowCommand';
 import {runMcpCommand} from './mcpCommand';
 import {runSkillCommand} from './skillCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
-import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
-import {runGatewayCommand} from './gatewayCommand';
 import {runDoctorCommand} from './doctorCommand';
 import {runRunsCommand} from './runsCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
@@ -81,8 +79,6 @@ const KNOWN_COMMANDS = new Set([
 	'mcp',
 	'skill',
 	'marketplace',
-	'channel',
-	'gateway',
 	'dashboard',
 	'telemetry',
 	'doctor',
@@ -240,7 +236,7 @@ function inkRenderOptions() {
 
 // Set terminal tab title immediately so it appears before React renders.
 // Only when stdout is a TTY — otherwise we'd be writing escape sequences
-// into a pipe (e.g. `athena gateway status --json | jq`) and corrupting
+// into a pipe (e.g. `athena dashboard status --json | jq`) and corrupting
 // the consumer.
 if (process.stdout.isTTY) {
 	process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');
@@ -264,7 +260,6 @@ const cli = meow(
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
 			skill <sub>           Manage personal skills (install, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
-			channel <sub>         Manage external channels
 			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
 			telemetry [action]    Manage anonymous telemetry (enable/disable/status)
 			doctor                Diagnose Claude headless setup (use with --harness=claude)
@@ -286,10 +281,6 @@ const cli = meow(
 			--ephemeral     Do not persist Athena session data (exec mode)
 			--timeout-ms    Hard timeout for exec run in milliseconds
 			--workflow      Override the active workflow for this run only (no config change)
-			--channel       Attach a channel for permission/question relay (repeatable). Built-in: telegram
-			--bot-token     Telegram bot token (channel telegram configure)
-			--user-id       Telegram allowed user id (channel telegram configure)
-			--chat-id       Telegram destination chat id (defaults to --user-id)
 			--url           Dashboard origin (dashboard pair)
 			--name          Friendly machine name (dashboard pair)
 			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (exec mode)
@@ -318,7 +309,6 @@ const cli = meow(
 		  $ athena-flow resume <sessionId>
 		  $ athena-flow exec "summarize current repo status"
 		  $ athena-flow exec "run tests" --json
-		  $ athena-flow exec "delete /tmp/foo" --channel telegram
 		  $ athena-flow --project-dir=/my/project
 		  $ athena-flow --plugin=/path/to/my-plugin
 		  $ athena-flow --isolation=minimal
@@ -375,22 +365,6 @@ const cli = meow(
 			workflow: {
 				type: 'string',
 			},
-			channel: {
-				type: 'string',
-				isMultiple: true,
-			},
-			botToken: {
-				type: 'string',
-			},
-			userId: {
-				type: 'string',
-			},
-			chatId: {
-				type: 'string',
-			},
-			token: {
-				type: 'string',
-			},
 			url: {
 				type: 'string',
 			},
@@ -412,25 +386,6 @@ const cli = meow(
 				default: false,
 			},
 			limit: {
-				type: 'number',
-			},
-			tlsCa: {
-				type: 'string',
-			},
-			tlsCert: {
-				type: 'string',
-			},
-			tlsKey: {
-				type: 'string',
-			},
-			bind: {
-				type: 'string',
-			},
-			insecure: {
-				type: 'boolean',
-				default: false,
-			},
-			gracePeriodMs: {
 				type: 'number',
 			},
 			dryRun: {
@@ -581,55 +536,6 @@ async function main(): Promise<void> {
 	if (command === 'marketplace') {
 		const [subcommand = '', ...subcommandArgs] = commandArgs;
 		await exitWith(runMarketplaceCommand({subcommand, subcommandArgs}));
-		return;
-	}
-
-	if (command === 'channel') {
-		await exitWith(
-			runChannelCommand({
-				subcommandArgs: commandArgs,
-				flags: {
-					botToken:
-						typeof cli.flags.botToken === 'string'
-							? cli.flags.botToken
-							: undefined,
-					userId:
-						typeof cli.flags.userId === 'string' ? cli.flags.userId : undefined,
-					chatId:
-						typeof cli.flags.chatId === 'string' ? cli.flags.chatId : undefined,
-				},
-			}),
-		);
-		return;
-	}
-
-	if (command === 'gateway') {
-		const [subcommand = '', ...subcommandArgs] = commandArgs;
-		// Top-level meow consumes --json into cli.flags before subcommand args
-		// are sliced off; forward it so `gateway probe/status` see it.
-		if (cli.flags.json) subcommandArgs.push('--json');
-		if (typeof cli.flags.token === 'string') {
-			subcommandArgs.push('--token', cli.flags.token);
-		}
-		if (typeof cli.flags.tlsCa === 'string') {
-			subcommandArgs.push('--tls-ca', cli.flags.tlsCa);
-		}
-		if (typeof cli.flags.tlsCert === 'string') {
-			subcommandArgs.push('--tls-cert', cli.flags.tlsCert);
-		}
-		if (typeof cli.flags.tlsKey === 'string') {
-			subcommandArgs.push('--tls-key', cli.flags.tlsKey);
-		}
-		if (typeof cli.flags.bind === 'string') {
-			subcommandArgs.push('--bind', cli.flags.bind);
-		}
-		if (cli.flags.insecure) {
-			subcommandArgs.push('--insecure');
-		}
-		if (typeof cli.flags.gracePeriodMs === 'number') {
-			subcommandArgs.push('--grace-period-ms', String(cli.flags.gracePeriodMs));
-		}
-		await exitWith(await runGatewayCommand({subcommand, subcommandArgs}));
 		return;
 	}
 
@@ -820,7 +726,6 @@ async function main(): Promise<void> {
 				ephemeral: cli.flags.ephemeral,
 				timeoutMs: cli.flags.timeoutMs,
 				verbose: cli.flags.verbose,
-				channels: cli.flags.channel ?? [],
 			},
 			runtimeConfig,
 		});
@@ -851,9 +756,6 @@ async function main(): Promise<void> {
 
 	const {athenaSessionId, initialSessionId} = interactiveSession;
 	const instanceId = process.pid;
-
-	// Channel attachments are deferred to the gateway in M6+; the legacy
-	// per-session channel-subprocess wiring has been removed.
 
 	render(
 		<App
