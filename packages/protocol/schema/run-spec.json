@@ -1,0 +1,61 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/run-spec.json",
+	"title": "run-spec",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"prompt": {
+			"type": "string"
+		},
+		"athenaSessionId": {
+			"type": "string"
+		},
+		"adapterResumeSessionId": {
+			"type": "string"
+		},
+		"sessionId": {
+			"type": "string"
+		},
+		"projectDir": {
+			"type": "string"
+		},
+		"workflow": {
+			"type": "object",
+			"properties": {
+				"source": {
+					"type": "string"
+				},
+				"ref": {
+					"type": "string"
+				},
+				"version": {
+					"type": "string"
+				}
+			},
+			"additionalProperties": {}
+		},
+		"harness": {
+			"type": "string"
+		},
+		"env": {
+			"type": "object",
+			"propertyNames": {
+				"type": "string"
+			},
+			"additionalProperties": {
+				"type": "string"
+			}
+		},
+		"timeoutSec": {
+			"type": "number"
+		},
+		"callbackWsUrl": {
+			"type": "string"
+		},
+		"callbackToken": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": {}
+}

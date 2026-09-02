@@ -3,7 +3,6 @@
 		"target": "ES2022",
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
-		"jsx": "react-jsx",
 		"strict": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
@@ -15,14 +14,8 @@
 		"noEmit": true,
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
-		"isolatedModules": true,
-		"customConditions": ["source"]
+		"isolatedModules": true
 	},
-	"include": ["src"],
-	"exclude": [
-		"src/**/*.test.ts",
-		"src/**/*.test.tsx",
-		"src/**/__tests__/**",
-		"src/**/__sentinels__/**"
-	]
+	"include": ["src", "scripts"],
+	"exclude": ["src/**/*.test.ts"]
 }

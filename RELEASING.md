@@ -40,6 +40,25 @@ rest are hidden (see `release-please-config.json`).
 > The **npmjs.com webpage headline lags** behind the registry (cache, minutes to ~1h).
 > Trust `npm view @drisp/cli version`, not the website front page.
 
+## `@drisp/protocol` (workspace package)
+
+`packages/protocol` is a second release-please component (`protocol`, see
+`release-please-config.json`). It versions independently of the CLI:
+
+- Commits touching `packages/protocol/**` bump it; release-please keeps a
+  separate release PR (`chore(main): release protocol x.y.z`) and tag
+  `protocol-v<x.y.z>`.
+- Merging that PR makes the `publish` job run `npm publish -w packages/protocol`
+  (its `prepublishOnly` builds `dist/`). The CLI publish is unchanged and gated
+  on its own release.
+- The CLI inlines the package into its bundle (`noExternal` in `tsup.config.ts`),
+  so a published `@drisp/cli` never depends on `@drisp/protocol` from the
+  registry — the two can release in any order.
+- After changing a schema, run `npm run schema:generate` and commit
+  `packages/protocol/schema/*.json`; a test fails if they drift.
+- Verify with `npm view @drisp/protocol version`. `manual-release.yml` covers
+  the CLI only.
+
 ## Recovery & out-of-band releases
 
 `manual-release.yml` is the escape hatch. It bumps `package.json` + the release-please

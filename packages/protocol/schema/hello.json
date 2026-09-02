@@ -1,0 +1,46 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/hello.json",
+	"title": "hello",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"type": {
+			"type": "string",
+			"const": "hello"
+		},
+		"protocolVersion": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"role": {
+			"type": "string",
+			"enum": ["runner", "hub"]
+		},
+		"instanceId": {
+			"type": "string"
+		},
+		"agent": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"version": {
+					"type": "string"
+				}
+			},
+			"required": ["name"],
+			"additionalProperties": false
+		},
+		"capabilities": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		}
+	},
+	"required": ["type", "protocolVersion"],
+	"additionalProperties": false
+}

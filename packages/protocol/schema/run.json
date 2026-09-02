@@ -1,0 +1,57 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/run.json",
+	"title": "run",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"runId": {
+			"type": "string"
+		},
+		"athenaSessionId": {
+			"type": "string"
+		},
+		"workflowName": {
+			"type": "string"
+		},
+		"goal": {
+			"type": "string"
+		},
+		"iteration": {
+			"type": "integer",
+			"minimum": 0,
+			"maximum": 9007199254740991
+		},
+		"maxIterations": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"status": {
+			"type": "string",
+			"enum": [
+				"running",
+				"awaiting_attention",
+				"completed",
+				"blocked",
+				"exhausted",
+				"failed",
+				"cancelled"
+			]
+		},
+		"stopReason": {
+			"type": "string"
+		},
+		"adapterSessionId": {
+			"type": "string"
+		},
+		"startedAt": {
+			"type": "number"
+		},
+		"endedAt": {
+			"type": "number"
+		}
+	},
+	"required": ["runId", "athenaSessionId", "iteration", "status", "startedAt"],
+	"additionalProperties": false
+}

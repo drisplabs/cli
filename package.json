@@ -33,9 +33,12 @@
 	"publishConfig": {
 		"access": "public"
 	},
+	"workspaces": [
+		"packages/*"
+	],
 	"scripts": {
 		"build": "tsup",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit && npm run typecheck -w packages/protocol",
 		"dev": "tsup --watch",
 		"start": "tsup && node dist/cli.js",
 		"dev:debug": "tsup && DEV=true node dist/cli.js",
@@ -55,7 +58,9 @@
 		"lint": "npm run lint:format && npm run lint:eslint",
 		"format": "prettier --write .",
 		"prepare": "simple-git-hooks",
-		"prepublishOnly": "npm run lint && npm run typecheck && npm run lint:dead && npm test && npm run build"
+		"prepublishOnly": "npm run lint && npm run typecheck && npm run lint:dead && npm test && npm run build",
+		"build:protocol": "npm run build -w packages/protocol",
+		"schema:generate": "npm run schema:generate -w packages/protocol"
 	},
 	"files": [
 		"dist",
@@ -77,6 +82,7 @@
 		"ws": "^8.20.0"
 	},
 	"devDependencies": {
+		"@drisp/protocol": "*",
 		"@commitlint/cli": "^20.4.3",
 		"@commitlint/config-conventional": "^20.4.3",
 		"@eslint/js": "^9.0.0",
