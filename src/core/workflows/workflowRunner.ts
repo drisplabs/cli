@@ -11,25 +11,24 @@ import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
 import type {TrackerMarkers} from './trackerReader';
-import {
-	createWorkflowRunState,
-	prepareWorkflowTurn,
-	resolveTrackerPath,
-} from './sessionPlan';
-import {classifyTurnFailure} from '../runtime/failureTaxonomy';
+import {createWorkflowRunState, resolveTrackerPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
-	buildNudgePrompt,
 	readTracker,
 	TRACKER_SKELETON_MARKER,
 	demoteTerminalMarkers,
 } from './trackerReader';
-import {
-	DEFAULT_NUDGE_CAP,
-	DEFAULT_RETRY_BACKOFF_MS,
-	DEFAULT_RETRY_CAP,
-} from './types';
 import {substituteVariables} from './templateVars';
+import {
+	step,
+	createInitialRun,
+	serializeRunMemory,
+	type RunPhase,
+	type RunMemory,
+	type RunEvent,
+	type RunAction,
+	type StepConfig,
+} from './runMachine';
 
 export type TurnInput = {
 	prompt: string;
@@ -51,6 +50,16 @@ export type WorkflowRunnerInput = {
 	 * leaving a forever-suspended row beside a new one.
 	 */
 	resumeRunId?: string;
+	/**
+	 * A previously persisted `RunMemory` (ADR 0016 §2, §6) to rehydrate from
+	 * instead of starting fresh — so a resumed Run continues its Iteration,
+	 * Nudge streak, and Retry streak budgets rather than restarting them.
+	 * Optional and additive: omitted, this Runner behaves exactly as before —
+	 * no caller is wired to load and pass this yet (that plumbing is left to
+	 * a follow-up; the mechanism itself is exercised directly by
+	 * `runMachine.test.ts`).
+	 */
+	resumedRunMemory?: RunMemory;
 
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
@@ -232,46 +241,6 @@ function buildHandoffInvocationPrompt(handoffPath: string): string {
 }
 
 /**
- * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
- * in-flight context the Tracker never checkpointed; the Tracker remains the
- * durable ledger.
- */
-function buildHandoverSeedPrompt(
-	handoffPath: string,
-	trackerPath: string | undefined,
-): string {
-	return (
-		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
-		`Read the Handoff file at ${handoffPath}` +
-		(trackerPath ? ` and the tracker at ${trackerPath}` : '') +
-		`, then continue the work from exactly where it stands. ` +
-		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
-	);
-}
-
-/**
- * First prompt of a woken (previously suspended) Run: the human's reply plus
- * enough framing that even a degraded fresh Agent Session — the session that
- * asked may be gone — re-orients from the Tracker instead of treating the
- * reply as a brand-new one-line task. Observed live without this: a wake of a
- * Run whose Turn 1 had died pre-orientation acted on the bare reply, never
- * bootstrapped the Tracker, and failed the skeleton check despite doing the
- * work.
- */
-function buildWakePrompt(
-	reply: string,
-	trackerPath: string | undefined,
-): string {
-	return (
-		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
-		(trackerPath
-			? `Read the tracker at ${trackerPath} for the task and its current state, apply the reply, and continue the workflow. `
-			: `Apply the reply and continue the workflow. `) +
-		`Keep the tracker current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
-	);
-}
-
-/**
  * Sleep for `ms`, waking early (in ~250ms slices) if `isCancelled` flips —
  * a Run being killed must not sit out a full retry backoff.
  */
@@ -346,15 +315,54 @@ function defaultCreateTracker(trackerPath: string, content: string): void {
 	}
 }
 
+function isTerminalPhase(
+	phase: RunPhase,
+): phase is Extract<
+	RunPhase,
+	{kind: 'awaiting_attention' | 'completed' | 'failed' | 'cancelled'}
+> {
+	return (
+		phase.kind === 'awaiting_attention' ||
+		phase.kind === 'completed' ||
+		phase.kind === 'failed' ||
+		phase.kind === 'cancelled'
+	);
+}
+
+function terminalPhaseToStatus(
+	phase: Extract<
+		RunPhase,
+		{kind: 'awaiting_attention' | 'completed' | 'failed' | 'cancelled'}
+	>,
+): {status: RunStatus; stopReason?: string} {
+	switch (phase.kind) {
+		case 'awaiting_attention':
+			return {status: 'awaiting_attention', stopReason: phase.stopReason};
+		case 'completed':
+			return {status: 'completed'};
+		case 'failed':
+			return {status: 'failed', stopReason: phase.stopReason};
+		case 'cancelled':
+			return {status: 'cancelled'};
+	}
+}
+
+/**
+ * `perform()` — the interpreter (ADR 0016 §1): the sole point of contact with
+ * the outside world. It executes the `RunAction[]` the reducer (`step()`, in
+ * `runMachine.ts`) returns, gathers exactly one `RunEvent` describing what
+ * happened, and hands it back to `step()`. All fs/timer/harness/callback I/O
+ * lives here; the reducer never touches any of it.
+ */
 export function createWorkflowRunner(
 	input: WorkflowRunnerInput,
 ): WorkflowRunnerHandle {
 	const runId = input.resumeRunId ?? crypto.randomUUID();
 	let cancelled = false;
 	let status: RunStatus = 'running';
-	let iterations = 0;
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let stopReason: string | undefined;
+	let memory: RunMemory | undefined;
 
 	const trackerResolved = resolveTrackerPath({
 		projectDir: input.projectDir,
@@ -370,12 +378,13 @@ export function createWorkflowRunner(
 			runId,
 			sessionId: input.sessionId,
 			workflowName: input.workflow?.name,
-			iteration: iterations,
+			iteration: memory?.iteration ?? 0,
 			maxIterations: input.workflow?.loop?.maxIterations ?? 1,
 			status,
 			stopReason,
 			trackerPath: trackerPromptPath,
 			...(adapterSessionId ? {adapterSessionId} : {}),
+			...(memory ? {runMemoryJson: serializeRunMemory(memory)} : {}),
 		};
 	}
 
@@ -385,6 +394,19 @@ export function createWorkflowRunner(
 		} catch {
 			// Persistence failure is non-fatal for the runner
 		}
+	}
+
+	function handoffDirFor(): string {
+		return path.join(
+			trackerAbsPath
+				? path.dirname(trackerAbsPath)
+				: path.resolve(
+						input.projectDir,
+						'.athena',
+						input.sessionId || 'session',
+					),
+			HANDOFF_DIR_NAME,
+		);
 	}
 
 	const result = (async (): Promise<WorkflowRunResult> => {
@@ -427,322 +449,292 @@ export function createWorkflowRunner(
 			harness: input.harness,
 		});
 
-		let nextContinuation: TurnContinuation = input.initialContinuation ?? {
-			mode: 'fresh',
-		};
-		// Nudge state (ADR 0014 §3): consecutive undeclared stops without
-		// Tracker progress, and the Tracker content at the last stop. The
-		// corrective prompt for a nudged (resumed) Turn overrides the prepared
-		// Continue Prompt for exactly one Turn.
-		let nudgeStreak = 0;
-		let lastStopTrackerContent: string | null = null;
-		let nextPromptOverride: string | null = null;
-		// Retry state (ADR 0014 §4): consecutive transient Turn failures.
-		// Resets on any Turn that completes without failing.
-		let retryStreak = 0;
-
 		const loop = input.workflow?.loop;
+		const cfg: StepConfig = {
+			workflowState,
+			initialPrompt: input.prompt,
+			loop,
+			trackerAbsPath,
+			trackerPromptPath,
+		};
 
-		// Waking a suspended Run (ADR 0014 §6): frame the human's reply for the
-		// first Turn instead of running the bare reply through the Orient
-		// template. Works for both the intact-session resume and the degraded
-		// fresh Turn.
-		if (input.resumeRunId && loop?.enabled) {
-			nextPromptOverride = buildWakePrompt(input.prompt, trackerPromptPath);
-		}
+		const initial = createInitialRun(cfg, {
+			initialContinuation: input.initialContinuation,
+			waking: !!(input.resumeRunId && loop?.enabled),
+			resumedMemory: input.resumedRunMemory,
+		});
+		let phase: RunPhase = initial.phase;
+		memory = initial.memory;
 
-		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-		while (!cancelled) {
-			iterations++;
-			const prepared = prepareWorkflowTurn(workflowState, {
-				prompt: input.prompt,
-				iteration: iterations,
-				configOverride: undefined,
-			});
+		// --- action execution -------------------------------------------------
 
-			const attemptedContinuation = nextContinuation;
-			const promptForTurn = nextPromptOverride ?? prepared.prompt;
-			nextPromptOverride = null;
+		async function performStartTurn(
+			prompt: string,
+			continuation: TurnContinuation,
+			configOverride: HarnessProcessOverride | undefined,
+		): Promise<RunEvent> {
 			const turnResult = await input.startTurn({
-				prompt: promptForTurn,
-				continuation: attemptedContinuation,
-				configOverride: prepared.configOverride,
+				prompt,
+				continuation,
+				configOverride,
 			});
 
-			// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
 			if (cancelled) {
-				status = 'cancelled';
-				persist();
-				break;
+				return {
+					type: 'turn_finished',
+					cancelled: true,
+					hasError: false,
+					exitCode: null,
+					streamMessage: null,
+					transportBroken: false,
+					handoverRequestHandle: null,
+					suspension: null,
+					adapterSessionId: null,
+					outcome: null,
+					trackerContent: '',
+				};
 			}
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 
-			// Handover (ADR 0014 §5): this Turn was interrupted because it crossed
-			// maxTurnTokenCount — its compaction was blocked and the conversation
-			// must be distilled instead. Fork the live conversation, have the
-			// handoff skill write the Handoff file, discard the fork, and seed a
-			// fresh Turn with the file + Tracker. Checked before suspension and
-			// failure classification: the interruption is neither.
+			// Handover (ADR 0014 §5): checked before suspension and failure
+			// classification — the interruption is neither.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
-				const handoffDir = path.join(
-					trackerAbsPath
-						? path.dirname(trackerAbsPath)
-						: path.resolve(
-								input.projectDir,
-								'.athena',
-								input.sessionId || 'session',
-							),
-					HANDOFF_DIR_NAME,
-				);
-				const handoffAbsPath = nextHandoffPath(handoffDir);
-
-				input.handover?.onForkStateChange?.(true);
-				let forkOk = false;
-				try {
-					const forkResult = await input.startTurn({
-						prompt: buildHandoffInvocationPrompt(handoffAbsPath),
-						continuation: {mode: 'resume', handle: handoverRequest.handle},
-						configOverride: {...prepared.configOverride, forkSession: true},
-					});
-					cumulativeTokens = mergeTokens(cumulativeTokens, forkResult.tokens);
-					forkOk =
-						!forkResult.error &&
-						(forkResult.exitCode === null || forkResult.exitCode === 0) &&
-						fs.existsSync(handoffAbsPath);
-				} catch {
-					forkOk = false;
-				} finally {
-					input.handover?.onForkStateChange?.(false);
-				}
-
-				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-				if (cancelled) break;
-
-				if (forkOk) {
-					purgeHandoffs(handoffDir, HANDOFF_RETAIN);
-					// The fork is discarded (nothing resumes it); the next Turn is a
-					// fresh Agent Session — the only context-resetting transition —
-					// and ticks the Iteration counter like any Turn.
-					nextContinuation = {mode: 'fresh'};
-					nextPromptOverride = buildHandoverSeedPrompt(
-						handoffAbsPath,
-						trackerAbsPath ?? undefined,
-					);
-					persist();
-					continue;
-				}
-
-				// Degrade, never stall (ADR 0014 §5): stop intercepting this
-				// session's compactions so normal vendor compaction proceeds, and
-				// resume the interrupted conversation in place.
-				input.handover?.onDegraded?.(handoverRequest.handle);
-				nextContinuation = {mode: 'resume', handle: handoverRequest.handle};
-				persist();
-				continue;
+				return {
+					type: 'turn_finished',
+					cancelled: false,
+					hasError: false,
+					exitCode: null,
+					streamMessage: null,
+					transportBroken: false,
+					handoverRequestHandle: handoverRequest.handle,
+					suspension: null,
+					adapterSessionId: null,
+					outcome: null,
+					trackerContent: '',
+				};
 			}
 
-			// Declared attention interrupted this Turn (e.g. an AskUserQuestion no
-			// attached human can answer). Checked before failure classification:
-			// the interruption ends the harness process abnormally, but the Run is
-			// suspended, not failed.
-			const suspension = input.checkSuspension?.();
+			// Declared attention interrupted this Turn. Checked before failure
+			// classification: the interruption ends the harness process
+			// abnormally, but the Run is suspended, not failed.
+			const suspension = input.checkSuspension?.() ?? null;
 			if (suspension) {
-				status = 'awaiting_attention';
-				stopReason = suspension.reason;
-				persist();
-				break;
+				return {
+					type: 'turn_finished',
+					cancelled: false,
+					hasError: false,
+					exitCode: null,
+					streamMessage: null,
+					transportBroken: false,
+					handoverRequestHandle: null,
+					suspension,
+					adapterSessionId: null,
+					outcome: null,
+					trackerContent: '',
+				};
 			}
 
-			if (
-				turnResult.error ||
-				(turnResult.exitCode !== null && turnResult.exitCode !== 0)
-			) {
-				const parts: string[] = [];
-				if (turnResult.error?.message) {
-					parts.push(turnResult.error.message);
-				} else if (turnResult.exitCode !== null) {
-					parts.push(`Process exited with code ${turnResult.exitCode}`);
-				}
-				if (turnResult.lastStderr) {
-					parts.push(turnResult.lastStderr);
-				} else if (turnResult.streamMessage) {
-					// Headless Claude prints API errors to stdout as the final
-					// stream message with an empty stderr — without this the
-					// human-facing reason is a bare exit code.
-					parts.push(turnResult.streamMessage.slice(0, 300));
-				}
-				const failureDetail = parts.join(': ') || 'Turn failed';
-
-				// Failure taxonomy (ADR 0014 §4), looped Runs only: transient →
-				// backoff then resume the same Agent Session; hard (incl.
-				// unclassifiable) → suspend for a human. Non-looped runs keep
-				// the plain terminal failure below.
-				if (loop?.enabled) {
-					const classification = classifyTurnFailure({
-						errorMessage: turnResult.error?.message,
-						// Prefer the stderr tail: the first stderr line is often
-						// teardown noise (e.g. a cancelled SessionEnd hook) while the
-						// real cause — a 401, a rate limit — is printed later.
-						lastStderr: turnResult.stderrTail ?? turnResult.lastStderr,
-						// Claude's headless stream-json mode prints API errors to
-						// stdout as the final stream message and leaves stderr empty.
-						lastMessage: turnResult.streamMessage,
-					});
-
-					if (classification.kind === 'transient') {
-						retryStreak++;
-						const retryCap = loop.retryCap ?? DEFAULT_RETRY_CAP;
-						if (retryStreak > retryCap) {
-							status = 'awaiting_attention';
-							stopReason = `retry cap reached: ${retryCap} transient failure${
-								retryCap === 1 ? '' : 's'
-							} (retryCap); last (${classification.code}): ${failureDetail}`;
-							persist();
-							break;
-						}
-						// Backoff, then resume the same Agent Session — it persists
-						// on disk, so resuming preserves in-flight work the Tracker
-						// never checkpointed. The Run stays `running`, and the
-						// failed attempt does not burn an iteration.
-						const backoffBase = loop.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
-						await delayWithCancel(
-							backoffBase * 2 ** (retryStreak - 1),
-							() => cancelled,
-						);
-						// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-						if (cancelled) break;
-						iterations--;
-						const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
-						nextContinuation = adapterSessionId
-							? {mode: 'resume', handle: adapterSessionId}
-							: attemptedContinuation;
-						persist();
-						continue;
-					}
-
-					// Hard failure on a resumed Turn: degrade to a fresh replay of
-					// the same iteration first (ADR 0014 / #139) — this is the
-					// missing-or-invalid-session recovery. Bounded by construction:
-					// the replay runs fresh, so a second hard failure suspends.
-					if (attemptedContinuation.mode === 'resume') {
-						iterations--;
-						nextContinuation = {mode: 'fresh'};
-						persist();
-						continue;
-					}
-
-					// Hard (or unclassifiable) failure → escalate to a human
-					// rather than retry blindly (ADR 0014 §4, §7).
-					status = 'awaiting_attention';
-					stopReason = `hard failure (${classification.code}): ${failureDetail} — not retried; needs a human`;
-					persist();
-					break;
-				}
-
-				status = 'failed';
-				stopReason = failureDetail;
-				persist();
-				break;
+			const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
+			const hasError = !!turnResult.error;
+			const failed =
+				hasError || (turnResult.exitCode !== null && turnResult.exitCode !== 0);
+			if (failed) {
+				return {
+					type: 'turn_finished',
+					cancelled: false,
+					hasError,
+					errorMessage: turnResult.error?.message,
+					exitCode: turnResult.exitCode,
+					lastStderr: turnResult.lastStderr,
+					stderrTail: turnResult.stderrTail,
+					streamMessage: turnResult.streamMessage,
+					transportBroken: false,
+					handoverRequestHandle: null,
+					suspension: null,
+					adapterSessionId,
+					outcome: null,
+					trackerContent: '',
+				};
 			}
-
-			// The Turn completed without failing — the transient-failure streak
-			// is over.
-			retryStreak = 0;
 
 			const transport = turnResult.diagnostics?.transport;
-			if (
+			const transportBroken = !!(
 				transport &&
 				transport.streamToolUses > 0 &&
 				transport.preToolUseEvents === 0
-			) {
-				status = 'failed';
-				stopReason = `Hook transport broken: observed ${transport.streamToolUses} tool use(s) in Claude stream but received no PreToolUse events.`;
-				persist();
-				break;
-			}
+			);
 
-			// Non-looped: single turn, done.
-			if (!loop?.enabled) {
-				status = 'completed';
-				persist();
-				break;
-			}
-
-			// Looped: one owner maps the Tracker's end-state to a final Run Status.
-			if (trackerAbsPath) {
-				const outcome = resolveTurnOutcome({
+			// Looped: one owner (`resolveTurnOutcome`) maps the Tracker's end-state
+			// to a final Run Status — only consulted on the success path, once the
+			// hook transport is known-good, matching the original's lazy read.
+			let trackerContent = '';
+			let outcome = null;
+			if (!transportBroken && loop?.enabled && trackerAbsPath) {
+				trackerContent = readTracker(trackerAbsPath);
+				outcome = resolveTurnOutcome({
 					trackerPath: trackerAbsPath,
 					loop,
-					iteration: iterations,
+					iteration: memory!.iteration,
 				});
-				if (outcome.kind === 'stop' || outcome.kind === 'suspend') {
-					status = outcome.status;
-					stopReason = outcome.stopReason;
-					persist();
-					break;
-				}
 			}
 
-			// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same
-			// Agent Session with a corrective prompt — finish, or declare a
-			// marker. Bounded by the Nudge cap, which resets whenever the
-			// Tracker advances between stops so only unproductive repeated
-			// stops escalate (checkpointing workflows never trip it).
-			const trackerContent = trackerAbsPath ? readTracker(trackerAbsPath) : '';
-			if (trackerContent !== lastStopTrackerContent) {
-				nudgeStreak = 0;
-			}
-			lastStopTrackerContent = trackerContent;
-
-			const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
-			if (adapterSessionId) {
-				nudgeStreak++;
-				const nudgeCap = loop.nudgeCap ?? DEFAULT_NUDGE_CAP;
-				if (nudgeStreak > nudgeCap) {
-					status = 'awaiting_attention';
-					stopReason = `nudge cap reached: ${nudgeCap} nudge${
-						nudgeCap === 1 ? '' : 's'
-					} (nudgeCap) without tracker progress or a terminal marker`;
-					persist();
-					break;
-				}
-				nextContinuation = {mode: 'resume', handle: adapterSessionId};
-				nextPromptOverride = buildNudgePrompt(
-					{
-						...loop,
-						trackerPath: trackerPromptPath ?? loop.trackerPath,
-					},
-					// Turn-1 variant: nothing was ever written. The corrective must
-					// name the bootstrap duty — the common live shape is a question
-					// asked in chat instead of declared on the tracker.
-					{
-						skeletonNotReplaced: trackerContent.includes(
-							TRACKER_SKELETON_MARKER,
-						),
-					},
-				);
-			} else {
-				// No vendor session id to resume (harness never reported one):
-				// fall back to the pre-Nudge behaviour — a fresh Turn seeded by
-				// the Continue Prompt.
-				nextContinuation = {mode: 'fresh'};
-			}
-			persist();
-			input.onIterationComplete?.(snapshot());
+			return {
+				type: 'turn_finished',
+				cancelled: false,
+				hasError: false,
+				exitCode: turnResult.exitCode,
+				streamMessage: turnResult.streamMessage,
+				transportBroken,
+				handoverRequestHandle: null,
+				suspension: null,
+				adapterSessionId,
+				outcome,
+				trackerContent,
+			};
 		}
 
-		// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- cancelled is mutated externally during await
-		if (cancelled && status === 'running') {
-			status = 'cancelled';
-			persist();
+		async function performForkTurn(
+			handle: string,
+			configOverride: HarnessProcessOverride | undefined,
+		): Promise<RunEvent> {
+			const handoffDir = handoffDirFor();
+			const handoffAbsPath = nextHandoffPath(handoffDir);
+
+			input.handover?.onForkStateChange?.(true);
+			let forkOk = false;
+			try {
+				const forkResult = await input.startTurn({
+					prompt: buildHandoffInvocationPrompt(handoffAbsPath),
+					continuation: {mode: 'resume', handle},
+					configOverride: {...configOverride, forkSession: true},
+				});
+				cumulativeTokens = mergeTokens(cumulativeTokens, forkResult.tokens);
+				forkOk =
+					!forkResult.error &&
+					(forkResult.exitCode === null || forkResult.exitCode === 0) &&
+					fs.existsSync(handoffAbsPath);
+			} catch {
+				forkOk = false;
+			} finally {
+				input.handover?.onForkStateChange?.(false);
+			}
+
+			return {
+				type: 'fork_finished',
+				ok: forkOk,
+				cancelled,
+				handoffPath: handoffAbsPath,
+			};
+		}
+
+		async function performWait(ms: number): Promise<RunEvent> {
+			await delayWithCancel(ms, () => cancelled);
+			if (cancelled) {
+				return {
+					type: 'backoff_elapsed',
+					cancelled: true,
+					adapterSessionId: null,
+				};
+			}
+			const adapterSessionId = input.currentAdapterSessionId?.() ?? null;
+			return {type: 'backoff_elapsed', cancelled: false, adapterSessionId};
+		}
+
+		function isKickoffAction(action: RunAction): boolean {
+			return (
+				action.type === 'start_turn' ||
+				action.type === 'start_fork_turn' ||
+				action.type === 'wait'
+			);
+		}
+
+		/**
+		 * Execute every non-kickoff (side-effect) action in order, then the
+		 * kickoff action (if any) — a phase's actions always carry at most one.
+		 * Returns the event the kickoff action produced, or `null` for a
+		 * terminal phase's actions (persist only, no kickoff).
+		 */
+		async function runActions(actions: RunAction[]): Promise<RunEvent | null> {
+			let kickoff: RunAction | null = null;
+			for (const action of actions) {
+				if (isKickoffAction(action)) {
+					kickoff = action;
+					continue;
+				}
+				// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- kickoff action types are filtered out above by isKickoffAction and handled in the switch below
+				switch (action.type) {
+					case 'persist':
+						persist();
+						break;
+					case 'notify_iteration_complete':
+						input.onIterationComplete?.(snapshot());
+						break;
+					case 'purge_handoffs':
+						purgeHandoffs(handoffDirFor(), HANDOFF_RETAIN);
+						break;
+					case 'degrade_handover':
+						input.handover?.onDegraded?.(action.handle);
+						break;
+				}
+			}
+			if (!kickoff) return null;
+			// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- non-kickoff action types are handled in the switch above
+			switch (kickoff.type) {
+				case 'start_turn':
+					return performStartTurn(
+						kickoff.prompt,
+						kickoff.continuation,
+						kickoff.configOverride,
+					);
+				case 'start_fork_turn':
+					return performForkTurn(kickoff.handle, kickoff.configOverride);
+				case 'wait':
+					return performWait(kickoff.ms);
+				default:
+					return null;
+			}
+		}
+
+		// --- interpreter loop ---------------------------------------------------
+
+		const bootstrapActions: RunAction[] =
+			phase.kind === 'turn_in_flight'
+				? [
+						{
+							type: 'start_turn',
+							prompt: phase.prompt,
+							continuation: phase.continuation,
+							configOverride: phase.configOverride,
+						},
+					]
+				: phase.kind === 'backing_off'
+					? [{type: 'wait', ms: phase.ms}]
+					: [];
+
+		let pendingEvent = await runActions(bootstrapActions);
+
+		while (pendingEvent) {
+			const stepResult = step(phase, memory, pendingEvent, cfg);
+			phase = stepResult.phase;
+			memory = stepResult.memory;
+
+			if (isTerminalPhase(phase)) {
+				const terminal = terminalPhaseToStatus(phase);
+				status = terminal.status;
+				stopReason = terminal.stopReason;
+				await runActions(stepResult.actions);
+				break;
+			}
+
+			pendingEvent = await runActions(stepResult.actions);
 		}
 
 		return {
 			runId,
 			status,
-			iterations,
+			iterations: memory.iteration,
 			stopReason,
 			tokens: cumulativeTokens,
 		};

@@ -71,6 +71,15 @@ export type WorkflowRunSnapshot = {
 	 * and fork-based transition depends on it (ADR 0014).
 	 */
 	adapterSessionId?: string;
+	/**
+	 * Opaque JSON snapshot of the run-loop reducer's `RunMemory` (nudge/retry
+	 * streaks, last tracker hash, in-flight stop prompt/continuation), so a
+	 * resumed process can rehydrate the reducer instead of restarting its
+	 * counters (ADR 0016). Serialized/parsed by `src/core/workflows/runMachine`
+	 * — this layer stores and returns it as an opaque string, never inspects
+	 * its shape.
+	 */
+	runMemoryJson?: string;
 };
 
 export type PersistedWorkflowRun = {
@@ -86,4 +95,6 @@ export type PersistedWorkflowRun = {
 	trackerPath?: string;
 	/** Vendor session id of the Run's most recent Agent Session (ADR 0014). */
 	adapterSessionId?: string;
+	/** Opaque JSON snapshot of the run-loop reducer's `RunMemory` (ADR 0016). */
+	runMemoryJson?: string;
 };
