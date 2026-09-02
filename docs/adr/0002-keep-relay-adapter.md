@@ -1,6 +1,12 @@
 # ADR 0002 - Keep the relay adapter as a shared seam
 
-Status: Active
+> **Superseded by #183** (delete the gateway, channels, Telegram, and console).
+> The relay adapter, the session bridge it fed, and the gateway they relayed to
+> were all removed: drisp has one door, and a permission request with no hub
+> attached waits (see the README's "Permissions with no hub attached"). Kept
+> for the record; the paths below no longer exist.
+
+Status: Superseded
 Date: 2026-06-03
 
 ## Context

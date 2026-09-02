@@ -574,15 +574,6 @@ export function renderDetailLines(
 		case 'permission.denied':
 		case 'elicitation.request':
 		case 'elicitation.result':
-		case 'channel.permission.relayed':
-		case 'channel.permission.resolved':
-		case 'channel.question.relayed':
-		case 'channel.question.resolved':
-		case 'channel.chat.inbound':
-		case 'channel.chat.outbound':
-		case 'gateway.function.invoked':
-		case 'gateway.function.completed':
-		case 'gateway.function.failed':
 		case 'artifacts.manifest': {
 			const header = buildCompactHeader(event, width, {theme});
 			const json = JSON.stringify(event.raw ?? event.data, null, 2);

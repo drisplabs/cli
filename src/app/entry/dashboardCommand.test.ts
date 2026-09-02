@@ -255,7 +255,7 @@ describe('runDashboardCommand: pair', () => {
 		expect(cap.out.join('\n')).toContain('bound runner Nightly QA (runner_1)');
 	});
 
-	it('does not reconcile console sidecars or reload the gateway after pairing', async () => {
+	it('does not write console sidecars after pairing', async () => {
 		const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pair-home-'));
 		tmpDirs.push(home);
 		process.env['HOME'] = home;

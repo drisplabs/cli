@@ -365,8 +365,8 @@ export async function runDashboardCommand(
 
 		// Mirror the dashboard's runner-attachment list locally. The dashboard
 		// remains the source of truth — we just stop discarding the data the
-		// pair response already carries, so subsequent commands and the
-		// gateway can read "which runners are attached?" without a round-trip.
+		// pair response already carries, so subsequent commands can read
+		// "which runners are attached?" without a round-trip.
 		try {
 			writeMirror({
 				instanceId: parsed.instanceId,

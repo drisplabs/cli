@@ -49,9 +49,10 @@ What happens, in ADR 0014 terms:
   falls back to a fresh Turn seeded from the Tracker, with your reply still
   the prompt. The Run is never stranded on a dead session.
 
-A live session's questions still route through the existing Relay path
-(`--channel telegram` etc.) as runtime decisions; suspension is what happens
-when no such channel answered and the process has since ended.
+A live interactive session answers its own questions in the terminal, and a
+paired dashboard can deliver decisions into a running session; suspension is
+what happens when no hub was attached to answer (the request held, per the
+README's "Permissions with no hub attached") and the process has since ended.
 
 ## Notes
 

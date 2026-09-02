@@ -18,11 +18,6 @@ import {resolveHarnessAdapter} from '../../harnesses/registry';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import {createRuntime} from '../runtime/createRuntime';
 import {
-	createRelayPermissionCallback,
-	createRelayQuestionCallback,
-} from '../channels/relayAdapter';
-import {startSessionBridge} from '../channels/sessionBridgeLifecycle';
-import {
 	createPairedFeedPublisher,
 	type FeedSink,
 } from '../dashboard/pairedFeedPublisher';
@@ -218,8 +213,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		now,
 	});
 
-	// Exec does not pre-seed rules from isolation defaults; channel relay (or
-	// the absence of one) governs approvals.
+	// Exec does not pre-seed rules from isolation defaults. With no hub
+	// attached there is nobody to ask, so a permission request holds the Run
+	// until timeoutMs (or abort) — see README "Permissions with no hub".
 	const rules: import('../../core/controller/rules').HookRule[] = [];
 
 	let runtimeStarted = false;
@@ -321,16 +317,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const currentAdapterSessionId = (): string | null => adapterSessionId;
 
-	const bridgeFactory = options.bridgeFactory ?? startSessionBridge;
-	const bridge =
-		options.channels && options.channels.length > 0
-			? await bridgeFactory({
-					runtimeId: athenaSessionId,
-					defaultAgentId: 'main',
-					...(options.signal ? {signal: options.signal} : {}),
-				})
-			: null;
-
 	// Handover state (ADR 0014 §5). A compact.pre on the Run's Agent Session
 	// blocks vendor compaction and interrupts the Turn; the workflow runner
 	// then forks, distills, and reseeds. While the fork writes the Handoff
@@ -359,16 +345,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const controllerCallbacks: ControllerCallbacks = {
 		getRules: () => rules,
-		// No UI queue in exec; with no bridge attached, the runtime never
-		// receives a decision and the request blocks until timeoutMs (or abort).
+		// No UI queue in exec; with no hub attached, the runtime never
+		// receives a decision and the request holds until timeoutMs (or abort).
 		enqueuePermission: () => {},
 		enqueueQuestion: () => {},
-		...(bridge
-			? {
-					relayPermission: createRelayPermissionCallback(bridge, runtime),
-					relayQuestion: createRelayQuestionCallback(bridge, runtime),
-				}
-			: {}),
 		// Handover interception is Claude-only for now: the fork transition
 		// rides --fork-session, which Codex has no equivalent for. Non-workflow
 		// sessions never intercept — vendor compaction proceeds unchanged.
@@ -464,13 +444,12 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
 
-			// Declared attention (ADR 0014): with no bridge, no human can ever
-			// answer a question — waiting on the null-timeout decision would hang
-			// the Run forever. Interrupt the Turn; the runner suspends the Run in
-			// `awaiting_attention` with the question preserved.
+			// Declared attention (ADR 0014): with no hub attached, no human can
+			// ever answer a question — waiting on the null-timeout decision would
+			// hang the Run forever. Interrupt the Turn; the runner suspends the
+			// Run in `awaiting_attention` with the question preserved.
 			if (
 				options.workflow?.loop?.enabled &&
-				!bridge &&
 				attentionRequest === null &&
 				isQuestionEvent(runtimeEvent)
 			) {
@@ -718,7 +697,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (runtimeStarted) {
 			runtime.stop();
 		}
-		await bridge?.stop();
 		store.close();
 		ownedFeedPublisher?.close();
 	}

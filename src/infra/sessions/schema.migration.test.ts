@@ -2,6 +2,14 @@ import {describe, it, expect} from 'vitest';
 import Database from 'better-sqlite3';
 import {initSchema} from './schema';
 
+function tableNames(db: Database.Database): string[] {
+	return (
+		db
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+			.all() as Array<{name: string}>
+	).map(row => row.name);
+}
+
 describe('schema migrations', () => {
 	it('rejects duplicate global seq (different runs)', () => {
 		const db = new Database(':memory:');
@@ -216,7 +224,7 @@ describe('schema migrations', () => {
 		db.close();
 	});
 
-	it('migrates v5 → v6 by adding the channel_outbox table', () => {
+	it('migrates v5 → v6 as a version bump that creates no channel_outbox table', () => {
 		const db = new Database(':memory:');
 		db.exec('PRAGMA foreign_keys = ON');
 		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
@@ -252,23 +260,24 @@ describe('schema migrations', () => {
 		};
 		expect(row.version).toBe(8);
 
-		// channel_outbox: insert + due index works
-		db.prepare(
-			`INSERT INTO channel_outbox (channel_id, account_id, payload_json, next_attempt_at, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-		).run(
-			'telegram',
-			'default',
-			'{"text":"hi"}',
-			Date.now() + 1000,
-			Date.now(),
-		);
-		const due = db
-			.prepare(
-				'SELECT count(*) as n FROM channel_outbox WHERE next_attempt_at >= ?',
-			)
-			.get(0) as {n: number};
-		expect(due.n).toBe(1);
+		// The channel queues went with the second runner (#183): no code path
+		// creates them any more. The feed outbox (feed_events) is untouched.
+		expect(tableNames(db)).not.toContain('channel_outbox');
+		expect(tableNames(db)).not.toContain('inbound_queue');
+		expect(tableNames(db)).toContain('feed_events');
+
+		db.close();
+	});
+
+	it('creates no channel_outbox or inbound_queue table on a fresh database', () => {
+		const db = new Database(':memory:');
+		initSchema(db);
+
+		const tables = tableNames(db);
+		expect(tables).not.toContain('channel_outbox');
+		expect(tables).not.toContain('inbound_queue');
+		expect(tables).toContain('feed_events');
+		expect(tables).toContain('workflow_runs');
 
 		db.close();
 	});

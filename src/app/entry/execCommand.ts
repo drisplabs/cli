@@ -18,7 +18,6 @@ export type ExecCliFlags = {
 	ephemeral: boolean;
 	timeoutMs?: number;
 	verbose: boolean;
-	channels?: readonly string[];
 };
 
 export type ExecRuntimeConfig = Pick<
@@ -133,7 +132,6 @@ export async function runExecCommand(
 		outputLastMessagePath: input.flags.outputLastMessage,
 		ephemeral: input.flags.ephemeral,
 		timeoutMs: input.flags.timeoutMs,
-		channels: input.flags.channels,
 		// Reporting-only summary: strip to name + source layer so secret-bearing
 		// MCP env/command/args and skill paths never reach the startup notice or
 		// the exec.started event (R3).

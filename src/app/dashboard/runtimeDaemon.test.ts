@@ -458,7 +458,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		}
 	});
 
-	it('does not reconcile console sidecars or reload the gateway when attachments change', async () => {
+	it('does not write console sidecars when attachments change', async () => {
 		const fake = makeFakeSocket();
 		const home = process.env['HOME']!;
 		const channelDir = path.join(home, '.config', 'athena', 'channels');
