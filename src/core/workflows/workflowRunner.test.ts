@@ -5,6 +5,7 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
 import {TRACKER_SKELETON_MARKER} from './trackerReader';
+import type {RunMemory} from './runMachine';
 
 const NULL_TOKENS = {
 	input: null,
@@ -1297,6 +1298,85 @@ describe('createWorkflowRunner', () => {
 		});
 	});
 
+	it('retries a transient fork failure once with backoff before completing the Handover', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+
+		let pendingHandover: {handle: string} | null = null;
+		const degraded: string[] = [];
+		const calls: Array<{continuation: unknown}> = [];
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// First fork attempt: a transient infra failure — no Handoff file
+			// written, so it must retry rather than degrade immediately.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				return {
+					...OK_RESULT,
+					exitCode: 1,
+					error: new Error('API Error: 503 Service Unavailable'),
+				};
+			})
+			// The retried fork attempt succeeds.
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input as never);
+				const named = /(\S*handoff\S*\.md)/.exec(input.prompt);
+				if (!named)
+					throw new Error(`no Handoff path in prompt: ${input.prompt}`);
+				fs.mkdirSync(path.dirname(named[1]!), {recursive: true});
+				fs.writeFileSync(named[1]!, '# Handoff', 'utf-8');
+				return OK_RESULT;
+			})
+			// The post-Handover Turn completes the workflow.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5, retryBackoffMs: 1},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onDegraded: handle_ => degraded.push(handle_),
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The retry succeeded — the Handover never degraded to in-place vendor
+		// compaction.
+		expect(degraded).toEqual([]);
+		// Turn 1, the failed fork, the retried fork, the post-Handover Turn.
+		expect(startTurn).toHaveBeenCalledTimes(4);
+		// Turn 1 (interrupted) + post-Handover Turn tick; neither fork attempt
+		// does.
+		expect(result.iterations).toBe(2);
+	});
+
 	it('frames the human reply with wake context on the first Turn of a woken run', async () => {
 		const projectDir = makeTempDir();
 		const trackerDir = path.join(projectDir, '.athena', 's1');
@@ -1336,6 +1416,73 @@ describe('createWorkflowRunner', () => {
 		expect(prompts[0]).toContain('French, please.');
 		expect(prompts[0]).toContain('tracker');
 		expect(prompts[0]).toContain('terminal marker');
+	});
+
+	it('wakes from resumedRunMemory: carries the iteration budget across the wake and seeds the wake prompt', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		fs.writeFileSync(
+			trackerPath,
+			'# Workflow Tracker\n\nstuck on a question\n',
+			'utf-8',
+		);
+
+		const prompts: string[] = [];
+		const continuations: unknown[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(
+				async (input: {prompt: string; continuation: unknown}) => {
+					prompts.push(input.prompt);
+					continuations.push(input.continuation);
+					fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					return OK_RESULT;
+				},
+			);
+
+		// A Run suspended at iteration 7 (ADR 0016 §2/§6) — the wake must
+		// continue that budget, not restart it at 1.
+		const resumedRunMemory: RunMemory = {
+			iteration: 7,
+			nudgeStreak: 3,
+			retryStreak: 1,
+			lastTrackerHash: 'deadbeef',
+			lastStopPrompt: 'the stale pre-wake prompt',
+			lastStopContinuation: {mode: 'fresh'},
+		};
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the human reply',
+			resumeRunId: 'run-suspended',
+			resumedRunMemory,
+			resumedStopReason:
+				'nudge cap reached: 2 nudges (nudgeCap) without tracker progress or a terminal marker',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 20},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The wake ticks the iteration once from the rehydrated budget — a
+		// Run-wide ceiling across wakes, not restarted at 1.
+		expect(result.iterations).toBe(8);
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(continuations[0]).toEqual({mode: 'fresh'});
+		expect(prompts[0]).toContain('suspended awaiting a human');
+		expect(prompts[0]).toContain('the human reply');
+		// Not the stale pre-wake prompt the suspended Run last attempted — the
+		// replay invariant (ADR 0016 §3) never replays it on a wake.
+		expect(prompts[0]).not.toContain('the stale pre-wake prompt');
 	});
 
 	it('reuses a resumed run id so the suspended run returns to running', async () => {
