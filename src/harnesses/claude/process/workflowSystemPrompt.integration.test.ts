@@ -1,6 +1,6 @@
 /**
  * End-to-end integration: a looped workflow's composed system prompt
- * (Stateless Turn Protocol + the workflow's instructions file) must reach
+ * (Turn Protocol + the workflow's instructions file) must reach
  * the spawned Claude process via `--append-system-prompt-file`.
  *
  * This spans the seam that unit tests leave uncovered: `sessionPlan` proves the
@@ -158,7 +158,7 @@ describe('workflow system prompt reaches the spawned process (e2e)', () => {
 		});
 
 		const appended = appendedSystemPromptFileContents(args);
-		expect(appended).toContain('Stateless Turn Protocol');
+		expect(appended).toContain('Turn Protocol');
 		expect(appended).toContain('# My Workflow Steps');
 	});
 
@@ -179,14 +179,12 @@ describe('workflow system prompt reaches the spawned process (e2e)', () => {
 		// The conversation prompt (-p) is part of the message history and is
 		// subject to compaction. The protocol must NOT live there.
 		const promptArg = args[args.indexOf('-p') + 1]!;
-		expect(promptArg).not.toContain('Stateless Turn Protocol');
+		expect(promptArg).not.toContain('Turn Protocol');
 
 		// It must live in the appended system-prompt file, which is re-sent on
 		// every model request for the life of the process and therefore survives
 		// an in-process compaction.
-		expect(appendedSystemPromptFileContents(args)).toContain(
-			'Stateless Turn Protocol',
-		);
+		expect(appendedSystemPromptFileContents(args)).toContain('Turn Protocol');
 	});
 
 	it('regenerates the composed prompt on a later run when the workflow file changes', () => {
