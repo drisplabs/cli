@@ -2,7 +2,7 @@
 
 Since ADR 0014 a Workflow Run that cannot proceed alone suspends in the
 non-terminal **`awaiting_attention`** status instead of dying. Every route in
-funnels here: a declared `WORKFLOW_BLOCKED[: reason]`, an `AskUserQuestion`
+funnels here: a declared `NEEDS_HUMAN[: reason]`, an `AskUserQuestion`
 no attached human could answer, a hard failure (`auth` / `billing` /
 `invalid_request` / `model_not_found` / unclassifiable), or an exhausted
 bound (Nudge cap, Retry cap, `maxIterations`) — the suspension message always
@@ -27,10 +27,10 @@ Lists every Workflow Run whose session's most recent run is
 `awaiting_attention`, across all projects: the workflow name, the session id,
 why it suspended, and the exact wake command.
 
-## Wake: `athena-flow exec --continue`
+## Wake: `athena-flow run --continue`
 
 ```sh
-athena-flow exec --continue=<athenaSessionId> "your reply"
+athena-flow run --continue=<athenaSessionId> "your reply"
 ```
 
 What happens, in ADR 0014 terms:
@@ -46,7 +46,7 @@ What happens, in ADR 0014 terms:
   row returns to `running` and can proceed to completion — no forever-
   suspended row left beside a new one.
 - **Degrade:** if the vendor session is gone or invalid, the failed resume
-  falls back to a fresh Turn seeded from the Tracker, with your reply still
+  falls back to a fresh Turn seeded from the Journal, with your reply still
   the prompt. The Run is never stranded on a dead session.
 
 A live interactive session answers its own questions in the terminal, and a
@@ -60,4 +60,4 @@ README's "Permissions with no hub attached") and the process has since ended.
   longer emitted.
 - A suspended run's `ended_at` stays NULL — it has not ended.
 - Iteration numbering restarts on the resumed run's row (the runner counts
-  its own Turns); the Tracker remains the durable ledger of progress.
+  its own Turns); the Journal remains the durable ledger of progress.

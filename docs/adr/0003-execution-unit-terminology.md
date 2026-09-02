@@ -3,6 +3,8 @@
 Status: Active — amended by [ADR 0014](0014-handover-retry-attention-continuation.md) (§1's Agent Session is no longer "the FRESH vendor session/thread per Turn (no `--resume`)": it spans the Turns that resume it and resets at a Handover, so the Tracker is no longer the sole continuity mechanism. §5's "Stateless" name is left in place but is now a partial misnomer.)
 Date: 2026-06-06
 
+> **Terminology note (2026-09-03, #185):** this ADR predates the rename of the **Tracker** to the **Journal** (`journal.md`, `JOURNAL_SKELETON`), of the `WORKFLOW_BLOCKED` marker to `NEEDS_HUMAN`, of `drisp exec` to `drisp run`, and of the isolation presets `strict` / `minimal` / `permissive` to `guarded` / `standard` / `autonomous`. The text below is preserved as decided; read the old names as the new ones. §6's rule that persisted identifiers are not renamed still holds (`tracker_path` stays). See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
+
 ## Context
 
 The words **session**, **run**, and **turn** are overloaded across the codebase, and **iteration** is

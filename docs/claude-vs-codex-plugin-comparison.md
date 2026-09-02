@@ -416,7 +416,7 @@ Claude plugins can specify tool access restrictions via isolation configs:
 ```typescript
 // src/harnesses/claude/config/isolation.ts
 type IsolationConfig = {
-	preset?: 'strict' | 'minimal' | 'permissive';
+	preset?: 'guarded' | 'standard' | 'autonomous';
 	allowedTools?: string[];
 	disallowedTools?: string[];
 	mcpConfig?: string;

@@ -8,6 +8,8 @@ since `.athena/` is gitignored but the KB is git-versioned)
 Date: 2026-07-19
 Relates to: KB PRD (lespaceman/athena-flow-cli#132)
 
+> **Terminology note (2026-09-03, #185):** the **Tracker** named below is now the **Journal**; a KB Source built from a Workflow Run is therefore a Journal plus its transitive closure. The text is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
+
 ## Context
 
 The KB PRD says a separate `kb.db` "holds the provenance index and page

@@ -121,8 +121,9 @@ const interruptionBase = {
 
 /**
  * Why a Run parked in `awaiting_attention` — the payload of a Needs-attention
- * escalation. One of: a declared `WORKFLOW_BLOCKED`, an elicitation the agent
- * raised (`AskUserQuestion`), a hard failure, or an exhausted cap/ceiling.
+ * escalation. One of: a declared `NEEDS_HUMAN` marker (spelled
+ * `WORKFLOW_BLOCKED` before 0.6), an elicitation the agent raised
+ * (`AskUserQuestion`), a hard failure, or an exhausted cap/ceiling.
  * Resolved by a human reply (`answer` for a question, `steer` otherwise),
  * which resumes the intact Agent Session.
  */
@@ -130,7 +131,7 @@ export const InterruptionSchema = z.discriminatedUnion('kind', [
 	z.object({
 		...interruptionBase,
 		kind: z.literal('blocked'),
-		/** The `: reason` suffix of `WORKFLOW_BLOCKED[: reason]`, when given. */
+		/** The `: reason` suffix of `NEEDS_HUMAN[: reason]`, when given. */
 		reason: z.string().optional(),
 	}),
 	z.object({

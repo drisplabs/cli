@@ -50,7 +50,7 @@ and model preferences. The runtime handles the rest.
 
 **Harness-agnostic** -- same workflows, same UI, same session model across Claude Code and Codex.
 
-**CI-native** -- `drisp exec` runs headlessly with safe defaults, JSONL output, and structured exit codes.
+**CI-native** -- `drisp run` runs headlessly with safe defaults, JSONL output, and structured exit codes.
 
 <br>
 
@@ -126,23 +126,23 @@ drisp workflow install e2e-test-builder@lespaceman/athena-workflow-marketplace
 
 ## CI / Automation
 
-`drisp exec` is built for pipelines. Safe by default -- permission and question hooks fail unless you opt in.
+`drisp run` is built for pipelines. Safe by default -- permission and question hooks fail unless you opt in.
 
 ### Permissions with no hub attached
 
-drisp has a single door. A permission request or a question is answered by whoever is attached to the Run: the interactive terminal, or a paired dashboard delivering decisions. With no hub attached (a headless `drisp exec` with no dashboard paired) there is nobody to ask, so the request **waits**: the Run holds on the pending decision, and nothing is auto-approved or auto-denied on its behalf. The hold ends one of two ways. If you set `--timeout-ms`, the run exits with the timeout exit code when it expires. If the Run belongs to a workflow and the agent asked a question, the Turn is interrupted and the Run is parked in `awaiting_attention`, where `drisp runs` lists it and a human wakes it with the answer (see [human resume](docs/guides/human-resume.md)). The hold-then-park rules are refined in #190.
+drisp has a single door. A permission request or a question is answered by whoever is attached to the Run: the interactive terminal, or a paired dashboard delivering decisions. With no hub attached (a headless `drisp run` with no dashboard paired) there is nobody to ask, so the request **waits**: the Run holds on the pending decision, and nothing is auto-approved or auto-denied on its behalf. The hold ends one of two ways. If you set `--timeout-ms`, the run exits with the timeout exit code when it expires. If the Run belongs to a workflow and the agent asked a question, the Turn is interrupted and the Run is parked in `awaiting_attention`, where `drisp runs` lists it and a human wakes it with the answer (see [human resume](docs/guides/human-resume.md)). The hold-then-park rules are refined in #190.
 
 ```bash
-drisp exec "summarize risk in this PR"                                        # plain text
-drisp exec "run checks" --json --on-permission=deny --on-question=empty       # JSONL
-drisp exec "write release notes" --output-last-message release-notes.md       # artifact
+drisp run "summarize risk in this PR"                                        # plain text
+drisp run "run checks" --json --on-permission=deny --on-question=empty       # JSONL
+drisp run "write release notes" --output-last-message release-notes.md       # artifact
 ```
 
 <details>
 <summary>GitHub Actions</summary>
 
 ```yaml
-name: drisp-exec
+name: drisp-run
 on: [pull_request]
 jobs:
   drisp:
@@ -153,7 +153,7 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
-      - run: npx @drisp/cli exec "summarize risk in this PR" \
+      - run: npx @drisp/cli run "summarize risk in this PR" \
           --json --on-permission=deny --on-question=empty \
           --output-last-message drisp-summary.md
       - uses: actions/upload-artifact@v4
@@ -168,11 +168,11 @@ jobs:
 <summary>GitLab CI</summary>
 
 ```yaml
-drisp_exec:
+drisp_run:
   image: node:20
   script:
     - npm ci
-    - npx @drisp/cli exec "summarize pipeline status" \
+    - npx @drisp/cli run "summarize pipeline status" \
       --json --on-permission=deny --on-question=empty \
       --output-last-message drisp-summary.md
   artifacts:
@@ -220,41 +220,41 @@ Config merges in order: **global &rarr; project &rarr; CLI flags**.
 <details>
 <summary>CLI flags</summary>
 
-| Flag            | Description                                   |
-| --------------- | --------------------------------------------- |
-| `--project-dir` | Project directory (default: cwd)              |
-| `--plugin`      | Path to a plugin directory (repeatable)       |
-| `--isolation`   | `strict` (default) · `minimal` · `permissive` |
-| `--theme`       | `dark` (default) · `light` · `high-contrast`  |
-| `--ascii`       | ASCII-only UI glyphs                          |
-| `--verbose`     | Extra rendering detail                        |
+| Flag            | Description                                     |
+| --------------- | ----------------------------------------------- |
+| `--project-dir` | Project directory (default: cwd)                |
+| `--plugin`      | Path to a plugin directory (repeatable)         |
+| `--isolation`   | `guarded` (default) · `standard` · `autonomous` |
+| `--theme`       | `dark` (default) · `light` · `high-contrast`    |
+| `--ascii`       | ASCII-only UI glyphs                            |
+| `--verbose`     | Extra rendering detail                          |
 
-**exec-only:**
+**run-only:**
 
-| Flag                    | Description                                            |
-| ----------------------- | ------------------------------------------------------ |
-| `--continue`            | Resume most recent exec session (or `--continue=<id>`) |
-| `--json`                | JSONL lifecycle events on stdout                       |
-| `--output-last-message` | Write final assistant message to a file                |
-| `--ephemeral`           | Disable session persistence for this run               |
-| `--on-permission`       | `allow` · `deny` · `fail` (default)                    |
-| `--on-question`         | `empty` · `fail` (default)                             |
-| `--timeout-ms`          | Hard timeout for the run                               |
+| Flag                    | Description                                           |
+| ----------------------- | ----------------------------------------------------- |
+| `--continue`            | Resume most recent run session (or `--continue=<id>`) |
+| `--json`                | JSONL lifecycle events on stdout                      |
+| `--output-last-message` | Write final assistant message to a file               |
+| `--ephemeral`           | Disable session persistence for this run              |
+| `--on-permission`       | `allow` · `deny` · `fail` (default)                   |
+| `--on-question`         | `empty` · `fail` (default)                            |
+| `--timeout-ms`          | Hard timeout for the run                              |
 
 </details>
 
 <details>
 <summary>Commands</summary>
 
-| Command             | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| _(default)_         | Start interactive session in cwd                             |
-| `setup`             | Re-run setup wizard                                          |
-| `sessions`          | Interactive session picker                                   |
-| `resume [id]`       | Resume most recent or specific session                       |
-| `exec "<prompt>"`   | Headless run for CI / scripting                              |
-| `workflow <sub>`    | `install` · `list` · `search` · `remove` · `upgrade` · `use` |
-| `marketplace <sub>` | `add` · `refresh` · `remove` · `list`                        |
+| Command             | Description                                                    |
+| ------------------- | -------------------------------------------------------------- |
+| _(default)_         | Start interactive session in cwd                               |
+| `setup`             | Re-run setup wizard                                            |
+| `sessions`          | Interactive session picker                                     |
+| `resume [id]`       | Resume most recent or specific session                         |
+| `run "<prompt>"`    | Headless run for CI / scripting (`exec` is a deprecated alias) |
+| `workflow <sub>`    | `install` · `list` · `search` · `remove` · `upgrade` · `use`   |
+| `marketplace <sub>` | `add` · `refresh` · `remove` · `list`                          |
 
 </details>
 
