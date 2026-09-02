@@ -83,19 +83,6 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			adapter_session_id TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
 		);
-
-		-- Durable retry queue for outbound channel sends. Drained by the gateway
-		-- daemon on startup and after transient send failures.
-		CREATE TABLE IF NOT EXISTS channel_outbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel_id TEXT NOT NULL,
-			account_id TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			attempt INTEGER NOT NULL DEFAULT 0,
-			next_attempt_at INTEGER NOT NULL,
-			last_error TEXT,
-			created_at INTEGER NOT NULL
-		);
 	`);
 
 	db.exec(`
@@ -104,7 +91,6 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_seq ON feed_events(seq);
 		CREATE INDEX IF NOT EXISTS idx_runtime_seq ON runtime_events(seq);
 		CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs(session_id);
-		CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
 	`);
 
 	// idx_feed_prompt indexes a column added in v7, so it can't live in the base
@@ -184,24 +170,14 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		}
 	).version;
 	if (versionAfterV5 === 5) {
-		// v6 originally also created `channel_messages` and
-		// `gateway_function_invocations`; both shipped without any production
-		// reader/writer and were dropped from the DDL (ADR 0006). Databases
-		// already migrated to v6 keep those empty tables harmlessly.
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS channel_outbox (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				channel_id TEXT NOT NULL,
-				account_id TEXT NOT NULL,
-				payload_json TEXT NOT NULL,
-				attempt INTEGER NOT NULL DEFAULT 0,
-				next_attempt_at INTEGER NOT NULL,
-				last_error TEXT,
-				created_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
-			UPDATE schema_version SET version = 6;
-		`);
+		// v6 originally created `channel_messages` and
+		// `gateway_function_invocations` (dropped in ADR 0006: no reader or
+		// writer ever shipped) and the channel `channel_outbox` retry queue
+		// (dropped with the second runner in #183). Nothing reads or writes any
+		// of them, so v5 → v6 is now a pure version bump. Databases already
+		// migrated to v6 keep those empty tables harmlessly; the feed outbox
+		// (`feed_events`) is unrelated and untouched.
+		db.exec('UPDATE schema_version SET version = 6;');
 	}
 
 	const versionAfterV6 = (
