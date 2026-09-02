@@ -372,6 +372,12 @@ export function projectTrackerTasks(
 	const tasks: TrackerTaskProjection[] = [];
 	for (const row of rows) {
 		const recordAbsPath = path.resolve(baseDir, row.recordPath);
+		// Containment: a Tracker row may only point at a record inside its own
+		// Dossier. The agent authors the Tracker, but it does so from content it
+		// read elsewhere, and a row like `../../../etc/passwd` would otherwise
+		// be resolved and read. Escaping rows are skipped, not fatal.
+		const relToBase = path.relative(baseDir, recordAbsPath);
+		if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) continue;
 		let recordContent: string;
 		try {
 			recordContent = fs.readFileSync(recordAbsPath, 'utf-8');

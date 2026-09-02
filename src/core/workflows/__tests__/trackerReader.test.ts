@@ -504,6 +504,40 @@ describe('projectTrackerTasks', () => {
 		]);
 	});
 
+	it('skips a row pointing outside the Dossier, without failing the rest', () => {
+		const dir = makeDossier();
+		const trackerPath = path.join(dir, 'tracker.md');
+		// A record placed OUTSIDE the Dossier, valid in every other respect: if
+		// containment were missing it would parse and project.
+		const outsidePath = path.join(dir, '..', 'outside-record.md');
+		fs.writeFileSync(
+			outsidePath,
+			['---', 'status: open', '---', ''].join('\n'),
+		);
+		fs.writeFileSync(
+			trackerPath,
+			[
+				'# Workflow Tracker',
+				'',
+				'## Units',
+				'',
+				'| Unit | Record |',
+				'| --- | --- |',
+				'| Escaping row | ../outside-record.md |',
+				'| Absolute row | ' + outsidePath + ' |',
+				'| Present record | units/present.md |',
+			].join('\n'),
+		);
+		fs.writeFileSync(
+			path.join(dir, 'units', 'present.md'),
+			['---', 'status: open', '---', ''].join('\n'),
+		);
+
+		expect(projectTrackerTasks(trackerPath)).toEqual([
+			{taskId: 'present', content: 'Present record', status: 'pending'},
+		]);
+	});
+
 	it('skips a row whose record has malformed frontmatter, without failing the rest', () => {
 		const dir = makeDossier();
 		const trackerPath = path.join(dir, 'tracker.md');
