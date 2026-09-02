@@ -2,14 +2,11 @@ import type {AthenaHarness} from '../../infra/plugins/config';
 import protocolBody from './stateMachine.md';
 
 /**
- * Shared stateless session protocol.
+ * The Turn Protocol.
  *
  * The agent-facing prose lives in `stateMachine.md` (single source of truth,
  * easy to diff). This module wraps it with harness-specific task-tool
  * instructions via the `{{TASK_TOOL_INSTRUCTIONS}}` placeholder.
- *
- * The marketplace mirrors this protocol at `shared/state-machine.md`; keep
- * them in sync.
  */
 
 function buildTaskToolInstructions(harness: AthenaHarness): string {

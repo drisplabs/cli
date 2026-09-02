@@ -1,6 +1,6 @@
-# Stateless Turn Protocol
+# Turn Protocol
 
-You run inside a managed workflow loop. **Run until the work is done.** The tracker file is your durable memory: read it, work, write it as you go. Your conversation context usually survives between stops — the runner resumes your session rather than restarting it — but never rely on that: the runner may kill a long Turn, your session may be replaced at a context bound, the process may die mid-task. Anything not in the tracker can be lost.
+You run inside a managed workflow loop. **Run until the work is done.** The Dossier — `.athena/<session_id>/` — is your durable memory; `tracker.md` is your index into it: read it, work, write it as you go. Your conversation context usually survives between stops — the runner resumes your session rather than restarting it — but never rely on that: the runner may kill a long Turn, your session may be replaced at a context bound, the process may die mid-task. Anything not in the Dossier can be lost.
 
 Two kinds of Turn exist, and you should know which you are in:
 
@@ -12,7 +12,7 @@ Two kinds of Turn exist, and you should know which you are in:
 1. Read the tracker at the configured path (default: `.athena/<session_id>/tracker.md`). The runner provides the session ID — do not invent one.
 2. If the tracker contains `<!-- TRACKER_SKELETON -->` → this is Turn 1, run [**Orient**](#orient-turn-1).
 3. Otherwise → this is a continuation, run [**Execute**](#execute-continuation) from where the tracker says, not from the start of the flow.
-4. If the runner's prompt names a Handoff file, read it too: it carries the in-flight context the tracker never checkpointed. Do not redo completed work or re-litigate decisions it records.
+4. If the runner's prompt names a Handoff file, read it too — it's mandatory alongside the tracker: it carries the in-flight context the tracker never checkpointed. Then read whatever the tracker's fifth question names (see [Tracker contract](#tracker-contract)) — that, the tracker, and any named Handoff file are your complete required reading. Do not redo completed work or re-litigate decisions any of them record.
 
 Reading first prevents two failure modes that waste whole Turns: redoing work already done, or contradicting decisions a prior Turn made.
 
@@ -20,14 +20,15 @@ In a resumed Turn, your context is already loaded — skim the tracker only if y
 
 ## Tracker contract
 
-The tracker must always answer four questions:
+The tracker must always answer five questions:
 
 1. What are we trying to accomplish?
 2. What has been done?
 3. What's left?
 4. What should the next Turn do first?
+5. What else, beyond this file, must the next Turn read to have full context?
 
-A fresh Turn has no other context. If something isn't here, it doesn't exist. Section headings may vary by workflow, but these four answers must be explicit and easy to find.
+A fresh Turn has no other context. If something isn't here or in a file question 5 names, it doesn't exist. Section headings may vary by workflow, but these five answers must be explicit and easy to find. Question 5 is the tracker's pointer into the rest of the Dossier (see [The Dossier](#the-dossier)): on a single-file Run its honest answer is "nothing else"; once anything has been shed, it names exactly which files, so a fresh Turn's opening read stays small even when the Dossier has grown.
 
 ### Terminal markers
 
@@ -42,6 +43,47 @@ Rules:
 - When you write a terminal marker, it must be the final non-empty line of the tracker. Put every summary, status note, and next-step sentence before the marker. Never append prose after it.
 - The runner trusts markers unconditionally. A premature `WORKFLOW_COMPLETE` ends the run with no automatic recovery — write it only when its criteria are fully met.
 - Include a concrete reason after `WORKFLOW_BLOCKED:` whenever possible — it is what the human sees when deciding how to answer you. Put the full question there.
+
+## The Dossier
+
+`.athena/<session_id>/` is the Dossier: the tracker plus everywhere it can shed cold detail once shedding earns its keep.
+
+```
+tracker.md       state: index, open loops, next action, terminal marker
+units/<slug>.md   journal: contract, problem, design + rationale, build state, gate evidence
+orientation.md    cross-unit knowledge, revised in place
+handoff/NNN.md    episodic distillation, written at a Handover (chain, newest is mandatory reading)
+```
+
+**On most Runs the Dossier never grows past `tracker.md` itself** — one file, no ceremony, no extra directories, nothing below this line to act on. Nothing here changes how a short, single-unit Run works.
+
+A **unit** is a bounded piece of the plan that reaches its own closed state while the Run keeps going — one issue in a multi-issue epic, one phase of a larger goal. A Run with only one unit never closes a unit while another stays open, so it can never trip the first shed trigger below.
+
+### When to shed
+
+Two triggers, both structural. A single-unit Run trips neither:
+
+- **A unit closes while another is still open.** Cut that unit's whole detail out of the tracker now, before starting the next one.
+- **The tracker crosses ~8,000 tokens** (roughly 32,000 characters — a token is about 4 characters at this codebase's measured rate). This is a backstop for one long single unit, not a target to design toward — shed the completed phases of the still-open unit.
+
+### How to shed
+
+Shedding is three positive acts on one whole named `##` section — never a summary, never a partial move:
+
+1. **Cut** the section, verbatim, out of `tracker.md`.
+2. **Paste** it, verbatim, into `units/<slug>.md` (create the file on that unit's first shed).
+3. **Pointer** — leave one index row in the tracker's unit table with a relative path to where the detail went.
+
+Content is demoted, never deleted. If you find yourself rewording or condensing while moving text, stop — that is not shedding, that is exactly where fidelity leaks.
+
+### orientation.md
+
+Knowledge that spans more than one unit lives here, revised in place instead of appended to — the one Dossier surface you edit rather than move things into. Two sections with different rules:
+
+- **Established** — decisions. Never decay; only explicitly superseded ("we chose X over Y because Z — superseded 2026-09-03: …").
+- **Observed** — facts carrying a `file.ts:123`-style anchor. Revalidate the anchor before relying on it; code moves.
+
+A correction is an edit to the existing entry, not a new capitalized warning stacked on top of stale text.
 
 ## Run until done; declare when blocked
 
@@ -86,10 +128,11 @@ You end the run only by declaring:
 
 Write on **concrete triggers**, not on a vague sense of "meaningful progress." The right cadence sits between every-tool-call (noisy log, wastes tokens) and end-of-run (everything lost if you die mid-task). This matters more, not less, now that Turns run long: the tracker (plus the Handoff file at a Handover) is what carries a killed or reset session.
 
-- **Discrete unit done** — file written, fix applied, test run, gate passed. Reflect the new reality before starting the next unit.
-- **Insight learned** — API quirk, config field that turned out to matter, dead end ruled out, decision between two approaches. Insights are tracker-worthy even when no code changed; rediscovering them costs a future Turn a full re-exploration. The tracker is a knowledge ledger, not just a task log.
+- **Discrete unit done** — file written, fix applied, test run, gate passed. Reflect the new reality before starting the next unit. If another unit is still open, this is also a shed trigger (see [The Dossier](#the-dossier)): cut this unit's detail into `units/<slug>.md` before you start the next one.
+- **Insight learned** — API quirk, config field that turned out to matter, dead end ruled out, decision between two approaches. Insights are tracker-worthy even when no code changed; rediscovering them costs a future Turn a full re-exploration. The tracker is a knowledge ledger, not just a task log. Insight that spans more than one unit belongs in `orientation.md`, not the tracker.
 - **About to do something risky or long-running** — subagent dispatch, long build, flaky external call, large refactor. Write _first_, then act. If the operation kills your Turn, only what's on disk survives.
 - **Plan changed** — task resequenced, new task surfaced, planned task no longer needed. Stale plans poison continuation Turns.
+- **The tracker crosses the ~8,000-token backstop** — shed the completed phases of the still-open unit into its `units/<slug>.md` record now, mid-unit; don't wait for it to close.
 - **You haven't written in a while** — if you can't remember the last update, you've gone too long. A short defensive update ("doing X, last completed Y, next is Z") beats nothing.
 
 Each update covers: what changed (work or knowledge), what's now next, and any caveat a future Turn needs. Don't transcribe tool calls — the tracker is a contract with your future self, not a replay log.
@@ -113,6 +156,7 @@ The tracker is the durable source of truth. Your harness's task tools are a sess
 - [ ] Run until the work is done — do not stop at checkpoints, and never stop as a way of asking permission to continue
 - [ ] Need a human? Declare it: `WORKFLOW_BLOCKED: <question>` as the final non-empty line, then end
 - [ ] Update the tracker on concrete triggers — unit done, insight learned, risky op pending, plan changed
+- [ ] Shed a unit's detail into `units/<slug>.md` the moment it closes while another stays open, or the tracker crosses ~8,000 tokens — cut, paste, pointer, never summarize
 - [ ] Project the tracker plan into task tools at session start; keep both in sync as work lands
 - [ ] Follow the workflow steps as written; do not skip, reorder, or substitute your own process
 - [ ] Load the appropriate skill before each activity; do not rely on assumed knowledge

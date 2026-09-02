@@ -1,5 +1,5 @@
 /**
- * Tracker reader — the read-only inspector for the Stateless Turn Protocol.
+ * Tracker reader — the read-only inspector for the Turn Protocol.
  *
  * Athena spawns fresh `claude -p` Turns in a loop. The agent owns the Tracker
  * file (creates/updates it); the Runner only reads it between Turns to learn the

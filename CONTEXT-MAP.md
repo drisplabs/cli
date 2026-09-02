@@ -9,7 +9,7 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
 - [Feed-pipeline](./CONTEXT.md) — observation / projection: normalizes harness
   events into a timeline (**FeedMapper**, **FeedEvent**, **Feed Run**).
 - [Workflow-execution](./UBIQUITOUS_LANGUAGE.md) — execution / control: drives
-  the Stateless Turn Protocol loop (**Runner**, **Workflow Run**, **Turn**,
+  the Turn Protocol loop (**Runner**, **Workflow Run**, **Turn**,
   **Tracker**).
 - [Knowledge-base](./KNOWLEDGE_BASE.md) — knowledge management: the durable,
   LLM-maintained wiki that reconciles intent with reality (**KB**, **Wiki

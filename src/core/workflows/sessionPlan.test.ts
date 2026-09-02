@@ -69,9 +69,9 @@ describe('workflow session planning', () => {
 		const instructions = (state.workflowOverride as Record<string, unknown>)[
 			'developerInstructions'
 		] as string;
-		expect(instructions).toContain('# Stateless Turn Protocol');
+		expect(instructions).toContain('# Turn Protocol');
 		expect(instructions).toContain('# Workflow Steps');
-		expect(instructions.indexOf('Stateless Turn Protocol')).toBeLessThan(
+		expect(instructions.indexOf('Turn Protocol')).toBeLessThan(
 			instructions.indexOf('Workflow Steps'),
 		);
 	});
