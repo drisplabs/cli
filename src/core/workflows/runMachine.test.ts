@@ -14,6 +14,7 @@ import {
 import {
 	buildContinuePrompt,
 	buildNudgePrompt,
+	buildTrackerSizeNudgeSuffix,
 	TRACKER_SKELETON_MARKER,
 } from './trackerReader';
 import type {WorkflowRunState} from './sessionPlan';
@@ -153,6 +154,7 @@ function forkFinished(
 		ok: true,
 		cancelled: false,
 		handoffPath: '/proj/.athena/s1/handoff/001.md',
+		handoffSizeBytes: null,
 		transient: false,
 		...overrides,
 	};
@@ -466,6 +468,88 @@ describe('runMachine.step — turn_in_flight', () => {
 		expect(nextPhase.prompt).toBe(buildContinuePrompt(LOOP));
 		expect(result.memory.iteration).toBe(2);
 	});
+
+	it('does not append a size nudge when the tracker is under the token bound (Nudge path)', () => {
+		const trackerContent = '# Tracker\nsmall';
+		const result = step(
+			turnInFlight(),
+			makeMemory({lastTrackerHash: hash(trackerContent)}),
+			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.prompt).toBe(
+			buildNudgePrompt(LOOP, {skeletonNotReplaced: false}),
+		);
+	});
+
+	it('appends a size nudge suffix once the tracker crosses the token bound (Nudge path)', () => {
+		const trackerContent = 'x'.repeat(40_000); // well past the ~8,000-token bound
+		const result = step(
+			turnInFlight(),
+			makeMemory({lastTrackerHash: hash(trackerContent)}),
+			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.prompt).toBe(
+			buildNudgePrompt(LOOP, {skeletonNotReplaced: false}) +
+				buildTrackerSizeNudgeSuffix(LOOP.trackerPath),
+		);
+	});
+
+	it('does not append a size nudge when the tracker is under the token bound (fresh-continue path)', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory({iteration: 1}),
+			turnFinished({adapterSessionId: null, trackerContent: '# Tracker'}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.prompt).toBe(buildContinuePrompt(LOOP));
+	});
+
+	it('appends a size nudge suffix once the tracker crosses the token bound (fresh-continue path)', () => {
+		const trackerContent = 'x'.repeat(40_000);
+		const result = step(
+			turnInFlight(),
+			makeMemory({iteration: 1}),
+			turnFinished({adapterSessionId: null, trackerContent}),
+			makeCfg(),
+		);
+		const nextPhase = result.phase as Extract<
+			RunPhase,
+			{kind: 'turn_in_flight'}
+		>;
+		expect(nextPhase.prompt).toBe(
+			buildContinuePrompt(LOOP) + buildTrackerSizeNudgeSuffix(LOOP.trackerPath),
+		);
+	});
+
+	it('the size nudge never blocks the Run or produces a different action set', () => {
+		const trackerContent = 'x'.repeat(40_000);
+		const result = step(
+			turnInFlight(),
+			makeMemory({iteration: 1}),
+			turnFinished({adapterSessionId: null, trackerContent}),
+			makeCfg(),
+		);
+		expect(result.phase.kind).toBe('turn_in_flight');
+		expect(result.actions.map(a => a.type)).toEqual([
+			'persist',
+			'notify_iteration_complete',
+			'start_turn',
+		]);
+	});
 });
 
 describe('runMachine.step — backing_off', () => {
@@ -646,6 +730,44 @@ describe('runMachine.step — handing_over', () => {
 			{type: 'persist'},
 			expect.objectContaining({type: 'start_turn'}),
 		]);
+	});
+
+	it('records the Handoff file size on the run memory when the fork succeeds', () => {
+		const result = step(
+			handingOver({handle: 'sess-1'}),
+			makeMemory({iteration: 2, lastHandoffSizeBytes: null}),
+			forkFinished({ok: true, handoffSizeBytes: 4096}),
+			makeCfg(),
+		);
+		expect(result.memory.lastHandoffSizeBytes).toBe(4096);
+	});
+
+	it('records a null Handoff size when the stat failed rather than guessing', () => {
+		const result = step(
+			handingOver({handle: 'sess-1'}),
+			makeMemory({iteration: 2, lastHandoffSizeBytes: 1024}),
+			forkFinished({ok: true, handoffSizeBytes: null}),
+			makeCfg(),
+		);
+		expect(result.memory.lastHandoffSizeBytes).toBeNull();
+	});
+
+	it('leaves the prior Handoff size untouched when the fork fails and degrades in place', () => {
+		const result = step(
+			handingOver({handle: 'sess-orig'}),
+			makeMemory({iteration: 2, lastHandoffSizeBytes: 2048}),
+			forkFinished({ok: false}),
+			makeCfg(),
+		);
+		expect(result.memory.lastHandoffSizeBytes).toBe(2048);
+	});
+
+	it('the Handover seed prompt instructs folding the Handoff in before domain work', () => {
+		const prompt = buildHandoverSeedPrompt(
+			'/proj/.athena/s1/handoff/002.md',
+			'/proj/.athena/s1/tracker.md',
+		);
+		expect(prompt.toLowerCase()).toContain('before any domain work');
 	});
 
 	it('a transient failed fork retries once with backoff instead of degrading (ADR 0016 §8)', () => {

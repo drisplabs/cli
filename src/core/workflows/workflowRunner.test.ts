@@ -5,7 +5,10 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
 import {TRACKER_SKELETON_MARKER} from './trackerReader';
+import type {TrackerTaskProjection} from './trackerReader';
 import type {RunMemory} from './runMachine';
+import {deserializeRunMemory} from './runMachine';
+import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
 
 const NULL_TOKENS = {
 	input: null,
@@ -1087,6 +1090,71 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('Handover occurred');
 		expect(calls[2]!.prompt).toContain(handoffPath);
 		expect(calls[2]!.prompt).toContain(trackerPath);
+		// The post-Handover Turn must fold the Handoff in before domain work (ADR 0015 §8).
+		expect(calls[2]!.prompt.toLowerCase()).toContain('before any domain work');
+	});
+
+	it('records the Handoff file size on the run snapshot once the fork writes it', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(trackerDir, {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
+		const handoffBody = '# Handoff\nwhere things stand';
+
+		let pendingHandover: {handle: string} | null = null;
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			.mockImplementationOnce(async () => {
+				fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+				fs.writeFileSync(handoffPath, handoffBody, 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const snapshots: WorkflowRunSnapshot[] = [];
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: snapshot => snapshots.push(snapshot),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onForkStateChange: () => {},
+			},
+		});
+
+		await handle.result;
+
+		// Some snapshot taken after the fork must carry the Handoff's byte size.
+		const memories = snapshots
+			.map(s =>
+				s.runMemoryJson ? deserializeRunMemory(s.runMemoryJson) : null,
+			)
+			.filter(m => m !== null);
+		const sawHandoffSize = memories.some(
+			m => m!.lastHandoffSizeBytes === Buffer.byteLength(handoffBody, 'utf-8'),
+		);
+		expect(sawHandoffSize).toBe(true);
 	});
 
 	it('keeps prior Handoff files: each Handover writes the next numbered file', async () => {
@@ -1661,5 +1729,117 @@ describe('createWorkflowRunner', () => {
 		expect(createTracker).toHaveBeenCalledTimes(1);
 		expect(createTracker.mock.calls[0][0]).toContain('.athena/s1/tracker.md');
 		expect(createTracker.mock.calls[0][1]).toContain(TRACKER_SKELETON_MARKER);
+	});
+
+	it('projects the tracker unit table into the task tools after each Turn (ADR 0015 §7)', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(trackerDir, 'units'), {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		fs.writeFileSync(
+			path.join(trackerDir, 'units', 'first-unit.md'),
+			['---', 'status: closed', '---', '', 'Done.'].join('\n'),
+		);
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				trackerPath,
+				[
+					'# Workflow Tracker',
+					'',
+					'## Units',
+					'',
+					'| Unit | Record |',
+					'| --- | --- |',
+					'| First unit | units/first-unit.md |',
+					'',
+					'<!-- WORKFLOW_COMPLETE -->',
+				].join('\n'),
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const projected: TrackerTaskProjection[][] = [];
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 3},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks: tasks => projected.push(tasks),
+		});
+
+		await handle.result;
+
+		expect(projected.length).toBeGreaterThan(0);
+		expect(projected[projected.length - 1]).toEqual([
+			{taskId: 'first-unit', content: 'First unit', status: 'completed'},
+		]);
+	});
+
+	it('never fails a Turn when the tracker has no unit table to project (parse miss degrades silently)', async () => {
+		const projectDir = makeTempDir();
+		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+		const projectTasks = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(projectTasks).not.toHaveBeenCalled();
+	});
+
+	it('never fails a Turn when the projectTasks callback itself throws', async () => {
+		const projectDir = makeTempDir();
+		const trackerDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(trackerDir, 'units'), {recursive: true});
+		const trackerPath = path.join(trackerDir, 'tracker.md');
+		fs.writeFileSync(
+			path.join(trackerDir, 'units', 'u.md'),
+			['---', 'status: open', '---', ''].join('\n'),
+		);
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				trackerPath,
+				[
+					'## Units',
+					'| Unit | Record |',
+					'| --- | --- |',
+					'| Unit | units/u.md |',
+					'<!-- WORKFLOW_COMPLETE -->',
+				].join('\n'),
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks: () => {
+				throw new Error('boom');
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
 	});
 });

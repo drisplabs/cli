@@ -10,13 +10,14 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
-import type {TrackerMarkers} from './trackerReader';
+import type {TrackerMarkers, TrackerTaskProjection} from './trackerReader';
 import {createWorkflowRunState, resolveTrackerPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
 	readTracker,
 	TRACKER_SKELETON_MARKER,
 	demoteTerminalMarkers,
+	projectTrackerTasks,
 } from './trackerReader';
 import {substituteVariables} from './templateVars';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
@@ -114,6 +115,15 @@ export type WorkflowRunnerInput = {
 		 */
 		onDegraded?: (handle: string) => void;
 	};
+	/**
+	 * Task-tool projection seam (ADR 0015 §7). Called best-effort after every
+	 * `persist` action with the Tracker's `## Units` table + unit-record
+	 * frontmatter projected into a harness-neutral shape — or not called at
+	 * all when {@link projectTrackerTasks} finds no table to project. A parse
+	 * miss or a throw from this callback is swallowed: this can never fail a
+	 * Turn or a Run. Optional — omitted, the Runner behaves exactly as before.
+	 */
+	projectTasks?: (tasks: TrackerTaskProjection[]) => void;
 };
 
 export type WorkflowRunResult = {
@@ -647,11 +657,23 @@ export function createWorkflowRunner(
 				input.handover?.onForkStateChange?.(false);
 			}
 
+			// Fidelity metric only (ADR 0015 §8) — a read-only stat, never a write,
+			// so this never touches the one-owner property (ADR 0004).
+			let handoffSizeBytes: number | null = null;
+			if (forkOk) {
+				try {
+					handoffSizeBytes = fs.statSync(handoffAbsPath).size;
+				} catch {
+					handoffSizeBytes = null;
+				}
+			}
+
 			return {
 				type: 'fork_finished',
 				ok: forkOk,
 				cancelled,
 				handoffPath: handoffAbsPath,
+				handoffSizeBytes,
 				transient,
 			};
 		}
@@ -694,6 +716,15 @@ export function createWorkflowRunner(
 				switch (action.type) {
 					case 'persist':
 						persist();
+						if (trackerAbsPath && input.projectTasks) {
+							try {
+								const tasks = projectTrackerTasks(trackerAbsPath);
+								if (tasks) input.projectTasks(tasks);
+							} catch {
+								// A parse miss or a throwing callback can never fail a Turn
+								// or a Run (ADR 0015 §7: degrade to no projection).
+							}
+						}
 						break;
 					case 'notify_iteration_complete':
 						input.onIterationComplete?.(snapshot());

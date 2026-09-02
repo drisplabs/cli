@@ -12,7 +12,7 @@ Two kinds of Turn exist, and you should know which you are in:
 1. Read the tracker at the configured path (default: `.athena/<session_id>/tracker.md`). The runner provides the session ID — do not invent one.
 2. If the tracker contains `<!-- TRACKER_SKELETON -->` → this is Turn 1, run [**Orient**](#orient-turn-1).
 3. Otherwise → this is a continuation, run [**Execute**](#execute-continuation) from where the tracker says, not from the start of the flow.
-4. If the runner's prompt names a Handoff file, read it too — it's mandatory alongside the tracker: it carries the in-flight context the tracker never checkpointed. Then read whatever the tracker's fifth question names (see [Tracker contract](#tracker-contract)) — that, the tracker, and any named Handoff file are your complete required reading. Do not redo completed work or re-litigate decisions any of them record.
+4. If the runner's prompt names a Handoff file, read it too — it's mandatory alongside the tracker: it carries the in-flight context the tracker never checkpointed. Before any domain work, fold whatever in it is still durable into the tracker (or the open unit's record, if it's been shed) — the Handoff is a one-time relay, not a permanent Dossier file, so anything worth keeping has to land in `tracker.md`/`units/<slug>.md` now or it is lost once the Handoff falls off the chain. Then read whatever the tracker's fifth question names (see [Tracker contract](#tracker-contract)) — that, the tracker, and any named Handoff file are your complete required reading. Do not redo completed work or re-litigate decisions any of them record.
 
 Reading first prevents two failure modes that waste whole Turns: redoing work already done, or contradicting decisions a prior Turn made.
 
@@ -75,6 +75,47 @@ Shedding is three positive acts on one whole named `##` section — never a summ
 3. **Pointer** — leave one index row in the tracker's unit table with a relative path to where the detail went.
 
 Content is demoted, never deleted. If you find yourself rewording or condensing while moving text, stop — that is not shedding, that is exactly where fidelity leaks.
+
+### The unit table
+
+The tracker's unit table is the index the runner reads to keep the CLI's own task list in sync with your plan — it is parsed by tooling, so its shape is fixed, not free-form prose. Keep it under a `## Units` heading, as a GFM table with exactly two columns:
+
+```
+## Units
+
+| Unit                  | Record                     |
+| ---------------------- | --------------------------- |
+| Add the size nudge     | units/size-nudge.md         |
+| Wire up task projection | units/task-projection.md   |
+```
+
+- **Unit** — a short human-readable label for the unit (what step 3 of [How to shed](#how-to-shed) points at).
+- **Record** — the path to that unit's `units/<slug>.md`, relative to the tracker's own directory.
+
+One row per unit that has been shed; units still fully inline in the tracker (never shed) don't need a row. A row whose Record file is missing, unreadable, or malformed is simply skipped by the runner — never guessed at, never a failure (see the next section). Malformed rows in an otherwise-fine table don't invalidate the rest of the table.
+
+Each `units/<slug>.md` record opens with a small YAML frontmatter block the runner reads to know the unit's state:
+
+```
+---
+status: open
+gates: []
+---
+
+<the shed section content, verbatim>
+```
+
+- `status` — `open` or `closed`, exactly (case-insensitive). Any other value, or a missing `status` key, means the runner treats the whole record as unparseable for projection purposes — it still exists as your durable journal, it just doesn't surface in the task list.
+- `gates` — reserved for future gate-evidence tracking; not read by anything yet. Leave it present but empty, or omit it — either is fine today.
+
+This frontmatter is the only structured part of a unit record; everything after the closing `---` is free-form prose exactly like the rest of the Dossier.
+
+### Parsing is best-effort, never a gate
+
+The unit table and unit-record frontmatter exist so the runner can mirror your plan into the harness's own task list (see [Task UI projection](#task-ui-projection)) and, separately, so it can nudge you when the tracker grows past its size backstop. Both are conveniences layered on top of the Dossier, not requirements on it:
+
+- A missing table, an extra column, a typo'd status, a unit record that fails to parse — none of it fails your Turn, and none of it is worth stopping to fix for the runner's sake. The runner silently skips whatever it can't parse and, at most, folds a size nudge into your next prompt.
+- Never restructure the tracker or a unit record just to make automated parsing happy at the expense of the content itself. If the table and the prose disagree, the prose (what you actually did) is the truth.
 
 ### orientation.md
 
@@ -149,6 +190,8 @@ The tracker is the durable source of truth. Your harness's task tools are a sess
 - **In a fresh continuation (e.g. after a Handover):** recreate the projection from the tracker; do not assume task IDs from prior sessions still exist.
 - **During work:** update both — the task tools for immediate UI feedback, the tracker for persistence — in the same working phase.
 
+Separately, the runner independently re-derives a task list from the tracker's [unit table](#the-unit-table) and each unit record's frontmatter after every Turn, and mirrors it into the CLI's own task display. This is a backstop, not a substitute for the above — it only ever reaches `open`/`closed`, so keep calling the task tools yourself for anything finer-grained. It never blocks or fails a Turn: an unparseable table or record just means that Turn's mirror is skipped, exactly as described in [Parsing is best-effort, never a gate](#parsing-is-best-effort-never-a-gate).
+
 ## Quick reference
 
 - [ ] Fresh Turn: read the tracker (and any named Handoff file) before doing anything else
@@ -157,6 +200,8 @@ The tracker is the durable source of truth. Your harness's task tools are a sess
 - [ ] Need a human? Declare it: `WORKFLOW_BLOCKED: <question>` as the final non-empty line, then end
 - [ ] Update the tracker on concrete triggers — unit done, insight learned, risky op pending, plan changed
 - [ ] Shed a unit's detail into `units/<slug>.md` the moment it closes while another stays open, or the tracker crosses ~8,000 tokens — cut, paste, pointer, never summarize
+- [ ] Keep the unit table and each shed record's `status: open|closed` frontmatter current — the runner mirrors them into the task list and skips silently on any parse miss
+- [ ] After a Handover: fold the Handoff's durable content into the tracker or open unit record before any domain work
 - [ ] Project the tracker plan into task tools at session start; keep both in sync as work lands
 - [ ] Follow the workflow steps as written; do not skip, reorder, or substitute your own process
 - [ ] Load the appropriate skill before each activity; do not rely on assumed knowledge

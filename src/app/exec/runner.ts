@@ -3,6 +3,8 @@ import path from 'node:path';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
 import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
+import {buildSyntheticTaskEvent} from '../../core/feed/syntheticEvents';
+import type {TrackerTaskProjection} from '../../core/workflows/trackerReader';
 import {
 	type RuntimeDecision,
 	type RuntimeEvent,
@@ -687,6 +689,50 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					iteration: runSnapshot.iteration,
 					status: runSnapshot.status,
 				});
+			},
+			// Task-tool projection (ADR 0015 §7): the Tracker's `## Units` table +
+			// unit-record frontmatter, diffed against what the Feed already knows
+			// and reconciled through the same `task.created`/`task.completed`
+			// path a live TodoWrite/TaskCreate/TaskUpdate call would take.
+			projectTasks: (tasks: TrackerTaskProjection[]) => {
+				const known = new Map(
+					mapper
+						.getTasks()
+						.filter(task => task.taskId)
+						.map(task => [task.taskId!, task] as const),
+				);
+				const newEvents: FeedEvent[] = [];
+				for (const task of tasks) {
+					const existing = known.get(task.taskId);
+					if (!existing) {
+						newEvents.push(
+							...mapper.mapEvent(
+								buildSyntheticTaskEvent('task.created', athenaSessionId, {
+									task_id: task.taskId,
+									task_subject: task.content,
+								}),
+							),
+						);
+					}
+					if (task.status === 'completed' && existing?.status !== 'completed') {
+						newEvents.push(
+							...mapper.mapEvent(
+								buildSyntheticTaskEvent('task.completed', athenaSessionId, {
+									task_id: task.taskId,
+									task_subject: task.content,
+								}),
+							),
+						);
+					}
+				}
+				if (newEvents.length > 0) {
+					safePersist(
+						store,
+						() => store.recordFeedEvents(newEvents),
+						message => output.warn(message),
+						'recordFeedEvents failed',
+					);
+				}
 			},
 		});
 
