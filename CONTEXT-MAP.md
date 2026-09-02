@@ -23,11 +23,13 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
   `feed_events.run_id` (**Feed Run**) is unrelated to `workflow_runs.id`
   (**Workflow Run**).
 - **Knowledge-base → Workflow-execution**: the KB _reads_ a completed **Workflow
-  Run** — taken as its final **Tracker** plus run outcome — as a **KB Source**,
-  and each **KB operation** _executes as_ a **KB Workflow** (a Workflow Run
-  through the **Runner**). The KB never edits a source. **Provenance links**
-  reference sources by text tuple, not foreign key — sources live in per-session
-  `session.db` files while the KB is a separate store.
+  Run** — taken as its final **Tracker** plus the transitive closure of Dossier
+  files it points to, passed through the **Redaction gate** — as a **KB
+  Source**, and each **KB operation** _executes as_ a **KB Workflow** (a
+  Workflow Run through the **Runner**). The KB never edits a source.
+  **Provenance links** reference sources by text tuple, not foreign key —
+  sources live in per-session `session.db` files while the KB is a separate
+  store.
 - **Knowledge-base → Feed-pipeline** _(future)_: an inbound channel message
   becomes a **KB Source** once the channel ledger is a durable, subscribable
   stream. Deferred from the KB MVP, which is manually/CI-triggered.

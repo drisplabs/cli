@@ -1,6 +1,10 @@
 # ADR 0011 - KB storage & provenance: markdown is the source of truth
 
-Status: Active
+Status: Active — amended by [ADR 0015](0015-tracker-sheds-into-dossier.md) (§10: a KB Source built
+from a Workflow Run is a Tracker plus its transitive closure of Dossier files — unit records,
+`orientation.md`, the Handoff chain — not a single file; the `(source_kind, source_id, session_id)`
+tuple now keys that whole closure, and Ingest gates the closure through redaction before folding,
+since `.athena/` is gitignored but the KB is git-versioned)
 Date: 2026-07-19
 Relates to: KB PRD (lespaceman/athena-flow-cli#132)
 
