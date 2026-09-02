@@ -55,20 +55,20 @@ describe('useWorkflowSessionController', () => {
 	it('applies workflow prompt/system instructions and continues loop turns', async () => {
 		const projectDir = makeTempDir();
 		const promptPath = path.join(projectDir, 'workflow-prompt.md');
-		const trackerPath = path.join(projectDir, '.athena', 'session-1.md');
-		fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
-		fs.writeFileSync(promptPath, 'Always read the tracker.', 'utf-8');
+		const journalPath = path.join(projectDir, '.athena', 'session-1.md');
+		fs.mkdirSync(path.dirname(journalPath), {recursive: true});
+		fs.writeFileSync(promptPath, 'Always read the journal.', 'utf-8');
 
 		const spawn = vi
 			.fn<HarnessProcess<HarnessProcessOverride>['startTurn']>()
 			.mockImplementation(async (_prompt, _continuation, _configOverride) => {
 				const call = spawn.mock.calls.length;
 				if (call === 1) {
-					fs.writeFileSync(trackerPath, 'still running', 'utf-8');
+					fs.writeFileSync(journalPath, 'still running', 'utf-8');
 					return OK_RESULT;
 				}
 
-				fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- DONE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -94,8 +94,8 @@ describe('useWorkflowSessionController', () => {
 							enabled: true,
 							completionMarker: '<!-- DONE -->',
 							maxIterations: 5,
-							trackerPath: '.athena/{sessionId}.md',
-							continuePrompt: 'Continue with {trackerPath}',
+							journalPath: '.athena/{sessionId}.md',
+							continuePrompt: 'Continue with {journalPath}',
 						},
 					},
 				},
@@ -133,7 +133,7 @@ describe('useWorkflowSessionController', () => {
 			},
 		);
 		expect(result.current.isRunning).toBe(false);
-		expect(fs.existsSync(trackerPath)).toBe(true);
+		expect(fs.existsSync(journalPath)).toBe(true);
 	});
 
 	it('kills an in-flight run before starting a new spawn', async () => {
@@ -263,11 +263,11 @@ describe('useWorkflowSessionController', () => {
 	});
 
 	it('stops workflow continuation after a failed turn', async () => {
-		const trackerPath = path.join(makeTempDir(), 'tracker.md');
+		const journalPath = path.join(makeTempDir(), 'journal.md');
 		const spawn = vi
 			.fn<HarnessProcess<HarnessProcessOverride>['startTurn']>()
 			.mockImplementation(async () => {
-				fs.writeFileSync(trackerPath, 'still running', 'utf-8');
+				fs.writeFileSync(journalPath, 'still running', 'utf-8');
 				return {
 					exitCode: 1,
 					error: null,
@@ -286,7 +286,7 @@ describe('useWorkflowSessionController', () => {
 					usage: NULL_USAGE,
 				},
 				{
-					projectDir: path.dirname(trackerPath),
+					projectDir: path.dirname(journalPath),
 					workflow: {
 						name: 'wf',
 						plugins: [],
@@ -295,7 +295,7 @@ describe('useWorkflowSessionController', () => {
 							enabled: true,
 							completionMarker: '<!-- DONE -->',
 							maxIterations: 5,
-							trackerPath: path.basename(trackerPath),
+							journalPath: path.basename(journalPath),
 						},
 					},
 				},

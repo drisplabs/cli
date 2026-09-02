@@ -109,7 +109,7 @@ export function openSessionDbReadonly(
 					maxIterations: row['max_iterations'] as number,
 					status: row['status'] as PersistedWorkflowRun['status'],
 					stopReason: (row['stop_reason'] as string | null) ?? undefined,
-					trackerPath: (row['tracker_path'] as string | null) ?? undefined,
+					journalPath: (row['tracker_path'] as string | null) ?? undefined,
 					adapterSessionId:
 						(row['adapter_session_id'] as string | null | undefined) ??
 						undefined,

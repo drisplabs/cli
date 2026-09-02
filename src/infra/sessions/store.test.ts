@@ -269,7 +269,7 @@ describe('SessionStore', () => {
 			workflowName: 'test-wf',
 			iteration: 0,
 			status: 'running',
-			trackerPath: '.athena/s1/tracker.md',
+			journalPath: '.athena/s1/journal.md',
 		});
 
 		const run1 = store.getLatestRun();
@@ -278,7 +278,7 @@ describe('SessionStore', () => {
 		expect(run1!.workflowName).toBe('test-wf');
 		expect(run1!.iteration).toBe(0);
 		expect(run1!.status).toBe('running');
-		expect(run1!.trackerPath).toBe('.athena/s1/tracker.md');
+		expect(run1!.journalPath).toBe('.athena/s1/journal.md');
 		expect(run1!.endedAt).toBeUndefined();
 
 		store.persistRun({
@@ -287,14 +287,14 @@ describe('SessionStore', () => {
 			workflowName: 'test-wf',
 			iteration: 3,
 			status: 'completed',
-			stopReason: 'Tracker has completion marker',
-			trackerPath: '.athena/s1/tracker.md',
+			stopReason: 'Journal has completion marker',
+			journalPath: '.athena/s1/journal.md',
 		});
 
 		const run2 = store.getLatestRun();
 		expect(run2!.iteration).toBe(3);
 		expect(run2!.status).toBe('completed');
-		expect(run2!.stopReason).toBe('Tracker has completion marker');
+		expect(run2!.stopReason).toBe('Journal has completion marker');
 		expect(run2!.endedAt).toBeDefined();
 	});
 

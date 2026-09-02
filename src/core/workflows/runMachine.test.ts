@@ -14,8 +14,8 @@ import {
 import {
 	buildContinuePrompt,
 	buildNudgePrompt,
-	TRACKER_SKELETON_MARKER,
-} from './trackerReader';
+	JOURNAL_SKELETON_MARKER,
+} from './journalReader';
 import type {WorkflowRunState} from './sessionPlan';
 import type {LoopConfig, WorkflowConfig} from './types';
 import crypto from 'node:crypto';
@@ -23,7 +23,7 @@ import crypto from 'node:crypto';
 const LOOP: LoopConfig = {
 	enabled: true,
 	maxIterations: 20,
-	trackerPath: '.athena/s1/tracker.md',
+	journalPath: '.athena/s1/journal.md',
 };
 
 function hash(content: string): string {
@@ -40,7 +40,7 @@ function workflowState(overrides?: Partial<WorkflowConfig>): WorkflowRunState {
 	};
 	return {
 		workflow,
-		trackerPathForPrompt: LOOP.trackerPath,
+		journalPathForPrompt: LOOP.journalPath,
 		workflowOverride: undefined,
 		warnings: [],
 	};
@@ -51,8 +51,8 @@ function makeCfg(overrides?: Partial<StepConfig>): StepConfig {
 		workflowState: workflowState(),
 		initialPrompt: 'do the task',
 		loop: LOOP,
-		trackerAbsPath: '/proj/.athena/s1/tracker.md',
-		trackerPromptPath: '.athena/s1/tracker.md',
+		journalAbsPath: '/proj/.athena/s1/journal.md',
+		journalPromptPath: '.athena/s1/journal.md',
 		...overrides,
 	};
 }
@@ -62,7 +62,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		iteration: 1,
 		nudgeStreak: 0,
 		retryStreak: 0,
-		lastTrackerHash: null,
+		lastJournalHash: null,
 		lastStopPrompt: 'do the task',
 		lastStopContinuation: {mode: 'fresh'},
 		...overrides,
@@ -112,7 +112,7 @@ function turnFinished(
 		suspension: null,
 		adapterSessionId: null,
 		outcome: null,
-		trackerContent: '',
+		journalContent: '',
 		...overrides,
 	};
 }
@@ -307,7 +307,7 @@ describe('runMachine.step — turn_in_flight', () => {
 		expect(result.actions).toEqual([{type: 'persist'}]);
 	});
 
-	it('a declared stop/failed outcome (e.g. missing tracker) fails the run', () => {
+	it('a declared stop/failed outcome (e.g. missing journal) fails the run', () => {
 		const result = step(
 			turnInFlight(),
 			makeMemory(),
@@ -315,14 +315,14 @@ describe('runMachine.step — turn_in_flight', () => {
 				outcome: {
 					kind: 'stop',
 					status: 'failed',
-					stopReason: 'tracker file is missing',
+					stopReason: 'journal file is missing',
 				},
 			}),
 			makeCfg(),
 		);
 		expect(result.phase).toEqual({
 			kind: 'failed',
-			stopReason: 'tracker file is missing',
+			stopReason: 'journal file is missing',
 		});
 	});
 
@@ -345,16 +345,56 @@ describe('runMachine.step — turn_in_flight', () => {
 		});
 	});
 
+	it('a suspend outcome that carries a deprecation suspends identically and asks the interpreter to warn', () => {
+		const legacy = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({
+				outcome: {
+					kind: 'suspend',
+					status: 'awaiting_attention',
+					stopReason: 'agent declared NEEDS_HUMAN: which env?',
+					deprecation: 'WORKFLOW_BLOCKED is deprecated; write NEEDS_HUMAN',
+				},
+			}),
+			makeCfg(),
+		);
+		const current = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({
+				outcome: {
+					kind: 'suspend',
+					status: 'awaiting_attention',
+					stopReason: 'agent declared NEEDS_HUMAN: which env?',
+				},
+			}),
+			makeCfg(),
+		);
+		// The reducer stays pure: the deprecation becomes an action, and the
+		// resulting phase/memory are indistinguishable from the new marker's.
+		expect(legacy.phase).toEqual(current.phase);
+		expect(legacy.memory).toEqual(current.memory);
+		expect(legacy.actions).toEqual([
+			{
+				type: 'warn',
+				message: 'WORKFLOW_BLOCKED is deprecated; write NEEDS_HUMAN',
+			},
+			{type: 'persist'},
+		]);
+		expect(current.actions).toEqual([{type: 'persist'}]);
+	});
+
 	it('an undeclared stop with a live Agent Session dispatches a Nudge', () => {
-		const trackerContent = '# Tracker\nsome progress';
+		const journalContent = '# Journal\nsome progress';
 		const result = step(
 			turnInFlight(),
 			makeMemory({
 				iteration: 2,
 				nudgeStreak: 1,
-				lastTrackerHash: hash(trackerContent),
+				lastJournalHash: hash(journalContent),
 			}),
-			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			turnFinished({adapterSessionId: 'sess-live', journalContent}),
 			makeCfg(),
 		);
 		expect(result.phase.kind).toBe('turn_in_flight');
@@ -378,26 +418,26 @@ describe('runMachine.step — turn_in_flight', () => {
 		]);
 	});
 
-	it('the nudge streak resets when the tracker changed since the last stop', () => {
-		const trackerContent = '# Tracker\nnew progress';
+	it('the nudge streak resets when the journal changed since the last stop', () => {
+		const journalContent = '# Journal\nnew progress';
 		const result = step(
 			turnInFlight(),
 			makeMemory({
 				nudgeStreak: 2,
-				lastTrackerHash: hash('# Tracker\nold progress'),
+				lastJournalHash: hash('# Journal\nold progress'),
 			}),
-			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			turnFinished({adapterSessionId: 'sess-live', journalContent}),
 			makeCfg(),
 		);
 		expect(result.memory.nudgeStreak).toBe(1); // reset to 0, then incremented once for this stop
 	});
 
 	it('a nudge past the cap suspends, naming the bound', () => {
-		const trackerContent = '# Tracker\nsame';
+		const journalContent = '# Journal\nsame';
 		const result = step(
 			turnInFlight(),
-			makeMemory({nudgeStreak: 3, lastTrackerHash: hash(trackerContent)}), // default nudgeCap is 3
-			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			makeMemory({nudgeStreak: 3, lastJournalHash: hash(journalContent)}), // default nudgeCap is 3
+			turnFinished({adapterSessionId: 'sess-live', journalContent}),
 			makeCfg(),
 		);
 		expect(result.phase.kind).toBe('awaiting_attention');
@@ -408,11 +448,11 @@ describe('runMachine.step — turn_in_flight', () => {
 	});
 
 	it('a nudge on an unreplaced skeleton uses the bootstrap corrective prompt', () => {
-		const trackerContent = `${TRACKER_SKELETON_MARKER}\n# Workflow Tracker`;
+		const journalContent = `${JOURNAL_SKELETON_MARKER}\n# Workflow Journal`;
 		const result = step(
 			turnInFlight(),
-			makeMemory({lastTrackerHash: hash(trackerContent)}),
-			turnFinished({adapterSessionId: 'sess-live', trackerContent}),
+			makeMemory({lastJournalHash: hash(journalContent)}),
+			turnFinished({adapterSessionId: 'sess-live', journalContent}),
 			makeCfg(),
 		);
 		const nextPhase = result.phase as Extract<
@@ -429,7 +469,7 @@ describe('runMachine.step — turn_in_flight', () => {
 		const result = step(
 			turnInFlight(),
 			makeMemory({iteration: 1}),
-			turnFinished({adapterSessionId: null, trackerContent: '# Tracker'}),
+			turnFinished({adapterSessionId: null, journalContent: '# Journal'}),
 			makeCfg(),
 		);
 		expect(result.phase.kind).toBe('turn_in_flight');
@@ -520,7 +560,7 @@ describe('runMachine.step — handing_over', () => {
 		expect(nextPhase.prompt).toBe(
 			buildHandoverSeedPrompt(
 				'/proj/.athena/s1/handoff/002.md',
-				'/proj/.athena/s1/tracker.md',
+				'/proj/.athena/s1/journal.md',
 			),
 		);
 		expect(result.memory.iteration).toBe(3);
@@ -587,7 +627,7 @@ describe('createInitialRun', () => {
 	it('wakes a suspended run with the wake prompt, not the bare reply', () => {
 		const {phase} = createInitialRun(makeCfg(), {waking: true});
 		expect((phase as Extract<RunPhase, {kind: 'turn_in_flight'}>).prompt).toBe(
-			buildWakePrompt('do the task', '.athena/s1/tracker.md'),
+			buildWakePrompt('do the task', '.athena/s1/journal.md'),
 		);
 	});
 
@@ -619,7 +659,7 @@ describe('RunMemory serialization', () => {
 			iteration: 4,
 			nudgeStreak: 1,
 			retryStreak: 2,
-			lastTrackerHash: 'abc123',
+			lastJournalHash: 'abc123',
 			lastStopContinuation: {mode: 'resume', handle: 'sess-1'},
 		});
 		const parsed = deserializeRunMemory(serializeRunMemory(original));

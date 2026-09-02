@@ -10,14 +10,14 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
-import type {TrackerMarkers} from './trackerReader';
-import {createWorkflowRunState, resolveTrackerPath} from './sessionPlan';
+import type {JournalMarkers} from './journalReader';
+import {createWorkflowRunState, resolveJournalPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
-	readTracker,
-	TRACKER_SKELETON_MARKER,
+	readJournal,
+	JOURNAL_SKELETON_MARKER,
 	demoteTerminalMarkers,
-} from './trackerReader';
+} from './journalReader';
 import {substituteVariables} from './templateVars';
 import {
 	step,
@@ -65,7 +65,13 @@ export type WorkflowRunnerInput = {
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
 	onIterationComplete?: (snapshot: WorkflowRunSnapshot) => void;
 	abortCurrentTurn?: () => void;
-	createTracker?: (trackerPath: string, content: string) => void;
+	createJournal?: (journalPath: string, content: string) => void;
+	/**
+	 * Receives non-fatal Runner notices — today, the deprecation logged when
+	 * a Turn declares itself with the legacy `WORKFLOW_BLOCKED` marker (#185).
+	 * Optional: an unwired caller simply drops the notice.
+	 */
+	onWarning?: (message: string) => void;
 	/**
 	 * Consulted after each Turn, before failure classification. A non-null
 	 * result suspends the Run in `awaiting_attention` with the given reason
@@ -87,7 +93,7 @@ export type WorkflowRunnerInput = {
 	 * harness's `compact.pre`, blocks the compaction, interrupts the Turn, and
 	 * records the request; the Runner then forks the live conversation, has
 	 * the `handoff` skill write a Handoff file, discards the fork, and starts
-	 * a fresh Turn seeded with the Handoff file + Tracker — the only
+	 * a fresh Turn seeded with the Handoff file + Journal — the only
 	 * transition that resets context instead of resuming.
 	 */
 	handover?: {
@@ -131,17 +137,17 @@ const NULL_TOKENS: TokenUsage = {
 	contextWindowSize: null,
 };
 
-const TRACKER_SKELETON_TEMPLATE = `${TRACKER_SKELETON_MARKER}
-# Workflow Tracker
+const JOURNAL_SKELETON_TEMPLATE = `${JOURNAL_SKELETON_MARKER}
+# Workflow Journal
 
 **Session**: {sessionId}
-**Tracker**: {trackerPath}
+**Journal**: {journalPath}
 **Goal**: {input}
 
 ---
 
-> This tracker was created by the runner. Update it as you work.
-> See the Turn Protocol for tracker conventions.
+> This journal was created by the runner. Update it as you work.
+> See the Turn Protocol for journal conventions.
 
 ## Status
 
@@ -157,12 +163,12 @@ _No progress yet._
 `;
 
 /**
- * Open a new Workflow Run's section on an existing Tracker.
+ * Open a new Workflow Run's section on an existing Journal.
  *
- * `DEFAULT_TRACKER_PATH` is keyed on the Athena Session, so every Workflow Run
- * in a Session shares one Tracker and the skeleton — the only place the Run's
+ * `DEFAULT_JOURNAL_PATH` is keyed on the Athena Session, so every Workflow Run
+ * in a Session shares one Journal and the skeleton — the only place the Run's
  * `{input}` goal is recorded — is written just once, for the first Run. Later
- * Runs then worked against a Tracker that never said what they had been asked
+ * Runs then worked against a Journal that never said what they had been asked
  * to do, and inherited their predecessor's Terminal Marker along with it.
  *
  * Opening a section fixes both: it records this Run's goal, and it demotes the
@@ -170,12 +176,12 @@ _No progress yet._
  * as misplaced once it writes below them.
  */
 function openRunSection(
-	trackerPath: string,
-	opts: {runId: string; goal: string; markers: TrackerMarkers},
+	journalPath: string,
+	opts: {runId: string; goal: string; markers: JournalMarkers},
 ): void {
 	let existing: string;
 	try {
-		existing = fs.readFileSync(trackerPath, 'utf-8');
+		existing = fs.readFileSync(journalPath, 'utf-8');
 	} catch {
 		return;
 	}
@@ -188,12 +194,12 @@ function openRunSection(
 
 	try {
 		fs.writeFileSync(
-			trackerPath,
+			journalPath,
 			demoteTerminalMarkers(existing.trimEnd(), opts.markers) + banner,
 			'utf-8',
 		);
 	} catch {
-		// A Tracker that cannot be rewritten is left as-is; the Run still starts.
+		// A Journal that cannot be rewritten is left as-is; the Run still starts.
 	}
 }
 
@@ -236,7 +242,7 @@ function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 function buildHandoffInvocationPrompt(handoffPath: string): string {
 	return (
 		`Invoke the handoff skill to write a Handoff file to ${handoffPath}. ` +
-		`Do nothing else: no code changes, no tracker updates — only the Handoff file.`
+		`Do nothing else: no code changes, no journal updates — only the Handoff file.`
 	);
 }
 
@@ -285,7 +291,7 @@ function handoffPathFor(dir: string, seq: number): string {
  * A fresh sequence number per Handover is what lets `existsSync` prove that
  * *this* fork wrote the file — the job the pre-Handover `rmSync` used to do,
  * at the cost of destroying Handoff N before N+1 was written. Past the second
- * Handover that left the Tracker as the sole carrier again, which is the
+ * Handover that left the Journal as the sole carrier again, which is the
  * condition ADR 0014 §5 exists to relieve.
  */
 function nextHandoffPath(dir: string): string {
@@ -306,10 +312,10 @@ function purgeHandoffs(dir: string, keep: number): void {
 	}
 }
 
-function defaultCreateTracker(trackerPath: string, content: string): void {
-	fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
+function defaultCreateJournal(journalPath: string, content: string): void {
+	fs.mkdirSync(path.dirname(journalPath), {recursive: true});
 	try {
-		fs.writeFileSync(trackerPath, content, {encoding: 'utf-8', flag: 'wx'});
+		fs.writeFileSync(journalPath, content, {encoding: 'utf-8', flag: 'wx'});
 	} catch (e) {
 		if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
 	}
@@ -364,13 +370,13 @@ export function createWorkflowRunner(
 	let stopReason: string | undefined;
 	let memory: RunMemory | undefined;
 
-	const trackerResolved = resolveTrackerPath({
+	const journalResolved = resolveJournalPath({
 		projectDir: input.projectDir,
 		sessionId: input.sessionId,
 		workflow: input.workflow,
 	});
-	const trackerAbsPath = trackerResolved?.absolutePath ?? null;
-	const trackerPromptPath = trackerResolved?.promptPath;
+	const journalAbsPath = journalResolved?.absolutePath ?? null;
+	const journalPromptPath = journalResolved?.promptPath;
 
 	function snapshot(): WorkflowRunSnapshot {
 		const adapterSessionId = input.currentAdapterSessionId?.() ?? undefined;
@@ -382,7 +388,7 @@ export function createWorkflowRunner(
 			maxIterations: input.workflow?.loop?.maxIterations ?? 1,
 			status,
 			stopReason,
-			trackerPath: trackerPromptPath,
+			journalPath: journalPromptPath,
 			...(adapterSessionId ? {adapterSessionId} : {}),
 			...(memory ? {runMemoryJson: serializeRunMemory(memory)} : {}),
 		};
@@ -398,8 +404,8 @@ export function createWorkflowRunner(
 
 	function handoffDirFor(): string {
 		return path.join(
-			trackerAbsPath
-				? path.dirname(trackerAbsPath)
+			journalAbsPath
+				? path.dirname(journalAbsPath)
 				: path.resolve(
 						input.projectDir,
 						'.athena',
@@ -416,24 +422,25 @@ export function createWorkflowRunner(
 		// returned handle is assigned.
 		await Promise.resolve();
 
-		// Create tracker skeleton if needed
-		if (trackerAbsPath && input.workflow?.loop?.enabled) {
-			const content = substituteVariables(TRACKER_SKELETON_TEMPLATE, {
+		// Create journal skeleton if needed
+		if (journalAbsPath && input.workflow?.loop?.enabled) {
+			const content = substituteVariables(JOURNAL_SKELETON_TEMPLATE, {
 				sessionId: input.sessionId,
-				trackerPath: trackerPromptPath,
+				journalPath: journalPromptPath,
 				input: input.prompt,
 			});
-			const write = input.createTracker ?? defaultCreateTracker;
+			const write = input.createJournal ?? defaultCreateJournal;
 			// Write-if-absent: the skeleton belongs to the Session's first Run.
-			const trackerExisted = fs.existsSync(trackerAbsPath);
-			write(trackerAbsPath, content);
+			const journalExisted = fs.existsSync(journalAbsPath);
+			write(journalAbsPath, content);
 			// A wake continues the same Run, so it opens no new section.
-			if (trackerExisted && !input.resumeRunId) {
-				openRunSection(trackerAbsPath, {
+			if (journalExisted && !input.resumeRunId) {
+				openRunSection(journalAbsPath, {
 					runId,
 					goal: input.prompt,
 					markers: {
 						completionMarker: input.workflow.loop.completionMarker,
+						needsHumanMarker: input.workflow.loop.needsHumanMarker,
 						blockedMarker: input.workflow.loop.blockedMarker,
 					},
 				});
@@ -454,8 +461,8 @@ export function createWorkflowRunner(
 			workflowState,
 			initialPrompt: input.prompt,
 			loop,
-			trackerAbsPath,
-			trackerPromptPath,
+			journalAbsPath,
+			journalPromptPath,
 		};
 
 		const initial = createInitialRun(cfg, {
@@ -491,7 +498,7 @@ export function createWorkflowRunner(
 					suspension: null,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -512,7 +519,7 @@ export function createWorkflowRunner(
 					suspension: null,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -532,7 +539,7 @@ export function createWorkflowRunner(
 					suspension,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -555,7 +562,7 @@ export function createWorkflowRunner(
 					suspension: null,
 					adapterSessionId,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -566,15 +573,15 @@ export function createWorkflowRunner(
 				transport.preToolUseEvents === 0
 			);
 
-			// Looped: one owner (`resolveTurnOutcome`) maps the Tracker's end-state
+			// Looped: one owner (`resolveTurnOutcome`) maps the Journal's end-state
 			// to a final Run Status — only consulted on the success path, once the
 			// hook transport is known-good, matching the original's lazy read.
-			let trackerContent = '';
+			let journalContent = '';
 			let outcome = null;
-			if (!transportBroken && loop?.enabled && trackerAbsPath) {
-				trackerContent = readTracker(trackerAbsPath);
+			if (!transportBroken && loop?.enabled && journalAbsPath) {
+				journalContent = readJournal(journalAbsPath);
 				outcome = resolveTurnOutcome({
-					trackerPath: trackerAbsPath,
+					journalPath: journalAbsPath,
 					loop,
 					iteration: memory!.iteration,
 				});
@@ -591,7 +598,7 @@ export function createWorkflowRunner(
 				suspension: null,
 				adapterSessionId,
 				outcome,
-				trackerContent,
+				journalContent,
 			};
 		}
 
@@ -667,6 +674,9 @@ export function createWorkflowRunner(
 				switch (action.type) {
 					case 'persist':
 						persist();
+						break;
+					case 'warn':
+						input.onWarning?.(action.message);
 						break;
 					case 'notify_iteration_complete':
 						input.onIterationComplete?.(snapshot());

@@ -4,13 +4,17 @@ import type {AthenaHarness} from '../../infra/plugins/config';
 import type {HarnessProcessOverride} from '../runtime/process';
 import {applyPromptTemplate} from './applyWorkflow';
 import {substituteVariables} from './templateVars';
-import {buildContinuePrompt, DEFAULT_TRACKER_PATH} from './trackerReader';
+import {
+	buildContinuePrompt,
+	LEGACY_JOURNAL_FILENAME,
+	loopJournalPath,
+} from './journalReader';
 import {buildStateMachineContent} from './stateMachine';
 import type {WorkflowConfig} from './types';
 
 export type WorkflowRunState = {
 	workflow?: WorkflowConfig;
-	trackerPathForPrompt?: string;
+	journalPathForPrompt?: string;
 	workflowOverride?: HarnessProcessOverride;
 	warnings: string[];
 };
@@ -25,7 +29,7 @@ function readWorkflowOverride(
 	projectDir: string,
 	workflow?: WorkflowConfig,
 	sessionId?: string,
-	trackerPath?: string,
+	journalPath?: string,
 	harness: AthenaHarness = 'claude-code',
 ): Pick<WorkflowRunState, 'workflowOverride' | 'warnings'> {
 	if (!workflow?.workflowFile) {
@@ -54,7 +58,7 @@ function readWorkflowOverride(
 
 	composed = substituteVariables(composed, {
 		sessionId,
-		trackerPath: trackerPath ?? undefined,
+		journalPath: journalPath ?? undefined,
 	});
 
 	// Write composed prompt to a stable file so the harness can read it via
@@ -84,7 +88,7 @@ function mergeOverrides(
 	};
 }
 
-export function resolveTrackerPath(input: {
+export function resolveJournalPath(input: {
 	projectDir: string;
 	sessionId?: string;
 	workflow?: WorkflowConfig;
@@ -94,10 +98,10 @@ export function resolveTrackerPath(input: {
 		return null;
 	}
 
-	const rawPath = loop.trackerPath ?? DEFAULT_TRACKER_PATH;
+	const rawPath = loopJournalPath(loop);
 
-	// The default tracker path requires a session ID for substitution.
-	// If neither a session ID nor an explicit tracker path was provided, the
+	// The default journal path requires a session ID for substitution.
+	// If neither a session ID nor an explicit journal path was provided, the
 	// loop cannot operate.
 	if (!input.sessionId && rawPath.includes('{sessionId}')) {
 		return null;
@@ -109,6 +113,29 @@ export function resolveTrackerPath(input: {
 	const absolutePath = path.isAbsolute(promptPath)
 		? promptPath
 		: path.resolve(input.projectDir, promptPath);
+
+	// Compatibility window (#185, removed in 0.7.0): a Dossier written before
+	// the rename holds `tracker.md`, not `journal.md`. When the workflow uses
+	// the default path and only the legacy file exists, keep reading it so a
+	// resumed or woken Session does not lose its continuity to a fresh
+	// skeleton beside the old file.
+	const usesDefaultPath =
+		loop.journalPath === undefined && loop.trackerPath === undefined;
+	if (usesDefaultPath && !fs.existsSync(absolutePath)) {
+		const legacyAbsolutePath = path.join(
+			path.dirname(absolutePath),
+			LEGACY_JOURNAL_FILENAME,
+		);
+		if (fs.existsSync(legacyAbsolutePath)) {
+			return {
+				absolutePath: legacyAbsolutePath,
+				promptPath: path.posix.join(
+					path.posix.dirname(promptPath),
+					LEGACY_JOURNAL_FILENAME,
+				),
+			};
+		}
+	}
 
 	return {
 		absolutePath,
@@ -123,18 +150,18 @@ export function createWorkflowRunState(input: {
 	harness?: AthenaHarness;
 }): WorkflowRunState {
 	const {projectDir, sessionId, workflow, harness} = input;
-	const trackerResolved = resolveTrackerPath({projectDir, sessionId, workflow});
+	const journalResolved = resolveJournalPath({projectDir, sessionId, workflow});
 	const {workflowOverride, warnings} = readWorkflowOverride(
 		projectDir,
 		workflow,
 		sessionId,
-		trackerResolved?.promptPath,
+		journalResolved?.promptPath,
 		harness,
 	);
 
 	return {
 		workflow,
-		trackerPathForPrompt: trackerResolved?.promptPath,
+		journalPathForPrompt: journalResolved?.promptPath,
 		workflowOverride,
 		warnings,
 	};
@@ -143,7 +170,7 @@ export function createWorkflowRunState(input: {
 /**
  * Build the prompt for the Turn at `iteration` (1-based). Turn 1 gets the
  * Orient prompt from the workflow's template; Turn 2+ of a loop gets the
- * lightweight Continue Prompt that just points the agent at the Tracker.
+ * lightweight Continue Prompt that just points the agent at the Journal.
  */
 export function prepareWorkflowTurn(
 	state: WorkflowRunState,
@@ -159,7 +186,7 @@ export function prepareWorkflowTurn(
 	const prompt = isContinuation
 		? buildContinuePrompt({
 				...workflow.loop!,
-				trackerPath: state.trackerPathForPrompt ?? workflow.loop?.trackerPath,
+				journalPath: state.journalPathForPrompt ?? workflow.loop?.journalPath,
 			})
 		: workflow
 			? applyPromptTemplate(workflow.promptTemplate, input.prompt)
