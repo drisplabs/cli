@@ -93,8 +93,10 @@ bought.
 
 **3. Two shed triggers, both structural.** (a) A unit closes **while another is still open**.
 (b) The Tracker exceeds ~8,000 tokens (~6% of `maxTurnTokenCount`) — shed the completed phases of the
-open unit. A single-unit Run trips neither. The first trigger is what an agent can execute
-deterministically; the second is a backstop for the single long unit.
+open unit. Trigger (a) cannot fire on a single-unit Run at all — it requires a second unit still
+open — so (b) is the only trigger such a Run can reach, and only once that one unit has outgrown the
+bound. The first is what an agent can execute deterministically; the second is the backstop for the
+single long unit.
 
 **4. Shedding is `cut → paste → pointer`.** A whole named `##` section moves verbatim; the Tracker
 keeps one index row and a path. Three positive acts, deliberately _not_ phrased as "do not summarise

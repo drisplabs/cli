@@ -61,7 +61,7 @@ A **unit** is a bounded piece of the plan that reaches its own closed state whil
 
 ### When to shed
 
-Two triggers, both structural. A single-unit Run trips neither:
+Two triggers, both structural. A single-unit Run can only ever reach the second, and only once that unit has outgrown the bound:
 
 - **A unit closes while another is still open.** Cut that unit's whole detail out of the tracker now, before starting the next one.
 - **The tracker crosses ~8,000 tokens** (roughly 32,000 characters — a token is about 4 characters at this codebase's measured rate). This is a backstop for one long single unit, not a target to design toward — shed the completed phases of the still-open unit.
