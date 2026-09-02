@@ -384,6 +384,72 @@ describe('writeGlobalConfig', () => {
 	});
 });
 
+describe('stale channel keys (#183)', () => {
+	it('ignores a leftover "channels" key with a one-line stderr warning naming the key', () => {
+		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			files['/stale-channels/.athena/config.json'] = JSON.stringify({
+				plugins: [],
+				channels: ['telegram'],
+			});
+
+			const config = readConfig('/stale-channels');
+
+			expect(config).toEqual({plugins: [], additionalDirectories: []});
+			expect(config).not.toHaveProperty('channels');
+			expect(stderr).toHaveBeenCalledTimes(1);
+			const line = String(stderr.mock.calls[0]![0]);
+			expect(line).toContain('"channels"');
+			expect(line).toContain('/stale-channels/.athena/config.json');
+			expect(line).not.toContain('\n');
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+
+	it('does not fail to load when the stale key carries a malformed value', () => {
+		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			files['/stale-malformed/.athena/config.json'] = JSON.stringify({
+				plugins: [],
+				channels: 'telegram',
+			});
+
+			expect(() => readConfig('/stale-malformed')).not.toThrow();
+			expect(stderr).toHaveBeenCalledTimes(1);
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+
+	it('warns once per config file, not on every read', () => {
+		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			files['/stale-once/.athena/config.json'] = JSON.stringify({
+				channels: ['telegram'],
+			});
+
+			readConfig('/stale-once');
+			readConfig('/stale-once');
+
+			expect(stderr).toHaveBeenCalledTimes(1);
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+
+	it('stays silent when no stale key is present', () => {
+		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			files['/clean/.athena/config.json'] = JSON.stringify({plugins: []});
+			readConfig('/clean');
+			expect(stderr).not.toHaveBeenCalled();
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+});
+
 describe('personal mcpServers field', () => {
 	it('round-trips a personal MCP server through global config (AC1)', () => {
 		writeGlobalConfig({

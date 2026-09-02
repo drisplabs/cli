@@ -59,9 +59,7 @@
 	},
 	"files": [
 		"dist",
-		"!dist/**/*.js.map",
-		"dist/channel-daemon.js",
-		"dist/channel-telegram.js"
+		"!dist/**/*.js.map"
 	],
 	"dependencies": {
 		"@inkjs/ui": "^2.0.0",

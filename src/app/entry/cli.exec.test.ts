@@ -235,7 +235,6 @@ describe('cli exec mode', () => {
 			expect(runExecMock).toHaveBeenCalledWith(
 				expect.objectContaining({
 					prompt: 'hello from test',
-					channels: [],
 				}),
 			);
 			expect(renderMock).not.toHaveBeenCalled();
@@ -259,8 +258,15 @@ describe('cli exec mode', () => {
 				.join('\n');
 
 			expect(help).toContain('dashboard <sub>');
+			expect(help).toContain('exec "<prompt>"');
+			// One door into drisp (#183): no second runner, no channel surface.
 			expect(help).not.toContain('gateway');
 			expect(help).not.toContain('Gateway');
+			expect(help).not.toContain('channel');
+			expect(help).not.toContain('telegram');
+			expect(help).not.toContain('--bot-token');
+			expect(help).not.toContain('--user-id');
+			expect(help).not.toContain('--chat-id');
 			expect(help).not.toContain('--token');
 			expect(help).not.toContain('--tls-ca');
 			expect(help).not.toContain('--tls-cert');
@@ -295,17 +301,20 @@ describe('cli exec mode', () => {
 		}
 	});
 
-	it('accepts --channel and forwards it to runExec', async () => {
-		const cli = await runCli(['exec', 'hello', '--channel', 'telegram']);
-		try {
-			expect(runExecMock).toHaveBeenCalledWith(
-				expect.objectContaining({
-					channels: ['telegram'],
-				}),
-			);
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
-		} finally {
-			cli.restore();
+	it('rejects the removed channel and gateway commands as unknown', async () => {
+		for (const command of ['channel', 'gateway']) {
+			const cli = await runCli([command, 'status']);
+			try {
+				expect(runExecMock).not.toHaveBeenCalled();
+				expect(renderMock).not.toHaveBeenCalled();
+				expect(cli.exitSpy).toHaveBeenCalledWith(1);
+				const stderr = cli.errorSpy.mock.calls
+					.map(call => String(call[0]))
+					.join('\n');
+				expect(stderr).toContain(`Unknown command: ${command}`);
+			} finally {
+				cli.restore();
+			}
 		}
 	});
 
