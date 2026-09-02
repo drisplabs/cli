@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -81,6 +81,13 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			-- transition (Nudge, Retry, human-resume, Handover) depends on it
 			-- surviving a process restart (ADR 0014).
 			adapter_session_id TEXT,
+			-- Opaque JSON snapshot of the run-loop reducer's RunMemory (nudge/
+			-- retry streaks, last tracker hash, in-flight stop prompt/
+			-- continuation), so a resumed or woken process rehydrates the
+			-- reducer instead of restarting its counters (ADR 0016). Written
+			-- and read only by runMachine.ts's serializeRunMemory/
+			-- deserializeRunMemory — this layer stores it opaquely.
+			run_memory_json TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
 		);
 
@@ -242,6 +249,32 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			db.exec('ALTER TABLE workflow_runs ADD COLUMN adapter_session_id TEXT;');
 		}
 		db.exec('UPDATE schema_version SET version = 8;');
+	}
+
+	const versionAfterV8 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV8 === 8) {
+		// v9 adds the nullable opaque RunMemory snapshot (nudge/retry streaks,
+		// last tracker hash, in-flight stop prompt/continuation) so a resumed or
+		// woken process rehydrates the run-loop reducer instead of restarting
+		// its counters (ADR 0016). Guarded: a database migrating from pre-v5
+		// got workflow_runs from the base DDL above, which already carries the
+		// column.
+		const hasRunMemoryColumn =
+			(
+				db
+					.prepare(
+						`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = 'run_memory_json'`,
+					)
+					.get() as {n: number}
+			).n > 0;
+		if (!hasRunMemoryColumn) {
+			db.exec('ALTER TABLE workflow_runs ADD COLUMN run_memory_json TEXT;');
+		}
+		db.exec('UPDATE schema_version SET version = 9;');
 	}
 };
 

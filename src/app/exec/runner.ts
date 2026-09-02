@@ -10,6 +10,7 @@ import {
 	type RuntimeEvent,
 } from '../../core/runtime/types';
 import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
+import {deserializeRunMemory} from '../../core/workflows/runMachine';
 import type {TurnContinuation} from '../../core/runtime/process';
 import {
 	createSessionStore,
@@ -601,6 +602,23 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			? {mode: 'resume', handle: options.adapterResumeSessionId}
 			: {mode: 'fresh'};
 
+		// Waking a suspended Run (ADR 0016 §2/§6): rehydrate its persisted
+		// `RunMemory` and stop reason from the session DB rather than letting
+		// `createWorkflowRunner` restart the Run's budgets from zero. This
+		// session's store is scoped to `athenaSessionId`, so `getLatestRun()`
+		// names the very Run `resumeRunId` points at — guarded defensively in
+		// case a future caller ever passes a foreign run id.
+		let resumedRunMemory;
+		let resumedStopReason;
+		if (options.resumeRunId) {
+			const resumedRun = store.getLatestRun();
+			if (resumedRun?.id === options.resumeRunId) {
+				resumedRunMemory =
+					deserializeRunMemory(resumedRun.runMemoryJson) ?? undefined;
+				resumedStopReason = resumedRun.stopReason;
+			}
+		}
+
 		const handle = createWorkflowRunner({
 			sessionId: athenaSessionId,
 			projectDir: options.projectDir,
@@ -609,6 +627,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			prompt: options.prompt,
 			initialContinuation: nextContinuation,
 			resumeRunId: options.resumeRunId,
+			resumedRunMemory,
+			resumedStopReason,
 			startTurn: async turnInput => {
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
