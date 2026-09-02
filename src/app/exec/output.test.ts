@@ -70,9 +70,9 @@ describe('createExecOutputWriter', () => {
 		writer.error('err');
 
 		const output = stderr.get();
-		expect(output).toContain('[athena exec] progress');
-		expect(output).toContain('[athena exec] warning: warn');
-		expect(output).toContain('[athena exec] error: err');
+		expect(output).toContain('[athena run] progress');
+		expect(output).toContain('[athena run] warning: warn');
+		expect(output).toContain('[athena run] error: err');
 	});
 
 	it('writes notices to stderr in human mode but stays silent in json mode', () => {
@@ -85,7 +85,7 @@ describe('createExecOutputWriter', () => {
 		});
 		humanWriter.notice('personal capabilities active');
 		expect(humanStderr.get()).toContain(
-			'[athena exec] personal capabilities active',
+			'[athena run] personal capabilities active',
 		);
 
 		const jsonStderr = createBufferWriter();

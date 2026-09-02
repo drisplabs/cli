@@ -178,7 +178,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(resolvePluginDirsMock).toHaveBeenCalledWith([
@@ -246,7 +246,7 @@ describe('bootstrapRuntimeConfig', () => {
 			projectDir: '/project',
 			showSetup: false,
 			pluginFlags: ['/cli-plugin'],
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 			verbose: true,
 		});
 
@@ -300,7 +300,10 @@ describe('bootstrapRuntimeConfig', () => {
 			pluginMcpConfig: '/tmp/mcp.json',
 		});
 		expect(result.harness).toBe('claude-code');
-		expect(result.isolationConfig.preset).toBe('minimal');
+		// The fixture workflow still spells its preset the pre-0.6 way
+		// (`isolation: 'minimal'`); it resolves to `standard` with a notice
+		// alongside the upgrade warning (#185).
+		expect(result.isolationConfig.preset).toBe('standard');
 		expect(result.isolationConfig.additionalDirectories).toEqual([
 			'/global-dir',
 			'/project-dir',
@@ -308,7 +311,58 @@ describe('bootstrapRuntimeConfig', () => {
 		expect(result.isolationConfig.model).toBe('opus');
 		expect(result.modelName).toBe('opus');
 		expect(result.warnings).toEqual([
-			"Workflow 'e2e-test-builder' requires 'minimal' isolation (upgrading from 'strict')",
+			"Workflow 'e2e-test-builder' isolation preset 'minimal' is deprecated and is removed in 0.7.0; use 'standard'",
+			"Workflow 'e2e-test-builder' requires 'standard' isolation (upgrading from 'guarded')",
+		]);
+	});
+
+	it('raises the isolation preset to a workflow-declared new-name preset without a deprecation notice (#185)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			activeWorkflow: 'auto-wf',
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolveWorkflowMock.mockReturnValue({
+			name: 'auto-wf',
+			plugins: [],
+			promptTemplate: '{input}',
+			isolation: 'autonomous',
+		});
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'standard',
+		});
+
+		expect(result.isolationConfig.preset).toBe('autonomous');
+		expect(result.warnings).toEqual([
+			"Workflow 'auto-wf' requires 'autonomous' isolation (upgrading from 'standard')",
+		]);
+	});
+
+	it('never lowers a user-chosen preset to a workflow-declared one, even spelled the old way (#185)', () => {
+		readGlobalConfigMock.mockReturnValue({
+			...emptyConfig,
+			activeWorkflow: 'strict-wf',
+		});
+		readConfigMock.mockReturnValue(emptyConfig);
+		resolveWorkflowMock.mockReturnValue({
+			name: 'strict-wf',
+			plugins: [],
+			promptTemplate: '{input}',
+			isolation: 'strict',
+		});
+
+		const result = bootstrapRuntimeConfig({
+			projectDir: '/project',
+			showSetup: false,
+			isolationPreset: 'autonomous',
+		});
+
+		expect(result.isolationConfig.preset).toBe('autonomous');
+		expect(result.warnings).toEqual([
+			"Workflow 'strict-wf' isolation preset 'strict' is deprecated and is removed in 0.7.0; use 'guarded'",
 		]);
 	});
 
@@ -332,7 +386,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: true,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('e2e-test-builder');
@@ -369,7 +423,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: true,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('default');
@@ -391,7 +445,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('default');
@@ -433,7 +487,7 @@ describe('bootstrapRuntimeConfig', () => {
 		bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('project-workflow');
@@ -462,7 +516,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(ensureHandoffSkillPluginMock).toHaveBeenCalled();
@@ -490,7 +544,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(result.warnings).toEqual([
@@ -517,7 +571,7 @@ describe('bootstrapRuntimeConfig', () => {
 		bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(ensureHandoffSkillPluginMock).not.toHaveBeenCalled();
@@ -535,7 +589,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		// gate fires despite zero configured plugin dirs (the builtin handoff
@@ -569,7 +623,7 @@ describe('bootstrapRuntimeConfig', () => {
 		bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		// gate fires despite zero configured plugin dirs + zero personal MCP
@@ -605,7 +659,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(result.personalMcpServers).toEqual([
@@ -638,7 +692,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 			harnessOverride: 'openai-codex',
 		});
 
@@ -673,7 +727,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(result.capabilityConflicts).toEqual({
@@ -693,7 +747,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(result.capabilityConflicts).toEqual({mcpServers: [], skills: []});
@@ -721,7 +775,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(result.harness).toBe('openai-codex');
@@ -742,7 +796,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 			harnessOverride: 'claude-code',
 		});
 
@@ -794,7 +848,7 @@ describe('bootstrapRuntimeConfig', () => {
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
 			showSetup: false,
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(buildPluginMcpConfigMock).not.toHaveBeenCalled();
@@ -885,7 +939,7 @@ describe('bootstrapRuntimeConfig', () => {
 			projectDir: '/project',
 			showSetup: false,
 			pluginFlags: ['/cli-plugin'],
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 		});
 
 		expect(registerPluginsMock).toHaveBeenCalledWith(

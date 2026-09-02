@@ -119,7 +119,7 @@ describe('spawnClaude', () => {
 				'/tmp/mock-settings.json',
 				'--setting-sources',
 				'',
-				'--strict-mcp-config', // default strict preset
+				'--strict-mcp-config', // default guarded preset
 			]),
 			expect.objectContaining({
 				cwd: '/test/project',
@@ -436,12 +436,12 @@ describe('spawnClaude', () => {
 			expect(args).toContain('--strict-mcp-config');
 		});
 
-		it('minimal preset enables strict MCP config', () => {
+		it('standard preset enables strict MCP config', () => {
 			spawnClaude({
 				prompt: 'Test',
 				projectDir: '/test',
 				instanceId: 1,
-				isolation: 'minimal',
+				isolation: 'standard',
 			});
 
 			const args = vi.mocked(childProcess.spawn).mock.calls[0]?.[1] as string[];
@@ -454,7 +454,7 @@ describe('spawnClaude', () => {
 				projectDir: '/test',
 				instanceId: 1,
 				isolation: {
-					preset: 'strict',
+					preset: 'guarded',
 					allowedTools: ['Read'],
 				},
 			});

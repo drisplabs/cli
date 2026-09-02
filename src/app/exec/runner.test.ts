@@ -12,7 +12,7 @@ import type {
 	RuntimeEventHandler,
 } from '../../core/runtime/types';
 import {runExec} from './runner';
-import {EXEC_EXIT_CODE} from './types';
+import {RUN_EXIT_CODE} from './types';
 
 class MockRuntime implements Runtime {
 	private eventHandlers = new Set<RuntimeEventHandler>();
@@ -143,7 +143,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(true);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 		expect(result.finalMessage).toBe('done message');
 		expect(stdout.read()).toContain('done message');
 		expect(stderr.read()).not.toContain('error');
@@ -585,7 +585,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.OUTPUT);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.OUTPUT);
 		expect(result.failure?.message).toContain('upload denied');
 		expect(stdout.read()).not.toContain('done');
 		expect(stderr.read()).toContain('Artifact upload failed');
@@ -623,7 +623,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.OUTPUT);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.OUTPUT);
 		expect(result.failure?.message).toContain(
 			'Failed writing --output-last-message',
 		);
@@ -673,7 +673,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(result.failure?.kind).toBe('process');
 		expect(result.failure?.message).toBe('Execution cancelled.');
 		expect(runtime.decisions.length).toBe(0);
@@ -722,7 +722,7 @@ describe('runExec', () => {
 			const result = await runPromise;
 
 			expect(result.success).toBe(false);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.TIMEOUT);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.TIMEOUT);
 			expect(result.failure?.kind).toBe('timeout');
 			expect(runtime.decisions.length).toBe(0);
 		} finally {
@@ -818,7 +818,7 @@ describe('runExec', () => {
 			const result = await runPromise;
 
 			expect(result.success).toBe(false);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.TIMEOUT);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.TIMEOUT);
 			expect(result.failure?.kind).toBe('timeout');
 			expect(stderr.read()).toContain('timed out');
 		} finally {
@@ -1062,7 +1062,7 @@ describe('runExec', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 
 			// The compaction was answered with a block decision.
 			const blockDecision = runtime.decisions.find(
@@ -1147,7 +1147,7 @@ describe('runExec', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain('iteration ceiling');
@@ -1212,11 +1212,11 @@ describe('runExec', () => {
 			// A declared block suspends the Run (ADR 0014): no failure latch,
 			// no failure exit code — contrast the old terminal `blocked`.
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain(
-				'agent declared WORKFLOW_BLOCKED: browser initialization failed',
+				'agent declared NEEDS_HUMAN: browser initialization failed',
 			);
 		} finally {
 			fs.rmSync(trackerPath, {force: true});
@@ -1289,7 +1289,7 @@ describe('runExec', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain('Deploy to prod or staging?');
@@ -1362,7 +1362,7 @@ describe('runExec', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain('approval');
@@ -1424,7 +1424,7 @@ describe('runExec', () => {
 			// no failure exit code — contrast the old terminal `exhausted`. The
 			// notice names the tripped bound.
 			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(EXEC_EXIT_CODE.SUCCESS);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain('iteration ceiling');
@@ -1464,7 +1464,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(result.failure?.message).toContain('exited with code 1');
 		expect(result.failure?.message).toContain('Authentication failed');
 	});
@@ -1490,7 +1490,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(result.failure?.kind).toBe('process');
 		expect(result.failure?.message).toContain('db init failed');
 	});
@@ -1514,7 +1514,7 @@ describe('runExec', () => {
 		});
 
 		expect(result.success).toBe(false);
-		expect(result.exitCode).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(result.exitCode).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(result.failure?.kind).toBe('process');
 		expect(result.failure?.message).toContain('runtime init failed');
 	});

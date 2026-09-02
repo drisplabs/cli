@@ -30,7 +30,7 @@ import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
 import type {ExecRunOptions, ExecRunResult} from './types';
-import {EXEC_EXIT_CODE} from './types';
+import {RUN_EXIT_CODE} from './types';
 
 const NULL_TOKENS: TokenUsage = {
 	input: null,
@@ -156,7 +156,7 @@ function buildEarlyFailureResult(input: {
 }): ExecRunResult {
 	return {
 		success: false,
-		exitCode: EXEC_EXIT_CODE.RUNTIME,
+		exitCode: RUN_EXIT_CODE.RUNTIME,
 		athenaSessionId: input.ephemeral ? null : input.athenaSessionId,
 		adapterSessionId: null,
 		finalMessage: null,
@@ -386,7 +386,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		});
 		const provisionalResult: ExecRunResult = {
 			success: true,
-			exitCode: EXEC_EXIT_CODE.SUCCESS,
+			exitCode: RUN_EXIT_CODE.SUCCESS,
 			athenaSessionId: options.ephemeral ? null : athenaSessionId,
 			adapterSessionId,
 			finalMessage: resolved.message,
@@ -586,6 +586,12 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			prompt: options.prompt,
 			initialContinuation: nextContinuation,
 			resumeRunId: options.resumeRunId,
+			// Runner-level notices (e.g. a deprecated marker spelling, #185) reach
+			// both the human stderr stream and the JSONL contract.
+			onWarning: message => {
+				output.warn(message);
+				output.emitJsonEvent('exec.warning', {message});
+			},
 			startTurn: async turnInput => {
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
@@ -714,7 +720,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const failure = latch.current();
 	const exitCode = exitCodeFromFailure(failure);
-	const success = exitCode === EXEC_EXIT_CODE.SUCCESS;
+	const success = exitCode === RUN_EXIT_CODE.SUCCESS;
 	const finalMessage = success ? resolvedFinalMessage.message : null;
 	if (success && finalMessage !== null) {
 		output.printFinalMessage(finalMessage);

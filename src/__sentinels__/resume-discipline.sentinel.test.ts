@@ -46,7 +46,7 @@ describe('Sentinel: resume non-execution discipline', () => {
 
 	it('useClaudeProcess does not call spawnClaude on mount', () => {
 		const {unmount} = renderHook(() =>
-			useClaudeProcess('/tmp/proj', 1, 'strict'),
+			useClaudeProcess('/tmp/proj', 1, 'guarded'),
 		);
 
 		// spawnClaude should NOT have been called just by mounting the hook
@@ -56,7 +56,7 @@ describe('Sentinel: resume non-execution discipline', () => {
 
 	it('spawnClaude is called only after explicit spawn() invocation', async () => {
 		const {result, unmount} = renderHook(() =>
-			useClaudeProcess('/tmp/proj', 1, 'strict'),
+			useClaudeProcess('/tmp/proj', 1, 'guarded'),
 		);
 
 		expect(spawnClaude).not.toHaveBeenCalled();

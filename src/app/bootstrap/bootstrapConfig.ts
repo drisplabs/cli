@@ -15,9 +15,11 @@ import type {
 	EffectiveSkill,
 } from '../../infra/capabilities/effective';
 import {shouldResolveWorkflow} from '../../setup/shouldResolveWorkflow';
-import type {
-	HarnessProcessConfig,
-	HarnessProcessPreset,
+import {
+	HARNESS_PROCESS_PRESETS,
+	resolveHarnessProcessPreset,
+	type HarnessProcessConfig,
+	type HarnessProcessPreset,
 } from '../../core/runtime/process';
 import {
 	compileWorkflowPlan,
@@ -241,14 +243,23 @@ export function bootstrapRuntimeConfig({
 
 	let isolationPreset = initialIsolationPreset;
 	if (activeWorkflow?.isolation) {
-		const presetOrder = ['strict', 'minimal', 'permissive'];
-		const workflowIdx = presetOrder.indexOf(activeWorkflow.isolation);
-		const userIdx = presetOrder.indexOf(isolationPreset);
-		if (workflowIdx > userIdx) {
+		// A workflow.json may still spell its preset the pre-0.6 way (#185);
+		// read it through the same resolver the CLI flag uses, and say so.
+		const resolved = resolveHarnessProcessPreset(activeWorkflow.isolation);
+		if (resolved?.deprecation) {
 			warnings.push(
-				`Workflow '${activeWorkflow.name}' requires '${activeWorkflow.isolation}' isolation (upgrading from '${isolationPreset}')`,
+				`Workflow '${activeWorkflow.name}' isolation ${resolved.deprecation}`,
 			);
-			isolationPreset = activeWorkflow.isolation as HarnessProcessPreset;
+		}
+		const workflowIdx = resolved
+			? HARNESS_PROCESS_PRESETS.indexOf(resolved.preset)
+			: -1;
+		const userIdx = HARNESS_PROCESS_PRESETS.indexOf(isolationPreset);
+		if (resolved && workflowIdx > userIdx) {
+			warnings.push(
+				`Workflow '${activeWorkflow.name}' requires '${resolved.preset}' isolation (upgrading from '${isolationPreset}')`,
+			);
+			isolationPreset = resolved.preset;
 		}
 	}
 

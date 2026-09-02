@@ -1,6 +1,6 @@
 import {describe, it, expect, vi} from 'vitest';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
-import {EXEC_EXIT_CODE} from './types';
+import {RUN_EXIT_CODE} from './types';
 
 describe('createFailureLatch', () => {
 	it('starts with no failure', () => {
@@ -55,36 +55,36 @@ describe('createFailureLatch', () => {
 
 describe('exitCodeFromFailure', () => {
 	it('returns SUCCESS when no failure', () => {
-		expect(exitCodeFromFailure(undefined)).toBe(EXEC_EXIT_CODE.SUCCESS);
+		expect(exitCodeFromFailure(undefined)).toBe(RUN_EXIT_CODE.SUCCESS);
 	});
 
 	it('maps timeout to TIMEOUT', () => {
 		expect(exitCodeFromFailure({kind: 'timeout', message: 'x'})).toBe(
-			EXEC_EXIT_CODE.TIMEOUT,
+			RUN_EXIT_CODE.TIMEOUT,
 		);
 	});
 
 	it('maps output to OUTPUT', () => {
 		expect(exitCodeFromFailure({kind: 'output', message: 'x'})).toBe(
-			EXEC_EXIT_CODE.OUTPUT,
+			RUN_EXIT_CODE.OUTPUT,
 		);
 	});
 
 	it('maps workflow blocked to WORKFLOW_BLOCKED', () => {
 		expect(
 			exitCodeFromFailure({kind: 'workflow', state: 'blocked', message: 'x'}),
-		).toBe(EXEC_EXIT_CODE.WORKFLOW_BLOCKED);
+		).toBe(RUN_EXIT_CODE.WORKFLOW_BLOCKED);
 	});
 
 	it('maps workflow exhausted to WORKFLOW_EXHAUSTED', () => {
 		expect(
 			exitCodeFromFailure({kind: 'workflow', state: 'exhausted', message: 'x'}),
-		).toBe(EXEC_EXIT_CODE.WORKFLOW_EXHAUSTED);
+		).toBe(RUN_EXIT_CODE.WORKFLOW_EXHAUSTED);
 	});
 
 	it('maps process failure to RUNTIME', () => {
 		expect(exitCodeFromFailure({kind: 'process', message: 'x'})).toBe(
-			EXEC_EXIT_CODE.RUNTIME,
+			RUN_EXIT_CODE.RUNTIME,
 		);
 	});
 });

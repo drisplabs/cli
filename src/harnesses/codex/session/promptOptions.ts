@@ -55,14 +55,14 @@ function resolveIsolation(preset?: HarnessProcessPreset): {
 	sandbox: CodexSandbox;
 } {
 	switch (preset) {
-		case 'strict':
+		case 'guarded':
 			return {approvalPolicy: 'on-request', sandbox: 'read-only'};
-		case 'permissive':
+		case 'autonomous':
 			// Codex parity with the Claude harness's bypassPermissions: full
 			// access, never ask. ('auto-edit' is not a valid AskForApproval
 			// variant in codex-cli 0.142+ — it failed every spawn.)
 			return {approvalPolicy: 'never', sandbox: 'danger-full-access'};
-		case 'minimal':
+		case 'standard':
 		case undefined:
 			return {approvalPolicy: 'on-request', sandbox: 'workspace-write'};
 	}

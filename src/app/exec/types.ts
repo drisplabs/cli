@@ -29,7 +29,7 @@ export type PersonalCapabilitiesSummary = {
 	skills: ReadonlyArray<PersonalCapabilitySummaryEntry>;
 };
 
-export const EXEC_EXIT_CODE = {
+export const RUN_EXIT_CODE = {
 	SUCCESS: 0,
 	USAGE: 2,
 	BOOTSTRAP: 3,
@@ -43,7 +43,7 @@ export const EXEC_EXIT_CODE = {
 	WORKFLOW_EXHAUSTED: 9,
 } as const;
 
-export type ExecExitCode = (typeof EXEC_EXIT_CODE)[keyof typeof EXEC_EXIT_CODE];
+export type RunExitCode = (typeof RUN_EXIT_CODE)[keyof typeof RUN_EXIT_CODE];
 
 export type ExecRunOptions = {
 	prompt: string;
@@ -111,6 +111,8 @@ export type ExecRunOptions = {
 export type ExecWorkflowFailureState =
 	| 'blocked'
 	| 'exhausted'
+	// The Journal was the "Tracker" before #185; the persisted JSON value keeps
+	// its historical spelling, like the `blocked` status.
 	| 'missing_tracker';
 
 export type ExecRunFailure =
@@ -126,7 +128,7 @@ export type ExecRunFailure =
 
 export type ExecRunResult = {
 	success: boolean;
-	exitCode: ExecExitCode;
+	exitCode: RunExitCode;
 	athenaSessionId: string | null;
 	adapterSessionId: string | null;
 	finalMessage: string | null;

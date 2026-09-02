@@ -28,7 +28,7 @@ export type SpawnClaudeOptions = {
 	/**
 	 * Isolation configuration for the spawned Claude process.
 	 * Controls which settings/hooks/MCP servers are loaded.
-	 * Defaults to 'strict' preset (user settings only, athena hooks injected).
+	 * Defaults to 'guarded' preset (user settings only, athena hooks injected).
 	 */
 	isolation?: IsolationConfig | IsolationPreset;
 	/** Additional environment variables to pass to the Claude process */
