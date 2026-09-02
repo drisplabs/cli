@@ -438,6 +438,26 @@ describe('stale channel keys (#183)', () => {
 		}
 	});
 
+	it('scrubs the stale key from the global config on the next write', () => {
+		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			files['/home/testuser/.config/athena/config.json'] = JSON.stringify({
+				channels: ['telegram'],
+				theme: 'light',
+			});
+
+			writeGlobalConfig({theme: 'dark'});
+
+			const written = JSON.parse(
+				files['/home/testuser/.config/athena/config.json']!,
+			);
+			expect(written).not.toHaveProperty('channels');
+			expect(written.theme).toBe('dark');
+		} finally {
+			stderr.mockRestore();
+		}
+	});
+
 	it('stays silent when no stale key is present', () => {
 		const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
 		try {
