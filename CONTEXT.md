@@ -70,21 +70,21 @@ _Avoid_: agent stack, subagent state.
 The binding between a paired CLI instance and one dashboard-side **runner**.
 Owned by the dashboard (the CLI never creates or deletes one — it only
 mirrors). Surfaced locally in `~/.config/athena/attachments.json`. Each
-Attachment may receive dashboard assignments through the dashboard runtime
-daemon. The Attachment does not own a local harness process; dashboard assignment execution is owned by the
-dashboard runtime daemon. See `docs/adr/0001-attachment-supervisor.md`.
+Attachment may receive dashboard assignments through the runner process
+(`drisp runner`). The Attachment does not own a local harness process; dashboard assignment execution is owned by the
+runner process. See `docs/adr/0001-attachment-supervisor.md` and ADR 0017.
 _Avoid_: pairing (overloaded with the auth handshake), runner binding (verb
 phrase, not a noun for the resulting state).
 
 **Dashboard assignment**:
-A dashboard-issued request for the paired runtime daemon to execute one
+A dashboard-issued request for the paired runner process to execute one
 dashboard **Run** on behalf of a **runner**.
 _Avoid_: job assignment (wire-frame name), remote assignment (describes one
 transport path, not the domain concept).
 
 **Dashboard connection context**:
 The dashboard URL and instance id captured from the live dashboard socket
-connection. Used by the dashboard runtime daemon to admit buffered **Dashboard
+connection. Used by the runner process to admit buffered **Dashboard
 assignments** against the same connected dashboard that made the **Attachment**
 mirror current.
 _Avoid_: connection state (too broad), socket context (transport detail).
@@ -172,7 +172,7 @@ _Avoid_: plugin loading (that is `registerPlugins`), plugin install.
 - The **Pending description** flows from `tool.pre` (Task/Agent) to the next `subagent.start`, where **SubagentTracker** consumes and clears it.
 - The **Root plan** persists across **Runs** within a **Session** — only per-run state (subagent stack, tool/decision correlation, message stream) is reset between runs.
 - The **Runtime event loop** is the single owner of the subscribe → ingest → `sendDecision` → publish assembly for both interactive and headless modes; each mode is a thin adapter that supplies only its own side effects. The **Dashboard decision drain** is a sibling helper both modes reuse to feed inbound dashboard `RuntimeDecision`s into the same runtime.
-- A **Dashboard assignment** is admitted by the dashboard runtime daemon before
+- A **Dashboard assignment** is admitted by the runner process (`drisp runner`) before
   it launches the corresponding dashboard **Run** locally.
 - A **Dashboard connection context** exists only while the dashboard socket is
   connected; buffered **Dashboard assignments** are admitted only after the

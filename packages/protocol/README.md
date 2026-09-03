@@ -1,6 +1,6 @@
 # @drisp/protocol
 
-The wire contract between a drisp **runner** (the CLI's runtime daemon) and the
+The wire contract between a drisp **runner** (the CLI's `drisp runner` process) and the
 **hub** (the dashboard): zod schemas and inferred types for every
 instance-socket frame, the Workflow **Run**, the **Turn**, the **Interruption**
 a Run parks on, and the event stream — plus a JSON Schema export of the same.
@@ -66,7 +66,7 @@ The feed stream carries FeedEvents opaquely (`FeedEventSchema` keeps unknown
 | ------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `phase` | `PhaseEvent` | The Workflow Run moved to a new workflow step, as the Journal's Turn Protocol block names it — one per _change_ of step, not per Turn. `runId` is the Workflow Run; `turn` the Turn that named it; `stepIndex` / `stepTotal` only when the block gave them. `PhaseFeedEventSchema` narrows a FeedEvent to this shape. |
 
-The runner (the CLI's dashboard daemon) is wired to this package: it parses
+The runner (the CLI's `drisp runner` process) is wired to this package: it parses
 every inbound frame with `safeNormalizeFrame()`, sends a versioned `hello`
 first, and builds every outbound frame under its canonical name. Which name set
 actually reaches the wire is decided per connection by the hub's `hello` — see

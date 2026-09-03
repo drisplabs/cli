@@ -7,7 +7,7 @@
  * the head of the next Turn's prompt so the Turn Protocol block sees it before
  * it plans. This module owns the pure pieces — the queued shape, the prompt
  * block, the Journal entry — and the small buffered queue the exec runner and
- * the dashboard daemon hand Steers through.
+ * the runner process hand Steers through.
  */
 
 export type SteerOrigin = 'hub' | 'local';

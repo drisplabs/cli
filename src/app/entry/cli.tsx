@@ -41,6 +41,7 @@ import {runMcpCommand} from './mcpCommand';
 import {runSkillCommand} from './skillCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
 import {runDashboardCommand} from './dashboardCommand';
+import {runRunnerCommand} from './runnerCommand';
 import {runDoctorCommand} from './doctorCommand';
 import {runRunsCommand} from './runsCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
@@ -85,6 +86,8 @@ const KNOWN_COMMANDS = new Set([
 	'mcp',
 	'skill',
 	'marketplace',
+	'runner',
+	// Deprecated alias of `runner` (#188); removed in 0.7.0.
 	'dashboard',
 	'telemetry',
 	'doctor',
@@ -241,7 +244,7 @@ function inkRenderOptions() {
 
 // Set terminal tab title immediately so it appears before React renders.
 // Only when stdout is a TTY — otherwise we'd be writing escape sequences
-// into a pipe (e.g. `athena dashboard status --json | jq`) and corrupting
+// into a pipe (e.g. `drisp runner status --json | jq`) and corrupting
 // the consumer.
 if (process.stdout.isTTY) {
 	process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');
@@ -265,7 +268,9 @@ const cli = meow(
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
 			skill <sub>           Manage personal skills (install, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
-			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
+			runner [sub]          Run the runner that pairs this machine with the hub and executes its Runs
+			                      (no subcommand: foreground; --detach: background; status, stop, restart,
+			                      logs, runs, install, pair, unpair, refresh, doctor, list)
 			telemetry [action]    Manage anonymous telemetry (enable/disable/status)
 			doctor                Diagnose Claude headless setup (use with --harness=claude)
 
@@ -293,8 +298,9 @@ const cli = meow(
 			--ephemeral     Do not persist Athena session data (run mode)
 			--timeout-ms    Hard timeout for the run in milliseconds
 			--workflow      Override the active workflow for this run only (no config change)
-			--url           Dashboard origin (dashboard pair)
-			--name          Friendly machine name (dashboard pair)
+			--detach        Start the runner in the background (runner)
+			--url           Dashboard origin (runner pair)
+			--name          Friendly machine name (runner pair)
 			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (run mode)
 			--project       Scope workflow command to project config (workflow use)
 			--global        Scope workflow command to global config (workflow use, default)
@@ -304,6 +310,7 @@ const cli = meow(
 		Note: All isolation modes use --setting-sources "" to completely isolate
 		      from Claude Code's settings. athena-flow is fully self-contained.
 		      \`exec\` is a deprecated alias of \`run\` and is removed in 0.7.0.
+		      \`dashboard\` is a deprecated alias of \`runner\` and is removed in 0.7.0.
 
 	Config Files
 		Global:  ~/.config/athena/config.json
@@ -401,6 +408,10 @@ const cli = meow(
 				type: 'number',
 			},
 			follow: {
+				type: 'boolean',
+				default: false,
+			},
+			detach: {
 				type: 'boolean',
 				default: false,
 			},
@@ -571,26 +582,32 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (command === 'dashboard') {
+	if (command === 'runner' || command === 'dashboard') {
 		const [subcommand = '', ...subcommandArgs] = commandArgs;
+		const input = {
+			subcommand,
+			subcommandArgs,
+			flags: {
+				url: typeof cli.flags.url === 'string' ? cli.flags.url : undefined,
+				name: typeof cli.flags.name === 'string' ? cli.flags.name : undefined,
+				runner:
+					typeof cli.flags.runner === 'string' ? cli.flags.runner : undefined,
+				json: Boolean(cli.flags.json),
+				...(cli.flags.detach ? {detach: true} : {}),
+				...(typeof cli.flags.tail === 'number' ? {tail: cli.flags.tail} : {}),
+				...(cli.flags.follow ? {follow: true} : {}),
+				...(cli.flags.active ? {active: true} : {}),
+				...(typeof cli.flags.limit === 'number'
+					? {limit: cli.flags.limit}
+					: {}),
+			},
+		};
+		// `dashboard` is the deprecated alias (#188): it prints its own one-line
+		// notice and maps its subcommands onto the runner's.
 		await exitWith(
-			await runDashboardCommand({
-				subcommand,
-				subcommandArgs,
-				flags: {
-					url: typeof cli.flags.url === 'string' ? cli.flags.url : undefined,
-					name: typeof cli.flags.name === 'string' ? cli.flags.name : undefined,
-					runner:
-						typeof cli.flags.runner === 'string' ? cli.flags.runner : undefined,
-					json: Boolean(cli.flags.json),
-					...(typeof cli.flags.tail === 'number' ? {tail: cli.flags.tail} : {}),
-					...(cli.flags.follow ? {follow: true} : {}),
-					...(cli.flags.active ? {active: true} : {}),
-					...(typeof cli.flags.limit === 'number'
-						? {limit: cli.flags.limit}
-						: {}),
-				},
-			}),
+			command === 'runner'
+				? await runRunnerCommand(input)
+				: await runDashboardCommand(input),
 		);
 		return;
 	}

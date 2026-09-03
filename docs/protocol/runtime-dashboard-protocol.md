@@ -337,7 +337,7 @@ The frame contract is owned by the `@drisp/protocol` workspace package
 (`packages/protocol`): zod schemas, inferred types, and a JSON Schema export
 under `packages/protocol/schema/`. It accepts two frame-name sets side by side
 and normalises both to one typed value (`normalizeFrame()`). The runner (the
-CLI's dashboard daemon) is wired to the package: it has no frame types of its
+CLI's `drisp runner` process) is wired to the package: it has no frame types of its
 own, parses every inbound frame through it, and builds every outbound frame
 under the canonical name.
 
@@ -405,14 +405,14 @@ name set it puts on the wire:
    and every frame from then on uses the new names.
 3. If the hub sends a `hello` with a version the runner does not speak, the
    runner replies `{type: 'error', code: 'unsupported_protocol_version'}` and
-   closes the socket; the daemon's reconnect loop owns what happens next.
+   closes the socket; the runner's reconnect loop owns what happens next.
 4. A hub that never sends `hello` (the hub of today) leaves the connection in
    legacy mode for its lifetime. **Legacy is the default**; canonical must be
    announced.
 
 The mode is re-negotiated on every reconnect and is visible in
-`drisp dashboard status` (`wireMode`). The live-transport harness
-(`src/app/dashboard/liveTransportHarness.ts`) runs the daemon against a fake
+`drisp runner status` (`wireMode`). The live-transport harness
+(`src/app/dashboard/liveTransportHarness.ts`) runs the runner against a fake
 hub in both modes and validates every runner frame against the package under
 the name set that hub expects.
 
@@ -425,7 +425,7 @@ without the hub ever asking:
 1. **On connect**, the runner's `hello` carries `workflows`: every Workflow
    installed on that machine, read from the Workflow store
    (`~/.config/athena/workflows`) at connect time — so a reconnect reports the
-   store as it is then, not as it was at daemon start. A hub's `hello` omits
+   store as it is then, not as it was at runner start. A hub's `hello` omits
    the field; a runner that predates it does too.
 2. **While connected**, a change to the store — `drisp workflow install`,
    `upgrade`, or `remove`, or any other edit — is pushed as
@@ -454,6 +454,24 @@ An installed Workflow that shares a built-in's name shadows it (one entry, the
 installed one), exactly as local resolution prefers the store over the
 built-ins. The list is ordered built-ins first, then the store by name, so two
 reports of the same store compare equal.
+
+### 17.5 The runner process
+
+The runner side of this protocol is one process per machine, `drisp runner`
+(#188, ADR 0017). It has no transport other than the instance socket: no
+control socket, no local console, nothing a second client could connect to.
+What it keeps on disk, under `~/.local/state/drisp/`:
+
+| File                 | Role                                                                                                                                                                                                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `runner.pid`         | Liveness and the single-instance lock. A second runner exits non-zero with `already running (pid N)`; a dead pid is reaped on the next start.                                                                                                                                                                |
+| `runner.status.json` | The runner's snapshot — socket connected, `wireMode`, instance id, active / completed Runs, the last 100 run records — rewritten atomically whenever it changes and removed on a clean stop. `drisp runner status` / `runs` read it beside the pid file; the pid file is the liveness authority.             |
+| `runner.db`          | The durable **feed outbox** (§11; drained to the hub, rows leave on `feed_ack`) and the **decision inbox** (§13; the hub's `answer`s, rows leave when the Run consumes them), in one SQLite file the runner owns. A runner killed mid-Run drains the outbox and re-delivers the pending decision on restart. |
+| `runner.log`         | The rotating log.                                                                                                                                                                                                                                                                                            |
+
+The crash-recovery harness (`runRunnerRecoveryHarness` in
+`src/app/dashboard/liveTransportHarness.ts`) exercises exactly that restart
+against the fake hub in both wire modes.
 
 ## 18. Current Compatibility Notes
 

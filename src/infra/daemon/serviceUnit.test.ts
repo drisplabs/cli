@@ -27,26 +27,24 @@ describe('renderLaunchdPlist', () => {
 		const xml = renderLaunchdPlist({
 			label: 'ai.drisp.daemon',
 			nodeBinary: '/usr/local/bin/node',
-			daemonEntry: '/opt/drisp/dist/dashboard-daemon.js',
+			daemonEntry: '/opt/drisp/dist/runner.js',
 			workingDirectory: '/Users/test',
-			stdoutPath: '/Users/test/.local/state/drisp/dashboard-daemon.log',
-			stderrPath: '/Users/test/.local/state/drisp/dashboard-daemon.log',
+			stdoutPath: '/Users/test/.local/state/drisp/runner.log',
+			stderrPath: '/Users/test/.local/state/drisp/runner.log',
 		});
 		expect(xml).toContain('<key>Label</key>');
 		expect(xml).toContain('<string>ai.drisp.daemon</string>');
 		expect(xml).toContain('<key>RunAtLoad</key>');
 		expect(xml).toContain('<key>KeepAlive</key>');
 		expect(xml).toContain('<string>/usr/local/bin/node</string>');
-		expect(xml).toContain(
-			'<string>/opt/drisp/dist/dashboard-daemon.js</string>',
-		);
+		expect(xml).toContain('<string>/opt/drisp/dist/runner.js</string>');
 	});
 
 	it('xml-escapes special characters in paths', () => {
 		const xml = renderLaunchdPlist({
 			label: 'ai.drisp.daemon',
 			nodeBinary: '/usr/bin/node',
-			daemonEntry: '/path/with <weird> chars/dashboard-daemon.js',
+			daemonEntry: '/path/with <weird> chars/runner.js',
 			workingDirectory: '/home',
 			stdoutPath: '/log',
 			stderrPath: '/log',
@@ -61,12 +59,10 @@ describe('renderSystemdUnit', () => {
 		const unit = renderSystemdUnit({
 			description: 'Drisp daemon',
 			nodeBinary: '/usr/bin/node',
-			daemonEntry: '/opt/drisp/dist/dashboard-daemon.js',
+			daemonEntry: '/opt/drisp/dist/runner.js',
 		});
 		expect(unit).toContain('Description=Drisp daemon');
-		expect(unit).toContain(
-			'ExecStart=/usr/bin/node /opt/drisp/dist/dashboard-daemon.js',
-		);
+		expect(unit).toContain('ExecStart=/usr/bin/node /opt/drisp/dist/runner.js');
 		expect(unit).toContain('Restart=always');
 		expect(unit).toContain('WantedBy=default.target');
 	});
@@ -77,7 +73,7 @@ describe('installServiceUnit', () => {
 		const target = path.join(tmpDir, 'ai.drisp.daemon.plist');
 		const result = installServiceUnit({
 			platform: 'darwin',
-			daemonEntry: '/opt/drisp/dist/dashboard-daemon.js',
+			runnerEntry: '/opt/drisp/dist/runner.js',
 			nodeBinary: '/usr/bin/node',
 			targetPath: target,
 			env: {HOME: tmpDir},
@@ -96,7 +92,7 @@ describe('installServiceUnit', () => {
 		const target = path.join(tmpDir, 'drisp-daemon.service');
 		const result = installServiceUnit({
 			platform: 'linux',
-			daemonEntry: '/opt/drisp/dist/dashboard-daemon.js',
+			runnerEntry: '/opt/drisp/dist/runner.js',
 			nodeBinary: '/usr/bin/node',
 			targetPath: target,
 			env: {HOME: tmpDir},
@@ -113,7 +109,7 @@ describe('installServiceUnit', () => {
 	it('reports unsupported on win32', () => {
 		const result = installServiceUnit({
 			platform: 'win32',
-			daemonEntry: '/opt/dashboard-daemon.js',
+			runnerEntry: '/opt/runner.js',
 			nodeBinary: 'node.exe',
 			env: {HOME: tmpDir},
 		});
@@ -127,7 +123,7 @@ describe('installServiceUnit', () => {
 		const target = path.join(tmpDir, 'unit.plist');
 		installServiceUnit({
 			platform: 'darwin',
-			daemonEntry: '/x.js',
+			runnerEntry: '/x.js',
 			nodeBinary: '/node',
 			targetPath: target,
 			env: {HOME: tmpDir},
@@ -135,7 +131,7 @@ describe('installServiceUnit', () => {
 		const mtimeBefore = fs.statSync(target).mtimeMs;
 		installServiceUnit({
 			platform: 'darwin',
-			daemonEntry: '/x.js',
+			runnerEntry: '/x.js',
 			nodeBinary: '/node',
 			targetPath: target,
 			env: {HOME: tmpDir},

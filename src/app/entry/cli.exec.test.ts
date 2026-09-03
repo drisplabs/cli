@@ -3,6 +3,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 const renderMock = vi.fn();
 const runExecMock = vi.fn();
 const runDashboardMock = vi.fn();
+const runRunnerMock = vi.fn();
 const bootstrapRuntimeConfigMock = vi.fn();
 const readConfigMock = vi.fn();
 const readGlobalConfigMock = vi.fn();
@@ -89,6 +90,10 @@ vi.mock('../../setup/shouldShowSetup', () => ({
 
 vi.mock('./dashboardCommand', () => ({
 	runDashboardCommand: runDashboardMock,
+}));
+
+vi.mock('./runnerCommand', () => ({
+	runRunnerCommand: runRunnerMock,
 }));
 
 vi.mock('../exec', () => ({
@@ -222,6 +227,8 @@ describe('cli exec mode', () => {
 		runExecMock.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 		runDashboardMock.mockReset();
 		runDashboardMock.mockResolvedValue(0);
+		runRunnerMock.mockReset();
+		runRunnerMock.mockResolvedValue(0);
 	});
 
 	afterEach(() => {
@@ -257,7 +264,7 @@ describe('cli exec mode', () => {
 				.map(call => String(call[0]))
 				.join('\n');
 
-			expect(help).toContain('dashboard <sub>');
+			expect(help).toContain('runner [sub]');
 			expect(help).toContain('run "<prompt>"');
 			// One door into drisp (#183): no second runner, no channel surface.
 			expect(help).not.toContain('gateway');
@@ -865,8 +872,87 @@ describe('cli exec mode', () => {
 			expect(runDashboardMock).toHaveBeenCalledWith({
 				subcommand: 'status',
 				subcommandArgs: [],
-				flags: {url: undefined, name: undefined, json: true},
+				flags: {url: undefined, name: undefined, runner: undefined, json: true},
 			});
+			expect(runRunnerMock).not.toHaveBeenCalled();
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('routes drisp runner (no subcommand) and --detach through runRunnerCommand (#188)', async () => {
+		const foreground = await runCli(['runner']);
+		try {
+			expect(runRunnerMock).toHaveBeenCalledWith({
+				subcommand: '',
+				subcommandArgs: [],
+				flags: {
+					url: undefined,
+					name: undefined,
+					runner: undefined,
+					json: false,
+				},
+			});
+			expect(runDashboardMock).not.toHaveBeenCalled();
+			expect(foreground.exitSpy).toHaveBeenCalledWith(0);
+		} finally {
+			foreground.restore();
+		}
+
+		runRunnerMock.mockClear();
+		const detached = await runCli(['runner', '--detach', '--json']);
+		try {
+			expect(runRunnerMock).toHaveBeenCalledWith({
+				subcommand: '',
+				subcommandArgs: [],
+				flags: {
+					url: undefined,
+					name: undefined,
+					runner: undefined,
+					json: true,
+					detach: true,
+				},
+			});
+		} finally {
+			detached.restore();
+		}
+	});
+
+	it('routes runner subcommands with their flags', async () => {
+		const cli = await runCli([
+			'runner',
+			'runs',
+			'--active',
+			'--limit',
+			'5',
+			'--json',
+		]);
+		try {
+			expect(runRunnerMock).toHaveBeenCalledWith({
+				subcommand: 'runs',
+				subcommandArgs: [],
+				flags: {
+					url: undefined,
+					name: undefined,
+					runner: undefined,
+					json: true,
+					active: true,
+					limit: 5,
+				},
+			});
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('names runner in help and dashboard as its deprecated alias', async () => {
+		const cli = await runCli(['--help']);
+		try {
+			const help = cli.logSpy.mock.calls
+				.map(call => String(call[0]))
+				.join('\n');
+			expect(help).toContain('runner [sub]');
+			expect(help).toMatch(/dashboard.*deprecated alias.*runner/);
 		} finally {
 			cli.restore();
 		}

@@ -67,7 +67,7 @@ README's "Permissions with no hub attached") and the process has since ended.
 A permission request that no rule answers is not parked on at once (#190). In
 a Workflow Run it is **held** for the grace window — `permissionGraceMs` in
 config (project over global), `--permission-grace-ms` per run, 60 s by
-default — so a hub attached through the dashboard daemon can answer it inside
+default — so a hub attached through the runner (`drisp runner`) can answer it inside
 the Turn. With no hub attached nothing can answer, so the request is deferred
 immediately. When the window elapses unanswered, the call is refused with a
 _deferred_ result, the Turn ends, and the Run parks with the request recorded:
@@ -127,9 +127,9 @@ Two ways to send one:
   athena-flow run --continue=<athenaSessionId> "your reply" --steer "use the other branch"
   ```
 
-- **From the hub**, as a `steer` frame to the dashboard daemon. A Steer for a
+- **From the hub**, as a `steer` frame to the runner (`drisp runner`). A Steer for a
   running Run is handed to it at once and waits for the Turn boundary; a Steer
-  for a parked Run is held (`pending` on `drisp dashboard runs`) and delivered
+  for a parked Run is held (`pending` on `drisp runner runs`) and delivered
   when the hub continues that Run.
 
 Each delivery is recorded in the Journal — origin (`hub` or `local`), when it

@@ -55,7 +55,7 @@ export async function refreshDashboardAccessToken(
 	const initial = readDashboardClientConfig(env);
 	if (!initial) {
 		throw new Error(
-			'dashboard not paired. Run "athena dashboard pair <token> --url <origin>" first.',
+			'not paired. Run "drisp runner pair <token> --url <origin>" first.',
 		);
 	}
 
@@ -70,7 +70,7 @@ export async function refreshDashboardAccessToken(
 		const config = readDashboardClientConfig(env);
 		if (!config) {
 			throw new Error(
-				'dashboard not paired. Run "athena dashboard pair <token> --url <origin>" first.',
+				'not paired. Run "drisp runner pair <token> --url <origin>" first.',
 			);
 		}
 

@@ -1,7 +1,6 @@
 import type Database from 'better-sqlite3';
 import type {RuntimeDecision} from '../../core/runtime/types';
-import {openVersionedDb} from '../../infra/db/openVersionedDb';
-import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
+import {openRunnerDb, type RunnerDb} from '../runner/runnerDb';
 
 export type DashboardDecisionInboxRow = {
 	id: number;
@@ -35,88 +34,30 @@ export type DashboardDecisionInbox = DashboardDecisionReader & {
 	close(): void;
 };
 
+/**
+ * The inbox is a table in `runner.db` (see `runnerDb.ts`, which owns the
+ * schema; a legacy `dashboard-decision-inbox.db` — including the oldest shape
+ * with a full UNIQUE constraint — is imported there once). Pass the owner's
+ * open handle to share it — `close()` then leaves the handle open; with no
+ * handle the inbox opens `runner.db` itself (the interactive TUI draining
+ * decisions without a runner in the process) and owns that connection.
+ */
 export type CreateDashboardDecisionInboxOptions = {
+	/** An open `runner.db` handle to share (the runner's). */
+	db?: Database.Database;
+	/** Open `runner.db` at this path instead of the state dir's (tests). */
 	dbPath?: string;
 };
-
-function dashboardDecisionInboxPath(): string {
-	return `${ensureDaemonStateDir().dir}/dashboard-decision-inbox.db`;
-}
-
-function hasLegacyUniqueConstraint(db: Database.Database): boolean {
-	const rows = db
-		.prepare(`PRAGMA index_list('dashboard_decision_inbox')`)
-		.all() as Array<{unique: number; origin: string}>;
-	return rows.some(row => row.unique === 1 && row.origin === 'u');
-}
-
-function migrateLegacyUniqueConstraint(db: Database.Database): void {
-	if (!hasLegacyUniqueConstraint(db)) return;
-	db.exec(`
-		ALTER TABLE dashboard_decision_inbox
-			RENAME TO dashboard_decision_inbox_legacy;
-
-		CREATE TABLE dashboard_decision_inbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			athena_session_id TEXT NOT NULL,
-			request_id TEXT NOT NULL,
-			decision_json TEXT NOT NULL,
-			received_at INTEGER NOT NULL,
-			consumed_at INTEGER
-		);
-
-		INSERT INTO dashboard_decision_inbox (
-			id,
-			athena_session_id,
-			request_id,
-			decision_json,
-			received_at,
-			consumed_at
-		)
-		SELECT
-			id,
-			athena_session_id,
-			request_id,
-			decision_json,
-			received_at,
-			consumed_at
-		FROM dashboard_decision_inbox_legacy;
-
-		DROP TABLE dashboard_decision_inbox_legacy;
-	`);
-}
-
-function initInboxSchema(db: Database.Database): void {
-	db.exec(`
-		CREATE TABLE IF NOT EXISTS dashboard_decision_inbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			athena_session_id TEXT NOT NULL,
-			request_id TEXT NOT NULL,
-			decision_json TEXT NOT NULL,
-			received_at INTEGER NOT NULL,
-			consumed_at INTEGER
-		);
-	`);
-
-	migrateLegacyUniqueConstraint(db);
-
-	db.exec(`
-
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_decision_unconsumed
-			ON dashboard_decision_inbox(athena_session_id, request_id)
-			WHERE consumed_at IS NULL;
-
-		CREATE INDEX IF NOT EXISTS idx_dashboard_decision_pending
-			ON dashboard_decision_inbox(athena_session_id, consumed_at, id);
-	`);
-}
 
 export function createDashboardDecisionInbox(
 	options: CreateDashboardDecisionInboxOptions = {},
 ): DashboardDecisionInbox {
-	const db = openVersionedDb(options.dbPath ?? dashboardDecisionInboxPath(), {
-		migrate: initInboxSchema,
-	});
+	const owned: RunnerDb | null = options.db
+		? null
+		: openRunnerDb({
+				...(options.dbPath !== undefined ? {dbPath: options.dbPath} : {}),
+			});
+	const db = options.db ?? owned!.db;
 
 	const upsertUnconsumed = db.prepare(`
 		INSERT INTO dashboard_decision_inbox (
@@ -176,7 +117,7 @@ export function createDashboardDecisionInbox(
 			consume.run(Date.now(), input.id);
 		},
 		close() {
-			db.close();
+			owned?.close();
 		},
 	};
 }

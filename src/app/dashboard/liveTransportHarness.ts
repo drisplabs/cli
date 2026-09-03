@@ -17,18 +17,26 @@ import {
 } from '@drisp/protocol';
 import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
 import {
-	runDashboardRuntimeDaemon,
-	type RuntimeDaemonHandle,
-} from './runtimeDaemon';
-import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
+	startRunnerProcess,
+	type RunnerProcessHandle,
+} from '../runner/runnerProcess';
+import {openRunnerDb, type RunnerDb} from '../runner/runnerDb';
+import {readRunnerStatusFile} from '../runner/runnerStatusFile';
+import {readPidLock} from '../../infra/daemon/pidLock';
 import {
-	createPairedFeedPublisher,
-	type PairedFeedPublisher,
-} from './pairedFeedPublisher';
-import type {
-	DashboardDecisionInbox,
-	DashboardDecisionInboxRow,
+	ensureRunnerStateDir,
+	type RunnerStatePaths,
+} from '../../infra/daemon/stateDir';
+import {
+	createDashboardFeedOutbox,
+	type DashboardFeedOutbox,
+} from './dashboardFeedPublisher';
+import {
+	createDashboardDecisionInbox,
+	type DashboardDecisionInbox,
+	type DashboardDecisionInboxRow,
 } from './dashboardDecisionInbox';
+import type {FeedEvent} from '../../core/feed/types';
 import type {
 	HarnessVerificationCheck,
 	HarnessVerificationResult,
@@ -37,25 +45,29 @@ import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
 import {STEER_BLOCK_OPEN} from '../../core/workflows/steer';
 
 /**
- * Live-transport integration harness for the dashboard daemon: a fake hub
- * built from the `@drisp/protocol` schemas, driven over a REAL transport.
+ * Live-transport integration harness for the `drisp runner` process: a fake
+ * hub built from the `@drisp/protocol` schemas, driven over a REAL transport.
  *
  * Unlike the unit tests (which inject the `makeInstanceSocketClient` /
  * `fetchAttachments` seams), this harness leaves the transport REAL: it stands
  * up a local `http` server plus a real `ws` `WebSocketServer` on a loopback
- * port and boots the production `runDashboardRuntimeDaemon` so the daemon
- * exercises the real `createInstanceSocketClient` (real `ws`, access token as
- * subprotocol, `hello` handshake, frame normalisation) and the default
- * `fetchDashboardAttachments` (real `fetch` → real 503). Only the
- * non-transport seams the daemon needs to run offline are stubbed:
+ * port and boots the production runner through its public seam
+ * (`startRunnerProcess`, with the state dir pointed at a temp dir) so the
+ * runner exercises the real `createInstanceSocketClient` (real `ws`, access
+ * token as subprotocol, `hello` handshake, frame normalisation), the default
+ * `fetchDashboardAttachments` (real `fetch` → real 503), the real pid file,
+ * status file, and `runner.db` (feed outbox + decision inbox). Only the
+ * non-transport seams the runner needs to run offline are stubbed:
  * `readConfig`, `refreshAccessToken`, `executeRemoteAssignment`,
- * `reconnectDelaysMs`, and the disk-writing seams (`writeMirror`,
- * `decisionInbox`; the paired feed publisher is REAL, with its durable outbox
- * placed in the temp workspace) so the run leaves no working-tree or
- * state-dir pollution. The Workflow store is REAL but pointed at a temp dir
- * (`workflowStoreDir`), so the inventory the runner reports on `hello` and the
- * `workflows.changed` push after an install go through the real store read
- * and the real directory watch.
+ * `reconnectDelaysMs`, and `writeMirror`, so the run leaves no working-tree
+ * or user state-dir pollution. The Workflow store is REAL but pointed at a
+ * temp dir (`workflowStoreDir`), so the inventory the runner reports on
+ * `hello` and the `workflows.changed` push after an install go through the
+ * real store read and the real directory watch.
+ *
+ * `runRunnerRecoveryHarness` (below) drives the same fake hub through a
+ * crash: a runner killed mid-Run and restarted drains its outbox and
+ * re-delivers the pending decision.
  *
  * The fake hub speaks one of two frame-name sets (`hubProtocol`):
  *
@@ -191,21 +203,6 @@ export async function runLiveTransportHarness(
 	const hubProtocol = options.hubProtocol ?? 'legacy';
 	const checks: HarnessVerificationCheck[] = [];
 
-	// Observable server-side state, mutated by the http + ws handlers below.
-	let attachmentFetches = 0;
-	let socketConnections = 0;
-	// Held in an object so the closure reassignment below is not flattened to
-	// `null` by control-flow narrowing at the read sites.
-	const serverState: {socket: ServerWebSocket | null} = {socket: null};
-	const wire: WireFrame[] = [];
-	const violations: string[] = [];
-	const handshakeSubprotocols: string[] = [];
-
-	const framesOfType = (type: string): Record<string, unknown>[] =>
-		wire.filter(entry => entry.frame['type'] === type).map(e => e.frame);
-	const framesOnConnection = (connection: number): Record<string, unknown>[] =>
-		wire.filter(entry => entry.connection === connection).map(e => e.frame);
-
 	// Hub → runner frames under the hub's own name set.
 	const hubFrames = {
 		assign: (tempWorkspace: string): Record<string, unknown> => ({
@@ -263,63 +260,10 @@ export async function runLiveTransportHarness(
 		pairedAt: Date.now(),
 	});
 
-	const httpServer = http.createServer((req, res) => {
-		if (req.url && /^\/api\/instances\/[^/]+\/attachments$/.test(req.url)) {
-			attachmentFetches += 1;
-			res.writeHead(503, {'content-type': 'application/json'});
-			res.end(JSON.stringify({error: 'service unavailable (harness)'}));
-			return;
-		}
-		res.writeHead(404);
-		res.end();
-	});
-
-	const wss = new WebSocketServer({server: httpServer});
-	wss.on('connection', (socket, req) => {
-		socketConnections += 1;
-		const connection = socketConnections;
-		serverState.socket = socket;
-		const protocol = req.headers['sec-websocket-protocol'];
-		if (typeof protocol === 'string') handshakeSubprotocols.push(protocol);
-		socket.on('message', data => {
-			let frame: unknown;
-			try {
-				frame = JSON.parse(data.toString());
-			} catch {
-				violations.push(`runner sent non-JSON: ${data.toString()}`);
-				return;
-			}
-			if (typeof frame !== 'object' || frame === null) {
-				violations.push(`runner sent a non-object frame: ${String(frame)}`);
-				return;
-			}
-			const record = frame as Record<string, unknown>;
-			wire.push({connection, frame: record});
-			// A hub acks each feed-stream frame so the runner's outbox stops
-			// redelivering it.
-			if (
-				record['type'] === 'feed_event' ||
-				(record['type'] === 'event' && record['stream'] === 'feed')
-			) {
-				socket.send(
-					JSON.stringify({
-						type: 'feed_ack',
-						deliverySeq: record['deliverySeq'],
-					}),
-				);
-			}
-			const violation = checkNameSet(hubProtocol, record);
-			if (violation) violations.push(violation);
-		});
-		// A migrated hub announces itself; the hub of today says nothing.
-		if (hubProtocol === 'canonical') {
-			socket.send(
-				JSON.stringify(hello({role: 'hub', agent: {name: 'fake-hub'}})),
-			);
-		}
-	});
-
-	let daemon: RuntimeDaemonHandle | null = null;
+	const hub = await createFakeHub({hubProtocol});
+	dashboardUrl = hub.url;
+	const {framesOfType, framesOnConnection} = hub;
+	let runner: RunnerProcessHandle | null = null;
 
 	// What the stubbed Run's fake harness saw: the prompt of every Turn the
 	// real Workflow Runner started, and the Journal as Turn 2 found it.
@@ -328,49 +272,26 @@ export async function runLiveTransportHarness(
 		journalSeenByTurn2: '',
 	};
 
-	// The paired feed publisher is real — it is the seam the feed-stream
-	// scenario exercises — but its durable outbox lives in the temp workspace,
-	// so the dashboard state dir is never touched.
-	const feedOutbox = createDashboardFeedOutbox({
-		dbPath: path.join(tempWorkspace, 'feed-outbox.db'),
+	// The runner owns runner.db (feed outbox + decision inbox) in a temp state
+	// dir beside its pid file and status file. The harness reads the inbox
+	// through its own handle the way the interactive TUI does (the shared-open
+	// pattern), so what the hub's answer left behind is observable.
+	const stateHome = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-live-transport-state-'),
+	);
+	const statePaths = ensureRunnerStateDir({
+		XDG_STATE_HOME: stateHome,
+		HOME: stateHome,
 	});
-	const pairedFeedPublisher: PairedFeedPublisher = createPairedFeedPublisher({
-		readConfig,
-		outbox: feedOutbox,
-		drainIntervalMs: 50,
-	});
-	// The decision inbox is real in shape but in-memory: an `answer` the hub
-	// sends while the Run is parked must be stored against the request it is
-	// for, and observable, without touching the daemon state dir.
-	const inboxRows: DashboardDecisionInboxRow[] = [];
-	const consumedRows = new Set<number>();
-	const decisionInbox: DashboardDecisionInbox = {
-		enqueue: input => {
-			inboxRows.push({id: inboxRows.length + 1, ...input});
-		},
-		pendingForSession: ({athenaSessionId}) =>
-			inboxRows.filter(
-				row =>
-					row.athenaSessionId === athenaSessionId && !consumedRows.has(row.id),
-			),
-		markConsumed: ({id}) => {
-			consumedRows.add(id);
-		},
-		close: () => {},
-	};
+	let inboxDb: RunnerDb | null = null;
+	let inboxView: DashboardDecisionInbox | null = null;
 	// Every wake the stub executor received: the daemon re-launching a parked
 	// Run once an answer for its deferred request arrived.
 	const wakes: Array<{runId: string; reply: string}> = [];
 
 	try {
-		await new Promise<void>((resolve, reject) => {
-			httpServer.once('error', reject);
-			httpServer.listen(0, '127.0.0.1', () => resolve());
-		});
-		const {port} = httpServer.address() as AddressInfo;
-		dashboardUrl = `http://127.0.0.1:${port}`;
-
-		daemon = await runDashboardRuntimeDaemon({
+		runner = await startRunnerProcess({
+			statePaths,
 			readConfig,
 			refreshAccessToken: async () => ({
 				accessToken: ACCESS_TOKEN,
@@ -519,17 +440,19 @@ export async function runLiveTransportHarness(
 			reconnectDelaysMs: [10],
 			projectDir: tempWorkspace,
 			writeMirror: () => {},
-			pairedFeedPublisher,
-			decisionInbox,
 			workflowStoreDir,
 			cliVersion: CLI_VERSION,
+			feedDrainIntervalMs: 50,
+			statusIntervalMs: 50,
 		});
+		inboxDb = openRunnerDb({dbPath: statePaths.dbPath});
+		inboxView = createDashboardDecisionInbox({db: inboxDb.db});
 
 		// Scenario 1: the very first frame the runner puts on the wire is a
 		// versioned hello that reports the installed Workflows: the built-in
 		// (versioned by the CLI) and the one seeded in the store.
 		await waitFor(
-			() => socketConnections >= 1 && framesOnConnection(1).length >= 1,
+			() => hub.connections() >= 1 && framesOnConnection(1).length >= 1,
 			'first frame on the initial connection',
 			stepTimeoutMs,
 		);
@@ -555,15 +478,52 @@ export async function runLiveTransportHarness(
 					),
 		);
 
-		// Scenario 2: the attachment reconcile hit the real 503 and the daemon
+		// Scenario 2: the runner holds its pid file and reports itself through
+		// the status file — what `drisp runner status` reads in place of a
+		// control socket.
+		try {
+			await waitFor(
+				() =>
+					readRunnerStatusFile(statePaths.statusPath)?.socketConnected === true,
+				'status file reporting the socket connected',
+				stepTimeoutMs,
+			);
+			const pidFile = readPidLock(statePaths.pidPath);
+			const status = readRunnerStatusFile(statePaths.statusPath);
+			const pidHeld = pidFile.state === 'held' && pidFile.pid === process.pid;
+			const statusCurrent =
+				status?.pid === process.pid &&
+				status.instanceId === INSTANCE_ID &&
+				fs.existsSync(statePaths.dbPath);
+			checks.push(
+				pidHeld && statusCurrent
+					? pass(
+							'Pid file held and status file current',
+							`runner.pid holds pid ${process.pid}; runner.status.json reports pid ${status.pid}, instance ${status.instanceId}, socket connected; runner.db opened beside them.`,
+						)
+					: fail(
+							'Pid file held and status file current',
+							`pid file ${JSON.stringify(pidFile)}; status ${JSON.stringify(status)}; runner.db exists=${fs.existsSync(statePaths.dbPath)}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Pid file held and status file current',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 3: the attachment reconcile hit the real 503 and the runner
 		// degraded to push-only instead of tearing the control channel down.
 		await waitFor(
-			() => attachmentFetches >= 1,
+			() => hub.attachmentFetches() >= 1,
 			'attachment reconcile fetch (503)',
 			stepTimeoutMs,
 		);
-		const degradedConnected = daemon.snapshot().socketConnected;
-		const tokenCarried = handshakeSubprotocols.includes(ACCESS_TOKEN);
+		const degradedConnected = runner.snapshot().socketConnected;
+		const tokenCarried = hub.handshakeSubprotocols.includes(ACCESS_TOKEN);
 		checks.push(
 			degradedConnected
 				? pass(
@@ -578,11 +538,11 @@ export async function runLiveTransportHarness(
 					),
 		);
 
-		// Scenario 3: the wire mode follows what the hub announced — legacy
+		// Scenario 4: the wire mode follows what the hub announced — legacy
 		// when it said nothing, canonical once its hello carried our version.
 		try {
 			await waitFor(
-				() => daemon!.snapshot().wireMode === hubProtocol,
+				() => runner!.snapshot().wireMode === hubProtocol,
 				`wire mode ${hubProtocol}`,
 				stepTimeoutMs,
 			);
@@ -603,9 +563,9 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 4: send a real assignment under the hub's name set and
+		// Scenario 5: send a real assignment under the hub's name set and
 		// observe the daemon emit `assignment_accepted` back.
-		serverState.socket?.send(JSON.stringify(hubFrames.assign(tempWorkspace)));
+		hub.send(hubFrames.assign(tempWorkspace));
 		try {
 			await waitFor(
 				() =>
@@ -632,7 +592,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 5: the Run's stream and its needs_human escalation reach the
+		// Scenario 6: the Run's stream and its needs_human escalation reach the
 		// hub under the name set it expects.
 		const runStreamType = hubProtocol === 'canonical' ? 'event' : 'run_event';
 		try {
@@ -666,11 +626,11 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 6: the Run is parked on a deferred permission. The hub's
+		// Scenario 7: the Run is parked on a deferred permission. The hub's
 		// answer for that request (under its own name set) is acked, stored in
 		// the inbox and against the Run's Interruption, and wakes the Run: the
 		// executor is re-launched with a wake reply and the Run is active again.
-		serverState.socket?.send(JSON.stringify(hubFrames.answer()));
+		hub.send(hubFrames.answer());
 		try {
 			await waitFor(
 				() =>
@@ -678,7 +638,7 @@ export async function runLiveTransportHarness(
 						f => f['requestId'] === DEFERRED_REQUEST_ID,
 					) &&
 					wakes.length >= 1 &&
-					daemon!
+					runner!
 						.listRuns()
 						.some(
 							run =>
@@ -691,7 +651,7 @@ export async function runLiveTransportHarness(
 				'answer acked, stored on the parked run, and the run woken',
 				stepTimeoutMs,
 			);
-			const stored = decisionInbox
+			const stored = inboxView!
 				.pendingForSession({athenaSessionId: ATHENA_SESSION_ID, limit: 25})
 				.some(row => row.requestId === DEFERRED_REQUEST_ID);
 			const reply = wakes[0]?.reply ?? '';
@@ -717,7 +677,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 7: a steer sent while Turn 1 of the woken Run is in flight is
+		// Scenario 8: a steer sent while Turn 1 of the woken Run is in flight is
 		// recorded on the Run, waits for the Turn boundary, and heads the next
 		// Turn's prompt.
 		try {
@@ -726,10 +686,10 @@ export async function runLiveTransportHarness(
 				'the Run to start its first Turn before the steer',
 				stepTimeoutMs,
 			);
-			serverState.socket?.send(JSON.stringify(hubFrames.steer()));
+			hub.send(hubFrames.steer());
 			await waitFor(
 				() =>
-					daemon!
+					runner!
 						.listRuns()
 						.some(
 							run =>
@@ -772,7 +732,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 8: the change of workflow step Turn 1's Journal named reaches
+		// Scenario 9: the change of workflow step Turn 1's Journal named reaches
 		// the hub as a `phase` FeedEvent on the feed stream — produced by the
 		// real Workflow Runner, published through the real paired feed
 		// publisher — under the hub's name set, addressed to the Run's Athena
@@ -823,11 +783,11 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 9: a malformed frame is answered with a typed error and does
+		// Scenario 10: a malformed frame is answered with a typed error and does
 		// not take the connection down.
 		const errorsBefore = framesOfType('error').length;
-		serverState.socket?.send(JSON.stringify({type: 'not-a-frame', x: 1}));
-		serverState.socket?.send('{"type": "run.start"');
+		hub.send({type: 'not-a-frame', x: 1});
+		hub.sendRaw('{"type": "run.start"');
 		try {
 			await waitFor(
 				() => framesOfType('error').length >= errorsBefore + 2,
@@ -836,7 +796,7 @@ export async function runLiveTransportHarness(
 			);
 			const errors = framesOfType('error').slice(errorsBefore);
 			const typed = errors.every(e => e['code'] === 'malformed_frame');
-			const stillConnected = daemon.snapshot().socketConnected;
+			const stillConnected = runner.snapshot().socketConnected;
 			checks.push(
 				typed && stillConnected
 					? pass(
@@ -857,12 +817,12 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 10: the hub stops the Run under its own name set.
-		serverState.socket?.send(JSON.stringify(hubFrames.stop()));
+		// Scenario 11: the hub stops the Run under its own name set.
+		hub.send(hubFrames.stop());
 		try {
 			await waitFor(
 				() =>
-					daemon!
+					runner!
 						.listRuns()
 						.some(
 							run =>
@@ -886,7 +846,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 11: a Workflow installed into the store while connected is
+		// Scenario 12: a Workflow installed into the store while connected is
 		// pushed as a full-list replace (`workflows.changed`), and so is a
 		// removal. The store is watched for real; nothing tells the daemon.
 		const changesBefore = framesOfType('workflows.changed').length;
@@ -941,33 +901,33 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 12: drop the socket from the server and confirm the daemon
+		// Scenario 13: drop the socket from the server and confirm the daemon
 		// reconnects through the real reconnect loop — re-negotiating the wire
 		// mode and re-reading the store for the new connection's hello.
-		const connectionsBeforeClose = socketConnections;
-		serverState.socket?.close();
+		const connectionsBeforeClose = hub.connections();
+		hub.closeSocket();
 		try {
 			await waitFor(
-				() => socketConnections > connectionsBeforeClose,
+				() => hub.connections() > connectionsBeforeClose,
 				'socket reconnection after close',
 				stepTimeoutMs,
 			);
 			await waitFor(
-				() => daemon!.snapshot().socketConnected,
+				() => runner!.snapshot().socketConnected,
 				'daemon to report reconnected',
 				stepTimeoutMs,
 			);
 			await waitFor(
-				() => daemon!.snapshot().wireMode === hubProtocol,
+				() => runner!.snapshot().wireMode === hubProtocol,
 				`wire mode ${hubProtocol} after reconnect`,
 				stepTimeoutMs,
 			);
 			await waitFor(
-				() => framesOnConnection(socketConnections).length >= 1,
+				() => framesOnConnection(hub.connections()).length >= 1,
 				'first frame on the reconnected socket',
 				stepTimeoutMs,
 			);
-			const reconnectFirst = framesOnConnection(socketConnections).at(0);
+			const reconnectFirst = framesOnConnection(hub.connections()).at(0);
 			const helloAgain = reconnectFirst?.['type'] === 'hello';
 			const inventoryCurrent = isDeepStrictEqual(
 				reconnectFirst?.['workflows'],
@@ -977,7 +937,7 @@ export async function runLiveTransportHarness(
 				helloAgain && inventoryCurrent
 					? pass(
 							'Reconnect after close',
-							`Daemon re-established the real socket (connection #${socketConnections}), sent hello first with the current workflows (${afterRemoval
+							`Daemon re-established the real socket (connection #${hub.connections()}), sent hello first with the current workflows (${afterRemoval
 								.map(w => w.name)
 								.join(', ')}), and is back on ${hubProtocol} frame names.`,
 						)
@@ -997,21 +957,21 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 13: every frame the runner put on the wire parsed under the
+		// Scenario 14: every frame the runner put on the wire parsed under the
 		// package and was in the name set this hub speaks.
 		checks.push(
-			violations.length === 0
+			hub.violations.length === 0
 				? pass(
 						'Every runner frame in the expected name set',
-						`${wire.length} frames validated against @drisp/protocol under the ${hubProtocol} names: ${[
-							...new Set(wire.map(e => String(e.frame['type']))),
+						`${hub.wire.length} frames validated against @drisp/protocol under the ${hubProtocol} names: ${[
+							...new Set(hub.wire.map(e => String(e.frame['type']))),
 						]
 							.sort()
 							.join(', ')}.`,
 					)
 				: fail(
 						'Every runner frame in the expected name set',
-						violations.join('\n'),
+						hub.violations.join('\n'),
 					),
 		);
 	} catch (err) {
@@ -1022,29 +982,26 @@ export async function runLiveTransportHarness(
 			),
 		);
 	} finally {
-		// Teardown runs even on failure: stop the daemon, close both servers,
+		// Teardown runs even on failure: stop the runner, close the fake hub,
 		// and remove the temp workspace so no ports, timers, or disk leak.
-		if (daemon) {
+		if (runner) {
 			try {
-				await daemon.stop('harness teardown');
+				await runner.stop('harness teardown');
 			} catch {
 				// best-effort; teardown must continue
 			}
 		}
 		try {
-			feedOutbox.close();
+			inboxView?.close();
+			inboxDb?.close();
 		} catch {
-			// best-effort; the temp workspace is removed below regardless
+			// best-effort; the temp dirs are removed below regardless
 		}
-		await new Promise<void>(resolve => {
-			wss.close(() => resolve());
-		});
-		await new Promise<void>(resolve => {
-			httpServer.close(() => resolve());
-		});
+		await hub.close();
 		try {
 			fs.rmSync(tempWorkspace, {recursive: true, force: true});
 			fs.rmSync(workflowStoreDir, {recursive: true, force: true});
+			fs.rmSync(stateHome, {recursive: true, force: true});
 		} catch {
 			// best-effort cleanup
 		}
@@ -1054,8 +1011,606 @@ export async function runLiveTransportHarness(
 	return {
 		ok: !hasFailure,
 		summary: hasFailure
-			? `Dashboard-daemon live-transport harness (${hubProtocol} hub) FAILED`
-			: `Dashboard-daemon live-transport harness (${hubProtocol} hub) passed all scenarios`,
+			? `drisp runner live-transport harness (${hubProtocol} hub) FAILED`
+			: `drisp runner live-transport harness (${hubProtocol} hub) passed all scenarios`,
+		checks,
+	};
+}
+
+// ── The fake hub ──────────────────────────────────────────
+
+export type FakeHubOptions = {
+	hubProtocol: HubProtocol;
+	/**
+	 * Whether the hub acks feed-stream frames as they arrive. The recovery
+	 * harness withholds acks to leave the runner's outbox pending across a
+	 * crash.
+	 */
+	ackFeed?: boolean;
+};
+
+export type FakeHub = {
+	url: string;
+	/** Every runner frame seen, with the connection it arrived on (1-based). */
+	wire: WireFrame[];
+	/** Schema / name-set violations the hub noticed. */
+	violations: string[];
+	handshakeSubprotocols: string[];
+	connections(): number;
+	attachmentFetches(): number;
+	framesOfType(type: string): Record<string, unknown>[];
+	framesOnConnection(connection: number): Record<string, unknown>[];
+	/** Send a frame (serialised) on the current socket. */
+	send(frame: unknown): void;
+	/** Send raw text on the current socket (malformed-input scenarios). */
+	sendRaw(text: string): void;
+	setAckFeed(on: boolean): void;
+	/** Drop the current socket from the server side. */
+	closeSocket(): void;
+	close(): Promise<void>;
+};
+
+/**
+ * A fake hub: a loopback `http` server (the attachment reconcile endpoint
+ * answers 503) plus a real `ws` server that records every runner frame,
+ * validates it against `@drisp/protocol` under the hub's name set, acks feed
+ * frames (unless told not to), and announces itself with `hello` when it is
+ * a canonical hub.
+ */
+export async function createFakeHub(options: FakeHubOptions): Promise<FakeHub> {
+	const {hubProtocol} = options;
+	let ackFeed = options.ackFeed ?? true;
+	let attachmentFetches = 0;
+	let socketConnections = 0;
+	const serverState: {socket: ServerWebSocket | null} = {socket: null};
+	const wire: WireFrame[] = [];
+	const violations: string[] = [];
+	const handshakeSubprotocols: string[] = [];
+
+	const httpServer = http.createServer((req, res) => {
+		if (req.url && /^\/api\/instances\/[^/]+\/attachments$/.test(req.url)) {
+			attachmentFetches += 1;
+			res.writeHead(503, {'content-type': 'application/json'});
+			res.end(JSON.stringify({error: 'service unavailable (harness)'}));
+			return;
+		}
+		res.writeHead(404);
+		res.end();
+	});
+
+	const wss = new WebSocketServer({server: httpServer});
+	wss.on('connection', (socket, req) => {
+		socketConnections += 1;
+		const connection = socketConnections;
+		serverState.socket = socket;
+		const protocol = req.headers['sec-websocket-protocol'];
+		if (typeof protocol === 'string') handshakeSubprotocols.push(protocol);
+		socket.on('message', data => {
+			let frame: unknown;
+			try {
+				frame = JSON.parse(data.toString());
+			} catch {
+				violations.push(`runner sent non-JSON: ${data.toString()}`);
+				return;
+			}
+			if (typeof frame !== 'object' || frame === null) {
+				violations.push(`runner sent a non-object frame: ${String(frame)}`);
+				return;
+			}
+			const record = frame as Record<string, unknown>;
+			wire.push({connection, frame: record});
+			// A hub acks each feed-stream frame so the runner's outbox stops
+			// redelivering it.
+			if (
+				ackFeed &&
+				(record['type'] === 'feed_event' ||
+					(record['type'] === 'event' && record['stream'] === 'feed'))
+			) {
+				socket.send(
+					JSON.stringify({
+						type: 'feed_ack',
+						deliverySeq: record['deliverySeq'],
+					}),
+				);
+			}
+			const violation = checkNameSet(hubProtocol, record);
+			if (violation) violations.push(violation);
+		});
+		// A migrated hub announces itself; the hub of today says nothing.
+		if (hubProtocol === 'canonical') {
+			socket.send(
+				JSON.stringify(hello({role: 'hub', agent: {name: 'fake-hub'}})),
+			);
+		}
+	});
+
+	await new Promise<void>((resolve, reject) => {
+		httpServer.once('error', reject);
+		httpServer.listen(0, '127.0.0.1', () => resolve());
+	});
+	const {port} = httpServer.address() as AddressInfo;
+
+	return {
+		url: `http://127.0.0.1:${port}`,
+		wire,
+		violations,
+		handshakeSubprotocols,
+		connections: () => socketConnections,
+		attachmentFetches: () => attachmentFetches,
+		framesOfType: type =>
+			wire.filter(entry => entry.frame['type'] === type).map(e => e.frame),
+		framesOnConnection: connection =>
+			wire.filter(entry => entry.connection === connection).map(e => e.frame),
+		send: frame => serverState.socket?.send(JSON.stringify(frame)),
+		sendRaw: text => serverState.socket?.send(text),
+		setAckFeed: on => {
+			ackFeed = on;
+		},
+		closeSocket: () => serverState.socket?.close(),
+		async close() {
+			await new Promise<void>(resolve => {
+				wss.close(() => resolve());
+			});
+			await new Promise<void>(resolve => {
+				httpServer.close(() => resolve());
+			});
+		},
+	};
+}
+
+// ── Crash recovery ────────────────────────────────────────
+
+const RECOVERY_RUN_ID = 'run_live_harness_recovery';
+const RECOVERY_SESSION_ID = 'athena-live-harness-recovery';
+const RECOVERY_REQUEST_ID = 'req_live_harness_recovery';
+const RECOVERY_FEED_EVENT_IDS = ['feed-recovery-1', 'feed-recovery-2'];
+const STALE_PID = 987_654_321;
+
+function recoveryFeedEvent(eventId: string, seq: number): FeedEvent {
+	return {
+		event_id: eventId,
+		seq,
+		ts: Date.now(),
+		session_id: 'adapter-recovery',
+		run_id: `${RECOVERY_SESSION_ID}:R1`,
+		kind: 'notification',
+		level: 'info',
+		actor_id: 'agent:root',
+		title: `Recovery ${seq}`,
+		data: {message: `recovery ${seq}`},
+	} as FeedEvent;
+}
+
+/**
+ * Crash recovery at the runner's public seam (#188): a runner streaming a Run
+ * whose feed frames the hub has not acked, holding an `answer` the Run has
+ * not consumed, is killed and restarted. The restarted runner reaps the stale
+ * pid file, drains the outbox (the same event ids reach the hub again and are
+ * acked), and hands the pending decision to the Run when the hub continues
+ * it.
+ *
+ * The kill is simulated in-process: the first runner is stopped abruptly
+ * (its Run aborted, nothing drained, nothing consumed) and the residue a
+ * `kill -9` leaves — a pid file naming a dead process and a stale status
+ * file — is written back before the second runner starts on the same state
+ * dir.
+ */
+export async function runRunnerRecoveryHarness(
+	options: RunLiveTransportHarnessOptions = {},
+): Promise<HarnessVerificationResult> {
+	const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+	const hubProtocol = options.hubProtocol ?? 'legacy';
+	const checks: HarnessVerificationCheck[] = [];
+
+	const tempWorkspace = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-recovery-harness-'),
+	);
+	const workflowStoreDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-recovery-workflows-'),
+	);
+	const stateHome = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-recovery-state-'),
+	);
+	const statePaths: RunnerStatePaths = ensureRunnerStateDir({
+		XDG_STATE_HOME: stateHome,
+		HOME: stateHome,
+	});
+
+	// The hub withholds feed acks while the first runner is up, so the two
+	// feed events it streams stay pending in the outbox across the crash.
+	const hub = await createFakeHub({hubProtocol, ackFeed: false});
+	const readConfig = () => ({
+		dashboardUrl: hub.url,
+		instanceId: INSTANCE_ID,
+		refreshToken: 'live-harness-refresh-token',
+		fingerprint: 'live-harness-fingerprint',
+		pairedAt: Date.now(),
+	});
+	const refreshAccessToken = async () => ({
+		accessToken: ACCESS_TOKEN,
+		instanceId: INSTANCE_ID,
+		expiresInSec: 900,
+	});
+	const assignFrame = (): Record<string, unknown> => ({
+		type: hubProtocol === 'canonical' ? 'run.start' : 'job_assignment',
+		runId: RECOVERY_RUN_ID,
+		runSpec: {
+			prompt: 'recovery harness probe',
+			projectDir: tempWorkspace,
+			athenaSessionId: RECOVERY_SESSION_ID,
+		},
+	});
+	const answerFrame = (): Record<string, unknown> => ({
+		type: hubProtocol === 'canonical' ? 'answer' : 'dashboard_decision',
+		athenaSessionId: RECOVERY_SESSION_ID,
+		requestId: RECOVERY_REQUEST_ID,
+		decision: {
+			type: 'json',
+			source: 'user',
+			intent: {kind: 'permission_allow'},
+		},
+	});
+	const feedStreamType = hubProtocol === 'canonical' ? 'event' : 'feed_event';
+	const feedFramesOn = (connection: number): Record<string, unknown>[] =>
+		hub
+			.framesOnConnection(connection)
+			.filter(
+				f =>
+					f['type'] === feedStreamType &&
+					(hubProtocol === 'legacy' || f['stream'] === 'feed'),
+			);
+	const eventIdsOf = (frames: Record<string, unknown>[]): string[] =>
+		frames.map(f => String((f['envelope'] as {eventId?: unknown}).eventId));
+	const expectedEventIds = RECOVERY_FEED_EVENT_IDS.map(
+		id => `${RECOVERY_SESSION_ID}:${id}`,
+	);
+
+	// The harness's own read handles on runner.db (shared open): the outbox
+	// and inbox as they are on disk, independent of either runner.
+	let viewDb: RunnerDb | null = null;
+	let outboxView: DashboardFeedOutbox | null = null;
+	let inboxView: DashboardDecisionInbox | null = null;
+	const pendingOutbox = (): number =>
+		outboxView?.pendingBatch({limit: 100, now: Number.POSITIVE_INFINITY})
+			.length ?? -1;
+	const pendingInbox = (): DashboardDecisionInboxRow[] =>
+		inboxView?.pendingForSession({
+			athenaSessionId: RECOVERY_SESSION_ID,
+			limit: 25,
+		}) ?? [];
+
+	let first: RunnerProcessHandle | null = null;
+	let second: RunnerProcessHandle | null = null;
+	// What the second runner's Run found waiting for it.
+	const redelivered: DashboardDecisionInboxRow[] = [];
+
+	try {
+		// The first runner: its Run streams two feed events through the real
+		// paired feed publisher and then stays running until aborted — it never
+		// gets to consume the answer the hub sends.
+		first = await startRunnerProcess({
+			statePaths,
+			readConfig,
+			refreshAccessToken,
+			executeRemoteAssignment: async input => {
+				input.dashboardFeedPublisher?.publish({
+					origin: 'dashboard',
+					athenaSessionId: RECOVERY_SESSION_ID,
+					feedEvents: RECOVERY_FEED_EVENT_IDS.map((id, index) =>
+						recoveryFeedEvent(id, index + 1),
+					),
+				});
+				await new Promise<void>(resolve => {
+					if (input.abortSignal?.aborted) return resolve();
+					input.abortSignal?.addEventListener('abort', () => resolve(), {
+						once: true,
+					});
+				});
+			},
+			reconnectDelaysMs: [10],
+			projectDir: tempWorkspace,
+			writeMirror: () => {},
+			workflowStoreDir,
+			cliVersion: CLI_VERSION,
+			feedDrainIntervalMs: 50,
+			statusIntervalMs: 50,
+		});
+		viewDb = openRunnerDb({dbPath: statePaths.dbPath});
+		outboxView = createDashboardFeedOutbox({db: viewDb.db});
+		inboxView = createDashboardDecisionInbox({db: viewDb.db});
+
+		// Scenario 1: paired — hello on the wire, pid file held, status file
+		// reporting the socket connected.
+		try {
+			await waitFor(
+				() =>
+					hub.framesOnConnection(1).at(0)?.['type'] === 'hello' &&
+					readRunnerStatusFile(statePaths.statusPath)?.socketConnected === true,
+				'hello and a connected status file',
+				stepTimeoutMs,
+			);
+			const pidFile = readPidLock(statePaths.pidPath);
+			checks.push(
+				pidFile.state === 'held' && pidFile.pid === process.pid
+					? pass(
+							'Runner paired',
+							`hello went out first; runner.pid holds pid ${pidFile.pid}; runner.status.json reports the socket connected.`,
+						)
+					: fail('Runner paired', `pid file ${JSON.stringify(pidFile)}`),
+			);
+		} catch (err) {
+			checks.push(
+				fail('Runner paired', err instanceof Error ? err.message : String(err)),
+			);
+		}
+
+		// Scenario 2: the Run streams; the hub withholds acks, so both events
+		// stay pending in runner.db.
+		hub.send(assignFrame());
+		try {
+			await waitFor(
+				() =>
+					hub
+						.framesOfType('assignment_accepted')
+						.some(f => f['runId'] === RECOVERY_RUN_ID) &&
+					feedFramesOn(1).length >= 2,
+				'assignment accepted and both feed events streamed',
+				stepTimeoutMs,
+			);
+			const streamed = eventIdsOf(feedFramesOn(1));
+			const pending = pendingOutbox();
+			checks.push(
+				isDeepStrictEqual(streamed, expectedEventIds) && pending === 2
+					? pass(
+							'Run streamed, acks withheld',
+							`${RECOVERY_RUN_ID} admitted; feed events ${streamed.join(', ')} reached the hub as ${feedStreamType} and stay pending in runner.db (${pending} unacked).`,
+						)
+					: fail(
+							'Run streamed, acks withheld',
+							`streamed=${JSON.stringify(streamed)} pendingOutbox=${pending}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Run streamed, acks withheld',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 3: the hub answers a request of the running Run; the runner
+		// persists it in runner.db and acks it — the Run has not consumed it.
+		hub.send(answerFrame());
+		try {
+			await waitFor(
+				() =>
+					hub
+						.framesOfType('decision_ack')
+						.some(f => f['requestId'] === RECOVERY_REQUEST_ID) &&
+					pendingInbox().some(row => row.requestId === RECOVERY_REQUEST_ID),
+				'decision_ack and the answer pending in runner.db',
+				stepTimeoutMs,
+			);
+			checks.push(
+				pass(
+					'Answer persisted and acked',
+					`${hubProtocol === 'canonical' ? 'answer' : 'dashboard_decision'} for ${RECOVERY_REQUEST_ID} was acked and is pending in runner.db for ${RECOVERY_SESSION_ID}.`,
+				),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Answer persisted and acked',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 4: kill the runner mid-Run (simulated: an abrupt stop that
+		// drains and consumes nothing, plus the residue a kill -9 leaves), then
+		// start a fresh runner on the same state dir. The hub acks from now on.
+		const firstStartedAt = first.snapshot().startedAt;
+		await first.stop('SIGKILL (simulated)');
+		first = null;
+		fs.writeFileSync(statePaths.pidPath, `${STALE_PID}\n`);
+		fs.writeFileSync(
+			statePaths.statusPath,
+			JSON.stringify({
+				pid: STALE_PID,
+				startedAt: firstStartedAt,
+				updatedAt: firstStartedAt,
+				socketConnected: true,
+				activeRuns: 1,
+				completedRuns: 0,
+				runs: [],
+			}),
+		);
+		const outboxBeforeRestart = pendingOutbox();
+		const inboxBeforeRestart = pendingInbox().length;
+		hub.setAckFeed(true);
+		second = await startRunnerProcess({
+			statePaths,
+			readConfig,
+			refreshAccessToken,
+			// The continued Run: what runExec's decision drain does on start —
+			// take every pending decision for its session and consume it.
+			executeRemoteAssignment: async input => {
+				const rows =
+					input.decisionInbox?.pendingForSession({
+						athenaSessionId: RECOVERY_SESSION_ID,
+						limit: 25,
+					}) ?? [];
+				for (const row of rows) {
+					redelivered.push(row);
+					input.decisionInbox?.markConsumed({id: row.id});
+				}
+				await new Promise<void>(resolve => {
+					if (input.abortSignal?.aborted) return resolve();
+					input.abortSignal?.addEventListener('abort', () => resolve(), {
+						once: true,
+					});
+				});
+			},
+			reconnectDelaysMs: [10],
+			projectDir: tempWorkspace,
+			writeMirror: () => {},
+			workflowStoreDir,
+			cliVersion: CLI_VERSION,
+			feedDrainIntervalMs: 50,
+			statusIntervalMs: 50,
+		});
+		try {
+			await waitFor(
+				() =>
+					hub.connections() >= 2 &&
+					readRunnerStatusFile(statePaths.statusPath)?.pid === process.pid,
+				'the restarted runner to connect and rewrite the status file',
+				stepTimeoutMs,
+			);
+			const pidFile = readPidLock(statePaths.pidPath);
+			const status = readRunnerStatusFile(statePaths.statusPath);
+			const reaped = pidFile.state === 'held' && pidFile.pid === process.pid;
+			const fresh =
+				status !== null &&
+				status.pid === process.pid &&
+				status.startedAt > firstStartedAt;
+			checks.push(
+				reaped && fresh && outboxBeforeRestart === 2 && inboxBeforeRestart === 1
+					? pass(
+							'Killed mid-Run and restarted',
+							`The first runner went down with ${outboxBeforeRestart} feed events unacked and ${inboxBeforeRestart} answer unconsumed; the restarted runner reaped the stale pid file (pid ${STALE_PID}), holds runner.pid, rewrote runner.status.json, and reconnected (connection #${hub.connections()}).`,
+						)
+					: fail(
+							'Killed mid-Run and restarted',
+							`reaped=${reaped} fresh=${fresh} outboxBeforeRestart=${outboxBeforeRestart} inboxBeforeRestart=${inboxBeforeRestart}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Killed mid-Run and restarted',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 5: the restarted runner drains the outbox — the same two
+		// event ids reach the hub on the new connection and, acked now, leave
+		// runner.db.
+		try {
+			await waitFor(
+				() =>
+					feedFramesOn(hub.connections()).length >= 2 && pendingOutbox() === 0,
+				'both feed events re-sent on the new connection and acked',
+				stepTimeoutMs,
+			);
+			const resent = eventIdsOf(feedFramesOn(hub.connections()));
+			checks.push(
+				isDeepStrictEqual(resent, expectedEventIds)
+					? pass(
+							'Outbox drained after restart',
+							`Feed events ${resent.join(', ')} were re-sent on connection #${hub.connections()} and acked; runner.db has no pending feed events left.`,
+						)
+					: fail(
+							'Outbox drained after restart',
+							`re-sent=${JSON.stringify(resent)} expected=${JSON.stringify(expectedEventIds)}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Outbox drained after restart',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 6: the hub continues the Run; the answer the first runner
+		// never consumed is handed to it.
+		hub.send(assignFrame());
+		try {
+			await waitFor(
+				() =>
+					redelivered.some(row => row.requestId === RECOVERY_REQUEST_ID) &&
+					pendingInbox().length === 0,
+				'the pending answer re-delivered to the continued Run',
+				stepTimeoutMs,
+			);
+			const row = redelivered.find(r => r.requestId === RECOVERY_REQUEST_ID)!;
+			const allow = row.decision.intent?.kind === 'permission_allow';
+			checks.push(
+				allow && row.athenaSessionId === RECOVERY_SESSION_ID
+					? pass(
+							'Pending decision re-delivered',
+							`The continued ${RECOVERY_RUN_ID} received the ${RECOVERY_REQUEST_ID} answer (permission_allow) from runner.db and consumed it; nothing is left pending for ${RECOVERY_SESSION_ID}.`,
+						)
+					: fail(
+							'Pending decision re-delivered',
+							`re-delivered ${JSON.stringify(row)}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Pending decision re-delivered',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 7: every frame either runner put on the wire parsed under the
+		// package and was in the name set this hub speaks.
+		checks.push(
+			hub.violations.length === 0
+				? pass(
+						'Every runner frame in the expected name set',
+						`${hub.wire.length} frames across ${hub.connections()} connections validated against @drisp/protocol under the ${hubProtocol} names.`,
+					)
+				: fail(
+						'Every runner frame in the expected name set',
+						hub.violations.join('\n'),
+					),
+		);
+	} catch (err) {
+		checks.push(
+			fail(
+				'Harness execution',
+				`Unexpected failure: ${err instanceof Error ? err.message : String(err)}`,
+			),
+		);
+	} finally {
+		for (const handle of [first, second]) {
+			if (!handle) continue;
+			try {
+				await handle.stop('harness teardown');
+			} catch {
+				// best-effort; teardown must continue
+			}
+		}
+		try {
+			outboxView?.close();
+			inboxView?.close();
+			viewDb?.close();
+		} catch {
+			// best-effort; the temp dirs are removed below regardless
+		}
+		await hub.close();
+		try {
+			fs.rmSync(tempWorkspace, {recursive: true, force: true});
+			fs.rmSync(workflowStoreDir, {recursive: true, force: true});
+			fs.rmSync(stateHome, {recursive: true, force: true});
+		} catch {
+			// best-effort cleanup
+		}
+	}
+
+	const hasFailure = checks.some(check => check.status === 'fail');
+	return {
+		ok: !hasFailure,
+		summary: hasFailure
+			? `drisp runner crash-recovery harness (${hubProtocol} hub) FAILED`
+			: `drisp runner crash-recovery harness (${hubProtocol} hub) passed all scenarios`,
 		checks,
 	};
 }

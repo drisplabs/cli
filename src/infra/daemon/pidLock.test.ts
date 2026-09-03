@@ -26,7 +26,9 @@ describe('acquirePidLock', () => {
 		expect(lock.pid).toBe(process.pid);
 		expect(fs.readFileSync(pidPath, 'utf-8').trim()).toBe(String(process.pid));
 
-		expect(() => acquirePidLock(pidPath)).toThrow(/already running as pid/);
+		expect(() => acquirePidLock(pidPath)).toThrow(
+			new RegExp(`already running \\(pid ${process.pid}\\)`),
+		);
 		lock.release();
 	});
 

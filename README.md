@@ -205,6 +205,34 @@ drisp_run:
 
 <br>
 
+## Runner
+
+`drisp runner` is the one long-lived process that pairs a machine with the hub, receives its Runs over the instance socket, and executes them. Events leave the machine only over that socket.
+
+```bash
+drisp runner pair <token> --url https://hub.example.com   # pair, then start the runner in the background
+drisp runner                                              # run it in the foreground (Ctrl-C stops it)
+drisp runner --detach                                     # start it in the background
+drisp runner status                                       # pairing, process, socket, token — non-zero on any unhealthy axis
+drisp runner runs --active                                # the Runs it has handled
+drisp runner logs --follow                                # tail its log
+drisp runner stop                                         # SIGTERM to the pid in runner.pid
+drisp runner install                                      # launchd / systemd unit so it starts on login
+```
+
+A second `drisp runner` on the same machine exits non-zero with `already running (pid N)`. Its state lives in `~/.local/state/drisp/`:
+
+| File                 | What it is                                                                                                                                                                          |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runner.pid`         | Liveness and the single-instance lock.                                                                                                                                              |
+| `runner.status.json` | The runner's snapshot (socket, wire mode, active and recent Runs), rewritten on change; what `status` and `runs` read. Removed on a clean stop.                                     |
+| `runner.db`          | One SQLite database: the feed outbox the runner drains to the hub and the decision inbox the hub's answers wait in. A runner killed mid-Run drains and re-delivers both on restart. |
+| `runner.log`         | The rotating log.                                                                                                                                                                   |
+
+`drisp dashboard <sub>` is a deprecated alias of `drisp runner` for one release (`dashboard daemon start` is `runner --detach`; `daemon foreground` / `connect` is bare `runner`). The pre-0.6 `dashboard-feed-outbox.db` and `dashboard-decision-inbox.db` are imported into `runner.db` on the first start and removed.
+
+<br>
+
 ## Configuration
 
 Config merges in order: **global &rarr; project &rarr; CLI flags**.

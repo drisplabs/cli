@@ -43,10 +43,7 @@ export function acquirePidLock(pidPath: string): PidLockHandle {
 		}
 		const existing = readPidLock(pidPath);
 		if (existing.state === 'held') {
-			throw new Error(
-				`dashboard daemon is already running as pid ${existing.pid}` +
-					` (lock at ${pidPath}). Use "drisp dashboard daemon stop" to terminate it.`,
-			);
+			throw new Error(alreadyRunningMessage(existing.pid, pidPath));
 		}
 		if (existing.state === 'stale') {
 			try {
@@ -58,9 +55,15 @@ export function acquirePidLock(pidPath: string): PidLockHandle {
 		}
 		// 'absent' means the lock vanished between EEXIST and read — retry.
 	}
-	throw new Error(
-		`dashboard daemon: failed to acquire pid lock at ${pidPath} after retry`,
-	);
+	throw new Error(`failed to acquire pid lock at ${pidPath} after retry`);
+}
+
+/**
+ * The one wording for "a runner already holds the lock": `drisp runner`
+ * prints it and exits non-zero, so it names the pid and how to stop it.
+ */
+export function alreadyRunningMessage(pid: number, pidPath: string): string {
+	return `already running (pid ${pid}); lock at ${pidPath}. Stop it with "drisp runner stop".`;
 }
 
 export function readPidLock(pidPath: string): PidLockReadResult {
