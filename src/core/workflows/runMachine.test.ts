@@ -19,6 +19,7 @@ import {
 import type {WorkflowRunState} from './sessionPlan';
 import {STEER_BLOCK_OPEN} from './steer';
 import type {LoopConfig, WorkflowConfig} from './types';
+import type {Interruption} from '@drisp/protocol';
 import crypto from 'node:crypto';
 
 const LOOP: LoopConfig = {
@@ -323,6 +324,98 @@ describe('runMachine.step — turn_in_flight', () => {
 				makeCfg(),
 			);
 			expect(result.phase).toEqual({kind: 'completed'});
+			expect(result.actions).toEqual([{type: 'persist'}]);
+		});
+	});
+
+	describe('a permission held for the grace window, then deferred, parks on a structured Interruption (#190)', () => {
+		it('an unclaimed permission that went unanswered parks with the request id and the call, and asks the interpreter to record it', () => {
+			// Hold, then park: the interpreter held the unanswered permission
+			// for the grace window, refused it as "deferred", and ended the
+			// Turn. The reducer owns the sentence, shapes the wire Interruption
+			// (a `question` addressed by the request id), keeps it on the
+			// parked phase, and asks for it to be recorded (journal + run
+			// record) before persisting.
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					exitCode: 143,
+					interruption: {
+						kind: 'unclaimed_permission',
+						toolName: 'Bash',
+						permission: {
+							requestId: 'req-42',
+							inputSummary: 'git push origin main',
+							graceMs: 60_000,
+						},
+					},
+				}),
+				makeCfg(),
+			);
+			const expected: Interruption = {
+				kind: 'question',
+				message:
+					'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+				requestId: 'req-42',
+				question: 'Bash: git push origin main',
+			};
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason: expected.message,
+				interruption: expected,
+			});
+			expect(result.actions).toEqual([
+				{type: 'record_interruption', interruption: expected},
+				{type: 'persist'},
+			]);
+			expect(result.memory).toEqual(makeMemory());
+		});
+
+		it('an ask rule whose claimed permission went unanswered parks the same way, naming the rule', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {
+						kind: 'ask_rule',
+						rule: 'mcp__github__*',
+						toolName: 'mcp__github__create_pull_request',
+						permission: {
+							requestId: 'req-7',
+							inputSummary: 'title: Ship it',
+							graceMs: 500,
+						},
+					},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({
+				kind: 'awaiting_attention',
+				stopReason:
+					'ask rule "mcp__github__*" fired on mcp__github__create_pull_request, unanswered within the grace window (500ms); deferred: title: Ship it — wake with --answer=allow|deny',
+				interruption: {
+					kind: 'question',
+					requestId: 'req-7',
+					question: 'mcp__github__create_pull_request: title: Ship it',
+				},
+			});
+			expect(result.actions.map(a => a.type)).toEqual([
+				'record_interruption',
+				'persist',
+			]);
+		});
+
+		it('a permission parked without being held keeps the plain row: no Interruption to record', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {kind: 'unclaimed_permission', toolName: 'Edit'},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).not.toHaveProperty('interruption');
 			expect(result.actions).toEqual([{type: 'persist'}]);
 		});
 	});
@@ -766,6 +859,51 @@ describe('createInitialRun', () => {
 
 	it('wakes a suspended run with the wake prompt, not the bare reply', () => {
 		const {phase} = createInitialRun(makeCfg(), {waking: true});
+		expect((phase as Extract<RunPhase, {kind: 'turn_in_flight'}>).prompt).toBe(
+			buildWakePrompt('do the task', '.athena/s1/journal.md'),
+		);
+	});
+
+	it('wakes a run parked on a deferred question by asking the agent to re-issue that exact call (#190)', () => {
+		const parkedInterruption: Interruption = {
+			kind: 'question',
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		const {phase} = createInitialRun(makeCfg(), {
+			waking: true,
+			parkedInterruption,
+		});
+		const prompt = (phase as Extract<RunPhase, {kind: 'turn_in_flight'}>)
+			.prompt;
+		expect(prompt).toBe(
+			buildWakePrompt(
+				'do the task',
+				'.athena/s1/journal.md',
+				parkedInterruption,
+			),
+		);
+		// The replay contract, spelled out for the agent: re-issue the same
+		// call; a stored answer is applied without asking again, otherwise the
+		// request is held again.
+		expect(prompt).toContain('Bash: git push origin main');
+		expect(prompt).toContain('req-42');
+		expect(prompt).toContain('Re-issue that exact call');
+		// The plain wake framing is still there.
+		expect(prompt).toContain('The human replied:\n\ndo the task');
+	});
+
+	it('wakes a run parked on a non-question Interruption with the plain wake prompt', () => {
+		const {phase} = createInitialRun(makeCfg(), {
+			waking: true,
+			parkedInterruption: {
+				kind: 'blocked',
+				message: 'agent declared NEEDS_HUMAN: which env?',
+				reason: 'which env?',
+			},
+		});
 		expect((phase as Extract<RunPhase, {kind: 'turn_in_flight'}>).prompt).toBe(
 			buildWakePrompt('do the task', '.athena/s1/journal.md'),
 		);

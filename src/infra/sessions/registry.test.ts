@@ -16,6 +16,7 @@ import {
 import type {RuntimeEvent} from '../../core/runtime/types';
 import type {FeedEvent} from '../../core/feed/types';
 import {mapLegacyHookNameToRuntimeKind} from '../../core/runtime/events';
+import type {Interruption} from '@drisp/protocol';
 
 let dummySeq = 0;
 
@@ -275,7 +276,11 @@ describe('awaiting-attention run discovery (ADR 0014)', () => {
 	function seedSession(
 		sessionId: string,
 		runStatus: string,
-		options: {stopReason?: string; adapterSessionId?: string} = {},
+		options: {
+			stopReason?: string;
+			adapterSessionId?: string;
+			interruption?: Interruption;
+		} = {},
 	): void {
 		const store = createSessionStore({
 			sessionId,
@@ -295,9 +300,32 @@ describe('awaiting-attention run discovery (ADR 0014)', () => {
 			status: runStatus as never,
 			stopReason: options.stopReason,
 			adapterSessionId: options.adapterSessionId,
+			interruption: options.interruption,
 		});
 		store.close();
 	}
+
+	it('surfaces the pending question of a run parked on a deferred permission (#190)', () => {
+		const interruption: Interruption = {
+			kind: 'question',
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		seedSession('sess-parked', 'awaiting_attention', {
+			stopReason: interruption.message,
+			adapterSessionId: 'claude-sess-p',
+			interruption,
+		});
+
+		expect(getLatestRunForSession('sess-parked')!.interruption).toEqual(
+			interruption,
+		);
+		const runs = listAwaitingAttentionRuns();
+		expect(runs).toHaveLength(1);
+		expect(runs[0]!.interruption).toEqual(interruption);
+	});
 
 	it('getLatestRunForSession reads the persisted run with its vendor session id', () => {
 		seedSession('sess-s', 'awaiting_attention', {

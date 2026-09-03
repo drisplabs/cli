@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
 import type {PersistedWorkflowRun, SessionRow} from './types';
+import {parsePersistedInterruption} from './types';
 
 /**
  * The single read-only SQL surface over a `session.db` file.
@@ -113,6 +114,7 @@ export function openSessionDbReadonly(
 					adapterSessionId:
 						(row['adapter_session_id'] as string | null | undefined) ??
 						undefined,
+					interruption: parsePersistedInterruption(row['interruption_json']),
 				};
 			} catch {
 				// Pre-v5 databases have no workflow_runs table.

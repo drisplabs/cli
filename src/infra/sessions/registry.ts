@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type {Interruption} from '@drisp/protocol';
 import type {AthenaSession, PersistedWorkflowRun} from './types';
 import {rowToAthenaSession} from './types';
 import {SCHEMA_VERSION} from './schema';
@@ -142,6 +143,11 @@ export type AwaitingAttentionRun = {
 	workflowName?: string;
 	stopReason?: string;
 	adapterSessionId?: string;
+	/**
+	 * The structured Interruption the Run parked on, when its record has one
+	 * (#190): for a deferred permission, the request id and the call asked.
+	 */
+	interruption?: Interruption;
 	startedAt: number;
 	sessionUpdatedAt: number;
 };
@@ -176,6 +182,7 @@ export function listAwaitingAttentionRuns(
 			workflowName: run.workflowName,
 			stopReason: run.stopReason,
 			adapterSessionId: run.adapterSessionId,
+			...(run.interruption ? {interruption: run.interruption} : {}),
 			startedAt: run.startedAt,
 			sessionUpdatedAt: session.updatedAt,
 		});

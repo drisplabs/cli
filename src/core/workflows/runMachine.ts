@@ -26,6 +26,7 @@
  */
 
 import crypto from 'node:crypto';
+import type {Interruption} from '@drisp/protocol';
 import type {
 	HarnessProcessOverride,
 	TurnContinuation,
@@ -63,7 +64,16 @@ export type RunPhase =
 			continuation: TurnContinuation;
 	  }
 	| {kind: 'handing_over'; handle: string}
-	| {kind: 'awaiting_attention'; stopReason: string}
+	| {
+			kind: 'awaiting_attention';
+			stopReason: string;
+			/**
+			 * The structured reason the Run parked, when the interpreter has one
+			 * (#190: a permission request deferred after the grace window). The
+			 * `stopReason` sentence stays the human-facing summary.
+			 */
+			interruption?: Interruption;
+	  }
 	| {kind: 'completed'}
 	| {kind: 'failed'; stopReason?: string}
 	| {kind: 'cancelled'};
@@ -122,9 +132,56 @@ export type RunMemory = {
  * as a `suspend` outcome instead.
  */
 export type RunInterruption =
-	| {kind: 'ask_rule'; rule: string; toolName: string}
+	| {
+			kind: 'ask_rule';
+			rule: string;
+			toolName: string;
+			/** Present when the claimed permission was held, then deferred (#190). */
+			permission?: DeferredPermission;
+	  }
 	| {kind: 'question'; question: string}
-	| {kind: 'unclaimed_permission'; toolName: string};
+	| {
+			kind: 'unclaimed_permission';
+			toolName: string;
+			/** Present when the unclaimed permission was held, then deferred (#190). */
+			permission?: DeferredPermission;
+	  };
+
+/**
+ * Hold, then park (#190): a permission request the runner held for the grace
+ * window without an answer arriving was refused with a "deferred" result and
+ * the Turn ended. What the park keeps so a later `answer` can be replayed
+ * into the re-issued call: the pending request's id, a one-line summary of
+ * the tool input (so the re-asked call can be recognised), and how long it
+ * was held.
+ */
+export type DeferredPermission = {
+	requestId: string;
+	inputSummary: string;
+	graceMs: number;
+};
+
+function formatGrace(ms: number): string {
+	return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+}
+
+/**
+ * The wire-shaped Interruption (`@drisp/protocol`) a deferred permission
+ * parks on — a `question` addressed by the request id, whose `question` is
+ * the call as asked (`<tool>: <input summary>`). Null for every interruption
+ * that carries no deferred permission: those park on their sentence alone.
+ */
+function protocolInterruptionFor(
+	interruption: RunInterruption,
+): Interruption | null {
+	if (interruption.kind === 'question' || !interruption.permission) return null;
+	return {
+		kind: 'question',
+		message: describeInterruption(interruption),
+		requestId: interruption.permission.requestId,
+		question: `${interruption.toolName}: ${interruption.permission.inputSummary}`,
+	};
+}
 
 /**
  * The human sentence an `awaiting_attention` phase carries for an
@@ -134,12 +191,24 @@ export type RunInterruption =
 function describeInterruption(interruption: RunInterruption): string {
 	switch (interruption.kind) {
 		case 'ask_rule':
+			if (interruption.permission) {
+				return (
+					`ask rule "${interruption.rule}" fired on ${interruption.toolName}, unanswered within the grace window (${formatGrace(interruption.permission.graceMs)}); ` +
+					`deferred: ${interruption.permission.inputSummary} — wake with --answer=allow|deny`
+				);
+			}
 			return `ask rule "${interruption.rule}" fired on ${interruption.toolName} — needs a human`;
 		case 'question':
 			return interruption.question
 				? `agent asked a question with no human attached to answer: ${interruption.question}`
 				: 'agent asked a question with no human attached to answer';
 		case 'unclaimed_permission':
+			if (interruption.permission) {
+				return (
+					`permission request (${interruption.toolName}) unanswered within the grace window (${formatGrace(interruption.permission.graceMs)}); ` +
+					`deferred: ${interruption.permission.inputSummary} — wake with --answer=allow|deny, or rerun with --isolation autonomous`
+				);
+			}
 			return (
 				`agent requested sandbox approval (${interruption.toolName}) with no human attached to answer` +
 				` — rerun with --isolation autonomous, or wake with guidance`
@@ -214,7 +283,13 @@ export type RunAction =
 	 * action (#191) — the interpreter records each in the Journal, with its
 	 * origin and the Turn it was delivered into, before that Turn starts.
 	 */
-	| {type: 'steers_delivered'; steers: QueuedSteer[]; iteration: number};
+	| {type: 'steers_delivered'; steers: QueuedSteer[]; iteration: number}
+	/**
+	 * Record the Interruption a parking Run carries — in the Journal (so the
+	 * next Turn and `drisp runs` see the pending question) and on the Run
+	 * record (#190). Always precedes the `persist` of the parked phase.
+	 */
+	| {type: 'record_interruption'; interruption: Interruption};
 
 /** The immutable per-Run configuration the reducer needs. No callbacks. */
 export type StepConfig = {
@@ -263,13 +338,33 @@ export function buildHandoverSeedPrompt(
 export function buildWakePrompt(
 	reply: string,
 	journalPath: string | undefined,
+	parkedInterruption?: Interruption,
 ): string {
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
+		buildReplayGuidance(parkedInterruption) +
 		(journalPath
 			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
 		`Keep the journal current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
+	);
+}
+
+/**
+ * Replay (#190): a Run parked because a permission request (or question) went
+ * unanswered inside the grace window was told "deferred" and its Turn ended.
+ * On wake the runner cannot re-issue a tool call itself — the agent does — so
+ * the wake prompt names the deferred call and asks for it verbatim. A stored
+ * answer is replayed into that re-asked call by the runner; without one the
+ * request is simply held again. Empty for every other Interruption.
+ */
+function buildReplayGuidance(parked: Interruption | undefined): string {
+	if (!parked || parked.kind !== 'question' || !parked.requestId) return '';
+	const call = parked.question ?? 'the same call';
+	return (
+		`Before your previous Turn ended, your request \`${call}\` (request ${parked.requestId}) was deferred because nobody answered it in time. ` +
+		`Re-issue that exact call now, with the same input: if an answer was stored while this run was parked it is applied automatically, otherwise the request is held again for a human. ` +
+		`Do not work around the deferred call or substitute a different one.\n\n`
 	);
 }
 
@@ -313,6 +408,12 @@ export function createInitialRun(
 		 * head of the first Turn's prompt, after any the resumed memory carries.
 		 */
 		initialSteers?: QueuedSteer[];
+		/**
+		 * The Interruption the Run being woken parked on, when its record has
+		 * one (#190). A deferred question shapes the wake prompt into a replay
+		 * instruction; any other kind leaves the plain wake prompt.
+		 */
+		parkedInterruption?: Interruption;
 	},
 ): StepResult {
 	const initialSteers = opts.initialSteers ?? [];
@@ -344,7 +445,11 @@ export function createInitialRun(
 		configOverride: undefined,
 	});
 	const prompt = opts.waking
-		? buildWakePrompt(cfg.initialPrompt, cfg.journalPromptPath)
+		? buildWakePrompt(
+				cfg.initialPrompt,
+				cfg.journalPromptPath,
+				opts.parkedInterruption,
+			)
 		: prepared.prompt;
 
 	const phase: RunPhase = {
@@ -473,6 +578,26 @@ function handleTurnInFlight(
 	// — interrupting the Turn ends the harness process abnormally, but the Run
 	// is suspended, not failed.
 	if (event.interruption) {
+		// Hold, then park (#190): a permission that went unanswered inside the
+		// grace window was deferred and carries its request id and call. That
+		// structured Interruption is recorded — journal and run record — before
+		// the parked phase is persisted, so `drisp runs` and the hub both show
+		// what was asked and an `answer` has something to address.
+		const deferred = protocolInterruptionFor(event.interruption);
+		if (deferred) {
+			return {
+				phase: {
+					kind: 'awaiting_attention',
+					stopReason: deferred.message,
+					interruption: deferred,
+				},
+				memory,
+				actions: [
+					{type: 'record_interruption', interruption: deferred},
+					{type: 'persist'},
+				],
+			};
+		}
 		return {
 			phase: {
 				kind: 'awaiting_attention',
