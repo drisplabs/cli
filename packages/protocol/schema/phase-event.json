@@ -1,0 +1,33 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/phase-event.json",
+	"title": "phase-event",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"runId": {
+			"type": "string"
+		},
+		"turn": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"step": {
+			"type": "string",
+			"minLength": 1
+		},
+		"stepIndex": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"stepTotal": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		}
+	},
+	"required": ["runId", "turn", "step"],
+	"additionalProperties": false
+}

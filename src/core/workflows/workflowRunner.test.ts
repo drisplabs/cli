@@ -1774,3 +1774,173 @@ describe('createWorkflowRunner — steering (#191)', () => {
 		expect(startTurn).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('createWorkflowRunner phase events', () => {
+	const LOOPED_WORKFLOW = {
+		name: 'wf',
+		plugins: [],
+		promptTemplate: '{input}',
+		loop: {enabled: true, maxIterations: 5},
+	};
+
+	function journalWith(block: string[], ...tail: string[]): string {
+		return [
+			'# Journal',
+			'## Status',
+			'Working.',
+			'<!-- TURN_PROTOCOL',
+			...block,
+			'-->',
+			...tail,
+		].join('\n');
+	}
+
+	it('emits one phase change when a Turn names a new step and none while the step stays the same', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(['step: Orient', 'step_index: 1', 'step_total: 3']),
+					'utf-8',
+				);
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(
+						['step: Orient', 'step_index: 1', 'step_total: 3'],
+						'More notes.',
+					),
+					'utf-8',
+				);
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(
+						['step: Build', 'step_index: 2', 'step_total: 3'],
+						'<!-- WORKFLOW_COMPLETE -->',
+					),
+					'utf-8',
+				);
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(3);
+		expect(onWarning).not.toHaveBeenCalled();
+		expect(onPhaseChange.mock.calls.map(call => call[0])).toEqual([
+			{
+				runId: handle.runId,
+				turn: 1,
+				step: 'Orient',
+				stepIndex: 1,
+				stepTotal: 3,
+			},
+			{
+				runId: handle.runId,
+				turn: 3,
+				step: 'Build',
+				stepIndex: 2,
+				stepTotal: 3,
+			},
+		]);
+	});
+
+	it('ignores a malformed block with one warning and keeps the Run going', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(journalPath, journalWith(['step_index: 2']), 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(['step_index: 2'], '<!-- WORKFLOW_COMPLETE -->'),
+					'utf-8',
+				);
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(2);
+		expect(onPhaseChange).not.toHaveBeenCalled();
+		expect(onWarning).toHaveBeenCalledTimes(1);
+		expect(onWarning.mock.calls[0]![0]).toMatch(/TURN_PROTOCOL/);
+	});
+
+	it('emits no phase and no warning for a journal without a block', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				journalPath,
+				'## Plan\n- [x] done\n<!-- WORKFLOW_COMPLETE -->',
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		await handle.result;
+		expect(onPhaseChange).not.toHaveBeenCalled();
+		expect(onWarning).not.toHaveBeenCalled();
+	});
+});

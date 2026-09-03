@@ -11,6 +11,7 @@ import type {
 	RuntimeEvent,
 	RuntimeEventHandler,
 } from '../../core/runtime/types';
+import type {FeedEvent} from '../../core/feed/types';
 import {runExec} from './runner';
 import {RUN_EXIT_CODE} from './types';
 import {createSteerQueue, STEER_BLOCK_OPEN} from '../../core/workflows/steer';
@@ -1958,5 +1959,134 @@ describe('runExec', () => {
 		expect(spawns[0]!.prompt).toContain('via local');
 		expect(spawns[0]!.prompt.endsWith('hello')).toBe(true);
 		expect(stderr.read()).toContain('steer delivered into Turn 1 (via local)');
+	});
+});
+
+describe('runExec phase events', () => {
+	function journalWith(block: string[], ...tail: string[]): string {
+		return [
+			'# Journal',
+			'## Status',
+			'Working.',
+			'<!-- TURN_PROTOCOL',
+			...block,
+			'-->',
+			...tail,
+		].join('\n');
+	}
+
+	it('publishes a phase FeedEvent locally and to the paired feed, and a run.phase JSONL event, once per change of step', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const dashboardFeedPublisher = {publish: vi.fn()};
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'athena-exec-phase-'),
+		);
+		const journalPath = path.join(
+			projectDir,
+			'.athena',
+			'athena-1',
+			'journal.md',
+		);
+		let turns = 0;
+
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess();
+			turns += 1;
+			const turn = turns;
+			setImmediate(() => {
+				runtime.emit(
+					makeRuntimeEvent({
+						id: `evt-${turn}`,
+						kind: 'session.start',
+						hookName: 'SessionStart',
+					}),
+				);
+				fs.mkdirSync(path.dirname(journalPath), {recursive: true});
+				fs.writeFileSync(
+					journalPath,
+					turn === 1
+						? journalWith(['step: Orient', 'step_index: 1', 'step_total: 2'])
+						: journalWith(
+								['step: Build', 'step_index: 2', 'step_total: 2'],
+								'<!-- WORKFLOW_COMPLETE -->',
+							),
+					'utf-8',
+				);
+				opts.onStdout?.(
+					JSON.stringify({
+						type: 'message',
+						role: 'assistant',
+						content: [{type: 'text', text: 'done'}],
+					}) + '\n',
+				);
+				opts.onExit?.(0);
+			});
+			return child;
+		};
+
+		try {
+			const result = await runExec({
+				prompt: 'hello',
+				projectDir,
+				harness: 'claude-code',
+				athenaSessionId: 'athena-1',
+				isolationConfig: {},
+				ephemeral: true,
+				json: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				dashboardFeedPublisher,
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 5},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(turns).toBe(2);
+
+			const published = dashboardFeedPublisher.publish.mock.calls.flatMap(
+				([input]) =>
+					(input.feedEvents as FeedEvent[]).filter(e => e.kind === 'phase'),
+			);
+			expect(published.map(e => e.data)).toEqual([
+				{
+					runId: expect.any(String),
+					turn: 1,
+					step: 'Orient',
+					stepIndex: 1,
+					stepTotal: 2,
+				},
+				{
+					runId: expect.any(String),
+					turn: 2,
+					step: 'Build',
+					stepIndex: 2,
+					stepTotal: 2,
+				},
+			]);
+			expect(published[0]!.title).toBe('Step 1/2: Orient');
+			expect(published[0]!.session_id).toBe('adapter-session');
+			expect(published[0]!.run_id).toMatch(/^adapter-session:R\d+$/);
+
+			const phaseLines = stdout
+				.read()
+				.split('\n')
+				.filter(Boolean)
+				.map(line => JSON.parse(line))
+				.filter(event => event.type === 'run.phase');
+			expect(phaseLines.map(event => event.data.step)).toEqual([
+				'Orient',
+				'Build',
+			]);
+		} finally {
+			fs.rmSync(projectDir, {recursive: true, force: true});
+		}
 	});
 });

@@ -193,5 +193,7 @@ function generateNeutralTitle(event: FeedEvent, g: GlyphSet): string {
 			);
 		case 'artifacts.manifest':
 			return 'Artifacts manifest';
+		case 'phase':
+			return truncate(event.title);
 	}
 }

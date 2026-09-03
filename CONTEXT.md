@@ -23,6 +23,10 @@ A delayed answer from the user/controller that resolves a prior `RuntimeEvent` (
 A timeline-ready event derived from one or more `RuntimeEvent`s. Carries `event_id`, `seq`, `run_id`, `session_id`, `actor_id`, `kind`, `data`.
 _Avoid_: feed item (that's a UI projection of multiple `FeedEvent`s).
 
+**Phase** _(FeedEvent kind `phase`)_:
+The workflow step a **Workflow Run** is on, as the Journal's **Turn Protocol block** names it (`UBIQUITOUS_LANGUAGE.md`). The one FeedEvent the Runner synthesizes itself: it is not derived from a `RuntimeEvent` and never passes through the **FeedMapper**, which only lends it the current **Session**, **Run**, and a `seq` (`allocateSeq`). Emitted once per _change_ of step, never per Turn; `data.runId` is the Workflow Run id, unrelated to the event's own Feed Run `run_id`. Rendered as a step line locally and forwarded to the hub on the feed stream (`PhaseFeedEventSchema` in `@drisp/protocol`).
+_Avoid_: step event, progress event, phase (bare — collides with the Run-loop reducer's `RunPhase`).
+
 **FeedMapper**:
 The module that converts `RuntimeEvent` → `FeedEvent[]` and `RuntimeDecision` → `FeedEvent`. Stateful: maintains run/session/actor/correlation state across the event stream. Bootstraps from stored events on resume.
 

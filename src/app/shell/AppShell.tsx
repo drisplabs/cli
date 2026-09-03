@@ -341,6 +341,7 @@ function AppContent({
 		allocateSeq,
 		clearEvents,
 		emitNotification,
+		emitPhase,
 		isServerRunning,
 		recordTokens,
 		restoredTokens,
@@ -466,6 +467,7 @@ function AppContent({
 		verbose,
 		workflow,
 		workflowPlan,
+		onPhaseChange: emitPhase,
 		options: {
 			initialTokens: restoredTokens,
 			onExitTokens,

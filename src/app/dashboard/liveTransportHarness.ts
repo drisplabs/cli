@@ -8,17 +8,23 @@ import {WebSocketServer, type WebSocket as ServerWebSocket} from 'ws';
 import {
 	FrameSchema,
 	PROTOCOL_VERSION,
+	PhaseFeedEventSchema,
 	hello,
 	normalizeFrame,
 	toLegacyFrame,
 	type CanonicalFrame,
 	type InstalledWorkflow,
 } from '@drisp/protocol';
+import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
 import {
 	runDashboardRuntimeDaemon,
 	type RuntimeDaemonHandle,
 } from './runtimeDaemon';
-import type {PairedFeedPublisher} from './pairedFeedPublisher';
+import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
+import {
+	createPairedFeedPublisher,
+	type PairedFeedPublisher,
+} from './pairedFeedPublisher';
 import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
 import type {
 	HarnessVerificationCheck,
@@ -41,7 +47,8 @@ import {STEER_BLOCK_OPEN} from '../../core/workflows/steer';
  * non-transport seams the daemon needs to run offline are stubbed:
  * `readConfig`, `refreshAccessToken`, `executeRemoteAssignment`,
  * `reconnectDelaysMs`, and the disk-writing seams (`writeMirror`,
- * `pairedFeedPublisher`, `decisionInbox`) so the run leaves no working-tree or
+ * `decisionInbox`; the paired feed publisher is REAL, with its durable outbox
+ * placed in the temp workspace) so the run leaves no working-tree or
  * state-dir pollution. The Workflow store is REAL but pointed at a temp dir
  * (`workflowStoreDir`), so the inventory the runner reports on `hello` and the
  * `workflows.changed` push after an install go through the real store read
@@ -68,6 +75,7 @@ const ACCESS_TOKEN = 'live-harness-access-token';
 const ASSIGNMENT_RUN_ID = 'run_live_harness_1';
 const ATHENA_SESSION_ID = 'athena-live-harness';
 const STEER_TEXT = 'live-transport harness steer';
+const PHASE_STEP = 'Orient';
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 const CLI_VERSION = 'live-harness';
 const SEEDED_WORKFLOW: InstalledWorkflow = {
@@ -229,6 +237,17 @@ export async function runLiveTransportHarness(
 	);
 	installIntoStore(workflowStoreDir, SEEDED_WORKFLOW);
 
+	// The paired dashboard config the daemon and the feed publisher share; the
+	// URL is filled in once the fake hub is listening.
+	let dashboardUrl = '';
+	const readConfig = () => ({
+		dashboardUrl,
+		instanceId: INSTANCE_ID,
+		refreshToken: 'live-harness-refresh-token',
+		fingerprint: 'live-harness-fingerprint',
+		pairedAt: Date.now(),
+	});
+
 	const httpServer = http.createServer((req, res) => {
 		if (req.url && /^\/api\/instances\/[^/]+\/attachments$/.test(req.url)) {
 			attachmentFetches += 1;
@@ -261,6 +280,19 @@ export async function runLiveTransportHarness(
 			}
 			const record = frame as Record<string, unknown>;
 			wire.push({connection, frame: record});
+			// A hub acks each feed-stream frame so the runner's outbox stops
+			// redelivering it.
+			if (
+				record['type'] === 'feed_event' ||
+				(record['type'] === 'event' && record['stream'] === 'feed')
+			) {
+				socket.send(
+					JSON.stringify({
+						type: 'feed_ack',
+						deliverySeq: record['deliverySeq'],
+					}),
+				);
+			}
 			const violation = checkNameSet(hubProtocol, record);
 			if (violation) violations.push(violation);
 		});
@@ -281,16 +313,19 @@ export async function runLiveTransportHarness(
 		journalSeenByTurn2: '',
 	};
 
-	// Disk-writing seams stubbed so the harness never touches the dashboard
-	// state dir. These are not transport seams, so stubbing them does not
-	// weaken the live-transport coverage.
-	const pairedFeedPublisher: PairedFeedPublisher = {
-		publish: () => {},
-		attachTransport: () => {},
-		detachTransport: () => {},
-		handleAck: () => {},
-		close: () => {},
-	};
+	// The paired feed publisher is real — it is the seam the feed-stream
+	// scenario exercises — but its durable outbox lives in the temp workspace,
+	// so the dashboard state dir is never touched. The decision inbox is
+	// stubbed: it is not a transport seam, so stubbing it does not weaken the
+	// live-transport coverage.
+	const feedOutbox = createDashboardFeedOutbox({
+		dbPath: path.join(tempWorkspace, 'feed-outbox.db'),
+	});
+	const pairedFeedPublisher: PairedFeedPublisher = createPairedFeedPublisher({
+		readConfig,
+		outbox: feedOutbox,
+		drainIntervalMs: 50,
+	});
 	const decisionInbox: DashboardDecisionInbox = {
 		enqueue: () => {},
 		pendingForSession: () => [],
@@ -304,16 +339,10 @@ export async function runLiveTransportHarness(
 			httpServer.listen(0, '127.0.0.1', () => resolve());
 		});
 		const {port} = httpServer.address() as AddressInfo;
-		const dashboardUrl = `http://127.0.0.1:${port}`;
+		dashboardUrl = `http://127.0.0.1:${port}`;
 
 		daemon = await runDashboardRuntimeDaemon({
-			readConfig: () => ({
-				dashboardUrl,
-				instanceId: INSTANCE_ID,
-				refreshToken: 'live-harness-refresh-token',
-				fingerprint: 'live-harness-fingerprint',
-				pairedAt: Date.now(),
-			}),
+			readConfig,
 			refreshAccessToken: async () => ({
 				accessToken: ACCESS_TOKEN,
 				instanceId: INSTANCE_ID,
@@ -324,7 +353,9 @@ export async function runLiveTransportHarness(
 			// needs_human) through the REAL client, then runs a REAL Workflow
 			// Runner over a fake harness whose first Turn stays in flight until
 			// the hub's steer lands — so the steer is provably queued mid-Turn
-			// and delivered at the head of the next Turn (#191) — and finally
+			// and delivered at the head of the next Turn (#191). Turn 1 leaves a
+			// Turn Protocol block in the Journal, so the Runner's change of step
+			// goes out through the real paired feed publisher (#192). Finally it
 			// parks until stopped.
 			executeRemoteAssignment: async input => {
 				input.client.sendRunEvent({
@@ -368,7 +399,18 @@ export async function runLiveTransportHarness(
 						runState.turnPrompts.push(turn.prompt);
 						if (runState.turnPrompts.length === 1) {
 							await firstTurnGate;
-							fs.writeFileSync(journalPath, 'turn 1 done', 'utf-8');
+							fs.writeFileSync(
+								journalPath,
+								[
+									'turn 1 done',
+									'<!-- TURN_PROTOCOL',
+									`step: ${PHASE_STEP}`,
+									'step_index: 1',
+									'step_total: 3',
+									'-->',
+								].join('\n'),
+								'utf-8',
+							);
 						} else {
 							runState.journalSeenByTurn2 = fs.readFileSync(
 								journalPath,
@@ -396,6 +438,24 @@ export async function runLiveTransportHarness(
 						};
 					},
 					persistRunState: () => {},
+					// A change of workflow step reaches the hub through the paired
+					// feed publisher — the feed stream, not the run stream — the
+					// way runExec publishes it.
+					onPhaseChange: phase => {
+						input.dashboardFeedPublisher?.publish({
+							origin: 'dashboard',
+							athenaSessionId: ATHENA_SESSION_ID,
+							feedEvents: [
+								buildPhaseFeedEvent({
+									phase,
+									sessionId: ATHENA_SESSION_ID,
+									runId: `${ATHENA_SESSION_ID}:R1`,
+									seq: 1,
+									ts: Date.now(),
+								}),
+							],
+						});
+					},
 				});
 				// The daemon's steer queue is the seam runExec subscribes on in
 				// production; here the stub subscribes the same way.
@@ -623,7 +683,58 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 7: a malformed frame is answered with a typed error and does
+		// Scenario 7: the change of workflow step Turn 1's Journal named reaches
+		// the hub as a `phase` FeedEvent on the feed stream — produced by the
+		// real Workflow Runner, published through the real paired feed
+		// publisher — under the hub's name set, addressed to the Run's Athena
+		// Session, and parsing under PhaseFeedEventSchema.
+		const feedStreamType = hubProtocol === 'canonical' ? 'event' : 'feed_event';
+		const isPhaseFrame = (frame: Record<string, unknown>): boolean => {
+			if (hubProtocol === 'canonical' && frame['stream'] !== 'feed') {
+				return false;
+			}
+			const envelope = frame['envelope'] as
+				| {feedEvent?: {kind?: unknown}}
+				| undefined;
+			return envelope?.feedEvent?.kind === 'phase';
+		};
+		try {
+			await waitFor(
+				() => framesOfType(feedStreamType).some(isPhaseFrame),
+				'phase FeedEvent on the feed stream',
+				stepTimeoutMs,
+			);
+			const phaseFrame = framesOfType(feedStreamType).find(isPhaseFrame)!;
+			const envelope = phaseFrame['envelope'] as {
+				athenaSessionId?: unknown;
+				feedEvent: unknown;
+			};
+			const parsed = PhaseFeedEventSchema.safeParse(envelope.feedEvent);
+			checks.push(
+				parsed.success && envelope.athenaSessionId === ATHENA_SESSION_ID
+					? pass(
+							'Phase event on the feed stream',
+							`Step "${parsed.data.data.step}" (${parsed.data.data.stepIndex}/${parsed.data.data.stepTotal}) of ${parsed.data.data.runId}, named by Turn ${parsed.data.data.turn}, arrived as ${feedStreamType}${
+								hubProtocol === 'canonical' ? " (stream: 'feed')" : ''
+							} and parsed under PhaseFeedEventSchema.`,
+						)
+					: fail(
+							'Phase event on the feed stream',
+							parsed.success
+								? `phase envelope addressed to ${String(envelope.athenaSessionId)}, not ${ATHENA_SESSION_ID}`
+								: `phase FeedEvent does not parse under PhaseFeedEventSchema: ${parsed.error.message}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Phase event on the feed stream',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 8: a malformed frame is answered with a typed error and does
 		// not take the connection down.
 		const errorsBefore = framesOfType('error').length;
 		serverState.socket?.send(JSON.stringify({type: 'not-a-frame', x: 1}));
@@ -657,7 +768,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 8: the hub stops the Run under its own name set.
+		// Scenario 9: the hub stops the Run under its own name set.
 		serverState.socket?.send(JSON.stringify(hubFrames.stop()));
 		try {
 			await waitFor(
@@ -686,7 +797,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 9: a Workflow installed into the store while connected is
+		// Scenario 10: a Workflow installed into the store while connected is
 		// pushed as a full-list replace (`workflows.changed`), and so is a
 		// removal. The store is watched for real; nothing tells the daemon.
 		const changesBefore = framesOfType('workflows.changed').length;
@@ -741,7 +852,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 10: drop the socket from the server and confirm the daemon
+		// Scenario 11: drop the socket from the server and confirm the daemon
 		// reconnects through the real reconnect loop — re-negotiating the wire
 		// mode and re-reading the store for the new connection's hello.
 		const connectionsBeforeClose = socketConnections;
@@ -797,7 +908,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 11: every frame the runner put on the wire parsed under the
+		// Scenario 12: every frame the runner put on the wire parsed under the
 		// package and was in the name set this hub speaks.
 		checks.push(
 			violations.length === 0
@@ -830,6 +941,11 @@ export async function runLiveTransportHarness(
 			} catch {
 				// best-effort; teardown must continue
 			}
+		}
+		try {
+			feedOutbox.close();
+		} catch {
+			// best-effort; the temp workspace is removed below regardless
 		}
 		await new Promise<void>(resolve => {
 			wss.close(() => resolve());

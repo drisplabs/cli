@@ -57,6 +57,15 @@ maps to exactly one new name (`FRAME_NAME_MAP`).
 The `event` frame folds two old names into one, told apart by `stream`. Every
 other mapping is a pure rename of `type`; bodies are shared.
 
+## Events on the feed stream
+
+The feed stream carries FeedEvents opaquely (`FeedEventSchema` keeps unknown
+`kind`s and `data`), and names the ones the hub is expected to render:
+
+| `kind`  | `data`       | When                                                                                                                                                                                                                                                                                                                  |
+| ------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `phase` | `PhaseEvent` | The Workflow Run moved to a new workflow step, as the Journal's Turn Protocol block names it — one per _change_ of step, not per Turn. `runId` is the Workflow Run; `turn` the Turn that named it; `stepIndex` / `stepTotal` only when the block gave them. `PhaseFeedEventSchema` narrows a FeedEvent to this shape. |
+
 The runner (the CLI's dashboard daemon) is wired to this package: it parses
 every inbound frame with `safeNormalizeFrame()`, sends a versioned `hello`
 first, and builds every outbound frame under its canonical name. Which name set
@@ -95,13 +104,15 @@ generation, so they cannot drift.
 | `schema/run-stream-event.json`   | `RunStreamEventSchema`    |
 | `schema/feed-event.json`         | `FeedEventSchema`         |
 | `schema/feed-envelope.json`      | `FeedEnvelopeSchema`      |
+| `schema/phase-event.json`        | `PhaseEventSchema`        |
+| `schema/phase-feed-event.json`   | `PhaseFeedEventSchema`    |
 
 ## Layout
 
 ```
 src/version.ts     PROTOCOL_VERSION
 src/domain.ts      Run, Turn, Interruption, RunSpec, RuntimeDecision, Attachment, InstalledWorkflow
-src/events.ts      RunStreamEvent, FeedEvent, FeedEnvelope
+src/events.ts      RunStreamEvent, FeedEvent, FeedEnvelope, PhaseEvent, PhaseFeedEvent
 src/frames.ts      every frame under its old and new name; hello()
 src/normalize.ts   FRAME_NAME_MAP, normalizeFrame(), toLegacyFrame()
 src/jsonSchema.ts  buildJsonSchemas()

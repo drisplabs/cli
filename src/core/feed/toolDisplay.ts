@@ -1041,6 +1041,11 @@ export function resolveEventDisplay(event: FeedEvent): {
 		case 'elicitation.result':
 		case 'artifacts.manifest':
 			return {toolColumn: '', segments: []};
+		case 'phase':
+			return {
+				toolColumn: '',
+				segments: [{text: event.title, role: 'target'}],
+			};
 	}
 }
 
@@ -1133,6 +1138,7 @@ export function resolveEventToolColumn(event: FeedEvent): string {
 		case 'elicitation.request':
 		case 'elicitation.result':
 		case 'artifacts.manifest':
+		case 'phase':
 			return '';
 	}
 }

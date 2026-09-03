@@ -71,6 +71,37 @@ export const FeedEventSchema = z.looseObject({
 });
 export type FeedEvent = z.infer<typeof FeedEventSchema>;
 
+// ── Phase (the step a Workflow Run is on) ─────────────────
+
+/** The FeedEvent `kind` a phase event is published under. */
+export const PHASE_FEED_EVENT_KIND = 'phase' as const;
+
+/**
+ * The step a Workflow Run is on, as the Turn Protocol block in the Journal
+ * names it (`<!-- TURN_PROTOCOL … -->`, ADR 0015 §7). The runner emits one
+ * per *change* of step — a Turn still on the same step emits none — so the
+ * stream reads as the Run's progress through its workflow, not as a
+ * per-Turn heartbeat. `stepIndex` / `stepTotal` are present only when the
+ * block declared them.
+ */
+export const PhaseEventSchema = z.object({
+	/** The Workflow Run id (not a Feed Run id). */
+	runId: z.string(),
+	/** 1-based Iteration of the Turn whose Journal named this step. */
+	turn: z.int().positive(),
+	step: z.string().min(1),
+	stepIndex: z.int().positive().optional(),
+	stepTotal: z.int().positive().optional(),
+});
+export type PhaseEvent = z.infer<typeof PhaseEventSchema>;
+
+/** A FeedEvent of kind `phase` whose `data` is a {@link PhaseEvent}. */
+export const PhaseFeedEventSchema = FeedEventSchema.extend({
+	kind: z.literal(PHASE_FEED_EVENT_KIND),
+	data: PhaseEventSchema,
+});
+export type PhaseFeedEvent = z.infer<typeof PhaseFeedEventSchema>;
+
 export const FeedOriginSchema = z.enum(['local', 'dashboard']);
 export type FeedOrigin = z.infer<typeof FeedOriginSchema>;
 

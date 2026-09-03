@@ -286,6 +286,8 @@ function eventLabel(event: FeedEvent): string {
 			return 'Image View';
 		case 'context.compaction':
 			return 'Context Compaction';
+		case 'phase':
+			return 'Step';
 		case 'mcp.progress':
 			return event.data.title || 'MCP Progress';
 		case 'terminal.input':
@@ -489,6 +491,17 @@ export function renderDetailLines(
 		case 'skills.loaded': {
 			const header = buildCompactHeader(event, width, {theme});
 			const content = renderMarkdownToLines(event.data.message, cw);
+			return buildResult(header, content, false);
+		}
+
+		case 'phase': {
+			// The Runner's step line: what the Journal's Turn Protocol block
+			// named, and which Turn of which Workflow Run named it.
+			const header = buildCompactHeader(event, width, {theme});
+			const content = renderMarkdownToLines(
+				`**${event.title}**\n\nNamed by Turn ${event.data.turn} of Workflow Run \`${event.data.runId}\`.`,
+				cw,
+			);
 			return buildResult(header, content, false);
 		}
 

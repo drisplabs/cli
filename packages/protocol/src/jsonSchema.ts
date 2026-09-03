@@ -15,6 +15,8 @@ import {
 import {
 	FeedEnvelopeSchema,
 	FeedEventSchema,
+	PhaseEventSchema,
+	PhaseFeedEventSchema,
 	RunStreamEventSchema,
 } from './events';
 import {
@@ -40,6 +42,8 @@ export const JSON_SCHEMA_SOURCES = {
 	'run-stream-event': RunStreamEventSchema,
 	'feed-event': FeedEventSchema,
 	'feed-envelope': FeedEnvelopeSchema,
+	'phase-event': PhaseEventSchema,
+	'phase-feed-event': PhaseFeedEventSchema,
 } as const;
 
 export type JsonSchemaName = keyof typeof JSON_SCHEMA_SOURCES;

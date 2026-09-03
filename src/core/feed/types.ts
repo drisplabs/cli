@@ -1,5 +1,6 @@
 // src/feed/types.ts
 
+import type {PhaseEvent} from '@drisp/protocol';
 import type {PermissionSuggestion} from '../../shared/types/permissionSuggestion';
 import type {RuntimeEventDataMap, ToolBatchCall} from '../runtime/events';
 
@@ -60,7 +61,8 @@ export type FeedEventKind =
 	| 'permission.denied'
 	| 'elicitation.request'
 	| 'elicitation.result'
-	| 'artifacts.manifest';
+	| 'artifacts.manifest'
+	| 'phase';
 
 export type FeedEventLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -446,6 +448,14 @@ export type ArtifactsManifestData = {
 	manifest: unknown;
 };
 
+/**
+ * The workflow step a Workflow Run moved to, as the Journal's Turn Protocol
+ * block named it. Synthesized by the Runner (not the FeedMapper) once per
+ * change of step; the same shape `@drisp/protocol` publishes to the hub, so
+ * `runId` here is the Workflow Run id, not this event's Feed Run `run_id`.
+ */
+export type PhaseData = PhaseEvent;
+
 // Phase 2 stubs
 export type TodoPriority = 'p0' | 'p1' | 'p2';
 export type TodoFeedStatus = 'open' | 'doing' | 'blocked' | 'done';
@@ -553,7 +563,8 @@ export type FeedEvent =
 	| (FeedEventBase & {
 			kind: 'artifacts.manifest';
 			data: ArtifactsManifestData;
-	  });
+	  })
+	| (FeedEventBase & {kind: 'phase'; data: PhaseData});
 
 // ── Compile-time drift checks ────────────────────────────
 //

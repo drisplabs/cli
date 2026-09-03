@@ -51,18 +51,24 @@ adapter harnesses in `src/harnesses/`):
    first Turn is in flight is recorded on the Run, left out of that Turn, and
    delivered at the head of the next Turn's prompt (a real Workflow Runner over
    a fake harness), with a Journal entry naming its origin.
-7. **Malformed frames answered with error** — a non-frame object and invalid
+7. **Phase event on the feed stream** — Turn 1 leaves a Turn Protocol block in
+   the Journal; the real Workflow Runner reports the change of step, which is
+   published through the real paired feed publisher (its outbox in the temp
+   workspace) and reaches the hub as a `phase` FeedEvent on the feed stream
+   under the hub's name set, parsing under `PhaseFeedEventSchema`; the hub
+   acks it.
+8. **Malformed frames answered with error** — a non-frame object and invalid
    JSON are each answered with `error{code: 'malformed_frame'}`; the socket
    stays up.
-8. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
+9. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
    the Run.
-9. **Workflow store change pushed** — writing a Workflow into the store (the
-   way `drisp workflow install` does) produces a `workflows.changed` with the
-   full new inventory; removing one produces another without it.
-10. **Reconnect after close** — the daemon re-establishes the socket, sends
+10. **Workflow store change pushed** — writing a Workflow into the store (the
+    way `drisp workflow install` does) produces a `workflows.changed` with the
+    full new inventory; removing one produces another without it.
+11. **Reconnect after close** — the daemon re-establishes the socket, sends
     `hello` first again (with the store as it is now), and re-negotiates the
     wire mode.
-11. **Every runner frame in the expected name set** — no schema or name-set
+12. **Every runner frame in the expected name set** — no schema or name-set
     violations across the whole session.
 
 ## How to run

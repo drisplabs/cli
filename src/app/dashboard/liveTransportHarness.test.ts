@@ -31,6 +31,7 @@ describe.each<HubProtocol>(['legacy', 'canonical'])(
 				'Assignment admitted over the wire',
 				'Run stream and needs_human on the wire',
 				'Steer delivered into the next Turn',
+				'Phase event on the feed stream',
 				'Malformed frames answered with error',
 				'Stop cancels the run',
 				'Workflow store change pushed',

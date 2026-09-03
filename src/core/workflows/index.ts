@@ -37,4 +37,5 @@ export type {
 	WorkflowRunnerHandle,
 	WorkflowRunResult,
 	TurnInput,
+	PhaseChange,
 } from './workflowRunner';

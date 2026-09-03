@@ -17,12 +17,13 @@ only by that harness.
 
 ## Session / Run lifecycle
 
-| Kind            | C   | X   | Required data                      | Optional / harness-specific                                                                       |
-| --------------- | --- | --- | ---------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `session.start` | ✓   | ✓   | `source: string`                   | `agent_type?` (C), `model?` (C) — C values: `startup\|resume\|clear\|compact`; X value: `'codex'` |
-| `session.end`   | ✓   | ✓   | `reason: string`                   | —                                                                                                 |
-| `run.start`     | S   | S   | `trigger: {type, prompt_preview?}` | Synthesized on SessionStart / UserPromptSubmit                                                    |
-| `run.end`       | S   | S   | `status, counters`                 | Synthesized when run closes                                                                       |
+| Kind            | C   | X   | Required data                      | Optional / harness-specific                                                                                                                                           |
+| --------------- | --- | --- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session.start` | ✓   | ✓   | `source: string`                   | `agent_type?` (C), `model?` (C) — C values: `startup\|resume\|clear\|compact`; X value: `'codex'`                                                                     |
+| `session.end`   | ✓   | ✓   | `reason: string`                   | —                                                                                                                                                                     |
+| `run.start`     | S   | S   | `trigger: {type, prompt_preview?}` | Synthesized on SessionStart / UserPromptSubmit                                                                                                                        |
+| `run.end`       | S   | S   | `status, counters`                 | Synthesized when run closes                                                                                                                                           |
+| `phase`         | S   | S   | `runId, turn, step`                | `stepIndex?, stepTotal?` — synthesized by the Runner (not the mapper) from the Journal's Turn Protocol block, once per change of step; `runId` is the Workflow Run id |
 
 ## User / Agent messaging
 
