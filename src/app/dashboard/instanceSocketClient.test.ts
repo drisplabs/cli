@@ -488,7 +488,7 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 			athenaSessionId: 'athena-1',
 			interruption: {
 				kind: 'blocked',
-				message: 'agent declared WORKFLOW_BLOCKED',
+				message: 'agent declared NEEDS_HUMAN',
 			},
 		});
 
@@ -504,7 +504,7 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 				athenaSessionId: 'athena-1',
 				interruption: {
 					kind: 'blocked',
-					message: 'agent declared WORKFLOW_BLOCKED',
+					message: 'agent declared NEEDS_HUMAN',
 				},
 			},
 		]);

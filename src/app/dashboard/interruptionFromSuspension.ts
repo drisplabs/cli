@@ -24,9 +24,12 @@ export function interruptionFromSuspension(
 ): Interruption {
 	const message = stopReason?.trim() || 'workflow run awaiting attention';
 
-	const blocked = /^agent declared WORKFLOW_BLOCKED(?::\s*(.*))?$/s.exec(
-		message,
-	);
+	// `NEEDS_HUMAN` is the marker; `WORKFLOW_BLOCKED` is its pre-0.6 spelling,
+	// still accepted by the Runner for one release.
+	const blocked =
+		/^agent declared (?:NEEDS_HUMAN|WORKFLOW_BLOCKED)(?::\s*(.*))?$/s.exec(
+			message,
+		);
 	if (blocked) {
 		const reason = group(blocked, 1)?.trim();
 		return {kind: 'blocked', message, ...(reason ? {reason} : {})};

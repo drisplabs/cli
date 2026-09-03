@@ -277,7 +277,7 @@ export async function runLiveTransportHarness(
 					interruption: {
 						kind: 'blocked',
 						reason: 'harness',
-						message: 'agent declared WORKFLOW_BLOCKED: harness',
+						message: 'agent declared NEEDS_HUMAN: harness',
 					},
 				});
 				await new Promise<void>(resolve => {

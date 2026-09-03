@@ -5,12 +5,16 @@ import {interruptionFromSuspension} from './interruptionFromSuspension';
 describe('interruptionFromSuspension', () => {
 	it.each([
 		{
-			stopReason: 'agent declared WORKFLOW_BLOCKED',
+			stopReason: 'agent declared NEEDS_HUMAN',
 			expected: {kind: 'blocked'},
 		},
 		{
-			stopReason: 'agent declared WORKFLOW_BLOCKED: need the staging creds',
+			stopReason: 'agent declared NEEDS_HUMAN: need the staging creds',
 			expected: {kind: 'blocked', reason: 'need the staging creds'},
+		},
+		{
+			stopReason: 'agent declared WORKFLOW_BLOCKED: pre-0.6 marker spelling',
+			expected: {kind: 'blocked', reason: 'pre-0.6 marker spelling'},
 		},
 		{
 			stopReason: 'agent asked a question with no human attached to answer',

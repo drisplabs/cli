@@ -1583,7 +1583,7 @@ describe('executeRemoteAssignment: needs_human', () => {
 						runId: 'wf-run-9',
 						status: 'awaiting_attention',
 						stopReason:
-							'agent declared WORKFLOW_BLOCKED: need the staging credentials',
+							'agent declared NEEDS_HUMAN: need the staging credentials',
 					},
 				}) + '\n',
 			);
@@ -1636,8 +1636,7 @@ describe('executeRemoteAssignment: needs_human', () => {
 				interruption: {
 					kind: 'blocked',
 					reason: 'need the staging credentials',
-					message:
-						'agent declared WORKFLOW_BLOCKED: need the staging credentials',
+					message: 'agent declared NEEDS_HUMAN: need the staging credentials',
 				},
 			},
 		]);
