@@ -30,7 +30,10 @@ athena-flow runs --json # machine-readable
 Lists every Workflow Run whose session's most recent run is
 `awaiting_attention`, across all projects, as **Parked**: the workflow name,
 the session id, why it parked (which ask rule fired, or the `NEEDS_HUMAN`
-reason), and the exact wake command.
+reason), and the exact wake command. A Run parked on a **deferred
+permission** (#190) also shows the pending question — the tool and its input
+summary — and the request id an answer addresses, and its wake command
+carries `--answer=allow`.
 
 ## Wake: `athena-flow run --continue`
 
@@ -58,6 +61,41 @@ A live interactive session answers its own questions in the terminal, and a
 paired dashboard can deliver decisions into a running session; suspension is
 what happens when no hub was attached to answer (the request held, per the
 README's "Permissions with no hub attached") and the process has since ended.
+
+## Answer: `--answer` and the hub's `answer` frame
+
+A permission request that no rule answers is not parked on at once (#190). In
+a Workflow Run it is **held** for the grace window — `permissionGraceMs` in
+config (project over global), `--permission-grace-ms` per run, 60 s by
+default — so a hub attached through the dashboard daemon can answer it inside
+the Turn. With no hub attached nothing can answer, so the request is deferred
+immediately. When the window elapses unanswered, the call is refused with a
+_deferred_ result, the Turn ends, and the Run parks with the request recorded:
+its id, the tool, and a one-line input summary, in the Journal (a runner note
+under `## Needs human`) and on the run record (`drisp runs`, `needs_human` to
+the hub as a `question` Interruption addressed by `requestId`).
+
+Two ways to answer it:
+
+- **Locally**, on the wake:
+
+  ```sh
+  athena-flow run --continue=<athenaSessionId> --answer=allow "go ahead"
+  athena-flow run --continue=<athenaSessionId> --answer=deny "not that branch"
+  ```
+
+- **From the hub**, as an `answer` frame for the request id while the Run is
+  parked. The daemon stores it in the decision inbox, records it against the
+  Run's Interruption, and wakes the Run.
+
+On continue the wake prompt names the deferred call and asks the agent to
+re-issue it. The runner recognises the re-issued call (same tool, same input
+summary) and **replays** the stored answer into it without a prompt — in
+`--json` mode as `permission.replayed`, after `permission.hold` /
+`permission.deferred` on the way in. A stored answer is never applied to a
+different call: if the agent asks for something else, that request is held
+again. Without a stored answer the re-issued call is held again and, unanswered,
+parks the Run on the new request.
 
 ## Steer: `--steer` and the hub's `steer` frame
 
