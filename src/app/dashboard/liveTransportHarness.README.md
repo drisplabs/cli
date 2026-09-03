@@ -68,7 +68,7 @@ adapter harnesses in `src/harnesses/`):
    JSON are each answered with `error{code: 'malformed_frame'}`; the socket
    stays up.
 10. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
-   the Run.
+    the Run.
 11. **Workflow store change pushed** — writing a Workflow into the store (the
     way `drisp workflow install` does) produces a `workflows.changed` with the
     full new inventory; removing one produces another without it.
