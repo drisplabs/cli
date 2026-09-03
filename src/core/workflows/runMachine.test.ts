@@ -393,7 +393,7 @@ describe('runMachine.step — turn_in_flight', () => {
 			expect(result.phase).toMatchObject({
 				kind: 'awaiting_attention',
 				stopReason:
-					'ask rule "mcp__github__*" fired on mcp__github__create_pull_request, unanswered within the grace window (500ms); deferred: title: Ship it — wake with --answer=allow|deny',
+					'ask rule "mcp__github__*" fired on mcp__github__create_pull_request unanswered within the grace window (500ms); deferred: title: Ship it — wake with --answer=allow|deny',
 				interruption: {
 					kind: 'question',
 					requestId: 'req-7',
@@ -404,6 +404,30 @@ describe('runMachine.step — turn_in_flight', () => {
 				'record_interruption',
 				'persist',
 			]);
+		});
+
+		it('a permission deferred at once, with no hub to wait for, says so instead of naming a window', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {
+						kind: 'unclaimed_permission',
+						toolName: 'Bash',
+						permission: {
+							requestId: 'req-1',
+							inputSummary: 'git push',
+							graceMs: 0,
+						},
+					},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({
+				kind: 'awaiting_attention',
+				stopReason:
+					'permission request (Bash) deferred immediately (no hub attached to answer): git push — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+			});
 		});
 
 		it('a permission parked without being held keeps the plain row: no Interruption to record', () => {

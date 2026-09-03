@@ -11,6 +11,7 @@ const BASE_RUNTIME_CONFIG: ExecRuntimeConfig = {
 	personalMcpServers: [],
 	personalSkills: [],
 	capabilityConflicts: {mcpServers: [], skills: []},
+	permissionGraceMs: 60_000,
 };
 
 const BASE_FLAGS = {
@@ -131,6 +132,106 @@ describe('runExecCommand', () => {
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalledWith(
 			expect.stringContaining('Failed to resolve --continue session'),
+		);
+	});
+
+	it('rejects --answer without --continue', async () => {
+		const logError = vi.fn();
+		const runExecFn = vi.fn();
+		const code = await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS, answer: 'allow'},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn, logError},
+		);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
+		expect(runExecFn).not.toHaveBeenCalled();
+		expect(logError).toHaveBeenCalledWith(
+			expect.stringContaining('--answer only applies with --continue'),
+		);
+	});
+
+	it('rejects an --answer that is neither allow nor deny, and a negative grace window', async () => {
+		const logError = vi.fn();
+		const runExecFn = vi.fn();
+		expect(
+			await runExecCommand(
+				{
+					projectDir: '/tmp',
+					prompt: 'hello',
+					flags: {...BASE_FLAGS, continueFlag: 'athena-1', answer: 'maybe'},
+					runtimeConfig: BASE_RUNTIME_CONFIG,
+				},
+				{runExecFn, logError},
+			),
+		).toBe(RUN_EXIT_CODE.USAGE);
+		expect(
+			await runExecCommand(
+				{
+					projectDir: '/tmp',
+					prompt: 'hello',
+					flags: {...BASE_FLAGS, permissionGraceMs: -1},
+					runtimeConfig: BASE_RUNTIME_CONFIG,
+				},
+				{runExecFn, logError},
+			),
+		).toBe(RUN_EXIT_CODE.USAGE);
+		expect(runExecFn).not.toHaveBeenCalled();
+	});
+
+	it('forwards the configured grace window, lets the flag override it, and turns --answer into a stored decision (#190)', async () => {
+		const runExecFn = vi
+			.fn()
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
+		const getSessionMetaFn = vi.fn(() => ({
+			id: 'athena-1',
+			projectDir: '/tmp',
+			createdAt: 1,
+			updatedAt: 1,
+			adapterSessionIds: ['adapter-1'],
+		}));
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'go ahead',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: {...BASE_RUNTIME_CONFIG, permissionGraceMs: 12_000},
+			},
+			{runExecFn},
+		);
+		expect(runExecFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({permissionGraceMs: 12_000}),
+		);
+		expect(runExecFn.mock.calls.at(-1)![0]).not.toHaveProperty('storedAnswer');
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'go ahead',
+				flags: {
+					...BASE_FLAGS,
+					continueFlag: 'athena-1',
+					answer: 'deny',
+					permissionGraceMs: 0,
+				},
+				runtimeConfig: {...BASE_RUNTIME_CONFIG, permissionGraceMs: 12_000},
+			},
+			{runExecFn, getSessionMetaFn},
+		);
+		expect(runExecFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				athenaSessionId: 'athena-1',
+				permissionGraceMs: 0,
+				storedAnswer: {
+					type: 'json',
+					source: 'user',
+					intent: expect.objectContaining({kind: 'permission_deny'}),
+				},
+			}),
 		);
 	});
 

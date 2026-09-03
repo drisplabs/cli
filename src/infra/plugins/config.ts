@@ -82,6 +82,14 @@ export type AthenaConfig = {
 	/** Anonymous device identifier (UUIDv4, not tied to user identity) */
 	deviceId?: string;
 	/**
+	 * Permission grace window for unattended Workflow Runs (#190), in
+	 * milliseconds: how long `drisp run` holds a permission request no rule
+	 * answers for an attached hub before refusing it as "deferred" and parking
+	 * the Run. Project config overrides global; `--permission-grace-ms`
+	 * overrides both. Defaults to 60 000 when unset.
+	 */
+	permissionGraceMs?: number;
+	/**
 	 * Personal MCP servers configured directly by the user, keyed by name.
 	 * Merged with workflow-plugin MCP servers when launching Agent Sessions.
 	 */
@@ -237,11 +245,23 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetry?: boolean;
 		telemetryDiagnostics?: boolean;
 		deviceId?: string;
+		permissionGraceMs?: number;
 		mcpServers?: PersonalMcpServers;
 		skills?: PersonalSkillEntry[];
 	};
 
 	warnStaleKeys(configPath, raw as Record<string, unknown>);
+
+	if (
+		raw.permissionGraceMs !== undefined &&
+		(typeof raw.permissionGraceMs !== 'number' ||
+			!Number.isFinite(raw.permissionGraceMs) ||
+			raw.permissionGraceMs < 0)
+	) {
+		throw new Error(
+			`Invalid config: "${configPath}" field "permissionGraceMs" must be a non-negative number of milliseconds`,
+		);
+	}
 
 	if ('workflowMarketplaceSource' in (raw as Record<string, unknown>)) {
 		throw new Error(
@@ -296,6 +316,7 @@ function readConfigFile(configPath: string, baseDir: string): AthenaConfig {
 		telemetry: raw.telemetry,
 		telemetryDiagnostics: raw.telemetryDiagnostics,
 		deviceId: raw.deviceId,
+		permissionGraceMs: raw.permissionGraceMs,
 		// Personal capabilities are stored opaque. In particular skill `path`
 		// is NOT relative-resolved against baseDir (R1) — Issue 3 resolves it
 		// to an absolute path at install time.

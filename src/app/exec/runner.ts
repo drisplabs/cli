@@ -5,6 +5,7 @@ import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
 import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
 import {
+	type Runtime,
 	type RuntimeDecision,
 	type RuntimeEvent,
 } from '../../core/runtime/types';
@@ -38,6 +39,15 @@ import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
 import type {ExecRunOptions, ExecRunResult} from './types';
 import {RUN_EXIT_CODE} from './types';
+import {DEFAULT_PERMISSION_GRACE_MS} from '../../core/workflows/types';
+import type {Interruption} from '@drisp/protocol';
+import {
+	deferredPermissionDecision,
+	describeAnswer,
+	describeCall,
+	matchesParkedCall,
+	summarizeToolInput,
+} from './permissionHold';
 
 const NULL_TOKENS: TokenUsage = {
 	input: null,
@@ -255,6 +265,26 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	// went unclaimed under a holding preset. The reducer names the reason.
 	let interruption: RunInterruption | null = null;
 
+	// Hold, then park, then replay (#190). A permission request no rule
+	// answers is held for the grace window so an attached hub can answer it;
+	// with no hub there is nobody to wait for, so the window is zero. When it
+	// elapses the call is refused as "deferred" and the Turn ends, parking the
+	// Run on the request. On continue, an answer stored since — from the hub's
+	// inbox or `--answer` — is replayed into the re-issued call.
+	const dashboardDecisionInbox = options.dashboardDecisionInbox;
+	const permissionGraceMs = dashboardDecisionInbox
+		? Math.max(0, options.permissionGraceMs ?? DEFAULT_PERMISSION_GRACE_MS)
+		: 0;
+	let hold: {
+		eventId: string;
+		interruption: RunInterruption;
+		timer: ReturnType<typeof setTimeout> | null;
+	} | null = null;
+	// A decision to send once the event that triggered it has been ingested —
+	// the runtime-event loop ingests before it hands the event on, and a
+	// decision sent earlier would reach the feed before its request.
+	let afterIngest: (() => void) | null = null;
+
 	let store: SessionStore;
 	try {
 		store = sessionStoreFactory({
@@ -284,7 +314,46 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		mapperBootstrap?.feedEvents ?? [],
 	);
 
-	let runtime;
+	// The Interruption the Run being woken parked on, when it is a deferred
+	// permission (#190): what the wake prompt asks the agent to re-issue, and
+	// what a stored answer is matched against.
+	const parkedInterruption: Interruption | undefined = options.resumeRunId
+		? store.getLatestRun()?.interruption
+		: undefined;
+	const parkedRequestId =
+		parkedInterruption?.kind === 'question'
+			? parkedInterruption.requestId
+			: undefined;
+	// The answer stored for that request, if any: given locally on the command
+	// line, else the hub's `answer` waiting in the inbox (left there, and out
+	// of the drain, until it is replayed).
+	let storedAnswer: {
+		decision: RuntimeDecision;
+		source: 'local' | 'hub';
+		consume: () => void;
+	} | null = null;
+	if (parkedRequestId !== undefined) {
+		if (options.storedAnswer) {
+			storedAnswer = {
+				decision: options.storedAnswer,
+				source: 'local',
+				consume: () => {},
+			};
+		} else if (dashboardDecisionInbox) {
+			const row = dashboardDecisionInbox
+				.pendingForSession({athenaSessionId, limit: 25})
+				.find(pending => pending.requestId === parkedRequestId);
+			if (row) {
+				storedAnswer = {
+					decision: row.decision,
+					source: 'hub',
+					consume: () => dashboardDecisionInbox.markConsumed({id: row.id}),
+				};
+			}
+		}
+	}
+
+	let runtime: Runtime;
 	try {
 		runtime = runtimeFactory({
 			harness: options.harness,
@@ -385,9 +454,101 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		...(options.signal ? {signal: options.signal} : {}),
 	};
 
-	const dashboardDecisionInbox = options.dashboardDecisionInbox;
-
 	const linkedAdapterSessions = new Set<string>();
+
+	function clearHold(): void {
+		if (hold?.timer) clearTimeout(hold.timer);
+		hold = null;
+	}
+
+	/**
+	 * The grace window elapsed with no answer: refuse the call as deferred,
+	 * remember the request on the Interruption, and end the Turn so the Run
+	 * parks. The reducer turns the Interruption into the park sentence and the
+	 * wire-shaped `question` an `answer` can address.
+	 */
+	function deferHeldPermission(): void {
+		const held = hold;
+		if (!held) return;
+		hold = null;
+		interruption = held.interruption;
+		const toolName =
+			held.interruption.kind === 'question'
+				? 'question'
+				: held.interruption.toolName;
+		runtime.sendDecision(
+			held.eventId,
+			deferredPermissionDecision({toolName, graceMs: permissionGraceMs}),
+		);
+		output.emitJsonEvent('permission.deferred', {
+			requestId: held.eventId,
+			toolName,
+			graceMs: permissionGraceMs,
+		});
+		void sessionController.kill();
+	}
+
+	/**
+	 * A permission an ask rule claimed or no rule answered (#190): replay the
+	 * stored answer if this is the call the Run parked on, else hold it for the
+	 * grace window. Returns what to do once the event is ingested.
+	 */
+	function holdOrReplay(
+		runtimeEvent: RuntimeEvent,
+		next: Extract<RunInterruption, {kind: 'ask_rule' | 'unclaimed_permission'}>,
+	): () => void {
+		const inputSummary = summarizeToolInput(runtimeEvent);
+		const call = describeCall(next.toolName, inputSummary);
+
+		if (
+			storedAnswer &&
+			matchesParkedCall(parkedInterruption, next.toolName, inputSummary)
+		) {
+			const answer = storedAnswer;
+			storedAnswer = null;
+			const replayOf = parkedInterruption.requestId;
+			return () => {
+				runtime.sendDecision(runtimeEvent.id, answer.decision);
+				answer.consume();
+				output.notice(
+					`replayed the stored ${answer.source} answer (${describeAnswer(answer.decision)}) into the re-issued call ${call}`,
+				);
+				output.emitJsonEvent('permission.replayed', {
+					requestId: runtimeEvent.id,
+					replayOf,
+					toolName: next.toolName,
+					source: answer.source,
+					decision: answer.decision,
+				});
+			};
+		}
+
+		hold = {
+			eventId: runtimeEvent.id,
+			interruption: {
+				...next,
+				permission: {
+					requestId: runtimeEvent.id,
+					inputSummary,
+					graceMs: permissionGraceMs,
+				},
+			},
+			timer: null,
+		};
+		if (permissionGraceMs > 0) {
+			hold.timer = setTimeout(deferHeldPermission, permissionGraceMs);
+			output.notice(
+				`holding the ${next.toolName} permission request for ${Math.round(permissionGraceMs / 1000)}s awaiting an answer: ${inputSummary}`,
+			);
+			output.emitJsonEvent('permission.hold', {
+				requestId: runtimeEvent.id,
+				toolName: next.toolName,
+				graceMs: permissionGraceMs,
+			});
+			return () => {};
+		}
+		return deferHeldPermission;
+	}
 
 	function publishFeedEvents(feedEvents: readonly FeedEvent[]): void {
 		if (feedEvents.length === 0) return;
@@ -476,11 +637,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			// forever. Interrupt the Turn; the runner parks the Run in
 			// `awaiting_attention` with the reason preserved. Permissions a rule
 			// answers (the autonomous policy, a deny) never get here.
-			if (options.workflow?.loop?.enabled && interruption === null) {
+			if (
+				options.workflow?.loop?.enabled &&
+				interruption === null &&
+				hold === null
+			) {
 				const next = classifyUnattendedEvent(runtimeEvent, rules);
-				if (next) {
+				if (next?.kind === 'question') {
 					interruption = next;
 					void sessionController.kill();
+				} else if (next) {
+					afterIngest = holdOrReplay(runtimeEvent, next);
 				}
 			}
 
@@ -516,8 +683,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				}
 			}
 			publishFeedEvents(feedEvents);
+			// The permission event is ingested; a replayed answer or an
+			// immediate deferral can now follow it.
+			const pending = afterIngest;
+			afterIngest = null;
+			pending?.();
 		},
 		onDecisionReceived: (eventId: string, decision: RuntimeDecision) => {
+			// An answer for the held request arrived inside the grace window
+			// (the hub's inbox drain, or a rule): the hold is over and the Turn
+			// simply continues.
+			if (hold?.eventId === eventId) clearHold();
 			output.emitJsonEvent('runtime.decision', {
 				eventId,
 				decision,
@@ -584,6 +760,11 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				...(options.dashboardDecisionPollIntervalMs !== undefined
 					? {pollIntervalMs: options.dashboardDecisionPollIntervalMs}
 					: {}),
+				// The answer stored for the parked request is replayed into the
+				// re-issued call, not forwarded to a request id that is gone.
+				...(parkedRequestId !== undefined
+					? {shouldForward: row => row.requestId !== parkedRequestId}
+					: {}),
 				onError: error =>
 					output.warn(
 						`dashboard decision failed: ${
@@ -613,6 +794,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			prompt: options.prompt,
 			initialContinuation: nextContinuation,
 			resumeRunId: options.resumeRunId,
+			parkedInterruption,
 			// Runner-level notices (e.g. a deprecated marker spelling, #185) reach
 			// both the human stderr stream and the JSONL contract.
 			onWarning: message => {
@@ -652,6 +834,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					configOverride: turnInput.configOverride,
 					onStderrLine: message => output.log(message),
 				});
+				// A Turn that ended on its own while a request was held leaves
+				// nothing to defer.
+				clearHold();
 
 				if (turnResult.streamMessage) {
 					streamFinalMessage = turnResult.streamMessage;
@@ -764,6 +949,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					runId: runResult.runId,
 					status: 'awaiting_attention',
 					stopReason: runResult.stopReason ?? null,
+					// The structured Interruption when the Run parked on one (#190);
+					// the hub's `needs_human` carries it as-is.
+					interruption: runResult.interruption ?? null,
 				});
 			} else if (runResult.status === 'failed') {
 				latch.register({
@@ -782,6 +970,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}
+		clearHold();
 		dashboardDecisionDrain?.stop();
 		unsubscribeSteers?.();
 		await writeLastMessageBeforeTerminalCompletion();

@@ -284,6 +284,10 @@ const cli = meow(
 			--ascii         Use ASCII-only UI glyphs for compatibility
 			--continue      Resume most recent run session, or use --continue=<athenaSessionId> (run mode)
 			--steer         Queue a human steer for the head of the next Turn's prompt (repeatable; run mode)
+			--answer        allow | deny: answer the permission a parked run is waiting on; replayed
+			                into the re-issued call on --continue (run mode)
+			--permission-grace-ms  How long a permission no rule answers is held for an attached
+			                hub before it is deferred and the run parks (default 60000; run mode)
 			--json          Emit JSONL events to stdout (run mode)
 			--output-last-message  Write final assistant message to a file (run mode)
 			--ephemeral     Do not persist Athena session data (run mode)
@@ -360,6 +364,12 @@ const cli = meow(
 			steer: {
 				type: 'string',
 				isMultiple: true,
+			},
+			answer: {
+				type: 'string',
+			},
+			permissionGraceMs: {
+				type: 'number',
 			},
 			json: {
 				type: 'boolean',
@@ -759,6 +769,8 @@ async function main(): Promise<void> {
 				ephemeral: cli.flags.ephemeral,
 				timeoutMs: cli.flags.timeoutMs,
 				verbose: cli.flags.verbose,
+				permissionGraceMs: cli.flags.permissionGraceMs,
+				answer: cli.flags.answer,
 			},
 			runtimeConfig,
 		});

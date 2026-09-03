@@ -15,6 +15,7 @@ import type {FeedEvent} from '../../core/feed/types';
 import {runExec} from './runner';
 import {RUN_EXIT_CODE} from './types';
 import {createSteerQueue, STEER_BLOCK_OPEN} from '../../core/workflows/steer';
+import type {DashboardDecisionInboxRow} from '../dashboard/dashboardDecisionInbox';
 import {
 	createSessionStore,
 	listAwaitingAttentionRuns,
@@ -1372,8 +1373,10 @@ describe('runExec', () => {
 			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 			expect(result.failure).toBeUndefined();
 			expect(stderr.read()).toContain('workflow run suspended');
-			expect(stderr.read()).toContain('approval');
-			expect(stderr.read()).toContain('Edit');
+			// No hub attached: the approval is deferred at once and the Run
+			// parks on it (#190) instead of hanging.
+			expect(stderr.read()).toContain('permission request (Edit)');
+			expect(stderr.read()).toContain('deferred');
 		} finally {
 			fs.rmSync(trackerPath, {force: true});
 		}
@@ -1542,23 +1545,42 @@ describe('runExec', () => {
 				});
 
 				// Parked, not failed: the preset's policy never answered on the
-				// human's behalf, and the Run remains resumable.
+				// human's behalf, and the Run remains resumable. With no hub
+				// attached the claimed permission is deferred at once (#190): the
+				// call is refused as "deferred" and the Turn ends.
 				expect(result.success).toBe(true);
 				expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
 				expect(result.failure).toBeUndefined();
-				expect(runtime.decisions).toEqual([]);
+				expect(runtime.decisions).toEqual([
+					{
+						eventId: 'perm-Bash',
+						decision: expect.objectContaining({
+							source: 'timeout',
+							intent: expect.objectContaining({
+								kind: 'permission_deny',
+								reason: expect.stringContaining('deferred'),
+							}),
+						}),
+					},
+				]);
 				expect(stderr.read()).toContain('workflow run suspended');
 				expect(stderr.read()).toContain(
-					'ask rule "Bash" fired on Bash — needs a human',
+					'ask rule "Bash" fired on Bash deferred immediately (no hub attached to answer): git push',
 				);
 
-				// The inbox reads the persisted Run back and names the rule.
+				// The inbox reads the persisted Run back: it names the rule and
+				// carries the deferred request as the pending question.
 				const parked = listAwaitingAttentionRuns(undefined, sessionsRoot);
 				expect(parked).toHaveLength(1);
 				expect(parked[0]).toMatchObject({
 					athenaSessionId: 'session-1',
 					workflowName: 'default',
-					stopReason: 'ask rule "Bash" fired on Bash — needs a human',
+					stopReason: expect.stringContaining('ask rule "Bash" fired on Bash'),
+					interruption: {
+						kind: 'question',
+						requestId: 'perm-Bash',
+						question: 'Bash: git push',
+					},
 				});
 				const lines: string[] = [];
 				runRunsCommand({
@@ -1569,7 +1591,11 @@ describe('runExec', () => {
 				const inbox = lines.join('\n');
 				expect(inbox).toContain('default — Parked, awaiting attention');
 				expect(inbox).toContain('reason:  ask rule "Bash" fired on Bash');
-				expect(inbox).toContain('drisp run --continue=session-1');
+				expect(inbox).toContain('question: Bash: git push');
+				expect(inbox).toContain('request:  perm-Bash');
+				expect(inbox).toContain(
+					'drisp run --continue=session-1 --answer=allow',
+				);
 			} finally {
 				fs.rmSync(projectDir, {recursive: true, force: true});
 				fs.rmSync(sessionsRoot, {recursive: true, force: true});
@@ -1670,13 +1696,601 @@ describe('runExec', () => {
 				});
 
 				expect(result.success).toBe(true);
-				expect(runtime.decisions).toEqual([]);
+				// No hub attached: deferred at once rather than held (#190).
+				expect(runtime.decisions).toEqual([
+					{
+						eventId: 'perm-Bash',
+						decision: expect.objectContaining({
+							intent: expect.objectContaining({kind: 'permission_deny'}),
+						}),
+					},
+				]);
 				expect(stderr.read()).toContain('workflow run suspended');
-				expect(stderr.read()).toContain('sandbox approval (Bash)');
+				expect(stderr.read()).toContain(
+					'permission request (Bash) deferred immediately (no hub attached to answer): git push',
+				);
 				expect(stderr.read()).toContain('--isolation autonomous');
 			} finally {
 				fs.rmSync(projectDir, {recursive: true, force: true});
 			}
+		});
+
+		describe('hold, then park, then replay (#190)', () => {
+			const ALLOW: RuntimeDecision = {
+				type: 'json',
+				source: 'user',
+				intent: {kind: 'permission_allow'},
+			};
+
+			/** An in-memory stand-in for the daemon's durable decision inbox. */
+			function makeInbox(rows: DashboardDecisionInboxRow[] = []) {
+				const consumed = new Set<number>();
+				return {
+					rows,
+					consumed,
+					pendingForSession: () => rows.filter(row => !consumed.has(row.id)),
+					markConsumed: ({id}: {id: number}) => {
+						consumed.add(id);
+					},
+				};
+			}
+
+			type JsonlEvent = {
+				type: string;
+				data: {
+					stopReason?: string;
+					interruption?: unknown;
+					requestId?: string;
+					[key: string]: unknown;
+				};
+			};
+
+			function jsonl(text: string): JsonlEvent[] {
+				return text
+					.split('\n')
+					.filter(line => line.trim().length > 0)
+					.map(line => JSON.parse(line) as JsonlEvent);
+			}
+
+			function makeSessionsRoot(): string {
+				return fs.mkdtempSync(path.join(os.tmpdir(), 'runner-sessions-'));
+			}
+
+			function storeFactoryAt(sessionsRoot: string) {
+				return (opts: {sessionId: string; projectDir: string}) =>
+					createSessionStore({
+						...opts,
+						dbPath: path.join(sessionsRoot, opts.sessionId, 'session.db'),
+					});
+			}
+
+			/** Seed a session whose latest Run parked on a deferred Bash permission. */
+			function seedParkedRun(sessionsRoot: string, projectDir: string): void {
+				const message =
+					'permission request (Bash) unanswered within the grace window (60s); deferred: git push — wake with --answer=allow|deny, or rerun with --isolation autonomous';
+				const seed = createSessionStore({
+					sessionId: 'session-1',
+					projectDir,
+					dbPath: path.join(sessionsRoot, 'session-1', 'session.db'),
+				});
+				seed.persistRun({
+					runId: 'run-parked',
+					sessionId: 'session-1',
+					workflowName: 'default',
+					iteration: 1,
+					maxIterations: 5,
+					status: 'awaiting_attention',
+					stopReason: message,
+					interruption: {
+						kind: 'question',
+						message,
+						requestId: 'req-old',
+						question: 'Bash: git push',
+					},
+				});
+				seed.close();
+			}
+
+			function completeOnDecision(
+				runtime: MockRuntime,
+				opts: SpawnArgs,
+				journalPath: string,
+				eventId: string,
+			): void {
+				runtime.onDecision(decidedId => {
+					if (decidedId !== eventId) return;
+					fs.writeFileSync(
+						journalPath,
+						'# Task: done\n\n<!-- WORKFLOW_COMPLETE -->\n',
+						'utf-8',
+					);
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'message',
+							role: 'assistant',
+							content: [{type: 'text', text: 'pushed'}],
+						}) + '\n',
+					);
+					opts.onExit?.(0);
+				});
+			}
+
+			it('holds an unclaimed permission for the grace window while a hub is attached, then defers it and parks on the request', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const sessionsRoot = makeSessionsRoot();
+				const startedAt = Date.now();
+				let killedAt: number | null = null;
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					const child = makeChildProcess(() => {
+						killedAt = Date.now();
+						opts.onExit?.(143);
+					});
+					setImmediate(() => {
+						fs.writeFileSync(journalPath, '# Task: in progress\n', 'utf-8');
+						runtime.emit(permissionRequest('Bash'));
+					});
+					return child;
+				};
+
+				try {
+					const result = await runExec({
+						prompt: 'ship it',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						isolationConfig: {preset: 'guarded'},
+						json: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						sessionStoreFactory: storeFactoryAt(sessionsRoot),
+						dashboardDecisionInbox: makeInbox(),
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 40,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(result.success).toBe(true);
+					expect(result.failure).toBeUndefined();
+					// Held: the Turn was not interrupted before the window elapsed.
+					expect(killedAt).not.toBeNull();
+					expect(killedAt! - startedAt).toBeGreaterThanOrEqual(40);
+					// Deferred: the call was refused with a "deferred" result.
+					expect(runtime.decisions).toEqual([
+						{
+							eventId: 'perm-Bash',
+							decision: expect.objectContaining({
+								source: 'timeout',
+								intent: expect.objectContaining({
+									kind: 'permission_deny',
+									reason: expect.stringContaining('deferred'),
+								}),
+							}),
+						},
+					]);
+
+					const events = jsonl(stdout.read());
+					expect(
+						events.find(e => e.type === 'permission.hold')?.data,
+					).toMatchObject({
+						requestId: 'perm-Bash',
+						toolName: 'Bash',
+						graceMs: 40,
+					});
+					expect(
+						events.find(e => e.type === 'permission.deferred')?.data,
+					).toMatchObject({requestId: 'perm-Bash', toolName: 'Bash'});
+					const suspended = events.find(e => e.type === 'run.suspended');
+					expect(suspended?.data).toMatchObject({
+						status: 'awaiting_attention',
+						interruption: {
+							kind: 'question',
+							requestId: 'perm-Bash',
+							question: 'Bash: git push',
+						},
+					});
+					expect(suspended?.data.stopReason).toContain(
+						'unanswered within the grace window (40ms)',
+					);
+
+					// Parked: journal and run record both carry the question.
+					const journal = fs.readFileSync(journalPath, 'utf-8');
+					expect(journal).toContain('Needs human');
+					expect(journal).toContain('perm-Bash');
+					expect(journal).toContain('Bash: git push');
+					const parked = listAwaitingAttentionRuns(undefined, sessionsRoot);
+					expect(parked).toHaveLength(1);
+					expect(parked[0]?.interruption).toMatchObject({
+						kind: 'question',
+						requestId: 'perm-Bash',
+						question: 'Bash: git push',
+					});
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+					fs.rmSync(sessionsRoot, {recursive: true, force: true});
+				}
+			});
+
+			it('an answer arriving inside the grace window resolves the hold and the Turn simply continues', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const inbox = makeInbox();
+				let killed = false;
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					const child = makeChildProcess(() => {
+						killed = true;
+						opts.onExit?.(143);
+					});
+					completeOnDecision(runtime, opts, journalPath, 'perm-Bash');
+					setImmediate(() => {
+						runtime.emit(permissionRequest('Bash'));
+						// The hub answers a moment later, well inside the window.
+						setTimeout(() => {
+							inbox.rows.push({
+								id: 1,
+								athenaSessionId: 'session-1',
+								requestId: 'perm-Bash',
+								decision: ALLOW,
+								receivedAt: Date.now(),
+							});
+						}, 10);
+					});
+					return child;
+				};
+
+				try {
+					const result = await runExec({
+						prompt: 'ship it',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						isolationConfig: {preset: 'guarded'},
+						ephemeral: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						dashboardDecisionInbox: inbox,
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 5_000,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(result.success).toBe(true);
+					expect(result.finalMessage).toBe('pushed');
+					expect(killed).toBe(false);
+					expect(runtime.decisions).toEqual([
+						{eventId: 'perm-Bash', decision: ALLOW},
+					]);
+					expect(inbox.consumed.has(1)).toBe(true);
+					expect(stderr.read()).not.toContain('workflow run suspended');
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+				}
+			});
+
+			it('on continue, an answer given on the command line is replayed into the re-issued call without a prompt', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const sessionsRoot = makeSessionsRoot();
+				seedParkedRun(sessionsRoot, projectDir);
+				let wakePrompt: string | undefined;
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					wakePrompt = (opts as {prompt?: string}).prompt;
+					const child = makeChildProcess(() => {
+						opts.onExit?.(143);
+					});
+					completeOnDecision(runtime, opts, journalPath, 'perm-Bash-2');
+					setImmediate(() => {
+						// The agent re-issues the same call under a new request id.
+						runtime.emit({...permissionRequest('Bash'), id: 'perm-Bash-2'});
+					});
+					return child;
+				};
+
+				try {
+					const result = await runExec({
+						prompt: 'go ahead',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						resumeRunId: 'run-parked',
+						isolationConfig: {preset: 'guarded'},
+						json: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						sessionStoreFactory: storeFactoryAt(sessionsRoot),
+						dashboardDecisionInbox: makeInbox(),
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 5_000,
+						storedAnswer: ALLOW,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(result.success).toBe(true);
+					expect(result.finalMessage).toBe('pushed');
+					expect(runtime.decisions).toEqual([
+						{eventId: 'perm-Bash-2', decision: ALLOW},
+					]);
+					const events = jsonl(stdout.read());
+					expect(
+						events.find(e => e.type === 'permission.replayed')?.data,
+					).toMatchObject({
+						requestId: 'perm-Bash-2',
+						replayOf: 'req-old',
+						toolName: 'Bash',
+						source: 'local',
+					});
+					expect(events.some(e => e.type === 'permission.hold')).toBe(false);
+					expect(events.some(e => e.type === 'run.suspended')).toBe(false);
+					// The wake prompt asked for exactly that call to be re-issued.
+					expect(wakePrompt).toContain('Re-issue that exact call');
+					expect(wakePrompt).toContain('Bash: git push');
+					// The Run went back to running and completed: nothing is parked.
+					expect(listAwaitingAttentionRuns(undefined, sessionsRoot)).toEqual(
+						[],
+					);
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+					fs.rmSync(sessionsRoot, {recursive: true, force: true});
+				}
+			});
+
+			it('on continue, a hub answer stored in the inbox for the parked request is replayed, never forwarded to the stale request id', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const sessionsRoot = makeSessionsRoot();
+				seedParkedRun(sessionsRoot, projectDir);
+				const inbox = makeInbox([
+					{
+						id: 9,
+						athenaSessionId: 'session-1',
+						requestId: 'req-old',
+						decision: ALLOW,
+						receivedAt: 1,
+					},
+				]);
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					const child = makeChildProcess(() => {
+						opts.onExit?.(143);
+					});
+					completeOnDecision(runtime, opts, journalPath, 'perm-Bash-2');
+					setImmediate(() => {
+						runtime.emit({...permissionRequest('Bash'), id: 'perm-Bash-2'});
+					});
+					return child;
+				};
+
+				try {
+					const result = await runExec({
+						prompt: 'go ahead',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						resumeRunId: 'run-parked',
+						isolationConfig: {preset: 'guarded'},
+						json: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						sessionStoreFactory: storeFactoryAt(sessionsRoot),
+						dashboardDecisionInbox: inbox,
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 5_000,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(result.success).toBe(true);
+					// Only the re-issued request was answered; `req-old` never
+					// reached the runtime.
+					expect(runtime.decisions).toEqual([
+						{eventId: 'perm-Bash-2', decision: ALLOW},
+					]);
+					expect(inbox.consumed.has(9)).toBe(true);
+					expect(
+						jsonl(stdout.read()).find(e => e.type === 'permission.replayed')
+							?.data,
+					).toMatchObject({replayOf: 'req-old', source: 'hub'});
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+					fs.rmSync(sessionsRoot, {recursive: true, force: true});
+				}
+			});
+
+			it('on continue with no stored answer, the re-issued call is held again and the Run parks again on the new request', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const sessionsRoot = makeSessionsRoot();
+				seedParkedRun(sessionsRoot, projectDir);
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					const child = makeChildProcess(() => {
+						opts.onExit?.(143);
+					});
+					setImmediate(() => {
+						fs.writeFileSync(journalPath, '# Task: in progress\n', 'utf-8');
+						runtime.emit({...permissionRequest('Bash'), id: 'perm-Bash-2'});
+					});
+					return child;
+				};
+
+				try {
+					const result = await runExec({
+						prompt: 'go ahead',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						resumeRunId: 'run-parked',
+						isolationConfig: {preset: 'guarded'},
+						json: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						sessionStoreFactory: storeFactoryAt(sessionsRoot),
+						dashboardDecisionInbox: makeInbox(),
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 30,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(result.success).toBe(true);
+					expect(runtime.decisions).toEqual([
+						{
+							eventId: 'perm-Bash-2',
+							decision: expect.objectContaining({
+								intent: expect.objectContaining({kind: 'permission_deny'}),
+							}),
+						},
+					]);
+					const events = jsonl(stdout.read());
+					expect(events.some(e => e.type === 'permission.hold')).toBe(true);
+					expect(events.some(e => e.type === 'permission.replayed')).toBe(
+						false,
+					);
+					expect(
+						events.find(e => e.type === 'run.suspended')?.data.interruption,
+					).toMatchObject({
+						requestId: 'perm-Bash-2',
+						question: 'Bash: git push',
+					});
+					expect(
+						listAwaitingAttentionRuns(undefined, sessionsRoot)[0]?.interruption,
+					).toMatchObject({requestId: 'perm-Bash-2'});
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+					fs.rmSync(sessionsRoot, {recursive: true, force: true});
+				}
+			});
+
+			it('a stored answer is never replayed into a different call: the agent asking for something else is held', async () => {
+				const runtime = new MockRuntime();
+				const stdout = createWriteCapture();
+				const stderr = createWriteCapture();
+				const {projectDir, journalPath} = makeProject();
+				const sessionsRoot = makeSessionsRoot();
+				seedParkedRun(sessionsRoot, projectDir);
+
+				const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+					const child = makeChildProcess(() => {
+						opts.onExit?.(143);
+					});
+					setImmediate(() => {
+						fs.writeFileSync(journalPath, '# Task: in progress\n', 'utf-8');
+						runtime.emit(
+							makeRuntimeEvent({
+								id: 'perm-Bash-other',
+								kind: 'permission.request',
+								hookName: 'PermissionRequest',
+								toolName: 'Bash',
+								data: {
+									tool_name: 'Bash',
+									tool_input: {command: 'rm -rf build'},
+								},
+								interaction: {
+									expectsDecision: true,
+									defaultTimeoutMs: null,
+									canBlock: true,
+								},
+							}),
+						);
+					});
+					return child;
+				};
+
+				try {
+					await runExec({
+						prompt: 'go ahead',
+						projectDir,
+						harness: 'claude-code',
+						athenaSessionId: 'session-1',
+						resumeRunId: 'run-parked',
+						isolationConfig: {preset: 'guarded'},
+						json: true,
+						stdout: stdout.writer,
+						stderr: stderr.writer,
+						runtimeFactory: () => runtime,
+						spawnProcess,
+						sessionStoreFactory: storeFactoryAt(sessionsRoot),
+						dashboardDecisionInbox: makeInbox(),
+						dashboardDecisionPollIntervalMs: 5,
+						permissionGraceMs: 30,
+						storedAnswer: ALLOW,
+						workflow: {
+							name: 'default',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: LOOP,
+						},
+					});
+
+					expect(runtime.decisions).toEqual([
+						{
+							eventId: 'perm-Bash-other',
+							decision: expect.objectContaining({
+								intent: expect.objectContaining({kind: 'permission_deny'}),
+							}),
+						},
+					]);
+					const events = jsonl(stdout.read());
+					expect(events.some(e => e.type === 'permission.replayed')).toBe(
+						false,
+					);
+					expect(
+						events.find(e => e.type === 'run.suspended')?.data.interruption,
+					).toMatchObject({
+						requestId: 'perm-Bash-other',
+						question: 'Bash: rm -rf build',
+					});
+				} finally {
+					fs.rmSync(projectDir, {recursive: true, force: true});
+					fs.rmSync(sessionsRoot, {recursive: true, force: true});
+				}
+			});
 		});
 	});
 

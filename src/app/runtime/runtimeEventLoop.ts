@@ -13,7 +13,10 @@ import {
 	ingestRuntimeEvent,
 } from '../../core/feed/ingest';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
-import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
+import type {
+	DashboardDecisionInboxRow,
+	DashboardDecisionReader,
+} from '../dashboard/dashboardDecisionInbox';
 
 /**
  * The non-React runtime-event loop shared by interactive (`useFeed`) and
@@ -177,6 +180,14 @@ export type DashboardDecisionDrainOptions = {
 	onError?: (error: unknown) => void;
 	/** Hook to configure the interval handle, e.g. `timer.unref()` in headless. */
 	configureTimer?: (timer: ReturnType<typeof setInterval>) => void;
+	/**
+	 * Return false to leave a pending decision in the inbox untouched — neither
+	 * forwarded nor consumed. The exec runner uses this to keep an `answer`
+	 * stored for a parked Run's deferred request (#190) out of the runtime,
+	 * where its request id no longer exists, until the re-issued call it is
+	 * replayed into arrives.
+	 */
+	shouldForward?: (row: DashboardDecisionInboxRow) => boolean;
 };
 
 export type DashboardDecisionDrain = {
@@ -201,6 +212,7 @@ export function startDashboardDecisionDrain(
 			limit: DASHBOARD_DECISION_POLL_LIMIT,
 		});
 		for (const row of rows) {
+			if (options.shouldForward && !options.shouldForward(row)) continue;
 			try {
 				runtime.sendDecision(row.requestId, row.decision);
 				inbox.markConsumed({id: row.id});

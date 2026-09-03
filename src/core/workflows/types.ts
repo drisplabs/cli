@@ -38,6 +38,17 @@ export const DEFAULT_RETRY_CAP = 3;
  */
 export const DEFAULT_RETRY_BACKOFF_MS = 10_000;
 
+/**
+ * Default permission grace window (#190): how long an unattended Workflow
+ * Run holds a permission request no rule answers, waiting for an attached
+ * hub to answer it, before refusing the call as "deferred" and parking the
+ * Run as needs-human. Configurable as `permissionGraceMs` in
+ * `~/.config/athena/config.json` / `.athena/config.json`, and per run with
+ * `drisp run --permission-grace-ms`. With no hub attached nothing can answer,
+ * so the request is deferred at once regardless of the window.
+ */
+export const DEFAULT_PERMISSION_GRACE_MS = 60_000;
+
 export type LoopConfig = {
 	enabled: boolean;
 	/**

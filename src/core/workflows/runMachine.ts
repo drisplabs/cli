@@ -166,6 +166,17 @@ function formatGrace(ms: number): string {
 }
 
 /**
+ * How a deferred permission reads in the park sentence: held for a window
+ * that elapsed, or — with no hub attached to answer, so no window — deferred
+ * at once.
+ */
+function describeDeferral(permission: DeferredPermission): string {
+	return permission.graceMs > 0
+		? ` unanswered within the grace window (${formatGrace(permission.graceMs)}); deferred`
+		: ' deferred immediately (no hub attached to answer)';
+}
+
+/**
  * The wire-shaped Interruption (`@drisp/protocol`) a deferred permission
  * parks on — a `question` addressed by the request id, whose `question` is
  * the call as asked (`<tool>: <input summary>`). Null for every interruption
@@ -193,8 +204,8 @@ function describeInterruption(interruption: RunInterruption): string {
 		case 'ask_rule':
 			if (interruption.permission) {
 				return (
-					`ask rule "${interruption.rule}" fired on ${interruption.toolName}, unanswered within the grace window (${formatGrace(interruption.permission.graceMs)}); ` +
-					`deferred: ${interruption.permission.inputSummary} — wake with --answer=allow|deny`
+					`ask rule "${interruption.rule}" fired on ${interruption.toolName}${describeDeferral(interruption.permission)}: ` +
+					`${interruption.permission.inputSummary} — wake with --answer=allow|deny`
 				);
 			}
 			return `ask rule "${interruption.rule}" fired on ${interruption.toolName} — needs a human`;
@@ -205,8 +216,8 @@ function describeInterruption(interruption: RunInterruption): string {
 		case 'unclaimed_permission':
 			if (interruption.permission) {
 				return (
-					`permission request (${interruption.toolName}) unanswered within the grace window (${formatGrace(interruption.permission.graceMs)}); ` +
-					`deferred: ${interruption.permission.inputSummary} — wake with --answer=allow|deny, or rerun with --isolation autonomous`
+					`permission request (${interruption.toolName})${describeDeferral(interruption.permission)}: ` +
+					`${interruption.permission.inputSummary} — wake with --answer=allow|deny, or rerun with --isolation autonomous`
 				);
 			}
 			return (
