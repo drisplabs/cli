@@ -20,6 +20,7 @@ import {
 	insertAboveTerminalMarker,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
+import {createPhaseTracker} from './turnProtocolBlock';
 import {
 	formatSteerJournalEntry,
 	type DeliveredSteer,
@@ -41,6 +42,20 @@ export type TurnInput = {
 	prompt: string;
 	continuation: TurnContinuation;
 	configOverride?: HarnessProcessOverride;
+};
+
+/**
+ * The Run moved to a new workflow step: what the Journal's Turn Protocol
+ * block named after the Turn at `turn`. Emitted once per change of step, so
+ * two consecutive Turns on the same step produce one, not two. Mirrors the
+ * `phase` event in `@drisp/protocol`.
+ */
+export type PhaseChange = {
+	runId: string;
+	turn: number;
+	step: string;
+	stepIndex?: number;
+	stepTotal?: number;
 };
 
 export type WorkflowRunnerInput = {
@@ -85,6 +100,14 @@ export type WorkflowRunnerInput = {
 	 * Turn starts, after the Journal entry is written. Optional.
 	 */
 	onSteerDelivered?: (steers: DeliveredSteer[]) => void;
+	/**
+	 * Receives a {@link PhaseChange} when a Turn's Journal names a workflow
+	 * step different from the last one seen (the Turn Protocol block, ADR
+	 * 0015 §7). Derived in the journal-read path after a successful Turn;
+	 * never touches the Run's phase/memory. A malformed block is reported
+	 * through `onWarning` instead, once per distinct defect.
+	 */
+	onPhaseChange?: (change: PhaseChange) => void;
 	/**
 	 * Consulted after each Turn, before failure classification. A non-null
 	 * result parks the Run in `awaiting_attention` (ADR 0014, #189) — used when
@@ -463,6 +486,29 @@ export function createWorkflowRunner(
 		}
 	}
 
+	/**
+	 * The step the Journal's Turn Protocol block names after a Turn, reported
+	 * only when it changed. Lives beside the Journal read in the interpreter —
+	 * it is an observation of the Dossier, not a decision, so the reducer
+	 * never sees it (ADR 0016 §1).
+	 */
+	const phaseTracker = createPhaseTracker();
+	function observePhase(journalContent: string, turn: number): void {
+		const observation = phaseTracker.observe(journalContent);
+		if (observation.kind === 'new_step') {
+			const {name, index, total} = observation.step;
+			input.onPhaseChange?.({
+				runId,
+				turn,
+				step: name,
+				...(index !== undefined ? {stepIndex: index} : {}),
+				...(total !== undefined ? {stepTotal: total} : {}),
+			});
+		} else if (observation.kind === 'malformed' && observation.warning) {
+			input.onWarning?.(observation.warning);
+		}
+	}
+
 	function handoffDirFor(): string {
 		return path.join(
 			journalAbsPath
@@ -660,6 +706,7 @@ export function createWorkflowRunner(
 					loop,
 					iteration: memory!.iteration,
 				});
+				observePhase(journalContent, memory!.iteration);
 			}
 
 			return {
