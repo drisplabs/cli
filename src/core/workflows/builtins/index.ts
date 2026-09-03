@@ -11,27 +11,27 @@ import os from 'node:os';
 import path from 'node:path';
 import type {ResolvedWorkflowConfig} from '../types';
 import {
-	DEFAULT_BLOCKED_MARKER,
+	DEFAULT_NEEDS_HUMAN_MARKER,
 	DEFAULT_COMPLETION_MARKER,
-} from '../trackerReader';
+} from '../journalReader';
 
-const DEFAULT_BLOCKED_CLOSED_MARKER = `${DEFAULT_BLOCKED_MARKER} -->`;
-const DEFAULT_BLOCKED_REASON_MARKER = `${DEFAULT_BLOCKED_MARKER}: reason -->`;
+const DEFAULT_NEEDS_HUMAN_CLOSED_MARKER = `${DEFAULT_NEEDS_HUMAN_MARKER} -->`;
+const DEFAULT_NEEDS_HUMAN_REASON_MARKER = `${DEFAULT_NEEDS_HUMAN_MARKER}: reason -->`;
 
-const SYSTEM_PROMPT = `You are working on a long-horizon task managed by Athena. A tracker file is used to persist progress across sessions.
+const SYSTEM_PROMPT = `You are working on a long-horizon task managed by Athena. A journal file is used to persist progress across sessions.
 
-## Tracker File
+## Journal File
 
-At the start of each session, read the tracker file if it exists. It contains the task plan, completed steps, and current status from prior sessions.
+At the start of each session, read the journal file if it exists. It contains the task plan, completed steps, and current status from prior sessions.
 
-If no tracker file exists, create one by:
+If no journal file exists, create one by:
 1. Analyzing the user's request to understand the full scope
 2. Breaking the task into concrete, actionable steps
-3. Writing the plan to the tracker file
+3. Writing the plan to the journal file
 
-### Tracker Format
+### Journal Format
 
-Use this markdown format for the tracker:
+Use this markdown format for the journal:
 
 \`\`\`
 # Task: <one-line summary>
@@ -49,9 +49,9 @@ Use this markdown format for the tracker:
 <any important context, decisions, or blockers discovered along the way>
 \`\`\`
 
-### Updating the Tracker
+### Updating the Journal
 
-After completing meaningful work, update the tracker:
+After completing meaningful work, update the journal:
 - Check off completed steps
 - Update the current status section
 - Add any important notes or decisions
@@ -59,18 +59,18 @@ After completing meaningful work, update the tracker:
 ### Completion
 
 When all steps are complete:
-1. Update the tracker with all steps checked off
+1. Update the journal with all steps checked off
 2. Put any final summary or outcome notes above the terminal marker
-3. Add \`${DEFAULT_COMPLETION_MARKER}\` as the final non-empty line of the tracker file
-4. Do not write any tracker content after the terminal marker
+3. Add \`${DEFAULT_COMPLETION_MARKER}\` as the final non-empty line of the journal file
+4. Do not write any journal content after the terminal marker
 
-### Blocked
+### Needs a human
 
-If you are blocked and cannot make further progress:
-1. Document what is blocking you in the Notes section
+If you cannot proceed without a person — a question only they can answer, or an external blocker only they can clear:
+1. Document what you need from them in the Notes section
 2. Explain what needs to happen to unblock the task whenever possible above the terminal marker
-3. Add \`${DEFAULT_BLOCKED_CLOSED_MARKER}\` or \`${DEFAULT_BLOCKED_REASON_MARKER}\` as the final non-empty line of the tracker file
-4. Do not write any tracker content after the terminal marker
+3. Add \`${DEFAULT_NEEDS_HUMAN_CLOSED_MARKER}\` or \`${DEFAULT_NEEDS_HUMAN_REASON_MARKER}\` as the final non-empty line of the journal file
+4. Do not write any journal content after the terminal marker
 `;
 
 function ensureSystemPromptFile(): string {
@@ -113,7 +113,7 @@ export function resolveBuiltinWorkflow(
 		loop: {
 			enabled: true,
 			completionMarker: DEFAULT_COMPLETION_MARKER,
-			blockedMarker: DEFAULT_BLOCKED_MARKER,
+			needsHumanMarker: DEFAULT_NEEDS_HUMAN_MARKER,
 			maxIterations: 20,
 		},
 		plugins: [],

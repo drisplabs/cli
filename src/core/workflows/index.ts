@@ -27,9 +27,9 @@ export {useWorkflowSessionController} from './useWorkflowSessionController';
 export {
 	buildContinuePrompt,
 	DEFAULT_COMPLETION_MARKER,
-	DEFAULT_BLOCKED_MARKER,
-	DEFAULT_TRACKER_PATH,
-} from './trackerReader';
+	DEFAULT_NEEDS_HUMAN_MARKER,
+	DEFAULT_JOURNAL_PATH,
+} from './journalReader';
 export {resolveBuiltinWorkflow, listBuiltinWorkflows} from './builtins/index';
 export {createWorkflowRunner} from './workflowRunner';
 export type {

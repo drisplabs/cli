@@ -9,27 +9,35 @@ describe('substituteVariables', () => {
 	});
 
 	it('substitutes {sessionId} and <session_id>', () => {
-		const text = 'Path: .athena/{sessionId}/tracker.md and <session_id>';
+		const text = 'Path: .athena/{sessionId}/journal.md and <session_id>';
 		expect(substituteVariables(text, {sessionId: 'abc-123'})).toBe(
-			'Path: .athena/abc-123/tracker.md and abc-123',
+			'Path: .athena/abc-123/journal.md and abc-123',
 		);
 	});
 
-	it('substitutes {trackerPath}', () => {
+	it('substitutes {journalPath}', () => {
 		expect(
-			substituteVariables('Read {trackerPath}', {
-				trackerPath: '.athena/abc/tracker.md',
+			substituteVariables('Read {journalPath}', {
+				journalPath: '.athena/abc/journal.md',
 			}),
-		).toBe('Read .athena/abc/tracker.md');
+		).toBe('Read .athena/abc/journal.md');
+	});
+
+	it('substitutes the legacy {trackerPath} placeholder with the journal path for one release', () => {
+		expect(
+			substituteVariables('Read {trackerPath} then {journalPath}', {
+				journalPath: '.athena/abc/journal.md',
+			}),
+		).toBe('Read .athena/abc/journal.md then .athena/abc/journal.md');
 	});
 
 	it('substitutes all variables together', () => {
-		const text = '{input} at {trackerPath} in {sessionId}';
+		const text = '{input} at {journalPath} in {sessionId}';
 		expect(
 			substituteVariables(text, {
 				input: 'hello',
 				sessionId: 's1',
-				trackerPath: '/t.md',
+				journalPath: '/t.md',
 			}),
 		).toBe('hello at /t.md in s1');
 	});

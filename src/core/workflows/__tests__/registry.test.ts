@@ -420,7 +420,7 @@ describe('resolveWorkflow', () => {
 				loop: {
 					enabled: true,
 					completionMarkers: ['DONE', 'BLOCKED'],
-					trackerFile: 'legacy.md',
+					journalFile: 'legacy.md',
 					maxIterations: 3,
 				},
 			});

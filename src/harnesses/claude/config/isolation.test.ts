@@ -25,8 +25,8 @@ describe('normalizeEffort', () => {
 });
 
 describe('ISOLATION_PRESETS', () => {
-	it('strict preset should allow core read/edit/search tools', () => {
-		const preset = ISOLATION_PRESETS.strict;
+	it('guarded preset should allow core read/edit/search tools', () => {
+		const preset = ISOLATION_PRESETS.guarded;
 		expect(preset.allowedTools).toBeDefined();
 		expect(preset.allowedTools).toContain('Read');
 		expect(preset.allowedTools).toContain('Edit');
@@ -38,8 +38,8 @@ describe('ISOLATION_PRESETS', () => {
 		expect(preset.allowedTools).not.toContain('WebFetch');
 	});
 
-	it('minimal preset should allow core tools plus web, subagents, and MCP wildcard', () => {
-		const preset = ISOLATION_PRESETS.minimal;
+	it('standard preset should allow core tools plus web, subagents, and MCP wildcard', () => {
+		const preset = ISOLATION_PRESETS.standard;
 		expect(preset.allowedTools).toBeDefined();
 		// Core tools
 		expect(preset.allowedTools).toContain('Read');
@@ -55,8 +55,8 @@ describe('ISOLATION_PRESETS', () => {
 		expect(preset.allowedTools).toContain('mcp__*');
 	});
 
-	it('permissive preset should allow all tools including MCP wildcard', () => {
-		const preset = ISOLATION_PRESETS.permissive;
+	it('autonomous preset should allow all tools including MCP wildcard', () => {
+		const preset = ISOLATION_PRESETS.autonomous;
 		expect(preset.allowedTools).toBeDefined();
 		expect(preset.allowedTools).toContain('WebSearch');
 		expect(preset.allowedTools).toContain('Task');
@@ -65,29 +65,44 @@ describe('ISOLATION_PRESETS', () => {
 	});
 
 	it('all presets should enable strictMcpConfig', () => {
-		expect(ISOLATION_PRESETS.strict.strictMcpConfig).toBe(true);
-		expect(ISOLATION_PRESETS.minimal.strictMcpConfig).toBe(true);
-		expect(ISOLATION_PRESETS.permissive.strictMcpConfig).toBe(true);
+		expect(ISOLATION_PRESETS.guarded.strictMcpConfig).toBe(true);
+		expect(ISOLATION_PRESETS.standard.strictMcpConfig).toBe(true);
+		expect(ISOLATION_PRESETS.autonomous.strictMcpConfig).toBe(true);
 	});
 });
 
 describe('resolveIsolationConfig', () => {
-	it('should default to strict preset when no config provided', () => {
+	it('should default to guarded preset when no config provided', () => {
 		const config = resolveIsolationConfig();
-		expect(config.allowedTools).toEqual(ISOLATION_PRESETS.strict.allowedTools);
+		expect(config.allowedTools).toEqual(ISOLATION_PRESETS.guarded.allowedTools);
 		expect(config.strictMcpConfig).toBe(true);
 	});
 
+	it.each([
+		['strict', 'guarded'],
+		['minimal', 'standard'],
+		['permissive', 'autonomous'],
+	])('still expands the deprecated preset name %s as %s (#185)', (from, to) => {
+		expect(resolveIsolationConfig(from as never)).toEqual({
+			...ISOLATION_PRESETS[to as keyof typeof ISOLATION_PRESETS],
+		});
+		expect(
+			resolveIsolationConfig({preset: from as never}).allowedTools,
+		).toEqual(
+			ISOLATION_PRESETS[to as keyof typeof ISOLATION_PRESETS].allowedTools,
+		);
+	});
+
 	it('should expand string preset', () => {
-		const config = resolveIsolationConfig('permissive');
+		const config = resolveIsolationConfig('autonomous');
 		expect(config.allowedTools).toEqual(
-			ISOLATION_PRESETS.permissive.allowedTools,
+			ISOLATION_PRESETS.autonomous.allowedTools,
 		);
 	});
 
 	it('should allow custom config to override preset allowedTools', () => {
 		const config = resolveIsolationConfig({
-			preset: 'strict',
+			preset: 'guarded',
 			allowedTools: ['Read'],
 		});
 		// Custom allowedTools should override preset's

@@ -9,6 +9,10 @@ import {fileURLToPath} from 'node:url';
 import App from '../shell/AppShell';
 import {processRegistry} from '../../shared/utils/processRegistry';
 import {type IsolationPreset} from '../../harnesses/claude/config/isolation';
+import {
+	HARNESS_PROCESS_PRESETS,
+	resolveHarnessProcessPreset,
+} from '../../core/runtime/process';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import {listHarnessAdapters} from '../../harnesses/registry';
 import {registerBuiltins} from '../commands/builtins/index';
@@ -29,7 +33,7 @@ import {writeGlobalConfig} from '../../infra/plugins/config';
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
 import {resolveTheme} from '../../ui/theme/index';
 import {shouldShowSetup} from '../../setup/shouldShowSetup';
-import {EXEC_EXIT_CODE} from '../exec';
+import {RUN_EXIT_CODE} from '../exec';
 import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
@@ -74,6 +78,8 @@ const KNOWN_COMMANDS = new Set([
 	'sessions',
 	'resume',
 	'runs',
+	'run',
+	// Deprecated alias of `run` (#185); removed in 0.7.0.
 	'exec',
 	'workflow',
 	'mcp',
@@ -83,7 +89,6 @@ const KNOWN_COMMANDS = new Set([
 	'telemetry',
 	'doctor',
 ]);
-const VALID_ISOLATION_PRESETS = ['strict', 'minimal', 'permissive'] as const;
 const VALID_HARNESSES = listHarnessAdapters()
 	.filter(a => a.enabled)
 	.map(a => a.id);
@@ -139,7 +144,7 @@ function printExecDryRunSummary(
 		override: context.workflowOverride,
 	});
 	const lines: string[] = [
-		'athena-flow exec --dry-run',
+		'athena-flow run --dry-run',
 		`  project:           ${context.projectDir}`,
 		`  harness:           ${runtimeConfig.harness}`,
 		`  active workflow:   ${selection.name} [${selection.source}]`,
@@ -255,7 +260,7 @@ const cli = meow(
 			sessions              Launch interactive session picker
 			resume [sessionId]    Resume most recent (or specified) session
 			runs                  List workflow runs awaiting attention and how to wake them
-			exec "<prompt>"       Run non-interactively (CI/script mode)
+			run "<prompt>"        Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
 			skill <sub>           Manage personal skills (install, remove, list)
@@ -268,22 +273,23 @@ const cli = meow(
 			--project-dir   Project directory for hook socket (default: cwd)
 			--plugin        Path to a Claude Code plugin directory (repeatable)
 			--harness       Runtime harness: claude-code (default), openai-codex
-			--isolation     Isolation preset for spawned Claude process:
-			                  strict (default) - Full isolation, no MCP servers
-			                  minimal - Full isolation, allow project MCP servers
-			                  permissive - Full isolation, allow project MCP servers
+			--isolation     Isolation preset for the spawned harness process:
+			                  guarded (default) - core code tools only
+			                  standard - core tools + web + subagents + plugin MCP
+			                  autonomous - everything standard allows + notebooks; Codex never asks
+			                  (strict / minimal / permissive are deprecated aliases, removed in 0.7.0)
 			--verbose       Show additional rendering detail and streaming display
 			--theme         Color theme: dark (default), light, or high-contrast
 			--ascii         Use ASCII-only UI glyphs for compatibility
-			--continue      Resume most recent exec session, or use --continue=<athenaSessionId> (exec mode)
-			--json          Emit JSONL events to stdout (exec mode)
-			--output-last-message  Write final assistant message to a file (exec mode)
-			--ephemeral     Do not persist Athena session data (exec mode)
-			--timeout-ms    Hard timeout for exec run in milliseconds
+			--continue      Resume most recent run session, or use --continue=<athenaSessionId> (run mode)
+			--json          Emit JSONL events to stdout (run mode)
+			--output-last-message  Write final assistant message to a file (run mode)
+			--ephemeral     Do not persist Athena session data (run mode)
+			--timeout-ms    Hard timeout for the run in milliseconds
 			--workflow      Override the active workflow for this run only (no config change)
 			--url           Dashboard origin (dashboard pair)
 			--name          Friendly machine name (dashboard pair)
-			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (exec mode)
+			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (run mode)
 			--project       Scope workflow command to project config (workflow use)
 			--global        Scope workflow command to global config (workflow use, default)
 			--help          Show command help
@@ -291,6 +297,7 @@ const cli = meow(
 
 		Note: All isolation modes use --setting-sources "" to completely isolate
 		      from Claude Code's settings. athena-flow is fully self-contained.
+		      \`exec\` is a deprecated alias of \`run\` and is removed in 0.7.0.
 
 	Config Files
 		Global:  ~/.config/athena/config.json
@@ -307,11 +314,11 @@ const cli = meow(
 		  $ athena-flow sessions
 		  $ athena-flow resume
 		  $ athena-flow resume <sessionId>
-		  $ athena-flow exec "summarize current repo status"
-		  $ athena-flow exec "run tests" --json
+		  $ athena-flow run "summarize current repo status"
+		  $ athena-flow run "run tests" --json
 		  $ athena-flow --project-dir=/my/project
 		  $ athena-flow --plugin=/path/to/my-plugin
-		  $ athena-flow --isolation=minimal
+		  $ athena-flow --isolation=standard
 		  $ athena-flow --verbose
 		  $ athena-flow --ascii
 	`,
@@ -332,7 +339,7 @@ const cli = meow(
 			},
 			isolation: {
 				type: 'string',
-				default: 'strict',
+				default: 'guarded',
 			},
 			verbose: {
 				type: 'boolean',
@@ -418,6 +425,9 @@ const cli = meow(
 async function main(): Promise<void> {
 	const projectDir = path.resolve(cli.flags.projectDir);
 	const [command, ...commandArgs] = cli.input;
+	// `run` is the headless command; `exec` is its deprecated alias (#185) and
+	// behaves identically apart from the one-line notice below.
+	const isRunCommand = command === 'run' || command === 'exec';
 
 	if (command && !KNOWN_COMMANDS.has(command)) {
 		console.error(
@@ -426,6 +436,12 @@ async function main(): Promise<void> {
 		);
 		await exitWith(1);
 		return;
+	}
+
+	if (command === 'exec') {
+		console.error(
+			'drisp exec is deprecated and is removed in 0.7.0; use drisp run instead.',
+		);
 	}
 
 	if (
@@ -443,9 +459,9 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (command === 'exec' && commandArgs.length !== 1) {
-		console.error('Usage: athena-flow exec "<prompt>" [options]');
-		await exitWith(EXEC_EXIT_CODE.USAGE);
+	if (isRunCommand && commandArgs.length !== 1) {
+		console.error('Usage: athena-flow run "<prompt>" [options]');
+		await exitWith(RUN_EXIT_CODE.USAGE);
 		return;
 	}
 
@@ -621,18 +637,23 @@ async function main(): Promise<void> {
 			console.error(
 				`Error: Invalid harness '${cli.flags.harness}'. Valid options: ${VALID_HARNESSES.join(', ')}`,
 			);
-			await exitWith(command === 'exec' ? EXEC_EXIT_CODE.USAGE : 1);
+			await exitWith(isRunCommand ? RUN_EXIT_CODE.USAGE : 1);
 			return;
 		}
 	}
 
-	// Validate isolation preset
-	let isolationPreset: IsolationPreset = 'strict';
-	if (isOneOf(cli.flags.isolation, VALID_ISOLATION_PRESETS)) {
-		isolationPreset = cli.flags.isolation;
-	} else if (cli.flags.isolation !== 'strict') {
+	// Validate isolation preset. Old names (strict / minimal / permissive)
+	// resolve to their replacements with a notice for one release (#185).
+	let isolationPreset: IsolationPreset = 'guarded';
+	const resolvedPreset = resolveHarnessProcessPreset(cli.flags.isolation);
+	if (resolvedPreset) {
+		isolationPreset = resolvedPreset.preset;
+		if (resolvedPreset.deprecation) {
+			console.error(`Warning: isolation ${resolvedPreset.deprecation}.`);
+		}
+	} else {
 		console.error(
-			`Warning: Invalid isolation preset '${cli.flags.isolation}', using 'strict'`,
+			`Warning: Invalid isolation preset '${cli.flags.isolation}' (valid: ${HARNESS_PROCESS_PRESETS.join(', ')}), using 'guarded'`,
 		);
 	}
 
@@ -642,16 +663,15 @@ async function main(): Promise<void> {
 	const projectConfig = readConfig(projectDir);
 
 	// Interactive setup wizard must not run in exec mode
-	const showSetup =
-		command === 'exec'
-			? false
-			: shouldShowSetup({
-					cliInput: cli.input,
-					setupComplete: globalConfig.setupComplete,
-					globalConfigExists: fs.existsSync(
-						path.join(os.homedir(), '.config', 'athena', 'config.json'),
-					),
-				});
+	const showSetup = isRunCommand
+		? false
+		: shouldShowSetup({
+				cliInput: cli.input,
+				setupComplete: globalConfig.setupComplete,
+				globalConfigExists: fs.existsSync(
+					path.join(os.homedir(), '.config', 'athena', 'config.json'),
+				),
+			});
 
 	let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 	try {
@@ -668,7 +688,7 @@ async function main(): Promise<void> {
 		});
 	} catch (error) {
 		console.error(`Error: ${(error as Error).message}`);
-		await exitWith(command === 'exec' ? EXEC_EXIT_CODE.BOOTSTRAP : 1);
+		await exitWith(isRunCommand ? RUN_EXIT_CODE.BOOTSTRAP : 1);
 		return;
 	}
 
@@ -677,9 +697,9 @@ async function main(): Promise<void> {
 	}
 
 	if (cli.flags.dryRun) {
-		if (command !== 'exec') {
+		if (!isRunCommand) {
 			console.error('Error: --dry-run is only supported in exec mode.');
-			await exitWith(EXEC_EXIT_CODE.USAGE);
+			await exitWith(RUN_EXIT_CODE.USAGE);
 			return;
 		}
 		printExecDryRunSummary(runtimeConfig, {
@@ -708,14 +728,14 @@ async function main(): Promise<void> {
 	trackAppLaunched({version, harness: runtimeConfig.harness});
 
 	// Show telemetry notice on first run
-	if (command !== 'exec' && isFirstRun && globalConfig.telemetry !== false) {
+	if (!isRunCommand && isFirstRun && globalConfig.telemetry !== false) {
 		console.log(
 			'\n  Athena collects anonymous usage data to improve the product.' +
 				"\n  Run 'athena-flow telemetry disable' or set ATHENA_TELEMETRY_DISABLED=1 to opt out.\n",
 		);
 	}
 
-	if (command === 'exec') {
+	if (isRunCommand) {
 		const exitCode = await runExecCommand({
 			projectDir,
 			prompt: commandArgs[0]!,

@@ -46,17 +46,17 @@ export function createExecOutputWriter(
 		},
 		log(message) {
 			if (!options.verbose) return;
-			writeLine(options.stderr, `[athena exec] ${message}`);
+			writeLine(options.stderr, `[athena run] ${message}`);
 		},
 		notice(message) {
 			if (options.json) return;
-			writeLine(options.stderr, `[athena exec] ${message}`);
+			writeLine(options.stderr, `[athena run] ${message}`);
 		},
 		warn(message) {
-			writeLine(options.stderr, `[athena exec] warning: ${message}`);
+			writeLine(options.stderr, `[athena run] warning: ${message}`);
 		},
 		error(message) {
-			writeLine(options.stderr, `[athena exec] error: ${message}`);
+			writeLine(options.stderr, `[athena run] error: ${message}`);
 		},
 		printFinalMessage(message) {
 			if (options.json) return;

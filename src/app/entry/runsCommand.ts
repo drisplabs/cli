@@ -43,7 +43,7 @@ function formatRun(run: AwaitingAttentionRun, nowMs: number): string {
 		lines.push(`  reason:  ${run.stopReason}`);
 	}
 	lines.push(
-		`  wake it: athena-flow exec --continue=${run.athenaSessionId} "<your reply>"`,
+		`  wake it: athena-flow run --continue=${run.athenaSessionId} "<your reply>"`,
 	);
 	return lines.join('\n');
 }

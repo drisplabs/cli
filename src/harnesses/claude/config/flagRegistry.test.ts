@@ -159,7 +159,7 @@ describe('buildIsolationArgs', () => {
 		});
 
 		it('should not emit allowedTools as CLI flags (consumed as hook rules)', () => {
-			const config = resolveIsolationConfig('strict');
+			const config = resolveIsolationConfig('guarded');
 			const args = buildIsolationArgs(config);
 			expect(args.filter(a => a === '--allowedTools')).toHaveLength(0);
 		});
@@ -353,7 +353,7 @@ describe('buildIsolationArgs', () => {
 			// Simulates the HarnessProcessConfig from buildClaudeCompatibleIsolationConfig
 			// when user does NOT pass --verbose to athena CLI (verbose=false → debug=false, no verbose field)
 			const rawConfig = {
-				preset: 'minimal' as const,
+				preset: 'standard' as const,
 				debug: false,
 			};
 			const resolved = resolveIsolationConfig(rawConfig);

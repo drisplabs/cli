@@ -629,7 +629,7 @@ describe('useClaudeProcess', () => {
 			useClaudeProcess(
 				'/test',
 				TEST_INSTANCE_ID,
-				'strict',
+				'guarded',
 				'/tmp/plugin-mcp.json',
 			),
 		);
@@ -651,7 +651,7 @@ describe('useClaudeProcess', () => {
 			useClaudeProcess(
 				'/test',
 				TEST_INSTANCE_ID,
-				'strict',
+				'guarded',
 				'/tmp/plugin-mcp.json',
 			),
 		);
@@ -672,14 +672,14 @@ describe('useClaudeProcess', () => {
 
 	it('should not include pluginMcpConfig when not provided', async () => {
 		const {result} = renderHook(() =>
-			useClaudeProcess('/test', TEST_INSTANCE_ID, 'strict'),
+			useClaudeProcess('/test', TEST_INSTANCE_ID, 'guarded'),
 		);
 
 		const {spawnPromise} = await startSpawn(result, 'test prompt');
 
 		expect(spawnModule.spawnClaude).toHaveBeenCalledWith(
 			expect.objectContaining({
-				isolation: 'strict',
+				isolation: 'guarded',
 			}),
 		);
 		await completeSpawn(spawnPromise);
@@ -867,7 +867,7 @@ describe('useClaudeProcess', () => {
 
 	it('should pass pluginDirs through to spawnClaude when present in isolation config', async () => {
 		const isolationWithPlugins = {
-			preset: 'strict' as const,
+			preset: 'guarded' as const,
 			pluginDirs: ['/path/to/plugin1', '/path/to/plugin2'],
 		};
 
@@ -889,7 +889,7 @@ describe('useClaudeProcess', () => {
 
 	it('should preserve pluginDirs when merging with pluginMcpConfig', async () => {
 		const isolationWithPlugins = {
-			preset: 'strict' as const,
+			preset: 'guarded' as const,
 			pluginDirs: ['/path/to/plugin1'],
 		};
 

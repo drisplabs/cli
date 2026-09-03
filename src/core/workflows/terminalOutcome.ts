@@ -1,20 +1,24 @@
 /**
- * Terminal outcome — the single owner of "what the Tracker's end state means".
+ * Terminal outcome — the single owner of "what the Journal's end state means".
  *
  * After each Turn the Runner asks this module one question: run another Turn, or
  * stop with a final Run Status? Every terminal branch below carries BOTH the Run
  * Status the Runner reports and the human sentence shown to the user, so the map
- * from Tracker end-state → Run Status lives in exactly one place.
+ * from Journal end-state → Run Status lives in exactly one place.
  *
  * Previously that one concept was smeared across three vocabularies in three
- * files — `LoopState` (the Tracker reader) → `LoopStopReason` (sessionPlan) → `RunStatus`
+ * files — `LoopState` (the Journal reader) → `LoopStopReason` (sessionPlan) → `RunStatus`
  * + a hand-built message (workflowRunner) — with a lossy translation at each seam.
  * That is how `missing_tracker` slipped through the final hop's `else` branch and
  * surfaced its raw enum name to the user. Here the branches are exhaustive.
  */
 
 import fs from 'node:fs';
-import {parseTrackerState, readTracker} from './trackerReader';
+import {
+	buildMarkerDeprecation,
+	parseJournalState,
+	readJournal,
+} from './journalReader';
 import type {LoopConfig, RunStatus} from './types';
 
 /**
@@ -23,72 +27,85 @@ import type {LoopConfig, RunStatus} from './types';
  * `awaiting_attention` until a human replies (ADR 0014). Suspend messages must
  * name what tripped — several bounds funnel into the one suspended state, and
  * an unnamed give-up state is unreadable in practice.
+ *
+ * `deprecation` rides along when the Turn declared itself with a deprecated
+ * marker spelling: the outcome is identical, and the reducer turns the note
+ * into a `warn` action so the interpreter can log it (#185).
  */
 export type TurnOutcome =
 	| {kind: 'continue'}
 	| {kind: 'stop'; status: RunStatus; stopReason?: string}
-	| {kind: 'suspend'; status: RunStatus; stopReason: string};
+	| {
+			kind: 'suspend';
+			status: RunStatus;
+			stopReason: string;
+			deprecation?: string;
+	  };
 
-const MISSING_TRACKER_MESSAGE =
-	'the tracker file went missing during the run — the workflow can no longer verify progress';
+const MISSING_JOURNAL_MESSAGE =
+	'the journal file went missing during the run — the workflow can no longer verify progress';
 const MISPLACED_TERMINAL_MARKER_MESSAGE =
-	'terminal workflow marker is not the final non-empty line of the tracker; move all summary text above the marker';
+	'terminal workflow marker is not the final non-empty line of the journal; move all summary text above the marker';
 
 /**
  * Resolve the terminal outcome of a looped Workflow Run after the Turn at
- * `iteration` (1-based) completes. Reads the Tracker directly and returns the
+ * `iteration` (1-based) completes. Reads the Journal directly and returns the
  * final Run Status the Runner assigns — the Runner does not re-derive it.
  */
 export function resolveTurnOutcome(input: {
-	trackerPath: string;
+	journalPath: string;
 	loop: LoopConfig;
 	iteration: number;
 }): TurnOutcome {
-	const {trackerPath, loop, iteration} = input;
+	const {journalPath, loop, iteration} = input;
 
-	// The agent owns the Tracker; if it is *gone* we cannot verify progress and
+	// The agent owns the Journal; if it is *gone* we cannot verify progress and
 	// fail. This existence probe is deliberately distinct from reading the
-	// content: `readTracker` fails open to '' for a present-but-unreadable file,
-	// which parses as "still running" and keeps looping. Only an absent Tracker
+	// content: `readJournal` fails open to '' for a present-but-unreadable file,
+	// which parses as "still running" and keeps looping. Only an absent Journal
 	// is terminal. (Preserves the prior Runner behaviour.)
-	if (!fs.existsSync(trackerPath)) {
+	if (!fs.existsSync(journalPath)) {
 		return {
 			kind: 'stop',
 			status: 'failed',
-			stopReason: MISSING_TRACKER_MESSAGE,
+			stopReason: MISSING_JOURNAL_MESSAGE,
 		};
 	}
 
-	const tracker = parseTrackerState(readTracker(trackerPath), loop);
+	const journal = parseJournalState(readJournal(journalPath), loop);
 
 	// An untouched skeleton after a clean Turn is an undeclared premature stop
 	// (ADR 0014 §3), not a terminal bootstrap failure: the common live shape is
 	// the agent answering a trivial ask in chat before any tool work. Falling
 	// through to `continue` routes it into the Nudge path, whose cap — the
-	// tracker content isn't advancing — bounds a genuinely broken bootstrap and
+	// journal content isn't advancing — bounds a genuinely broken bootstrap and
 	// escalates it to `awaiting_attention` instead of a dead `failed`.
-	if (tracker.misplacedTerminalMarker) {
+	if (journal.misplacedTerminalMarker) {
 		return {
 			kind: 'stop',
 			status: 'failed',
 			stopReason: MISPLACED_TERMINAL_MARKER_MESSAGE,
 		};
 	}
-	if (tracker.completed) {
+	if (journal.completed) {
 		return {kind: 'stop', status: 'completed'};
 	}
-	// Declared attention (ADR 0014): WORKFLOW_BLOCKED is the agent's explicit
+	// Declared attention (ADR 0014): NEEDS_HUMAN is the agent's explicit
 	// "I need a human" — a question or an external blocker. It suspends the Run
 	// in the non-terminal `awaiting_attention` rather than ending it in the
 	// terminal `blocked` (still valid on historical rows, no longer emitted).
-	// Checked before the ceiling: a declared reason beats a generic bound.
-	if (tracker.blocked) {
+	// Checked before the ceiling: a declared reason beats a generic bound. The
+	// legacy WORKFLOW_BLOCKED spelling reaches this same branch (#185).
+	if (journal.needsHuman) {
 		return {
 			kind: 'suspend',
 			status: 'awaiting_attention',
-			stopReason: tracker.blockedReason
-				? `agent declared WORKFLOW_BLOCKED: ${tracker.blockedReason}`
-				: 'agent declared WORKFLOW_BLOCKED',
+			stopReason: journal.needsHumanReason
+				? `agent declared NEEDS_HUMAN: ${journal.needsHumanReason}`
+				: 'agent declared NEEDS_HUMAN',
+			...(journal.deprecatedMarker
+				? {deprecation: buildMarkerDeprecation(journal.deprecatedMarker)}
+				: {}),
 		};
 	}
 	// Runaway ceiling (ADR 0014 §7): hitting maxIterations suspends instead of

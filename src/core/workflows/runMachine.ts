@@ -2,7 +2,7 @@
  * Run-loop reducer (ADR 0016) — the pure decision core of a Workflow Run.
  *
  * `workflowRunner.ts` used to be one `while` loop that mixed every I/O call
- * (spawning Turns, reading/writing the Tracker, sleeping for a retry backoff,
+ * (spawning Turns, reading/writing the Journal, sleeping for a retry backoff,
  * persisting a snapshot) with every *decision* about what should happen next
  * (Nudge, Retry, Handover, suspend, stop). That made the decision logic
  * impossible to unit-test without mocking the whole harness, and — per ADR
@@ -19,7 +19,7 @@
  * calls `step` again — see `perform()` there.
  *
  * `RunMemory` is the part of a Run's state ADR 0016 §2 wants persisted
- * (Iteration, Nudge streak, Retry streak, the Tracker hash a Nudge resets
+ * (Iteration, Nudge streak, Retry streak, the Journal hash a Nudge resets
  * against, and the prompt/continuation last attempted) so a rehydrated Run
  * continues its budgets instead of restarting them (§6) — see
  * `createInitialRun`'s `resumedMemory` path.
@@ -37,7 +37,7 @@ import {
 	DEFAULT_RETRY_BACKOFF_MS,
 } from './types';
 import type {TurnOutcome} from './terminalOutcome';
-import {buildNudgePrompt, TRACKER_SKELETON_MARKER} from './trackerReader';
+import {buildNudgePrompt, hasSkeletonMarker} from './journalReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 
@@ -85,12 +85,12 @@ export type RunMemory = {
 	nudgeStreak: number;
 	retryStreak: number;
 	/**
-	 * SHA-256 hex digest of the Tracker's content at the last stop, or `null`
+	 * SHA-256 hex digest of the Journal's content at the last stop, or `null`
 	 * before any stop has been observed. A hash rather than the raw content
-	 * keeps a persisted Run cheap regardless of Tracker size, and covers only
-	 * `tracker.md` itself (ADR 0016 §9) — not a future multi-file Dossier.
+	 * keeps a persisted Run cheap regardless of Journal size, and covers only
+	 * `journal.md` itself (ADR 0016 §9) — not a future multi-file Dossier.
 	 */
-	lastTrackerHash: string | null;
+	lastJournalHash: string | null;
 	lastStopPrompt: string;
 	lastStopContinuation: TurnContinuation;
 };
@@ -114,9 +114,9 @@ export type RunEvent =
 			handoverRequestHandle: string | null;
 			suspension: {reason: string} | null;
 			adapterSessionId: string | null;
-			/** Only computed on the success path once loop/tracker apply. */
+			/** Only computed on the success path once loop/journal apply. */
 			outcome: TurnOutcome | null;
-			trackerContent: string;
+			journalContent: string;
 	  }
 	| {
 			type: 'backoff_elapsed';
@@ -147,7 +147,9 @@ export type RunAction =
 	| {type: 'wait'; ms: number}
 	| {type: 'notify_iteration_complete'}
 	| {type: 'purge_handoffs'}
-	| {type: 'degrade_handover'; handle: string};
+	| {type: 'degrade_handover'; handle: string}
+	/** Surface a non-fatal notice (e.g. a deprecated marker spelling, #185). */
+	| {type: 'warn'; message: string};
 
 /** The immutable per-Run configuration the reducer needs. No callbacks. */
 export type StepConfig = {
@@ -155,8 +157,8 @@ export type StepConfig = {
 	/** The Run's top-level prompt — `WorkflowRunnerInput.prompt`, unchanging across Turns. */
 	initialPrompt: string;
 	loop?: LoopConfig;
-	trackerAbsPath: string | null;
-	trackerPromptPath?: string;
+	journalAbsPath: string | null;
+	journalPromptPath?: string;
 };
 
 export type StepResult = {
@@ -165,23 +167,23 @@ export type StepResult = {
 	actions: RunAction[];
 };
 
-function hashTrackerContent(content: string): string {
+function hashJournalContent(content: string): string {
 	return crypto.createHash('sha256').update(content).digest('hex');
 }
 
 /**
  * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
- * in-flight context the Tracker never checkpointed; the Tracker remains the
+ * in-flight context the Journal never checkpointed; the Journal remains the
  * durable ledger.
  */
 export function buildHandoverSeedPrompt(
 	handoffPath: string,
-	trackerPath: string | undefined,
+	journalPath: string | undefined,
 ): string {
 	return (
 		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
 		`Read the Handoff file at ${handoffPath}` +
-		(trackerPath ? ` and the tracker at ${trackerPath}` : '') +
+		(journalPath ? ` and the journal at ${journalPath}` : '') +
 		`, then continue the work from exactly where it stands. ` +
 		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
 	);
@@ -190,19 +192,19 @@ export function buildHandoverSeedPrompt(
 /**
  * First prompt of a woken (previously suspended) Run: the human's reply plus
  * enough framing that even a degraded fresh Agent Session — the session that
- * asked may be gone — re-orients from the Tracker instead of treating the
+ * asked may be gone — re-orients from the Journal instead of treating the
  * reply as a brand-new one-line task.
  */
 export function buildWakePrompt(
 	reply: string,
-	trackerPath: string | undefined,
+	journalPath: string | undefined,
 ): string {
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
-		(trackerPath
-			? `Read the tracker at ${trackerPath} for the task and its current state, apply the reply, and continue the workflow. `
+		(journalPath
+			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
-		`Keep the tracker current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
+		`Keep the journal current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
 	);
 }
 
@@ -262,7 +264,7 @@ export function createInitialRun(
 		configOverride: undefined,
 	});
 	const prompt = opts.waking
-		? buildWakePrompt(cfg.initialPrompt, cfg.trackerPromptPath)
+		? buildWakePrompt(cfg.initialPrompt, cfg.journalPromptPath)
 		: prepared.prompt;
 
 	return {
@@ -276,7 +278,7 @@ export function createInitialRun(
 			iteration,
 			nudgeStreak: 0,
 			retryStreak: 0,
-			lastTrackerHash: null,
+			lastJournalHash: null,
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
 		},
@@ -448,25 +450,32 @@ function handleTurnInFlight(
 							kind: 'awaiting_attention',
 							stopReason: outcome.stopReason ?? 'stopped',
 						};
+		// A deprecated marker spelling reaches the same phase; the only
+		// difference is the notice the interpreter is asked to log (#185).
+		const deprecation =
+			outcome.kind === 'suspend' ? outcome.deprecation : undefined;
 		return {
 			phase: nextPhase,
 			memory: memoryAfterSuccess,
-			actions: [{type: 'persist'}],
+			actions: [
+				...(deprecation ? [{type: 'warn', message: deprecation} as const] : []),
+				{type: 'persist'},
+			],
 		};
 	}
 
 	// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same Agent
 	// Session with a corrective prompt. Bounded by the Nudge cap, which
-	// resets whenever the Tracker advances between stops (a hash comparison,
+	// resets whenever the Journal advances between stops (a hash comparison,
 	// ADR 0016 §7/§9).
-	const trackerHash = hashTrackerContent(event.trackerContent);
+	const journalHash = hashJournalContent(event.journalContent);
 	let nudgeStreak = memoryAfterSuccess.nudgeStreak;
-	if (trackerHash !== memoryAfterSuccess.lastTrackerHash) {
+	if (journalHash !== memoryAfterSuccess.lastJournalHash) {
 		nudgeStreak = 0;
 	}
 	const memoryWithHash = {
 		...memoryAfterSuccess,
-		lastTrackerHash: trackerHash,
+		lastJournalHash: journalHash,
 		nudgeStreak,
 	};
 
@@ -479,18 +488,16 @@ function handleTurnInFlight(
 					kind: 'awaiting_attention',
 					stopReason: `nudge cap reached: ${nudgeCap} nudge${
 						nudgeCap === 1 ? '' : 's'
-					} (nudgeCap) without tracker progress or a terminal marker`,
+					} (nudgeCap) without journal progress or a terminal marker`,
 				},
 				memory: {...memoryWithHash, nudgeStreak: nextNudgeStreak},
 				actions: [{type: 'persist'}],
 			};
 		}
 		const promptOverride = buildNudgePrompt(
-			{...loop, trackerPath: cfg.trackerPromptPath ?? loop.trackerPath},
+			{...loop, journalPath: cfg.journalPromptPath ?? loop.journalPath},
 			{
-				skeletonNotReplaced: event.trackerContent.includes(
-					TRACKER_SKELETON_MARKER,
-				),
+				skeletonNotReplaced: hasSkeletonMarker(event.journalContent),
 			},
 		);
 		const nextIteration = memoryWithHash.iteration + 1;
@@ -575,7 +582,7 @@ function handleBackingOff(
 		return {phase: {kind: 'cancelled'}, memory, actions: [{type: 'persist'}]};
 	}
 	// Resume the same Agent Session if it reported one — it persists on disk,
-	// so resuming preserves in-flight work the Tracker never checkpointed.
+	// so resuming preserves in-flight work the Journal never checkpointed.
 	// Otherwise fall back to whichever continuation this attempt used.
 	const continuation: TurnContinuation = event.adapterSessionId
 		? {mode: 'resume', handle: event.adapterSessionId}
@@ -628,7 +635,7 @@ function handleHandingOver(
 		const continuation: TurnContinuation = {mode: 'fresh'};
 		const seedPrompt = buildHandoverSeedPrompt(
 			event.handoffPath,
-			cfg.trackerAbsPath ?? undefined,
+			cfg.journalAbsPath ?? undefined,
 		);
 		const prepared = prepareWorkflowTurn(cfg.workflowState, {
 			prompt: cfg.initialPrompt,
@@ -778,6 +785,13 @@ export function deserializeRunMemory(
 	}
 	if (!parsed || typeof parsed !== 'object') return null;
 	const candidate = parsed as Record<string, unknown>;
+	// Snapshots persisted before #185 spell the hash `lastTrackerHash`; read
+	// it as `lastJournalHash` so an in-flight Run rehydrates across the rename.
+	// Removed in 0.7.0.
+	if (!('lastJournalHash' in candidate) && 'lastTrackerHash' in candidate) {
+		candidate.lastJournalHash = candidate.lastTrackerHash;
+		delete candidate.lastTrackerHash;
+	}
 	const continuation = candidate.lastStopContinuation as
 		| {mode?: unknown}
 		| undefined;
@@ -785,8 +799,8 @@ export function deserializeRunMemory(
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||
 		typeof candidate.retryStreak !== 'number' ||
-		(candidate.lastTrackerHash !== null &&
-			typeof candidate.lastTrackerHash !== 'string') ||
+		(candidate.lastJournalHash !== null &&
+			typeof candidate.lastJournalHash !== 'string') ||
 		typeof candidate.lastStopPrompt !== 'string' ||
 		!continuation ||
 		typeof continuation.mode !== 'string'

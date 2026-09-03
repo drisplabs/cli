@@ -3,6 +3,8 @@
 Status: Active
 Date: 2026-07-24
 
+> **Terminology note (2026-09-03, #185):** this ADR predates the rename of the **Tracker** to the **Journal** and of the declared-attention marker `WORKFLOW_BLOCKED[: reason]` to `NEEDS_HUMAN[: reason]` — §2's "attention is declared, never inferred" now reads `NEEDS_HUMAN`, and the old spelling is accepted for one release with a logged deprecation. The wake command in §6's human-resume path is `drisp run --continue`. The text below is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
+
 Replaces the withdrawn 2026-07-23 draft of this ADR ("Stop is notify-only"), whose central rule — _any
 normal stop without `WORKFLOW_COMPLETE` suspends_ — was rejected in review. See Context.
 

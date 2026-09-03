@@ -22,7 +22,7 @@ const resolveWorkflowInstallMock = vi.fn((source: string) => ({
 	workflowPath: source,
 }));
 
-const EXEC_EXIT_CODE = {
+const RUN_EXIT_CODE = {
 	SUCCESS: 0,
 	USAGE: 2,
 	BOOTSTRAP: 3,
@@ -93,7 +93,7 @@ vi.mock('./dashboardCommand', () => ({
 
 vi.mock('../exec', () => ({
 	runExec: runExecMock,
-	EXEC_EXIT_CODE,
+	RUN_EXIT_CODE,
 }));
 
 vi.mock('../../ui/theme/index', () => ({
@@ -146,7 +146,7 @@ const BASE_RUNTIME_BOOTSTRAP = {
 	globalConfig: BASE_CONFIG,
 	projectConfig: BASE_CONFIG,
 	harness: 'claude-code' as const,
-	isolationConfig: {preset: 'strict' as const, pluginDirs: []},
+	isolationConfig: {preset: 'guarded' as const, pluginDirs: []},
 	pluginMcpConfig: undefined,
 	workflowRef: undefined,
 	workflow: undefined,
@@ -219,7 +219,7 @@ describe('cli exec mode', () => {
 		readGlobalConfigMock.mockReturnValue(BASE_CONFIG);
 		bootstrapRuntimeConfigMock.mockReturnValue(BASE_RUNTIME_BOOTSTRAP);
 		resolveThemeMock.mockReturnValue({name: 'dark'});
-		runExecMock.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+		runExecMock.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 		runDashboardMock.mockReset();
 		runDashboardMock.mockResolvedValue(0);
 	});
@@ -238,7 +238,7 @@ describe('cli exec mode', () => {
 				}),
 			);
 			expect(renderMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
 			expect(bootstrapRuntimeConfigMock).toHaveBeenCalledWith(
 				expect.objectContaining({
 					showSetup: false,
@@ -258,7 +258,7 @@ describe('cli exec mode', () => {
 				.join('\n');
 
 			expect(help).toContain('dashboard <sub>');
-			expect(help).toContain('exec "<prompt>"');
+			expect(help).toContain('run "<prompt>"');
 			// One door into drisp (#183): no second runner, no channel surface.
 			expect(help).not.toContain('gateway');
 			expect(help).not.toContain('Gateway');
@@ -285,7 +285,7 @@ describe('cli exec mode', () => {
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
 			expect(bootstrapRuntimeConfigMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.USAGE);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
 		} finally {
 			cli.restore();
 		}
@@ -295,7 +295,7 @@ describe('cli exec mode', () => {
 		const cli = await runCli(['exec', 'hello', '--ephemeral', '--continue']);
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.USAGE);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
 		} finally {
 			cli.restore();
 		}
@@ -332,7 +332,7 @@ describe('cli exec mode', () => {
 					adapterResumeSessionId: 'adapter-2',
 				}),
 			);
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
 		} finally {
 			cli.restore();
 		}
@@ -344,7 +344,7 @@ describe('cli exec mode', () => {
 		const cli = await runCli(['exec', 'hello', '--continue=missing']);
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.RUNTIME);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.RUNTIME);
 		} finally {
 			cli.restore();
 		}
@@ -379,7 +379,7 @@ describe('cli exec mode', () => {
 			expect(cli.logSpy).not.toHaveBeenCalledWith(
 				expect.stringContaining('Athena collects anonymous usage data'),
 			);
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
 		} finally {
 			cli.restore();
 		}
@@ -416,7 +416,7 @@ describe('cli exec mode', () => {
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
 			expect(renderMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.BOOTSTRAP);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.BOOTSTRAP);
 		} finally {
 			cli.restore();
 		}
@@ -445,17 +445,161 @@ describe('cli exec mode', () => {
 					harnessOverride: 'openai-codex',
 				}),
 			);
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.SUCCESS);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
 		} finally {
 			cli.restore();
 		}
+	});
+
+	describe('run is the command; exec is its deprecated alias (#185)', () => {
+		// Every field of the runExec call except the freshly minted session id.
+		function lastExecCall(): Record<string, unknown> {
+			const {athenaSessionId, ...rest} = runExecMock.mock.calls.at(-1)![0];
+			expect(athenaSessionId).toEqual(expect.any(String));
+			return rest;
+		}
+
+		it('dispatches run to runExec exactly like exec', async () => {
+			const viaRun = await runCli(['run', 'hello from test', '--json']);
+			let runCall: Record<string, unknown>;
+			try {
+				expect(runExecMock).toHaveBeenCalledTimes(1);
+				runCall = lastExecCall();
+				expect(viaRun.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
+				expect(renderMock).not.toHaveBeenCalled();
+			} finally {
+				viaRun.restore();
+			}
+
+			runExecMock.mockClear();
+			const viaExec = await runCli(['exec', 'hello from test', '--json']);
+			try {
+				expect(runExecMock).toHaveBeenCalledTimes(1);
+				expect(lastExecCall()).toEqual(runCall);
+				expect(viaExec.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
+			} finally {
+				viaExec.restore();
+			}
+		});
+
+		it('prints a one-line deprecation notice to stderr for exec, and none for run', async () => {
+			const viaExec = await runCli(['exec', 'hello']);
+			try {
+				const notices = viaExec.errorSpy.mock.calls
+					.map(call => String(call[0]))
+					.filter(line => /deprecated/i.test(line));
+				expect(notices).toHaveLength(1);
+				expect(notices[0]).toContain('drisp exec');
+				expect(notices[0]).toContain('drisp run');
+				expect(notices[0]).toContain('0.7.0');
+				expect(notices[0]).not.toContain('\n');
+			} finally {
+				viaExec.restore();
+			}
+
+			const viaRun = await runCli(['run', 'hello']);
+			try {
+				const notices = viaRun.errorSpy.mock.calls
+					.map(call => String(call[0]))
+					.filter(line => /deprecated/i.test(line));
+				expect(notices).toHaveLength(0);
+			} finally {
+				viaRun.restore();
+			}
+		});
+
+		it('fails fast with a run usage line when the prompt is missing', async () => {
+			const cli = await runCli(['run']);
+			try {
+				expect(runExecMock).not.toHaveBeenCalled();
+				expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
+				expect(cli.errorSpy).toHaveBeenCalledWith(
+					expect.stringContaining('run "<prompt>"'),
+				);
+			} finally {
+				cli.restore();
+			}
+		});
+
+		it('names run, not exec, in the top-level help', async () => {
+			const cli = await runCli(['--help']);
+			try {
+				const help = cli.logSpy.mock.calls
+					.map(call => String(call[0]))
+					.join('\n');
+				expect(help).toContain('run "<prompt>"');
+				expect(help).not.toContain('exec "<prompt>"');
+				expect(help).toContain('guarded (default)');
+				expect(help).not.toContain('strict (default)');
+			} finally {
+				cli.restore();
+			}
+		});
+	});
+
+	describe('isolation presets: guarded / standard / autonomous (#185)', () => {
+		it.each([
+			['guarded', 'guarded'],
+			['standard', 'standard'],
+			['autonomous', 'autonomous'],
+		])(
+			'resolves the new preset name %s with no notice',
+			async (flag, preset) => {
+				const cli = await runCli(['run', 'hello', `--isolation=${flag}`]);
+				try {
+					expect(bootstrapRuntimeConfigMock).toHaveBeenCalledWith(
+						expect.objectContaining({isolationPreset: preset}),
+					);
+					expect(cli.errorSpy).not.toHaveBeenCalled();
+				} finally {
+					cli.restore();
+				}
+			},
+		);
+
+		it.each([
+			['strict', 'guarded'],
+			['minimal', 'standard'],
+			['permissive', 'autonomous'],
+		])(
+			'maps the old preset %s onto %s and prints a notice to stderr',
+			async (oldName, newName) => {
+				const cli = await runCli(['run', 'hello', `--isolation=${oldName}`]);
+				try {
+					expect(bootstrapRuntimeConfigMock).toHaveBeenCalledWith(
+						expect.objectContaining({isolationPreset: newName}),
+					);
+					const notices = cli.errorSpy.mock.calls.map(call => String(call[0]));
+					expect(notices).toHaveLength(1);
+					expect(notices[0]).toContain(`'${oldName}'`);
+					expect(notices[0]).toContain(`'${newName}'`);
+					expect(notices[0]).toContain('0.7.0');
+				} finally {
+					cli.restore();
+				}
+			},
+		);
+
+		it('falls back to guarded on an unknown preset, naming the valid ones', async () => {
+			const cli = await runCli(['run', 'hello', '--isolation=bogus']);
+			try {
+				expect(bootstrapRuntimeConfigMock).toHaveBeenCalledWith(
+					expect.objectContaining({isolationPreset: 'guarded'}),
+				);
+				expect(cli.errorSpy).toHaveBeenCalledWith(
+					expect.stringContaining("using 'guarded'"),
+				);
+			} finally {
+				cli.restore();
+			}
+		});
 	});
 
 	it('rejects invalid --harness value', async () => {
 		const cli = await runCli(['exec', 'hello', '--harness=invalid']);
 		try {
 			expect(bootstrapRuntimeConfigMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.USAGE);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
 			expect(cli.errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining('Invalid harness'),
 			);
@@ -497,7 +641,7 @@ describe('cli exec mode', () => {
 	it('--dry-run prints bootstrap summary and skips runExec', async () => {
 		bootstrapRuntimeConfigMock.mockReturnValue({
 			...BASE_RUNTIME_BOOTSTRAP,
-			isolationConfig: {preset: 'minimal' as const, pluginDirs: ['/p1']},
+			isolationConfig: {preset: 'standard' as const, pluginDirs: ['/p1']},
 			workflow: {name: 'pretend-workflow', version: '1.2.3'},
 		});
 		const cli = await runCli([
@@ -509,9 +653,9 @@ describe('cli exec mode', () => {
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
 			const printed = cli.logSpy.mock.calls.map(c => String(c[0])).join('\n');
-			expect(printed).toContain('athena-flow exec --dry-run');
+			expect(printed).toContain('athena-flow run --dry-run');
 			expect(printed).toContain('pretend-workflow [override]');
-			expect(printed).toContain('isolation (final): minimal');
+			expect(printed).toContain('isolation (final): standard');
 			expect(printed).toContain('/p1');
 			expect(cli.exitSpy).toHaveBeenCalledWith(0);
 		} finally {
@@ -629,7 +773,7 @@ describe('cli exec mode', () => {
 		try {
 			expect(runExecMock).not.toHaveBeenCalled();
 			expect(renderMock).not.toHaveBeenCalled();
-			expect(cli.exitSpy).toHaveBeenCalledWith(EXEC_EXIT_CODE.USAGE);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
 			expect(cli.errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining('--dry-run is only supported in exec mode'),
 			);

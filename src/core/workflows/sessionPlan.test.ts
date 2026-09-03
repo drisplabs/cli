@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it} from 'vitest';
-import {createWorkflowRunState, prepareWorkflowTurn} from './sessionPlan';
+import {
+	createWorkflowRunState,
+	prepareWorkflowTurn,
+	resolveJournalPath,
+} from './sessionPlan';
 import {STATE_MACHINE_CONTENT} from './stateMachine';
 
 const tempDirs: string[] = [];
@@ -19,11 +23,71 @@ afterEach(() => {
 	}
 });
 
+describe('resolveJournalPath', () => {
+	const LOOPED = {
+		name: 'wf',
+		plugins: [],
+		promptTemplate: '{input}',
+		loop: {enabled: true, maxIterations: 5},
+	};
+
+	it('defaults to .athena/<sessionId>/journal.md', () => {
+		const projectDir = makeTempDir();
+		expect(
+			resolveJournalPath({projectDir, sessionId: 's1', workflow: LOOPED}),
+		).toEqual({
+			absolutePath: path.join(projectDir, '.athena', 's1', 'journal.md'),
+			promptPath: '.athena/s1/journal.md',
+		});
+	});
+
+	it('keeps reading a legacy tracker.md when the session already has one and no journal.md', () => {
+		const projectDir = makeTempDir();
+		const dossier = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(dossier, {recursive: true});
+		fs.writeFileSync(path.join(dossier, 'tracker.md'), '# old', 'utf-8');
+
+		expect(
+			resolveJournalPath({projectDir, sessionId: 's1', workflow: LOOPED}),
+		).toEqual({
+			absolutePath: path.join(dossier, 'tracker.md'),
+			promptPath: '.athena/s1/tracker.md',
+		});
+	});
+
+	it('prefers journal.md once it exists, even beside a stale tracker.md', () => {
+		const projectDir = makeTempDir();
+		const dossier = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(dossier, {recursive: true});
+		fs.writeFileSync(path.join(dossier, 'tracker.md'), '# old', 'utf-8');
+		fs.writeFileSync(path.join(dossier, 'journal.md'), '# new', 'utf-8');
+
+		expect(
+			resolveJournalPath({projectDir, sessionId: 's1', workflow: LOOPED})
+				?.promptPath,
+		).toBe('.athena/s1/journal.md');
+	});
+
+	it('honours the legacy trackerPath config key as journalPath', () => {
+		const projectDir = makeTempDir();
+		expect(
+			resolveJournalPath({
+				projectDir,
+				sessionId: 's1',
+				workflow: {
+					...LOOPED,
+					loop: {enabled: true, maxIterations: 5, trackerPath: 'notes/t.md'},
+				},
+			})?.promptPath,
+		).toBe('notes/t.md');
+	});
+});
+
 describe('workflow session planning', () => {
 	it('applies prompt template and resolves shared workflow overrides', () => {
 		const projectDir = makeTempDir();
 		const promptPath = path.join(projectDir, 'workflow-prompt.md');
-		fs.writeFileSync(promptPath, 'Follow the tracker strictly.', 'utf-8');
+		fs.writeFileSync(promptPath, 'Follow the journal strictly.', 'utf-8');
 
 		const state = createWorkflowRunState({
 			projectDir,
@@ -44,7 +108,7 @@ describe('workflow session planning', () => {
 		expect(prepared.configOverride).toEqual({
 			model: 'gpt-5',
 			appendSystemPromptFile: composedPath,
-			developerInstructions: 'Follow the tracker strictly.',
+			developerInstructions: 'Follow the journal strictly.',
 		});
 	});
 
@@ -141,7 +205,7 @@ describe('workflow session planning', () => {
 		expect(instructions).toContain(
 			'Use a dedicated git worktree for repository-changing work',
 		);
-		expect(instructions).toContain('record its branch/path in the tracker');
+		expect(instructions).toContain('record its branch/path in the journal');
 	});
 
 	it('uses non-codex harness task tools in composed state machine content', () => {
@@ -205,8 +269,8 @@ describe('workflow session planning', () => {
 					enabled: true,
 					completionMarker: '<!-- DONE -->',
 					maxIterations: 5,
-					trackerPath: '.athena/{sessionId}.md',
-					continuePrompt: 'Continue with {trackerPath}',
+					journalPath: '.athena/{sessionId}.md',
+					continuePrompt: 'Continue with {journalPath}',
 				},
 			},
 		});

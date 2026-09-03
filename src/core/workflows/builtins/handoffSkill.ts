@@ -74,7 +74,7 @@ Structure the Handoff file with these sections, in this order:
 ## Rules
 
 - **Reference, don't duplicate.** Point to existing artifacts — PRDs, plans,
-  ADRs, issues, PRs, commits, diffs, trackers — by path or URL instead of
+  ADRs, issues, PRs, commits, diffs, journals — by path or URL instead of
   copying their content into the Handoff file.
 - **Redact secrets.** Never write API keys, passwords, tokens, credentials, or
   personally identifiable information into the file. Replace any such value

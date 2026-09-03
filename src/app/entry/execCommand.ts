@@ -4,7 +4,7 @@ import {
 	getSessionMeta,
 } from '../../infra/sessions/index';
 import type {RuntimeBootstrapOutput} from '../bootstrap/bootstrapConfig';
-import {runExec, EXEC_EXIT_CODE} from '../exec';
+import {runExec, RUN_EXIT_CODE} from '../exec';
 import {
 	resolveResumeTarget,
 	type ResumeRequest,
@@ -76,12 +76,12 @@ export async function runExecCommand(
 
 	if (input.flags.ephemeral && input.flags.continueFlag !== undefined) {
 		logError('Error: --ephemeral cannot be combined with --continue.');
-		return EXEC_EXIT_CODE.USAGE;
+		return RUN_EXIT_CODE.USAGE;
 	}
 
 	if (!isValidTimeout(input.flags.timeoutMs)) {
 		logError('Error: --timeout-ms must be a positive number.');
-		return EXEC_EXIT_CODE.USAGE;
+		return RUN_EXIT_CODE.USAGE;
 	}
 
 	let continueResolution: ResumeTarget | undefined;
@@ -110,10 +110,10 @@ export async function runExecCommand(
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
-		return EXEC_EXIT_CODE.RUNTIME;
+		return RUN_EXIT_CODE.RUNTIME;
 	}
 	if (!continueResolution) {
-		return EXEC_EXIT_CODE.RUNTIME;
+		return RUN_EXIT_CODE.RUNTIME;
 	}
 
 	const result = await runExecFn({

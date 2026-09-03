@@ -199,7 +199,7 @@ describe('buildCodexPromptOptions', () => {
 	it('maps isolation preset to Codex approvalPolicy and sandbox', () => {
 		expect(
 			buildCodexPromptOptions({
-				processConfig: {preset: 'strict'},
+				processConfig: {preset: 'guarded'},
 			}),
 		).toEqual(
 			expect.objectContaining({
@@ -214,7 +214,7 @@ describe('buildCodexPromptOptions', () => {
 		// killed every permissive run at spawn (observed live).
 		expect(
 			buildCodexPromptOptions({
-				processConfig: {preset: 'permissive'},
+				processConfig: {preset: 'autonomous'},
 			}),
 		).toEqual(
 			expect.objectContaining({
@@ -226,7 +226,7 @@ describe('buildCodexPromptOptions', () => {
 
 		expect(
 			buildCodexPromptOptions({
-				processConfig: {preset: 'minimal'},
+				processConfig: {preset: 'standard'},
 			}),
 		).toEqual(
 			expect.objectContaining({

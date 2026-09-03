@@ -32,7 +32,7 @@ _Avoid_: page type, category, tag.
 **KB Source**:
 The immutable input a **Provenance link** points back to; the KB is a projection
 of it. Two kinds in the MVP: a manually supplied file (PRD, transcript, spec),
-or a completed **Workflow Run** taken as its final **Tracker** plus the
+or a completed **Workflow Run** taken as its final **Journal** plus the
 **transitive closure** of Dossier files it points to — unit records,
 `orientation.md`, the Handoff chain — resolved recursively and passed through
 the **Redaction gate** before ingest. A closure is one KB Source: it is cited,

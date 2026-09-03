@@ -34,7 +34,7 @@ describe('runRunsCommand', () => {
 		expect(output).toContain('session: athena-1');
 		expect(output).toContain('which env?');
 		expect(output).toContain(
-			'athena-flow exec --continue=athena-1 "<your reply>"',
+			'athena-flow run --continue=athena-1 "<your reply>"',
 		);
 	});
 

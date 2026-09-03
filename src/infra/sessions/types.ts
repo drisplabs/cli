@@ -64,7 +64,7 @@ export type WorkflowRunSnapshot = {
 	maxIterations?: number;
 	status: RunStatus;
 	stopReason?: string;
-	trackerPath?: string;
+	journalPath?: string;
 	/**
 	 * Vendor session id (Claude Code session / Codex thread) of the most recent
 	 * Turn's Agent Session. Absent until the harness reports one; every resume-
@@ -73,7 +73,7 @@ export type WorkflowRunSnapshot = {
 	adapterSessionId?: string;
 	/**
 	 * Opaque JSON snapshot of the run-loop reducer's `RunMemory` (nudge/retry
-	 * streaks, last tracker hash, in-flight stop prompt/continuation), so a
+	 * streaks, last journal hash, in-flight stop prompt/continuation), so a
 	 * resumed process can rehydrate the reducer instead of restarting its
 	 * counters (ADR 0016). Serialized/parsed by `src/core/workflows/runMachine`
 	 * — this layer stores and returns it as an opaque string, never inspects
@@ -92,7 +92,7 @@ export type PersistedWorkflowRun = {
 	maxIterations: number;
 	status: RunStatus;
 	stopReason?: string;
-	trackerPath?: string;
+	journalPath?: string;
 	/** Vendor session id of the Run's most recent Agent Session (ADR 0014). */
 	adapterSessionId?: string;
 	/** Opaque JSON snapshot of the run-loop reducer's `RunMemory` (ADR 0016). */

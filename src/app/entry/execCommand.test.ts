@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
 import {runExecCommand, type ExecRuntimeConfig} from './execCommand';
-import {EXEC_EXIT_CODE} from '../exec';
+import {RUN_EXIT_CODE} from '../exec';
 
 const BASE_RUNTIME_CONFIG: ExecRuntimeConfig = {
 	harness: 'claude-code' as const,
@@ -37,7 +37,7 @@ describe('runExecCommand', () => {
 			{logError, runExecFn: runExecFn as never},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.USAGE);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -56,7 +56,7 @@ describe('runExecCommand', () => {
 			{logError, runExecFn: runExecFn as never},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.USAGE);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -79,7 +79,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -102,7 +102,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -127,7 +127,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalledWith(
 			expect.stringContaining('Failed to resolve --continue session'),
@@ -137,7 +137,7 @@ describe('runExecCommand', () => {
 	it('runs exec with resolved resume info and returns exit code', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.RUNTIME});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.RUNTIME});
 
 		const code = await runExecCommand(
 			{
@@ -152,7 +152,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).toHaveBeenCalledWith(
 			expect.objectContaining({
 				athenaSessionId: 'athena-new',
@@ -163,7 +163,7 @@ describe('runExecCommand', () => {
 	it('forwards a stripped personal capabilities summary (name + layer only)', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{
@@ -212,7 +212,7 @@ describe('runExecCommand', () => {
 	it('forwards a stripped capability-conflicts summary (name + layer only)', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{
@@ -263,7 +263,7 @@ describe('runExecCommand', () => {
 	it('uses most recent session when bare --continue is provided', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{

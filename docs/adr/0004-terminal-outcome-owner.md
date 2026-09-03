@@ -3,6 +3,8 @@
 Status: Active — amended by [ADR 0014](0014-handover-retry-attention-continuation.md) (the Run Status space gains the non-terminal `awaiting_attention`; `blocked` and `exhausted` are no longer emitted; `TurnOutcome` gains a `suspend` kind; failure-class handling is explicitly the Runner's, not the resolver's, so "one owner" now covers the Tracker-end-state map only)
 Date: 2026-07-19
 
+> **Terminology note (2026-09-03, #185):** this ADR predates the rename of the **Tracker** to the **Journal** (`trackerReader.ts` is now `journalReader.ts`; `parseTrackerState` / `readTracker` are `parseJournalState` / `readJournal`) and of the `WORKFLOW_BLOCKED` marker to `NEEDS_HUMAN`. The one-owner decision is unchanged; the owner now also carries a `deprecation` note when a Turn used the old marker spelling, which the run-loop reducer turns into a `warn` action. The text below is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
+
 ## Context
 
 After each Turn, the Runner must decide one thing: run another Turn, or stop the Workflow Run with a

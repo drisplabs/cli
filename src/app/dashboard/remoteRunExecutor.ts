@@ -413,7 +413,7 @@ export async function executeRemoteAssignment({
 			runtimeConfig = bootstrapRuntimeConfigFn({
 				projectDir,
 				showSetup: false,
-				isolationPreset: 'minimal',
+				isolationPreset: 'standard',
 				harnessOverride: spec.harness,
 				workflowOverride,
 			});
