@@ -13,8 +13,8 @@ export type ServiceInstallResult = {
 };
 
 export type ServiceInstallOptions = {
-	/** Absolute path to dist/dashboard-daemon.js. */
-	daemonEntry: string;
+	/** Absolute path to dist/runner.js. */
+	runnerEntry: string;
 	/** Absolute path to the node binary (typically `process.execPath`). */
 	nodeBinary: string;
 	env?: NodeJS.ProcessEnv;
@@ -25,7 +25,10 @@ export type ServiceInstallOptions = {
 };
 
 /**
- * Generate and write a launchd plist (macOS) or systemd user unit (linux).
+ * Generate and write a launchd plist (macOS) or systemd user unit (linux) for
+ * the `drisp runner` process. The unit names (`ai.drisp.daemon`,
+ * `drisp-daemon.service`) predate the runner and are kept so a re-install
+ * updates the unit a pre-0.6 pairing wrote instead of leaving two.
  *
  * Idempotent: if the unit file already matches, this is a no-op. The caller
  * runs the platform load command — we don't shell out for them, partly so the
@@ -34,7 +37,7 @@ export type ServiceInstallOptions = {
  *
  * Skips silently on unsupported platforms (Windows, BSD) and reports
  * `platform: 'unsupported'`. The user can still run the daemon via
- * `dashboard daemon foreground` under their own supervisor.
+ * `drisp runner` under their own supervisor.
  */
 export function installServiceUnit(
 	options: ServiceInstallOptions,
@@ -51,7 +54,7 @@ export function installServiceUnit(
 		const plist = renderLaunchdPlist({
 			label: 'ai.drisp.daemon',
 			nodeBinary: options.nodeBinary,
-			daemonEntry: options.daemonEntry,
+			daemonEntry: options.runnerEntry,
 			workingDirectory: home,
 			stdoutPath: paths.logPath,
 			stderrPath: paths.logPath,
@@ -71,9 +74,9 @@ export function installServiceUnit(
 			options.targetPath ??
 			path.join(home, '.config', 'systemd', 'user', 'drisp-daemon.service');
 		const unit = renderSystemdUnit({
-			description: 'Drisp dashboard runtime daemon',
+			description: 'Drisp runner',
 			nodeBinary: options.nodeBinary,
-			daemonEntry: options.daemonEntry,
+			daemonEntry: options.runnerEntry,
 		});
 		writeIfChanged(target, unit);
 		return {

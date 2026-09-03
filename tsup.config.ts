@@ -18,7 +18,10 @@ export default defineConfig({
 	entry: {
 		cli: 'src/app/entry/cli.tsx',
 		'hook-forwarder': 'src/harnesses/claude/hook-forwarder.ts',
-		'dashboard-daemon': 'src/app/entry/dashboardDaemon.ts',
+		runner: 'src/app/entry/runnerDaemon.ts',
+		// Deprecated alias of `runner` (#188), kept for one release so a service
+		// unit installed before 0.6 still finds its entry; removed in 0.7.0.
+		'dashboard-daemon': 'src/app/entry/runnerDaemon.ts',
 	},
 	format: ['esm'],
 	target: 'node18',
@@ -34,7 +37,7 @@ export default defineConfig({
 		// Set this in CI via GitHub Actions secrets. When unset (local dev),
 		// telemetry silently no-ops.
 		__POSTHOG_API_KEY__: JSON.stringify(process.env['POSTHOG_API_KEY'] ?? ''),
-		// Injected from package.json at build time so the bundled daemon
+		// Injected from package.json at build time so the bundled runner
 		// reports a real version. createRequire('../../../package.json') from
 		// the source file doesn't resolve correctly after bundling.
 		__ATHENA_VERSION__: JSON.stringify(
