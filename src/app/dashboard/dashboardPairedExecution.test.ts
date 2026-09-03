@@ -260,6 +260,177 @@ describe('DashboardPairedExecution', () => {
 		]);
 	});
 
+	describe('answer arrives while parked (#190)', () => {
+		const ALLOW = {
+			type: 'json' as const,
+			source: 'user' as const,
+			intent: {kind: 'permission_allow' as const},
+		};
+		const PARKED_INTERRUPTION = {
+			kind: 'question' as const,
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push',
+			requestId: 'req-1',
+			question: 'Bash: git push',
+		};
+
+		function makeRecordingClient() {
+			const needsHuman: unknown[] = [];
+			const decisionAcks: unknown[] = [];
+			const client = {
+				sendRunEvent: () => {},
+				sendDecisionAck: (frame: unknown) => decisionAcks.push(frame),
+				sendNeedsHuman: (frame: unknown) => needsHuman.push(frame),
+			} as Pick<
+				InstanceSocketClient,
+				'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
+			>;
+			return {client, needsHuman, decisionAcks};
+		}
+
+		/**
+		 * An executor that parks on its first launch (reports `needs_human`
+		 * with a deferred permission and returns) and, when woken, records the
+		 * wake and stays active until aborted.
+		 */
+		function makeParkingExecutor() {
+			const launches: Parameters<DashboardPairedExecutionExecutor>[0][] = [];
+			const executor: DashboardPairedExecutionExecutor = async input => {
+				launches.push(input);
+				if (!input.wake) {
+					input.client.sendNeedsHuman({
+						runId: input.assignment.runId,
+						athenaSessionId: 'athena-1',
+						interruption: PARKED_INTERRUPTION,
+					});
+					return;
+				}
+				await new Promise<void>(resolve => {
+					if (input.abortSignal?.aborted) return resolve();
+					input.abortSignal?.addEventListener('abort', () => resolve(), {
+						once: true,
+					});
+				});
+			};
+			return {executor, launches};
+		}
+
+		const settle = () => new Promise(resolve => setImmediate(resolve));
+
+		it('records the Interruption a Run parked on and marks the record awaiting_attention', async () => {
+			const {client, needsHuman} = makeRecordingClient();
+			const {executor} = makeParkingExecutor();
+			const execution = createDashboardPairedExecution({
+				client,
+				executor,
+				projectDir: '/tmp/project',
+				decisionInbox: makeDecisionInbox(),
+				now: () => 100,
+			});
+
+			execution.admitAssignment(
+				validated({type: 'run.start', runId: 'run_1', runSpec: {prompt: 'go'}}),
+			);
+			await settle();
+
+			// The frame still reaches the hub through the real client...
+			expect(needsHuman).toHaveLength(1);
+			// ...and the Run's record shows it parked on that question.
+			expect(execution.listRuns()).toEqual([
+				expect.objectContaining({
+					runId: 'run_1',
+					status: 'awaiting_attention',
+					athenaSessionId: 'athena-1',
+					interruption: PARKED_INTERRUPTION,
+				}),
+			]);
+			expect(execution.snapshot().activeRuns).toBe(0);
+		});
+
+		it('stores an answer against the parked Interruption and wakes the Run by re-launching the executor with the reply', async () => {
+			const {client, decisionAcks} = makeRecordingClient();
+			const {executor, launches} = makeParkingExecutor();
+			const decisionInbox = makeDecisionInbox();
+			const execution = createDashboardPairedExecution({
+				client,
+				executor,
+				projectDir: '/tmp/project',
+				decisionInbox,
+				now: () => 100,
+			});
+			const assignment = validated({
+				type: 'run.start',
+				runId: 'run_1',
+				runSpec: {prompt: 'go'},
+			});
+			execution.admitAssignment(assignment);
+			await settle();
+
+			execution.submitDashboardDecision({
+				athenaSessionId: 'athena-1',
+				requestId: 'req-1',
+				decision: ALLOW,
+			});
+			await settle();
+
+			// Stored durably (the inbox) and acked, as any answer is...
+			expect(decisionInbox.enqueue).toHaveBeenCalledWith(
+				expect.objectContaining({
+					athenaSessionId: 'athena-1',
+					requestId: 'req-1',
+				}),
+			);
+			expect(decisionAcks).toEqual([
+				{athenaSessionId: 'athena-1', requestId: 'req-1'},
+			]);
+			// ...and against the Interruption on the Run's record.
+			const record = execution.listRuns()[0]!;
+			expect(record.answer).toEqual({
+				requestId: 'req-1',
+				decision: ALLOW,
+				receivedAt: 100,
+			});
+			// The Run was woken: the executor ran again for the same assignment
+			// with a wake reply naming the answer, and is active once more.
+			expect(launches).toHaveLength(2);
+			expect(launches[1]!.assignment).toBe(assignment);
+			expect(launches[1]!.wake?.reply).toContain('allow');
+			expect(launches[1]!.wake?.reply).toContain('Bash: git push');
+			expect(record.status).toBe('running');
+			expect(execution.snapshot().activeRuns).toBe(1);
+
+			await execution.stop();
+		});
+
+		it('an answer no parked Run is waiting on is stored and acked but wakes nothing', async () => {
+			const {client, decisionAcks} = makeRecordingClient();
+			const {executor, launches} = makeParkingExecutor();
+			const execution = createDashboardPairedExecution({
+				client,
+				executor,
+				projectDir: '/tmp/project',
+				decisionInbox: makeDecisionInbox(),
+				now: () => 100,
+			});
+			execution.admitAssignment(
+				validated({type: 'run.start', runId: 'run_1', runSpec: {prompt: 'go'}}),
+			);
+			await settle();
+
+			execution.submitDashboardDecision({
+				athenaSessionId: 'athena-1',
+				requestId: 'req-someone-else',
+				decision: ALLOW,
+			});
+			await settle();
+
+			expect(decisionAcks).toHaveLength(1);
+			expect(launches).toHaveLength(1);
+			expect(execution.listRuns()[0]!.status).toBe('awaiting_attention');
+			expect(execution.listRuns()[0]!.answer).toBeUndefined();
+		});
+	});
+
 	it('records a steer on the Run it addresses and logs it', async () => {
 		const {client} = makeClient();
 		const logs: string[] = [];

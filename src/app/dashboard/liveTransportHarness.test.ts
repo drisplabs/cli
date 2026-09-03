@@ -30,6 +30,7 @@ describe.each<HubProtocol>(['legacy', 'canonical'])(
 				'Wire mode negotiated',
 				'Assignment admitted over the wire',
 				'Run stream and needs_human on the wire',
+				'Answer stored and Run woken while parked',
 				'Steer delivered into the next Turn',
 				'Phase event on the feed stream',
 				'Malformed frames answered with error',

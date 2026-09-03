@@ -46,29 +46,36 @@ adapter harnesses in `src/harnesses/`):
 4. **Assignment admitted over the wire** — the hub's assignment frame (under
    its own name) is admitted and `assignment_accepted` comes back.
 5. **Run stream and needs_human on the wire** — the Run's stream arrives under
-   the hub's name set and the parked Run is reported with `needs_human`.
-6. **Steer delivered into the next Turn** — a `steer` sent while the Run's
-   first Turn is in flight is recorded on the Run, left out of that Turn, and
-   delivered at the head of the next Turn's prompt (a real Workflow Runner over
-   a fake harness), with a Journal entry naming its origin.
-7. **Phase event on the feed stream** — Turn 1 leaves a Turn Protocol block in
+   the hub's name set and the parked Run is reported with `needs_human`
+   carrying a `question` Interruption addressed by a request id (a permission
+   deferred after the grace window, #190).
+6. **Answer stored and Run woken while parked** — the hub's `answer` for that
+   request (under its own name set) is acked, kept in the decision inbox for
+   replay, recorded on the parked Run's record, and wakes the Run: the
+   executor is re-launched with a wake reply naming the answer and the Run is
+   active again.
+7. **Steer delivered into the next Turn** — a `steer` sent while the woken
+   Run's first Turn is in flight is recorded on the Run, left out of that Turn,
+   and delivered at the head of the next Turn's prompt (a real Workflow Runner
+   over a fake harness), with a Journal entry naming its origin.
+8. **Phase event on the feed stream** — Turn 1 leaves a Turn Protocol block in
    the Journal; the real Workflow Runner reports the change of step, which is
    published through the real paired feed publisher (its outbox in the temp
    workspace) and reaches the hub as a `phase` FeedEvent on the feed stream
    under the hub's name set, parsing under `PhaseFeedEventSchema`; the hub
    acks it.
-8. **Malformed frames answered with error** — a non-frame object and invalid
+9. **Malformed frames answered with error** — a non-frame object and invalid
    JSON are each answered with `error{code: 'malformed_frame'}`; the socket
    stays up.
-9. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
+10. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
    the Run.
-10. **Workflow store change pushed** — writing a Workflow into the store (the
+11. **Workflow store change pushed** — writing a Workflow into the store (the
     way `drisp workflow install` does) produces a `workflows.changed` with the
     full new inventory; removing one produces another without it.
-11. **Reconnect after close** — the daemon re-establishes the socket, sends
+12. **Reconnect after close** — the daemon re-establishes the socket, sends
     `hello` first again (with the store as it is now), and re-negotiates the
     wire mode.
-12. **Every runner frame in the expected name set** — no schema or name-set
+13. **Every runner frame in the expected name set** — no schema or name-set
     violations across the whole session.
 
 ## How to run

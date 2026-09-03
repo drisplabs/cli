@@ -1,4 +1,8 @@
-import type {AssignmentRejectedReason, SteerFrame} from '@drisp/protocol';
+import type {
+	AssignmentRejectedReason,
+	Interruption,
+	SteerFrame,
+} from '@drisp/protocol';
 import type {
 	InstanceSocketClient,
 	InstanceSocketLogger,
@@ -11,6 +15,7 @@ import type {
 import type {FeedSink} from './pairedFeedPublisher';
 import type {RuntimeDecision} from '../../core/runtime/types';
 import {createSteerQueue, type SteerQueue} from '../../core/workflows/steer';
+import {describeAnswer} from '../exec/permissionHold';
 
 /**
  * A dashboard decision in Run-domain terms, decoupled from the `answer`
@@ -54,12 +59,35 @@ export type DashboardPairedExecutionExecutor = (
 	input: ExecuteRemoteAssignmentInput,
 ) => Promise<void>;
 
+/** An `answer` the hub sent for the request a parked Run is waiting on (#190). */
+export type DashboardRunAnswer = {
+	requestId: string;
+	decision: RuntimeDecision;
+	receivedAt: number;
+};
+
 export type DashboardPairedExecutionRunRecord = {
 	runId: string;
 	startedAt: number;
 	endedAt?: number;
-	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
+	/**
+	 * `awaiting_attention` is the parked state (#190): the executor has
+	 * returned, but the Run is waiting on a human and can be woken.
+	 */
+	status:
+		| 'running'
+		| 'awaiting_attention'
+		| 'completed'
+		| 'failed'
+		| 'cancelled'
+		| 'rejected';
 	error?: string;
+	/** The Athena Session the Run reported when it parked. */
+	athenaSessionId?: string;
+	/** Why the Run parked, as reported on its `needs_human` frame. */
+	interruption?: Interruption;
+	/** The answer stored against `interruption` while parked. */
+	answer?: DashboardRunAnswer;
 	/** Every Steer the hub sent for this Run, in arrival order. */
 	steers?: DashboardRunSteer[];
 };
@@ -135,12 +163,57 @@ export function createDashboardPairedExecution(
 	>();
 	const activeByRunner = new Map<string, Set<string>>();
 	const runHistory: DashboardPairedExecutionRunRecord[] = [];
+	// What a wake needs to re-launch a parked Run: the assignment it was
+	// admitted with, and the workspace it ran in.
+	const launched = new Map<
+		string,
+		{assignment: ValidatedAssignment; projectDir: string}
+	>();
+
+	// The executor reports a park through the client it is handed; observing
+	// that frame here is what lets an `answer` find the Run it is for.
+	const executionClient: typeof client = {
+		sendRunEvent: event => client.sendRunEvent(event),
+		sendDecisionAck: input => client.sendDecisionAck(input),
+		sendNeedsHuman(input) {
+			const record = [...runHistory]
+				.reverse()
+				.find(r => r.runId === input.runId);
+			if (record) {
+				record.status = 'awaiting_attention';
+				record.interruption = input.interruption;
+				if (input.athenaSessionId !== undefined) {
+					record.athenaSessionId = input.athenaSessionId;
+				}
+				delete record.answer;
+			}
+			client.sendNeedsHuman(input);
+		},
+	};
 
 	function recordRun(record: DashboardPairedExecutionRunRecord): void {
 		runHistory.push(record);
 		while (runHistory.length > runHistoryLimit) {
 			runHistory.shift();
 		}
+	}
+
+	/**
+	 * The parked Run an answer is for: parked on a deferred permission whose
+	 * request id and Athena Session match the answer's.
+	 */
+	function findParkedRunFor(
+		submission: DashboardDecisionSubmission,
+	): DashboardPairedExecutionRunRecord | undefined {
+		return [...runHistory]
+			.reverse()
+			.find(
+				r =>
+					r.status === 'awaiting_attention' &&
+					r.athenaSessionId === submission.athenaSessionId &&
+					r.interruption?.kind === 'question' &&
+					r.interruption.requestId === submission.requestId,
+			);
 	}
 
 	function rejectAssignment(
@@ -170,6 +243,40 @@ export function createDashboardPairedExecution(
 			athenaSessionId: submission.athenaSessionId,
 			requestId: submission.requestId,
 		});
+
+		// Answer arrives while parked (#190): store it against the Interruption
+		// and wake the Run. The re-launched run finds the answer in the inbox
+		// and replays it into the re-issued call.
+		const parked = findParkedRunFor(submission);
+		if (!parked) return;
+		const launch = launched.get(parked.runId);
+		if (!launch) return;
+		parked.answer = {
+			requestId: submission.requestId,
+			decision: submission.decision,
+			receivedAt: now(),
+		};
+		const call =
+			parked.interruption?.kind === 'question'
+				? (parked.interruption.question ?? 'the deferred call')
+				: 'the deferred call';
+		const verdict = describeAnswer(submission.decision);
+		log(
+			'info',
+			`answer (${verdict}) stored for run ${parked.runId} request ${submission.requestId}; waking it`,
+		);
+		const admission = launch_(launch.assignment, {
+			projectDir: launch.projectDir,
+			wake: {
+				reply: `Your deferred ${call} (request ${submission.requestId}) was answered: ${verdict}. Re-issue that call now and continue.`,
+			},
+		});
+		if (admission.kind === 'rejected') {
+			log(
+				'warn',
+				`run ${parked.runId} could not be woken: ${admission.rejection.message}`,
+			);
+		}
 	}
 
 	function cancelRun(runId: string): boolean {
@@ -220,7 +327,9 @@ export function createDashboardPairedExecution(
 
 	/**
 	 * Steers held while the Run was not running (#191), moved onto the queue
-	 * of the assignment that now continues it, in arrival order.
+	 * of the assignment that now continues it, in arrival order. A wake
+	 * (#190) launches the same assignment under the same runId, so a Steer
+	 * held against a parked Run rides its continue.
 	 */
 	function takeHeldSteers(runId: string, steerQueue: SteerQueue): void {
 		for (const prior of runHistory) {
@@ -237,9 +346,13 @@ export function createDashboardPairedExecution(
 		}
 	}
 
-	function handleAssignment(
+	/**
+	 * Launch the executor for an assignment: a fresh Run, or — with `wake` —
+	 * the continuation of a parked one, which reuses its record.
+	 */
+	function launch_(
 		assignment: ValidatedAssignment,
-		input: {projectDir?: string} = {},
+		input: {projectDir?: string; wake?: {reply: string}} = {},
 	): DashboardAssignmentAdmission {
 		const {runId, runnerId} = assignment;
 		if (active.has(runId)) {
@@ -263,19 +376,30 @@ export function createDashboardPairedExecution(
 		const controller = new AbortController();
 		const steerQueue = createSteerQueue();
 		takeHeldSteers(runId, steerQueue);
-		const record: DashboardPairedExecutionRunRecord = {
+		const resumed = input.wake
+			? [...runHistory].reverse().find(r => r.runId === runId)
+			: undefined;
+		const record: DashboardPairedExecutionRunRecord = resumed ?? {
 			runId,
 			startedAt: now(),
 			status: 'running',
 		};
-		recordRun(record);
+		if (resumed) {
+			resumed.status = 'running';
+			delete resumed.endedAt;
+			delete resumed.error;
+		} else {
+			recordRun(record);
+		}
+		const runProjectDir = input.projectDir ?? projectDir;
+		launched.set(runId, {assignment, projectDir: runProjectDir});
 		bucket.add(runId);
 		activeByRunner.set(runnerId, bucket);
 
 		const promise = executor({
 			assignment,
-			client,
-			projectDir: input.projectDir ?? projectDir,
+			client: executionClient,
+			projectDir: runProjectDir,
 			log,
 			abortSignal: controller.signal,
 			decisionInbox,
@@ -283,6 +407,7 @@ export function createDashboardPairedExecution(
 			...(pairedFeedPublisher
 				? {dashboardFeedPublisher: pairedFeedPublisher}
 				: {}),
+			...(input.wake ? {wake: input.wake} : {}),
 		})
 			.then(() => {
 				if (record.status === 'running') record.status = 'completed';
@@ -327,7 +452,7 @@ export function createDashboardPairedExecution(
 		// translated by `routeDashboardRunFrame` into `submitDashboardDecision`,
 		// `cancelRun`, and `steerRun` calls.
 		admitAssignment(assignment, input) {
-			return handleAssignment(assignment, input);
+			return launch_(assignment, input);
 		},
 		cancelRun,
 		submitDashboardDecision,

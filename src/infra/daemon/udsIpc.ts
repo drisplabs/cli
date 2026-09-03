@@ -18,8 +18,21 @@ export type UdsRunRecord = {
 	runId: string;
 	startedAt: number;
 	endedAt?: number;
-	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
+	/** `awaiting_attention`: parked for a human, wakeable (#190). */
+	status:
+		| 'running'
+		| 'awaiting_attention'
+		| 'completed'
+		| 'failed'
+		| 'cancelled'
+		| 'rejected';
 	error?: string;
+	/** The Athena Session a parked run reported. */
+	athenaSessionId?: string;
+	/** Why the run parked, as it was reported to the hub (a protocol Interruption). */
+	interruption?: unknown;
+	/** The answer stored against `interruption` while parked. */
+	answer?: {requestId: string; decision: unknown; receivedAt: number};
 	/** Steers the hub sent for this run, in arrival order. */
 	steers?: Array<{athenaSessionId?: string; text: string; receivedAt: number}>;
 };

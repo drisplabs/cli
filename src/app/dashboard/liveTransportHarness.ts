@@ -25,7 +25,10 @@ import {
 	createPairedFeedPublisher,
 	type PairedFeedPublisher,
 } from './pairedFeedPublisher';
-import type {DashboardDecisionInbox} from './dashboardDecisionInbox';
+import type {
+	DashboardDecisionInbox,
+	DashboardDecisionInboxRow,
+} from './dashboardDecisionInbox';
 import type {
 	HarnessVerificationCheck,
 	HarnessVerificationResult,
@@ -76,6 +79,8 @@ const ASSIGNMENT_RUN_ID = 'run_live_harness_1';
 const ATHENA_SESSION_ID = 'athena-live-harness';
 const STEER_TEXT = 'live-transport harness steer';
 const PHASE_STEP = 'Orient';
+const DEFERRED_REQUEST_ID = 'req_live_harness_deferred';
+const DEFERRED_CALL = 'Bash: git push origin main';
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 const CLI_VERSION = 'live-harness';
 const SEEDED_WORKFLOW: InstalledWorkflow = {
@@ -222,6 +227,16 @@ export async function runLiveTransportHarness(
 			type: hubProtocol === 'canonical' ? 'stop' : 'cancel',
 			runId: ASSIGNMENT_RUN_ID,
 		}),
+		answer: (): Record<string, unknown> => ({
+			type: hubProtocol === 'canonical' ? 'answer' : 'dashboard_decision',
+			athenaSessionId: ATHENA_SESSION_ID,
+			requestId: DEFERRED_REQUEST_ID,
+			decision: {
+				type: 'json',
+				source: 'user',
+				intent: {kind: 'permission_allow'},
+			},
+		}),
 	};
 
 	// Hermetic workspace for the admitted assignment. Pointing the assignment's
@@ -315,9 +330,7 @@ export async function runLiveTransportHarness(
 
 	// The paired feed publisher is real — it is the seam the feed-stream
 	// scenario exercises — but its durable outbox lives in the temp workspace,
-	// so the dashboard state dir is never touched. The decision inbox is
-	// stubbed: it is not a transport seam, so stubbing it does not weaken the
-	// live-transport coverage.
+	// so the dashboard state dir is never touched.
 	const feedOutbox = createDashboardFeedOutbox({
 		dbPath: path.join(tempWorkspace, 'feed-outbox.db'),
 	});
@@ -326,12 +339,28 @@ export async function runLiveTransportHarness(
 		outbox: feedOutbox,
 		drainIntervalMs: 50,
 	});
+	// The decision inbox is real in shape but in-memory: an `answer` the hub
+	// sends while the Run is parked must be stored against the request it is
+	// for, and observable, without touching the daemon state dir.
+	const inboxRows: DashboardDecisionInboxRow[] = [];
+	const consumedRows = new Set<number>();
 	const decisionInbox: DashboardDecisionInbox = {
-		enqueue: () => {},
-		pendingForSession: () => [],
-		markConsumed: () => {},
+		enqueue: input => {
+			inboxRows.push({id: inboxRows.length + 1, ...input});
+		},
+		pendingForSession: ({athenaSessionId}) =>
+			inboxRows.filter(
+				row =>
+					row.athenaSessionId === athenaSessionId && !consumedRows.has(row.id),
+			),
+		markConsumed: ({id}) => {
+			consumedRows.add(id);
+		},
 		close: () => {},
 	};
+	// Every wake the stub executor received: the daemon re-launching a parked
+	// Run once an answer for its deferred request arrived.
+	const wakes: Array<{runId: string; reply: string}> = [];
 
 	try {
 		await new Promise<void>((resolve, reject) => {
@@ -349,15 +378,126 @@ export async function runLiveTransportHarness(
 				expiresInSec: 900,
 			}),
 			// The harness is not under test here; the stub drives the runner →
-			// hub frames a real Run would (one run-stream event and a
-			// needs_human) through the REAL client, then runs a REAL Workflow
-			// Runner over a fake harness whose first Turn stays in flight until
-			// the hub's steer lands — so the steer is provably queued mid-Turn
-			// and delivered at the head of the next Turn (#191). Turn 1 leaves a
-			// Turn Protocol block in the Journal, so the Runner's change of step
-			// goes out through the real paired feed publisher (#192). Finally it
-			// parks until stopped.
+			// hub frames a real Run would through the REAL client. On its first
+			// launch it reports one run-stream event and parks on a deferred
+			// permission (needs_human with a `question` addressed by a request
+			// id) and returns, the way a parked run's executor does (#190).
+			// Woken by the hub's answer for that request, it runs a REAL
+			// Workflow Runner over a fake harness whose first Turn stays in
+			// flight until the hub's steer lands — so the steer is provably
+			// queued mid-Turn and delivered at the head of the next Turn (#191).
+			// Turn 1 leaves a Turn Protocol block in the Journal, so the
+			// Runner's change of step goes out through the real paired feed
+			// publisher (#192). Finally it parks until stopped.
 			executeRemoteAssignment: async input => {
+				if (input.wake) {
+					wakes.push({runId: input.assignment.runId, reply: input.wake.reply});
+
+					const journalPath = path.join(
+						tempWorkspace,
+						'.athena',
+						ATHENA_SESSION_ID,
+						'journal.md',
+					);
+					let releaseFirstTurn: () => void = () => {};
+					const firstTurnGate = new Promise<void>(resolve => {
+						releaseFirstTurn = resolve;
+					});
+					const runner = createWorkflowRunner({
+						sessionId: ATHENA_SESSION_ID,
+						projectDir: tempWorkspace,
+						prompt: input.wake.reply,
+						workflow: {
+							name: 'live-harness',
+							plugins: [],
+							promptTemplate: '{input}',
+							loop: {enabled: true, maxIterations: 3},
+						},
+						startTurn: async turn => {
+							runState.turnPrompts.push(turn.prompt);
+							if (runState.turnPrompts.length === 1) {
+								await firstTurnGate;
+								fs.writeFileSync(
+									journalPath,
+									[
+										'turn 1 done',
+										'<!-- TURN_PROTOCOL',
+										`step: ${PHASE_STEP}`,
+										'step_index: 1',
+										'step_total: 3',
+										'-->',
+									].join('\n'),
+									'utf-8',
+								);
+							} else {
+								runState.journalSeenByTurn2 = fs.readFileSync(
+									journalPath,
+									'utf-8',
+								);
+								fs.writeFileSync(
+									journalPath,
+									'<!-- WORKFLOW_COMPLETE -->',
+									'utf-8',
+								);
+							}
+							return {
+								exitCode: 0,
+								error: null,
+								streamMessage: null,
+								tokens: {
+									input: null,
+									output: null,
+									cacheRead: null,
+									cacheWrite: null,
+									total: null,
+									contextSize: null,
+									contextWindowSize: null,
+								},
+							};
+						},
+						persistRunState: () => {},
+						// A change of workflow step reaches the hub through the paired
+						// feed publisher — the feed stream, not the run stream — the
+						// way runExec publishes it.
+						onPhaseChange: phase => {
+							input.dashboardFeedPublisher?.publish({
+								origin: 'dashboard',
+								athenaSessionId: ATHENA_SESSION_ID,
+								feedEvents: [
+									buildPhaseFeedEvent({
+										phase,
+										sessionId: ATHENA_SESSION_ID,
+										runId: `${ATHENA_SESSION_ID}:R1`,
+										seq: 1,
+										ts: Date.now(),
+									}),
+								],
+							});
+						},
+					});
+					// The daemon's steer queue is the seam runExec subscribes on in
+					// production; here the stub subscribes the same way.
+					input.steerQueue?.subscribe(steer => {
+						runner.steer(steer);
+						releaseFirstTurn();
+					});
+					input.abortSignal?.addEventListener(
+						'abort',
+						() => {
+							runner.cancel();
+							releaseFirstTurn();
+						},
+						{once: true},
+					);
+					await runner.result;
+					await new Promise<void>(resolve => {
+						if (input.abortSignal?.aborted) return resolve();
+						input.abortSignal?.addEventListener('abort', () => resolve(), {
+							once: true,
+						});
+					});
+					return;
+				}
 				input.client.sendRunEvent({
 					runId: input.assignment.runId,
 					seq: 1,
@@ -369,114 +509,11 @@ export async function runLiveTransportHarness(
 					runId: input.assignment.runId,
 					athenaSessionId: ATHENA_SESSION_ID,
 					interruption: {
-						kind: 'blocked',
-						reason: 'harness',
-						message: 'agent declared NEEDS_HUMAN: harness',
+						kind: 'question',
+						message: `permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main`,
+						requestId: DEFERRED_REQUEST_ID,
+						question: DEFERRED_CALL,
 					},
-				});
-
-				const journalPath = path.join(
-					tempWorkspace,
-					'.athena',
-					ATHENA_SESSION_ID,
-					'journal.md',
-				);
-				let releaseFirstTurn: () => void = () => {};
-				const firstTurnGate = new Promise<void>(resolve => {
-					releaseFirstTurn = resolve;
-				});
-				const runner = createWorkflowRunner({
-					sessionId: ATHENA_SESSION_ID,
-					projectDir: tempWorkspace,
-					prompt: input.assignment.spec.prompt,
-					workflow: {
-						name: 'live-harness',
-						plugins: [],
-						promptTemplate: '{input}',
-						loop: {enabled: true, maxIterations: 3},
-					},
-					startTurn: async turn => {
-						runState.turnPrompts.push(turn.prompt);
-						if (runState.turnPrompts.length === 1) {
-							await firstTurnGate;
-							fs.writeFileSync(
-								journalPath,
-								[
-									'turn 1 done',
-									'<!-- TURN_PROTOCOL',
-									`step: ${PHASE_STEP}`,
-									'step_index: 1',
-									'step_total: 3',
-									'-->',
-								].join('\n'),
-								'utf-8',
-							);
-						} else {
-							runState.journalSeenByTurn2 = fs.readFileSync(
-								journalPath,
-								'utf-8',
-							);
-							fs.writeFileSync(
-								journalPath,
-								'<!-- WORKFLOW_COMPLETE -->',
-								'utf-8',
-							);
-						}
-						return {
-							exitCode: 0,
-							error: null,
-							streamMessage: null,
-							tokens: {
-								input: null,
-								output: null,
-								cacheRead: null,
-								cacheWrite: null,
-								total: null,
-								contextSize: null,
-								contextWindowSize: null,
-							},
-						};
-					},
-					persistRunState: () => {},
-					// A change of workflow step reaches the hub through the paired
-					// feed publisher — the feed stream, not the run stream — the
-					// way runExec publishes it.
-					onPhaseChange: phase => {
-						input.dashboardFeedPublisher?.publish({
-							origin: 'dashboard',
-							athenaSessionId: ATHENA_SESSION_ID,
-							feedEvents: [
-								buildPhaseFeedEvent({
-									phase,
-									sessionId: ATHENA_SESSION_ID,
-									runId: `${ATHENA_SESSION_ID}:R1`,
-									seq: 1,
-									ts: Date.now(),
-								}),
-							],
-						});
-					},
-				});
-				// The daemon's steer queue is the seam runExec subscribes on in
-				// production; here the stub subscribes the same way.
-				input.steerQueue?.subscribe(steer => {
-					runner.steer(steer);
-					releaseFirstTurn();
-				});
-				input.abortSignal?.addEventListener(
-					'abort',
-					() => {
-						runner.cancel();
-						releaseFirstTurn();
-					},
-					{once: true},
-				);
-				await runner.result;
-				await new Promise<void>(resolve => {
-					if (input.abortSignal?.aborted) return resolve();
-					input.abortSignal?.addEventListener('abort', () => resolve(), {
-						once: true,
-					});
 				});
 			},
 			reconnectDelaysMs: [10],
@@ -629,8 +666,60 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 6: a steer sent while Turn 1 is in flight is recorded on the
-		// Run, waits for the Turn boundary, and heads the next Turn's prompt.
+		// Scenario 6: the Run is parked on a deferred permission. The hub's
+		// answer for that request (under its own name set) is acked, stored in
+		// the inbox and against the Run's Interruption, and wakes the Run: the
+		// executor is re-launched with a wake reply and the Run is active again.
+		serverState.socket?.send(JSON.stringify(hubFrames.answer()));
+		try {
+			await waitFor(
+				() =>
+					framesOfType('decision_ack').some(
+						f => f['requestId'] === DEFERRED_REQUEST_ID,
+					) &&
+					wakes.length >= 1 &&
+					daemon!
+						.listRuns()
+						.some(
+							run =>
+								run.runId === ASSIGNMENT_RUN_ID &&
+								run.status === 'running' &&
+								run.answer?.requestId === DEFERRED_REQUEST_ID &&
+								run.interruption?.kind === 'question' &&
+								run.interruption.requestId === DEFERRED_REQUEST_ID,
+						),
+				'answer acked, stored on the parked run, and the run woken',
+				stepTimeoutMs,
+			);
+			const stored = decisionInbox
+				.pendingForSession({athenaSessionId: ATHENA_SESSION_ID, limit: 25})
+				.some(row => row.requestId === DEFERRED_REQUEST_ID);
+			const reply = wakes[0]?.reply ?? '';
+			const replyNamesAnswer =
+				reply.includes(DEFERRED_CALL) && reply.includes('allow');
+			checks.push(
+				stored && replyNamesAnswer
+					? pass(
+							'Answer stored and Run woken while parked',
+							`${hubProtocol === 'canonical' ? 'answer' : 'dashboard_decision'} for ${DEFERRED_REQUEST_ID} was acked, kept in the inbox for replay, recorded on the parked Run, and the Run was woken with the reply naming the answer.`,
+						)
+					: fail(
+							'Answer stored and Run woken while parked',
+							`stored=${stored} reply=${JSON.stringify(reply)}`,
+						),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Answer stored and Run woken while parked',
+					err instanceof Error ? err.message : String(err),
+				),
+			);
+		}
+
+		// Scenario 7: a steer sent while Turn 1 of the woken Run is in flight is
+		// recorded on the Run, waits for the Turn boundary, and heads the next
+		// Turn's prompt.
 		try {
 			await waitFor(
 				() => runState.turnPrompts.length >= 1,
@@ -683,7 +772,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 7: the change of workflow step Turn 1's Journal named reaches
+		// Scenario 8: the change of workflow step Turn 1's Journal named reaches
 		// the hub as a `phase` FeedEvent on the feed stream — produced by the
 		// real Workflow Runner, published through the real paired feed
 		// publisher — under the hub's name set, addressed to the Run's Athena
@@ -734,7 +823,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 8: a malformed frame is answered with a typed error and does
+		// Scenario 9: a malformed frame is answered with a typed error and does
 		// not take the connection down.
 		const errorsBefore = framesOfType('error').length;
 		serverState.socket?.send(JSON.stringify({type: 'not-a-frame', x: 1}));
@@ -768,7 +857,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 9: the hub stops the Run under its own name set.
+		// Scenario 10: the hub stops the Run under its own name set.
 		serverState.socket?.send(JSON.stringify(hubFrames.stop()));
 		try {
 			await waitFor(
@@ -797,7 +886,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 10: a Workflow installed into the store while connected is
+		// Scenario 11: a Workflow installed into the store while connected is
 		// pushed as a full-list replace (`workflows.changed`), and so is a
 		// removal. The store is watched for real; nothing tells the daemon.
 		const changesBefore = framesOfType('workflows.changed').length;
@@ -852,7 +941,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 11: drop the socket from the server and confirm the daemon
+		// Scenario 12: drop the socket from the server and confirm the daemon
 		// reconnects through the real reconnect loop — re-negotiating the wire
 		// mode and re-reading the store for the new connection's hello.
 		const connectionsBeforeClose = socketConnections;
@@ -908,7 +997,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 12: every frame the runner put on the wire parsed under the
+		// Scenario 13: every frame the runner put on the wire parsed under the
 		// package and was in the name set this hub speaks.
 		checks.push(
 			violations.length === 0
