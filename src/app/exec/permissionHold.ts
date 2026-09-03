@@ -124,14 +124,9 @@ export function matchesParkedCall(
 export function describeAnswer(decision: RuntimeDecision): string {
 	const intent = decision.intent;
 	if (!intent) return decision.type;
-	switch (intent.kind) {
-		case 'permission_allow':
-			return 'allow';
-		case 'permission_deny':
-			return 'deny';
-		default:
-			return intent.kind;
-	}
+	if (intent.kind === 'permission_allow') return 'allow';
+	if (intent.kind === 'permission_deny') return 'deny';
+	return intent.kind;
 }
 
 /** The `RuntimeDecision` a `--answer=allow|deny` given on the command line stands for. */
