@@ -59,6 +59,47 @@ paired dashboard can deliver decisions into a running session; suspension is
 what happens when no hub was attached to answer (the request held, per the
 README's "Permissions with no hub attached") and the process has since ended.
 
+## Steer: `--steer` and the hub's `steer` frame
+
+A **Steer** is a human turn text sent _into_ a Run (#191). It is never
+injected into a Turn in flight: the Runner queues it and delivers every queued
+Steer, in arrival order, as one labelled block at the **head of the next
+Turn's prompt**, ahead of the Turn Protocol's own instruction, so the agent
+reads it before it plans:
+
+```
+=== HUMAN STEER (1 of 2, via hub, received 2026-09-03T10:00:00.000Z) ===
+use the other branch
+=== HUMAN STEER (2 of 2, via local, received 2026-09-03T10:05:00.000Z) ===
+and skip the docs
+=== END HUMAN STEER ===
+
+A human steered this run. Read the steers above before you plan: …
+
+---
+
+<the Turn's own prompt: Orient / Continue / Nudge / wake framing>
+```
+
+Two ways to send one:
+
+- **Locally**, on any run and on a wake — repeatable, delivered in order:
+
+  ```sh
+  athena-flow run --continue=<athenaSessionId> "your reply" --steer "use the other branch"
+  ```
+
+- **From the hub**, as a `steer` frame to the dashboard daemon. A Steer for a
+  running Run is handed to it at once and waits for the Turn boundary; a Steer
+  for a parked Run is held (`pending` on `drisp dashboard runs`) and delivered
+  when the hub continues that Run.
+
+Each delivery is recorded in the Journal — origin (`hub` or `local`), when it
+arrived, and the Turn it was delivered into — above any terminal marker the
+Journal ends with, so an answered `NEEDS_HUMAN` line stays where the agent
+left it. In `--json` mode the run emits `run.steer.queued` on receipt and
+`run.steer` on delivery.
+
 ## Notes
 
 - `blocked` and `exhausted` still appear on historical rows; they are no

@@ -5,7 +5,9 @@ You run inside a managed workflow loop. **Run until the work is done.** The Doss
 Two kinds of Turn exist, and you should know which you are in:
 
 - **A fresh Turn** — the first Turn of the run, or the Turn right after a Handover (the runner's context reset). You start with no memory of prior work; the journal (and, after a Handover, the Handoff file) is all you have.
-- **A resumed Turn** — the runner continued your existing session with a new instruction (a corrective nudge, a retry after a transient failure, or a human's reply). Your context is intact; act on the new instruction and keep going.
+- **A resumed Turn** — the runner continued your existing session with a new instruction (a corrective nudge, a retry after a transient failure, a human's reply, or a human steer). Your context is intact; act on the new instruction and keep going.
+
+Either kind of Turn may open with a **human steer**: a block delimited by `=== HUMAN STEER … ===` and `=== END HUMAN STEER ===`, carrying instructions a human sent into the run while it was in progress (several are numbered in arrival order). Read it before you plan. Where it conflicts with the journal's planned next action, the steer wins; note what it changed in the journal and continue. The runner has already recorded the steer itself in the journal, with its origin and the Turn it reached.
 
 ## First action, in a fresh Turn
 

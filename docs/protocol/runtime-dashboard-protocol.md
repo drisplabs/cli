@@ -363,14 +363,14 @@ Every inbound frame is parsed with `safeNormalizeFrame()` before the frame
 router sees it, so both name sets are admitted and arrive as one canonical
 value:
 
-| On the wire (either)                               | Runner sees | Handled by                                                                        |
-| -------------------------------------------------- | ----------- | --------------------------------------------------------------------------------- |
-| `run.start` / `job_assignment`                     | `run.start` | assignment intake (gated on attachment readiness)                                 |
-| `answer` / `dashboard_decision`                    | `answer`    | decision inbox, then `decision_ack`                                               |
-| `stop` / `cancel`                                  | `stop`      | aborts the active Run                                                             |
-| `steer`                                            | `steer`     | recorded on the Run (`steers[]`); carried into the next Turn is drisplabs/cli#191 |
-| `hello`                                            | `hello`     | wire-mode negotiation (§17.3); a hub's hello carries no `workflows`               |
-| `feed_ack`, `attachments.changed`, `pong`, `error` | unchanged   | as before (`error` is logged)                                                     |
+| On the wire (either)                               | Runner sees | Handled by                                                                                                                                                                                            |
+| -------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run.start` / `job_assignment`                     | `run.start` | assignment intake (gated on attachment readiness)                                                                                                                                                     |
+| `answer` / `dashboard_decision`                    | `answer`    | decision inbox, then `decision_ack`                                                                                                                                                                   |
+| `stop` / `cancel`                                  | `stop`      | aborts the active Run                                                                                                                                                                                 |
+| `steer`                                            | `steer`     | recorded on the Run (`steers[]`) and queued for it: delivered at the head of the next Turn's prompt, never mid-Turn; held (`pending`) for a Run that is not running until the hub continues it (#191) |
+| `hello`                                            | `hello`     | wire-mode negotiation (§17.3); a hub's hello carries no `workflows`                                                                                                                                   |
+| `feed_ack`, `attachments.changed`, `pong`, `error` | unchanged   | as before (`error` is logged)                                                                                                                                                                         |
 
 A frame that is not JSON, or does not parse under the package (unknown `type`,
 missing required field), is answered with
