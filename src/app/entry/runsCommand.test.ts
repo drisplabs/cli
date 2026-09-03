@@ -19,7 +19,7 @@ function makeRun(
 }
 
 describe('runRunsCommand', () => {
-	it('prints the suspended-run inbox with reason and the wake command', () => {
+	it('prints the parked-run inbox with reason and the wake command', () => {
 		const lines: string[] = [];
 		const exitCode = runRunsCommand({
 			json: false,
@@ -29,16 +29,31 @@ describe('runRunsCommand', () => {
 
 		const output = lines.join('\n');
 		expect(exitCode).toBe(0);
-		expect(output).toContain('1 workflow run awaiting attention');
-		expect(output).toContain('default — awaiting attention');
+		expect(output).toContain('1 workflow run parked, awaiting attention');
+		expect(output).toContain('default — Parked, awaiting attention');
 		expect(output).toContain('session: athena-1');
 		expect(output).toContain('which env?');
-		expect(output).toContain(
-			'athena-flow run --continue=athena-1 "<your reply>"',
-		);
+		expect(output).toContain('drisp run --continue=athena-1 "<your reply>"');
 	});
 
-	it('says so when nothing awaits attention', () => {
+	it('shows which ask rule parked a Run (#189)', () => {
+		const lines: string[] = [];
+		runRunsCommand({
+			json: false,
+			log: message => lines.push(message),
+			listRunsFn: () => [
+				makeRun({
+					stopReason:
+						'ask rule "mcp__github__*" fired on mcp__github__create_pull_request — needs a human',
+				}),
+			],
+		});
+		const output = lines.join('\n');
+		expect(output).toContain('Parked');
+		expect(output).toContain('reason:  ask rule "mcp__github__*" fired on');
+	});
+
+	it('says so when nothing is parked', () => {
 		const lines: string[] = [];
 		runRunsCommand({
 			json: false,
@@ -46,7 +61,7 @@ describe('runRunsCommand', () => {
 			listRunsFn: () => [],
 		});
 		expect(lines.join('\n')).toContain(
-			'No workflow runs are awaiting attention.',
+			'No workflow runs are parked awaiting attention.',
 		);
 	});
 

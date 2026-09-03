@@ -331,6 +331,41 @@ describe('resolveWorkflow', () => {
 		);
 	});
 
+	it('reads askRules as tool-name patterns that force a human decision (#189)', () => {
+		files['/home/testuser/.config/athena/workflows/gated/workflow.json'] =
+			JSON.stringify({
+				name: 'gated',
+				plugins: [],
+				promptTemplate: '{input}',
+				workflowFile: 'workflow.md',
+				askRules: ['Bash', 'mcp__github__*'],
+			});
+		files['/home/testuser/.config/athena/workflows/gated/workflow.md'] =
+			'# Workflow';
+
+		expect(resolveWorkflow('gated').askRules).toEqual([
+			'Bash',
+			'mcp__github__*',
+		]);
+	});
+
+	it('throws when askRules is not an array of non-empty strings', () => {
+		files['/home/testuser/.config/athena/workflows/badask/workflow.json'] =
+			JSON.stringify({
+				name: 'badask',
+				plugins: [],
+				promptTemplate: '{input}',
+				workflowFile: 'workflow.md',
+				askRules: ['Bash', ''],
+			});
+		files['/home/testuser/.config/athena/workflows/badask/workflow.md'] =
+			'# Workflow';
+
+		expect(() => resolveWorkflow('badask')).toThrow(
+			/askRules.*array of non-empty tool-name patterns/,
+		);
+	});
+
 	it('resolves relative workflowFile to an absolute path when file exists', () => {
 		files['/home/testuser/.config/athena/workflows/sys/workflow.json'] =
 			JSON.stringify({

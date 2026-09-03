@@ -259,7 +259,7 @@ const cli = meow(
 			setup                 Re-run setup wizard
 			sessions              Launch interactive session picker
 			resume [sessionId]    Resume most recent (or specified) session
-			runs                  List workflow runs awaiting attention and how to wake them
+			runs                  List parked workflow runs (awaiting attention) and how to wake them
 			run "<prompt>"        Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
@@ -276,7 +276,8 @@ const cli = meow(
 			--isolation     Isolation preset for the spawned harness process:
 			                  guarded (default) - core code tools only
 			                  standard - core tools + web + subagents + plugin MCP
-			                  autonomous - everything standard allows + notebooks; Codex never asks
+			                  autonomous - everything standard allows + notebooks; Codex never asks;
+			                    in run mode, permissions no ask rule claims are answered allow
 			                  (strict / minimal / permissive are deprecated aliases, removed in 0.7.0)
 			--verbose       Show additional rendering detail and streaming display
 			--theme         Color theme: dark (default), light, or high-contrast

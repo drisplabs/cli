@@ -8,6 +8,12 @@ import {
 	type RuntimeEvent,
 } from '../../core/runtime/types';
 import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
+import type {RunInterruption} from '../../core/workflows/runMachine';
+import {
+	buildUnattendedRules,
+	matchRule,
+	type HookRule,
+} from '../../core/controller/rules';
 import type {TurnContinuation} from '../../core/runtime/process';
 import {
 	createSessionStore,
@@ -97,54 +103,65 @@ function formatCapabilityConflictNotice(summary: {
 	)}`;
 }
 
-/**
- * Human-facing description of a question the agent asked when no human is
- * attached to answer it. Used as the `awaiting_attention` suspension reason so
- * the question is preserved on the persisted Run (ADR 0014).
- */
-function describeAttentionRequest(event: RuntimeEvent): string {
+/** The question text an `AskUserQuestion` carries, joined; '' when none. */
+function extractQuestionText(event: RuntimeEvent): string {
 	const data = event.data as Record<string, unknown>;
 	const toolInput = data['tool_input'];
 	const questions =
 		typeof toolInput === 'object' && toolInput !== null
 			? (toolInput as Record<string, unknown>)['questions']
 			: undefined;
-	if (Array.isArray(questions)) {
-		const texts = questions
-			.map(q =>
-				typeof q === 'object' && q !== null
-					? (q as Record<string, unknown>)['question']
-					: undefined,
-			)
-			.filter((q): q is string => typeof q === 'string');
-		if (texts.length > 0) {
-			return `agent asked a question with no human attached to answer: ${texts.join(' | ')}`;
-		}
-	}
-	if (event.kind === 'permission.request' && event.toolName !== 'user_input') {
-		return (
-			`agent requested sandbox approval (${event.toolName ?? 'unknown tool'}) with no human attached to answer` +
-			` — rerun with a more permissive --isolation, or wake with guidance`
-		);
-	}
-	return 'agent asked a question with no human attached to answer';
+	if (!Array.isArray(questions)) return '';
+	return questions
+		.map(q =>
+			typeof q === 'object' && q !== null
+				? (q as Record<string, unknown>)['question']
+				: undefined,
+		)
+		.filter((q): q is string => typeof q === 'string')
+		.join(' | ');
 }
 
 /**
- * A question-shaped event: the agent needs a human answer to proceed. In an
- * unattended Workflow Run these previously waited forever on a null timeout;
- * per ADR 0014 they convert to an `awaiting_attention` suspension instead.
+ * What an unattended Workflow Run does with an event only a person could
+ * answer (#189): the Interruption that parks the Run, or null when the Turn
+ * keeps going. A permission is answered inside the Turn when a rule other
+ * than an ask rule matches it — under `autonomous` the preset's allow-all
+ * policy is such a rule — so only an ask rule, a question, or a permission
+ * left unclaimed under a holding preset interrupts. Previously every one of
+ * these waited forever on a null-timeout decision; per ADR 0014 they park.
  */
-function isQuestionEvent(event: RuntimeEvent): boolean {
-	return (
-		(event.kind === 'tool.pre' && event.toolName === 'AskUserQuestion') ||
+function classifyUnattendedEvent(
+	event: RuntimeEvent,
+	rules: HookRule[],
+): RunInterruption | null {
+	const data = event.data as Record<string, unknown>;
+	const toolName =
+		event.toolName ??
+		(typeof data['tool_name'] === 'string' ? data['tool_name'] : undefined);
+
+	if (event.kind === 'permission.request' && toolName !== 'user_input') {
 		// ANY permission request, not just Codex's 'user_input': a sandbox
 		// approval (e.g. item/fileChange/requestApproval under a read-only
 		// sandbox) is equally unanswerable unattended — observed live hanging a
 		// headless codex workflow run forever on the null-timeout decision.
-		event.kind === 'permission.request' ||
+		const rule = toolName ? matchRule(rules, toolName) : undefined;
+		if (rule?.action === 'ask') {
+			return {kind: 'ask_rule', rule: rule.toolName, toolName: toolName!};
+		}
+		if (rule) return null;
+		return {kind: 'unclaimed_permission', toolName: toolName ?? 'unknown tool'};
+	}
+
+	if (
+		(event.kind === 'tool.pre' && toolName === 'AskUserQuestion') ||
+		(event.kind === 'permission.request' && toolName === 'user_input') ||
 		event.kind === 'elicitation.request'
-	);
+	) {
+		return {kind: 'question', question: extractQuestionText(event)};
+	}
+
+	return null;
 }
 
 function buildEarlyFailureResult(input: {
@@ -213,10 +230,16 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		now,
 	});
 
-	// Exec does not pre-seed rules from isolation defaults. With no hub
-	// attached there is nobody to ask, so a permission request holds the Run
-	// until timeoutMs (or abort) — see README "Permissions with no hub".
-	const rules: import('../../core/controller/rules').HookRule[] = [];
+	// Unattended rules (#189): the Workflow's ask rules first, then the
+	// isolation preset's policy for whatever they leave unclaimed. Only
+	// `autonomous` has one (allow, within the tools the preset grants);
+	// under `guarded` / `standard` nothing is seeded, so with no hub attached
+	// an unclaimed permission holds until timeoutMs (or abort) — see README
+	// "Permissions with no hub" — or, in a Workflow Run, parks the Run.
+	const rules: HookRule[] = buildUnattendedRules({
+		preset: options.isolationConfig.preset,
+		askRules: options.workflow?.askRules,
+	});
 
 	let runtimeStarted = false;
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
@@ -225,9 +248,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
 	let beforeTerminalCompletionRan = false;
-	// Set when a Turn is interrupted because the agent asked a question no
-	// attached human can answer; the runner suspends the Run with this reason.
-	let attentionRequest: string | null = null;
+	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
+	// the agent asked a question no attached human can answer, or a permission
+	// went unclaimed under a holding preset. The reducer names the reason.
+	let interruption: RunInterruption | null = null;
 
 	let store: SessionStore;
 	try {
@@ -347,6 +371,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		getRules: () => rules,
 		// No UI queue in exec; with no hub attached, the runtime never
 		// receives a decision and the request holds until timeoutMs (or abort).
+		// A Workflow Run parks instead — see `classifyUnattendedEvent` above.
 		enqueuePermission: () => {},
 		enqueueQuestion: () => {},
 		// Handover interception is Claude-only for now: the fork transition
@@ -444,17 +469,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
 
-			// Declared attention (ADR 0014): with no hub attached, no human can
-			// ever answer a question — waiting on the null-timeout decision would
-			// hang the Run forever. Interrupt the Turn; the runner suspends the
-			// Run in `awaiting_attention` with the question preserved.
-			if (
-				options.workflow?.loop?.enabled &&
-				attentionRequest === null &&
-				isQuestionEvent(runtimeEvent)
-			) {
-				attentionRequest = describeAttentionRequest(runtimeEvent);
-				void sessionController.kill();
+			// Needs a person (ADR 0014, #189): with no hub attached, nobody can
+			// answer — waiting on the null-timeout decision would hang the Run
+			// forever. Interrupt the Turn; the runner parks the Run in
+			// `awaiting_attention` with the reason preserved. Permissions a rule
+			// answers (the autonomous policy, a deny) never get here.
+			if (options.workflow?.loop?.enabled && interruption === null) {
+				const next = classifyUnattendedEvent(runtimeEvent, rules);
+				if (next) {
+					interruption = next;
+					void sessionController.kill();
+				}
 			}
 
 			// Link new adapter sessions to the active workflow run
@@ -624,8 +649,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					'persistRun failed',
 				);
 			},
-			checkSuspension: () =>
-				attentionRequest !== null ? {reason: attentionRequest} : null,
+			checkInterruption: () => interruption,
 			currentAdapterSessionId,
 			handover: {
 				takeRequest: () => {

@@ -124,6 +124,18 @@ export function resolveWorkflow(name: string): ResolvedWorkflowConfig {
 	}
 
 	if (
+		raw['askRules'] !== undefined &&
+		(!Array.isArray(raw['askRules']) ||
+			!raw['askRules'].every(
+				(e: unknown) => typeof e === 'string' && e.trim().length > 0,
+			))
+	) {
+		throw new Error(
+			`Invalid workflow.json: "askRules" must be an array of non-empty tool-name patterns`,
+		);
+	}
+
+	if (
 		typeof raw['workflowFile'] !== 'string' ||
 		raw['workflowFile'].length === 0
 	) {
