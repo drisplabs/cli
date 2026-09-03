@@ -72,6 +72,21 @@ describe('hookController handleEvent', () => {
 		expect(result.decision!.intent).toEqual({kind: 'permission_allow'});
 	});
 
+	it('hands a permission an ask rule claims to the human, even under an approve-all rule (#189)', () => {
+		const cb = makeCallbacks();
+		cb._rules = [
+			{id: 'preset', toolName: '*', action: 'approve', addedBy: 'preset'},
+			{id: 'ask', toolName: 'Bash', action: 'ask', addedBy: 'workflow'},
+		];
+		const result = handleEvent(makeEvent('PermissionRequest'), cb);
+
+		expect(result.handled).toBe(true);
+		expect(result.decision).toBeUndefined();
+		expect(cb.enqueuePermission).toHaveBeenCalledWith(
+			expect.objectContaining({id: 'req-1'}),
+		);
+	});
+
 	it('returns immediate deny decision when deny rule matches', () => {
 		const cb = makeCallbacks();
 		cb._rules = [{id: '1', toolName: 'Bash', action: 'deny', addedBy: 'test'}];

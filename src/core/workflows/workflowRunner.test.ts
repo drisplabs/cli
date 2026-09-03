@@ -324,7 +324,7 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('suspends via checkSuspension even when the interrupted turn exited abnormally', async () => {
+	it('parks via checkInterruption even when the interrupted turn exited abnormally', async () => {
 		const projectDir = makeTempDir();
 		const journalDir = path.join(projectDir, '.athena', 's1');
 		fs.mkdirSync(journalDir, {recursive: true});
@@ -351,8 +351,9 @@ describe('createWorkflowRunner', () => {
 			},
 			startTurn,
 			persistRunState,
-			checkSuspension: () => ({
-				reason: 'agent asked a question with no human attached to answer',
+			checkInterruption: () => ({
+				kind: 'question',
+				question: 'Deploy to prod or staging?',
 			}),
 		});
 

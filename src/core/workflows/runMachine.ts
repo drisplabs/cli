@@ -96,6 +96,49 @@ export type RunMemory = {
 };
 
 /**
+ * Why an unattended Turn was interrupted to park the Run (#189) — the
+ * runner-side **Interruption** (see the glossary's wire section). With nobody
+ * attached, exactly three things stop a Turn for a person:
+ *
+ * - `ask_rule`: a permission an **ask rule** claimed (the rule pattern as
+ *   written in `workflow.json`, and the tool it matched);
+ * - `question`: the agent asked a question only a person can answer
+ *   (`AskUserQuestion`, a `user_input` request, an elicitation);
+ * - `unclaimed_permission`: a permission no rule answered under a preset
+ *   whose policy is to hold rather than auto-answer (`guarded` / `standard`).
+ *
+ * Under the `autonomous` preset an unclaimed permission is answered inside
+ * the Turn by the preset's policy and never reaches the reducer. The fourth
+ * way to park — the `NEEDS_HUMAN` marker — is a Journal end-state and arrives
+ * as a `suspend` outcome instead.
+ */
+export type RunInterruption =
+	| {kind: 'ask_rule'; rule: string; toolName: string}
+	| {kind: 'question'; question: string}
+	| {kind: 'unclaimed_permission'; toolName: string};
+
+/**
+ * The human sentence an `awaiting_attention` phase carries for an
+ * interruption — what `drisp runs` shows as the reason. Owned here, beside
+ * the retry-cap and nudge-cap sentences, so every park reason has one author.
+ */
+function describeInterruption(interruption: RunInterruption): string {
+	switch (interruption.kind) {
+		case 'ask_rule':
+			return `ask rule "${interruption.rule}" fired on ${interruption.toolName} — needs a human`;
+		case 'question':
+			return interruption.question
+				? `agent asked a question with no human attached to answer: ${interruption.question}`
+				: 'agent asked a question with no human attached to answer';
+		case 'unclaimed_permission':
+			return (
+				`agent requested sandbox approval (${interruption.toolName}) with no human attached to answer` +
+				` — rerun with --isolation autonomous, or wake with guidance`
+			);
+	}
+}
+
+/**
  * What `perform()` reports back after executing one phase's actions — the
  * only way information from the outside world reaches the reducer.
  */
@@ -112,7 +155,8 @@ export type RunEvent =
 			transportBroken: boolean;
 			/** The handle of a pending Handover request, or null when none. */
 			handoverRequestHandle: string | null;
-			suspension: {reason: string} | null;
+			/** Set when the Turn was interrupted to park the Run (#189). */
+			interruption: RunInterruption | null;
 			adapterSessionId: string | null;
 			/** Only computed on the success path once loop/journal apply. */
 			outcome: TurnOutcome | null;
@@ -313,9 +357,16 @@ function handleTurnInFlight(
 		};
 	}
 
-	if (event.suspension) {
+	// Parked for a person (#189): an ask rule, a question, or an unclaimed
+	// permission under a holding preset. Checked before failure classification
+	// — interrupting the Turn ends the harness process abnormally, but the Run
+	// is suspended, not failed.
+	if (event.interruption) {
 		return {
-			phase: {kind: 'awaiting_attention', stopReason: event.suspension.reason},
+			phase: {
+				kind: 'awaiting_attention',
+				stopReason: describeInterruption(event.interruption),
+			},
 			memory,
 			actions: [{type: 'persist'}],
 		};
