@@ -1,6 +1,6 @@
+import type {RunStartFrame} from '@drisp/protocol';
 import type {
 	InstanceSocketClient,
-	InstanceSocketFrame,
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import type {DashboardPairedExecution} from './dashboardPairedExecution';
@@ -12,11 +12,6 @@ import {
 	resolveRemoteWorkspace,
 	type RemoteWorkspaceResolution,
 } from './remoteWorkspaceResolver';
-
-type JobAssignmentFrame = Extract<
-	InstanceSocketFrame,
-	{type: 'job_assignment'}
->;
 
 export type DashboardAssignmentIntakeOptions = {
 	client: Pick<
@@ -40,7 +35,7 @@ export type DashboardConnectionContext = {
 };
 
 export type DashboardAssignmentIntake = {
-	receive(frame: JobAssignmentFrame): void;
+	receive(frame: RunStartFrame): void;
 	markReady(context: DashboardConnectionContext): void;
 	markNotReady(): void;
 };
@@ -53,11 +48,11 @@ export function createDashboardAssignmentIntake(
 		options.resolveWorkspace ??
 		((assignment, context) =>
 			resolveRemoteWorkspace(assignment, {dashboardUrl: context.dashboardUrl}));
-	const pending: JobAssignmentFrame[] = [];
+	const pending: RunStartFrame[] = [];
 	let context: DashboardConnectionContext | null = null;
 
 	function handle(
-		frame: JobAssignmentFrame,
+		frame: RunStartFrame,
 		readyContext: DashboardConnectionContext,
 	): void {
 		const validation = validateDashboardAssignment(frame);

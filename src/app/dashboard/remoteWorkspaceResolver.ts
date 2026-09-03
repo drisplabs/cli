@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {daemonStatePaths} from '../../infra/daemon/stateDir';
-import type {AssignmentRejectedReason} from './instanceSocketClient';
+import type {AssignmentRejectedReason} from '@drisp/protocol';
 import type {ValidatedAssignment} from './remoteRunExecutor';
 
 export type RemoteWorkspaceRejection = {

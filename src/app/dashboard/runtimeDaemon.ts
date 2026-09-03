@@ -2,6 +2,7 @@ import {
 	createInstanceSocketClient,
 	type InstanceSocketClient,
 	type InstanceSocketLogger,
+	type InstanceSocketWireMode,
 } from './instanceSocketClient';
 import {
 	executeRemoteAssignment,
@@ -48,6 +49,12 @@ export type RuntimeDaemonRunRecord = DashboardPairedExecutionRunRecord;
 export type RuntimeDaemonSnapshot = {
 	startedAt: number;
 	socketConnected: boolean;
+	/**
+	 * Which frame-name set the current connection puts on the wire: `legacy`
+	 * until the hub's `hello` announces the protocol version this runner
+	 * speaks, then `canonical`. Absent while disconnected.
+	 */
+	wireMode?: InstanceSocketWireMode;
 	lastFrameAt?: number;
 	activeRuns: number;
 	completedRuns: number;
@@ -210,18 +217,29 @@ export async function runDashboardRuntimeDaemon(
 	let cooldownUntil = 0;
 	const executionClient: Pick<
 		InstanceSocketClient,
-		'sendRunEvent' | 'sendDecisionAck'
+		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
 	> = {
 		sendRunEvent(event) {
 			const current = client ?? lastSocketClient;
 			if (!current) {
 				log(
 					'warn',
-					`instance socket dropped run_event (socket not connected): runId=${event.runId} kind=${event.kind}`,
+					`instance socket dropped run event (socket not connected): runId=${event.runId} kind=${event.kind}`,
 				);
 				return;
 			}
 			current.sendRunEvent(event);
+		},
+		sendNeedsHuman(input) {
+			const current = client ?? lastSocketClient;
+			if (!current) {
+				log(
+					'warn',
+					`instance socket dropped needs_human (socket not connected): runId=${input.runId} kind=${input.interruption.kind}`,
+				);
+				return;
+			}
+			current.sendNeedsHuman(input);
 		},
 		sendDecisionAck(input) {
 			const current = client;
@@ -401,11 +419,34 @@ export async function runDashboardRuntimeDaemon(
 				pairedFeedPublisher.handleAck(frame);
 				return;
 			}
-			if (frame.type === 'job_assignment') {
+			if (frame.type === 'run.start') {
 				assignmentIntake.receive(frame);
 				return;
 			}
-			routeDashboardRunFrame(pairedExecution, frame);
+			if (frame.type === 'hello') {
+				// The socket client already negotiated the wire mode; this is the
+				// daemon's record of who is on the other end.
+				log(
+					'info',
+					`runtime daemon: hub hello protocolVersion=${frame.protocolVersion}${
+						frame.agent ? ` agent=${frame.agent.name}` : ''
+					}`,
+				);
+				return;
+			}
+			if (frame.type === 'error') {
+				log(
+					'warn',
+					`runtime daemon: hub error frame code=${frame.code}${
+						frame.message ? `: ${frame.message}` : ''
+					}`,
+				);
+				return;
+			}
+			if (frame.type === 'pong') return;
+			if (!routeDashboardRunFrame(pairedExecution, frame)) {
+				log('debug', `runtime daemon: unhandled frame type=${frame.type}`);
+			}
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;
@@ -507,6 +548,7 @@ export async function runDashboardRuntimeDaemon(
 			return {
 				startedAt,
 				socketConnected: client !== null,
+				...(client ? {wireMode: client.wireMode()} : {}),
 				...(lastFrameAt !== undefined ? {lastFrameAt} : {}),
 				activeRuns: executionSnapshot.activeRuns,
 				completedRuns: executionSnapshot.completedRuns,

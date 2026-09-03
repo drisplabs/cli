@@ -23,7 +23,7 @@ describe('DashboardAssignmentIntake', () => {
 		});
 
 		const frame = {
-			type: 'job_assignment' as const,
+			type: 'run.start' as const,
 			runId: 'run_1',
 			runSpec: {prompt: 'hi'},
 		};
@@ -61,7 +61,7 @@ describe('DashboardAssignmentIntake', () => {
 		});
 		intake.markReady(connectedContext);
 		intake.receive({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_bad',
 			runSpec: {},
 		});
@@ -96,7 +96,7 @@ describe('DashboardAssignmentIntake', () => {
 		});
 		intake.markReady(connectedContext);
 		intake.receive({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_full',
 			runSpec: {prompt: 'go'},
 		});
@@ -127,7 +127,7 @@ describe('DashboardAssignmentIntake', () => {
 		});
 		intake.markReady(connectedContext);
 		intake.receive({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_home',
 			runSpec: {prompt: 'go'},
 		});

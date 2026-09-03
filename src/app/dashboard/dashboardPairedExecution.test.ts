@@ -10,7 +10,7 @@ import {
 } from './remoteRunExecutor';
 
 function validated(frame: {
-	type: 'job_assignment';
+	type: 'run.start';
 	runId: string;
 	runnerId?: string;
 	runSpec?: unknown;
@@ -28,7 +28,11 @@ function makeClient() {
 	const client = {
 		sendRunEvent: frame => runEvents.push(frame),
 		sendDecisionAck: frame => decisionAcks.push(frame),
-	} as Pick<InstanceSocketClient, 'sendRunEvent' | 'sendDecisionAck'>;
+		sendNeedsHuman: () => {},
+	} as Pick<
+		InstanceSocketClient,
+		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
+	>;
 	return {client, runEvents, decisionAcks};
 }
 
@@ -62,7 +66,7 @@ describe('DashboardPairedExecution', () => {
 		});
 
 		const assignment = validated({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_1',
 			runSpec: {prompt: 'hi', env: {FOO: 'bar'}},
 		});
@@ -100,7 +104,7 @@ describe('DashboardPairedExecution', () => {
 		});
 
 		const assignment = validated({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_dup',
 			runSpec: {prompt: 'hi'},
 		});
@@ -141,7 +145,7 @@ describe('DashboardPairedExecution', () => {
 
 		execution.admitAssignment(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_a',
 				runnerId: 'runner-1',
 				runSpec: {prompt: 'a'},
@@ -149,7 +153,7 @@ describe('DashboardPairedExecution', () => {
 		);
 		execution.admitAssignment(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_b',
 				runnerId: 'runner-1',
 				runSpec: {prompt: 'b'},
@@ -190,7 +194,7 @@ describe('DashboardPairedExecution', () => {
 
 		execution.admitAssignment(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_cancel',
 				runnerId: 'runner-1',
 				runSpec: {prompt: 'a'},
@@ -253,5 +257,73 @@ describe('DashboardPairedExecution', () => {
 		expect(decisionAcks).toEqual([
 			{athenaSessionId: 'athena-1', requestId: 'req-1'},
 		]);
+	});
+
+	it('records a steer on the Run it addresses and logs it', async () => {
+		const {client} = makeClient();
+		const logs: string[] = [];
+		let resolveFirst: () => void = () => {};
+		const executor = vi.fn(
+			async () =>
+				new Promise<void>(resolve => {
+					resolveFirst = resolve;
+				}),
+		) as DashboardPairedExecutionExecutor;
+		const execution = createDashboardPairedExecution({
+			client,
+			executor,
+			projectDir: '/tmp/project',
+			decisionInbox: makeDecisionInbox(),
+			log: (_level, message) => logs.push(message),
+			now: () => 777,
+		});
+
+		execution.admitAssignment(
+			validated({
+				type: 'run.start',
+				runId: 'run_steer',
+				runnerId: 'runner-1',
+				runSpec: {prompt: 'a'},
+			}),
+		);
+		await Promise.resolve();
+
+		expect(
+			execution.steerRun({
+				runId: 'run_steer',
+				athenaSessionId: 'athena-1',
+				text: 'use the other branch',
+			}),
+		).toBe(true);
+
+		expect(execution.listRuns()).toEqual([
+			expect.objectContaining({
+				runId: 'run_steer',
+				status: 'running',
+				steers: [
+					{
+						athenaSessionId: 'athena-1',
+						text: 'use the other branch',
+						receivedAt: 777,
+					},
+				],
+			}),
+		]);
+		expect(logs).toContainEqual(expect.stringContaining('steer'));
+		expect(logs).toContainEqual(expect.stringContaining('run_steer'));
+		resolveFirst();
+		await execution.stop();
+	});
+
+	it('returns false for a steer addressed to a Run it has never seen', () => {
+		const {client} = makeClient();
+		const execution = createDashboardPairedExecution({
+			client,
+			executor: vi.fn(async () => {}) as DashboardPairedExecutionExecutor,
+			projectDir: '/tmp/project',
+			decisionInbox: makeDecisionInbox(),
+		});
+
+		expect(execution.steerRun({runId: 'missing', text: 'hello'})).toBe(false);
 	});
 });

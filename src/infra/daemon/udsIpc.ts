@@ -20,6 +20,8 @@ export type UdsRunRecord = {
 	endedAt?: number;
 	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
 	error?: string;
+	/** Steers the hub sent for this run, in arrival order. */
+	steers?: Array<{athenaSessionId?: string; text: string; receivedAt: number}>;
 };
 
 export type UdsResponse =
@@ -29,6 +31,7 @@ export type UdsResponse =
 			pid: number;
 			startedAt: number;
 			socketConnected: boolean;
+			wireMode?: 'legacy' | 'canonical';
 			lastFrameAt?: number;
 			activeRuns: number;
 			completedRuns: number;
