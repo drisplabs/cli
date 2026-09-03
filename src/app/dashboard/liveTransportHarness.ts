@@ -688,8 +688,7 @@ export async function runLiveTransportHarness(
 		// real Workflow Runner, published through the real paired feed
 		// publisher — under the hub's name set, addressed to the Run's Athena
 		// Session, and parsing under PhaseFeedEventSchema.
-		const feedStreamType =
-			hubProtocol === 'canonical' ? 'event' : 'feed_event';
+		const feedStreamType = hubProtocol === 'canonical' ? 'event' : 'feed_event';
 		const isPhaseFrame = (frame: Record<string, unknown>): boolean => {
 			if (hubProtocol === 'canonical' && frame['stream'] !== 'feed') {
 				return false;
