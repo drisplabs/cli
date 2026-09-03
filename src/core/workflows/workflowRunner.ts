@@ -27,6 +27,7 @@ import {
 	type RunMemory,
 	type RunEvent,
 	type RunAction,
+	type RunInterruption,
 	type StepConfig,
 } from './runMachine';
 
@@ -74,12 +75,14 @@ export type WorkflowRunnerInput = {
 	onWarning?: (message: string) => void;
 	/**
 	 * Consulted after each Turn, before failure classification. A non-null
-	 * result suspends the Run in `awaiting_attention` with the given reason
-	 * (ADR 0014) — used when a Turn was interrupted because the agent asked a
-	 * question no attached human can answer. Takes precedence over the Turn's
-	 * exit code: interrupting the Turn to suspend is not a failure.
+	 * result parks the Run in `awaiting_attention` (ADR 0014, #189) — used when
+	 * a Turn was interrupted because an ask rule fired, the agent asked a
+	 * question no attached human can answer, or a permission went unclaimed
+	 * under a holding preset. The reducer names the reason. Takes precedence
+	 * over the Turn's exit code: interrupting the Turn to park is not a
+	 * failure.
 	 */
-	checkSuspension?: () => {reason: string} | null;
+	checkInterruption?: () => RunInterruption | null;
 	/**
 	 * Vendor session id (Claude session / Codex thread) of the most recent
 	 * Turn's Agent Session, as observed by the caller's runtime. Snapshotted on
@@ -495,7 +498,7 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension: null,
+					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
 					journalContent: '',
@@ -504,7 +507,7 @@ export function createWorkflowRunner(
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 
-			// Handover (ADR 0014 §5): checked before suspension and failure
+			// Handover (ADR 0014 §5): checked before interruption and failure
 			// classification — the interruption is neither.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
@@ -516,18 +519,18 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: handoverRequest.handle,
-					suspension: null,
+					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
 					journalContent: '',
 				};
 			}
 
-			// Declared attention interrupted this Turn. Checked before failure
-			// classification: the interruption ends the harness process
-			// abnormally, but the Run is suspended, not failed.
-			const suspension = input.checkSuspension?.() ?? null;
-			if (suspension) {
+			// An Interruption parked this Turn (#189). Checked before failure
+			// classification: interrupting ends the harness process abnormally,
+			// but the Run is suspended, not failed.
+			const interruption = input.checkInterruption?.() ?? null;
+			if (interruption) {
 				return {
 					type: 'turn_finished',
 					cancelled: false,
@@ -536,7 +539,7 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension,
+					interruption,
 					adapterSessionId: null,
 					outcome: null,
 					journalContent: '',
@@ -559,7 +562,7 @@ export function createWorkflowRunner(
 					streamMessage: turnResult.streamMessage,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension: null,
+					interruption: null,
 					adapterSessionId,
 					outcome: null,
 					journalContent: '',
@@ -595,7 +598,7 @@ export function createWorkflowRunner(
 				streamMessage: turnResult.streamMessage,
 				transportBroken,
 				handoverRequestHandle: null,
-				suspension: null,
+				interruption: null,
 				adapterSessionId,
 				outcome,
 				journalContent,

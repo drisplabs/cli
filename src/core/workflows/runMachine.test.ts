@@ -109,7 +109,7 @@ function turnFinished(
 		streamMessage: null,
 		transportBroken: false,
 		handoverRequestHandle: null,
-		suspension: null,
+		interruption: null,
 		adapterSessionId: null,
 		outcome: null,
 		journalContent: '',
@@ -173,18 +173,156 @@ describe('runMachine.step — turn_in_flight', () => {
 		]);
 	});
 
-	it('a declared suspension moves straight to awaiting_attention', () => {
-		const result = step(
-			turnInFlight(),
-			makeMemory(),
-			turnFinished({suspension: {reason: 'need human input: which env?'}}),
-			makeCfg(),
-		);
-		expect(result.phase).toEqual({
-			kind: 'awaiting_attention',
-			stopReason: 'need human input: which env?',
+	describe('unattended interruptions park the Run as needs-human (#189)', () => {
+		it('an ask rule firing parks the Run, naming the rule and the tool', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {kind: 'ask_rule', rule: 'Bash', toolName: 'Bash'},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason: 'ask rule "Bash" fired on Bash — needs a human',
+			});
+			expect(result.actions).toEqual([{type: 'persist'}]);
 		});
-		expect(result.actions).toEqual([{type: 'persist'}]);
+
+		it('an ask rule pattern is named as written, not as the tool it matched', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {
+						kind: 'ask_rule',
+						rule: 'mcp__github__*',
+						toolName: 'mcp__github__create_pull_request',
+					},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason:
+					'ask rule "mcp__github__*" fired on mcp__github__create_pull_request — needs a human',
+			});
+		});
+
+		it('a NEEDS_HUMAN marker parks the Run the same way an ask rule does', () => {
+			const marker = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					outcome: {
+						kind: 'suspend',
+						status: 'awaiting_attention',
+						stopReason: 'agent declared NEEDS_HUMAN: which env?',
+					},
+				}),
+				makeCfg(),
+			);
+			const askRule = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {kind: 'ask_rule', rule: 'Bash', toolName: 'Bash'},
+				}),
+				makeCfg(),
+			);
+			expect(marker.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason: 'agent declared NEEDS_HUMAN: which env?',
+			});
+			expect(marker.phase.kind).toBe(askRule.phase.kind);
+			expect(marker.actions).toEqual(askRule.actions);
+			expect(marker.memory).toEqual(askRule.memory);
+		});
+
+		it('a question no attached human can answer parks the Run with the question', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {
+						kind: 'question',
+						question: 'Deploy to prod or staging?',
+					},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason:
+					'agent asked a question with no human attached to answer: Deploy to prod or staging?',
+			});
+		});
+
+		it('a permission no rule claims parks the Run and points at the autonomous preset', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: {kind: 'unclaimed_permission', toolName: 'Edit'},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('awaiting_attention');
+			const reason = (
+				result.phase as Extract<RunPhase, {kind: 'awaiting_attention'}>
+			).stopReason;
+			expect(reason).toContain('Edit');
+			expect(reason).toContain('--isolation autonomous');
+		});
+
+		it('an interruption beats the Turn`s exit code: interrupting to park is not a failure', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					exitCode: 143,
+					interruption: {kind: 'ask_rule', rule: '*', toolName: 'Bash'},
+				}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('awaiting_attention');
+			expect(result.memory.retryStreak).toBe(0);
+		});
+
+		it('a Turn whose permission prompts were auto-answered is not interrupted: the Run continues', () => {
+			// The autonomous preset answers an unclaimed permission inside the
+			// Turn; the reducer never sees it. The Turn ends like any other —
+			// here without a marker, so the next row is a Nudge, not a park.
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: null,
+					outcome: {kind: 'continue'},
+					adapterSessionId: 'sess-1',
+					journalContent: 'progress',
+				}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('turn_in_flight');
+			expect(result.memory.iteration).toBe(2);
+		});
+
+		it('a Turn that ends on WORKFLOW_COMPLETE with nobody watching completes the Run', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					interruption: null,
+					outcome: {kind: 'stop', status: 'completed'},
+					journalContent: '# done\n<!-- WORKFLOW_COMPLETE -->',
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toEqual({kind: 'completed'});
+			expect(result.actions).toEqual([{type: 'persist'}]);
+		});
 	});
 
 	it('a transient failure backs off with exponential ms and bumps retryStreak', () => {

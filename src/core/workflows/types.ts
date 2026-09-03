@@ -134,6 +134,16 @@ export type WorkflowConfig = {
 	promptTemplate: string;
 	loop?: LoopConfig;
 	isolation?: string;
+	/**
+	 * **Ask rules** (#189, provisional): tool-name patterns — `*`, an exact
+	 * tool name, or `mcp__server__*` — whose permission prompts must always
+	 * reach a person. Unattended (`drisp run`, no hub attached) a matching
+	 * prompt parks the Run as needs-human naming the pattern; it is never
+	 * answered by the isolation preset's policy, even under `autonomous`.
+	 * Gates as data (decision + consequences) supersede this once
+	 * drisplabs/drisp-desktop#39 fixes the Workflow format.
+	 */
+	askRules?: string[];
 	model?: string;
 	/** Reasoning effort level to pin for the harness (low/medium/high/xhigh/max) */
 	effort?: string;
