@@ -35,6 +35,7 @@ import {
 } from './artifactCapture';
 import type {FeedSink} from './pairedFeedPublisher';
 import {interruptionFromSuspension} from './interruptionFromSuspension';
+import type {SteerQueue} from '../../core/workflows/steer';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
@@ -67,6 +68,12 @@ export type ExecuteRemoteAssignmentInput = {
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
 	decisionInbox?: DashboardDecisionReader;
+	/**
+	 * The hub's Steers for this Run (#191), pushed by paired execution as
+	 * `steer` frames arrive; handed to `runExec`, whose Runner delivers each
+	 * at the head of the next Turn's prompt.
+	 */
+	steerQueue?: SteerQueue;
 	bootstrapRuntimeConfigFn?: typeof bootstrapRuntimeConfig;
 	now?: () => number;
 	abortSignal?: AbortSignal;
@@ -336,6 +343,7 @@ export async function executeRemoteAssignment({
 	log = () => {},
 	runExecFn = runExec,
 	decisionInbox,
+	steerQueue,
 	bootstrapRuntimeConfigFn = bootstrapRuntimeConfig,
 	now = Date.now,
 	abortSignal,
@@ -510,6 +518,7 @@ export async function executeRemoteAssignment({
 				stdout,
 				stderr,
 				...(decisionInbox ? {dashboardDecisionInbox: decisionInbox} : {}),
+				...(steerQueue ? {steerQueue} : {}),
 				...(dashboardFeedPublisher ? {dashboardFeedPublisher} : {}),
 				...(artifactUploadSpec
 					? {

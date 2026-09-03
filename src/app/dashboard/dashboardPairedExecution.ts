@@ -10,6 +10,7 @@ import type {
 } from './remoteRunExecutor';
 import type {FeedSink} from './pairedFeedPublisher';
 import type {RuntimeDecision} from '../../core/runtime/types';
+import {createSteerQueue, type SteerQueue} from '../../core/workflows/steer';
 
 /**
  * A dashboard decision in Run-domain terms, decoupled from the `answer`
@@ -27,14 +28,17 @@ export type DashboardDecisionSubmission = {
 export type DashboardSteerSubmission = Omit<SteerFrame, 'type'>;
 
 /**
- * A Steer recorded on a Run. Carrying it into the next Turn's prompt is
- * drisplabs/cli#191; until then the record is the durable trace that it
- * arrived.
+ * A Steer recorded on a Run (#191). A Steer for a running Run is handed to its
+ * executor at once (the Runner queues it for the next Turn boundary); one for
+ * a Run that is no longer running — parked, or otherwise ended — is held
+ * `pending` and handed to the next assignment that continues the same Run.
  */
 export type DashboardRunSteer = {
 	athenaSessionId?: string;
 	text: string;
 	receivedAt: number;
+	/** Held for the Run's continue; cleared once handed to an executor. */
+	pending?: boolean;
 };
 
 export type DashboardAssignmentRejection = {
@@ -83,9 +87,10 @@ export type DashboardPairedExecution = {
 	cancelRun(runId: string): boolean;
 	submitDashboardDecision(submission: DashboardDecisionSubmission): void;
 	/**
-	 * Record a Steer on the Run it addresses. Returns `false` when this
-	 * execution has no record of the Run (never admitted here, or evicted
-	 * from the history ring).
+	 * Record a Steer on the Run it addresses and hand it to the Run's executor
+	 * (or hold it for the Run's continue when it is not running). Returns
+	 * `false` when this execution has no record of the Run (never admitted
+	 * here, or evicted from the history ring).
 	 */
 	steerRun(submission: DashboardSteerSubmission): boolean;
 	rejectAssignment(
@@ -125,6 +130,7 @@ export function createDashboardPairedExecution(
 			promise: Promise<void>;
 			record: DashboardPairedExecutionRunRecord;
 			runnerKey: string;
+			steerQueue: SteerQueue;
 		}
 	>();
 	const activeByRunner = new Map<string, Set<string>>();
@@ -188,19 +194,47 @@ export function createDashboardPairedExecution(
 			);
 			return false;
 		}
+		// Running: the executor's queue carries it to the Runner, which delivers
+		// it at the next Turn boundary. Otherwise it is held for the continue.
+		const entry = active.get(submission.runId);
 		const steer: DashboardRunSteer = {
 			...(submission.athenaSessionId !== undefined
 				? {athenaSessionId: submission.athenaSessionId}
 				: {}),
 			text: submission.text,
 			receivedAt: now(),
+			...(entry ? {} : {pending: true}),
 		};
 		record.steers = [...(record.steers ?? []), steer];
+		entry?.steerQueue.push({
+			text: steer.text,
+			origin: 'hub',
+			receivedAt: steer.receivedAt,
+		});
 		log(
 			'info',
-			`steer recorded for run ${submission.runId} (${record.status}): ${submission.text}`,
+			`steer ${entry ? 'queued for the next Turn of' : 'held for the continue of'} run ${submission.runId} (${record.status}): ${submission.text}`,
 		);
 		return true;
+	}
+
+	/**
+	 * Steers held while the Run was not running (#191), moved onto the queue
+	 * of the assignment that now continues it, in arrival order.
+	 */
+	function takeHeldSteers(runId: string, steerQueue: SteerQueue): void {
+		for (const prior of runHistory) {
+			if (prior.runId !== runId) continue;
+			for (const steer of prior.steers ?? []) {
+				if (!steer.pending) continue;
+				steer.pending = false;
+				steerQueue.push({
+					text: steer.text,
+					origin: 'hub',
+					receivedAt: steer.receivedAt,
+				});
+			}
+		}
 	}
 
 	function handleAssignment(
@@ -227,6 +261,8 @@ export function createDashboardPairedExecution(
 		}
 
 		const controller = new AbortController();
+		const steerQueue = createSteerQueue();
+		takeHeldSteers(runId, steerQueue);
 		const record: DashboardPairedExecutionRunRecord = {
 			runId,
 			startedAt: now(),
@@ -243,6 +279,7 @@ export function createDashboardPairedExecution(
 			log,
 			abortSignal: controller.signal,
 			decisionInbox,
+			steerQueue,
 			...(pairedFeedPublisher
 				? {dashboardFeedPublisher: pairedFeedPublisher}
 				: {}),
@@ -272,7 +309,13 @@ export function createDashboardPairedExecution(
 					if (remaining.size === 0) activeByRunner.delete(runnerId);
 				}
 			});
-		active.set(runId, {controller, promise, record, runnerKey: runnerId});
+		active.set(runId, {
+			controller,
+			promise,
+			record,
+			runnerKey: runnerId,
+			steerQueue,
+		});
 		return {kind: 'accepted'};
 	}
 

@@ -9,6 +9,7 @@ import {
 	type ValidatedAssignment,
 } from './remoteRunExecutor';
 import type {ExecRunOptions} from '../exec/types';
+import {createSteerQueue} from '../../core/workflows/steer';
 import type {RunStreamClient, RunStreamFrameInput} from './runStreamClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
@@ -91,6 +92,65 @@ describe('validateDashboardAssignment', () => {
 });
 
 describe('executeRemoteAssignment', () => {
+	it('forwards the steer queue to runExec so hub steers reach the Runner (#191)', async () => {
+		const steerQueue = createSteerQueue();
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => ({
+			success: true,
+			exitCode: 0 as const,
+			athenaSessionId: options.athenaSessionId ?? null,
+			adapterSessionId: null,
+			finalMessage: null,
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		}));
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_steer',
+				runSpec: {prompt: 'say hello'},
+			}),
+			client: {sendRunEvent: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			steerQueue,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'claude-code',
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+			now: () => 999,
+		});
+
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({steerQueue}),
+		);
+	});
+
 	it('runs the assigned prompt and streams exec events back to the dashboard', async () => {
 		const sent: unknown[] = [];
 		const runExecFn = vi.fn(async (options: ExecRunOptions) => {

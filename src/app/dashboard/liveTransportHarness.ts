@@ -24,6 +24,8 @@ import type {
 	HarnessVerificationCheck,
 	HarnessVerificationResult,
 } from '../../harnesses/types';
+import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
+import {STEER_BLOCK_OPEN} from '../../core/workflows/steer';
 
 /**
  * Live-transport integration harness for the dashboard daemon: a fake hub
@@ -272,6 +274,13 @@ export async function runLiveTransportHarness(
 
 	let daemon: RuntimeDaemonHandle | null = null;
 
+	// What the stubbed Run's fake harness saw: the prompt of every Turn the
+	// real Workflow Runner started, and the Journal as Turn 2 found it.
+	const runState: {turnPrompts: string[]; journalSeenByTurn2: string} = {
+		turnPrompts: [],
+		journalSeenByTurn2: '',
+	};
+
 	// Disk-writing seams stubbed so the harness never touches the dashboard
 	// state dir. These are not transport seams, so stubbing them does not
 	// weaken the live-transport coverage.
@@ -310,9 +319,13 @@ export async function runLiveTransportHarness(
 				instanceId: INSTANCE_ID,
 				expiresInSec: 900,
 			}),
-			// Execution is not under test here; the stub only drives the
-			// runner → hub frames a real Run would (one run-stream event and a
-			// needs_human) through the REAL client, then parks until stopped.
+			// The harness is not under test here; the stub drives the runner →
+			// hub frames a real Run would (one run-stream event and a
+			// needs_human) through the REAL client, then runs a REAL Workflow
+			// Runner over a fake harness whose first Turn stays in flight until
+			// the hub's steer lands — so the steer is provably queued mid-Turn
+			// and delivered at the head of the next Turn (#191) — and finally
+			// parks until stopped.
 			executeRemoteAssignment: async input => {
 				input.client.sendRunEvent({
 					runId: input.assignment.runId,
@@ -330,6 +343,75 @@ export async function runLiveTransportHarness(
 						message: 'agent declared NEEDS_HUMAN: harness',
 					},
 				});
+
+				const journalPath = path.join(
+					tempWorkspace,
+					'.athena',
+					ATHENA_SESSION_ID,
+					'journal.md',
+				);
+				let releaseFirstTurn: () => void = () => {};
+				const firstTurnGate = new Promise<void>(resolve => {
+					releaseFirstTurn = resolve;
+				});
+				const runner = createWorkflowRunner({
+					sessionId: ATHENA_SESSION_ID,
+					projectDir: tempWorkspace,
+					prompt: input.assignment.spec.prompt,
+					workflow: {
+						name: 'live-harness',
+						plugins: [],
+						promptTemplate: '{input}',
+						loop: {enabled: true, maxIterations: 3},
+					},
+					startTurn: async turn => {
+						runState.turnPrompts.push(turn.prompt);
+						if (runState.turnPrompts.length === 1) {
+							await firstTurnGate;
+							fs.writeFileSync(journalPath, 'turn 1 done', 'utf-8');
+						} else {
+							runState.journalSeenByTurn2 = fs.readFileSync(
+								journalPath,
+								'utf-8',
+							);
+							fs.writeFileSync(
+								journalPath,
+								'<!-- WORKFLOW_COMPLETE -->',
+								'utf-8',
+							);
+						}
+						return {
+							exitCode: 0,
+							error: null,
+							streamMessage: null,
+							tokens: {
+								input: null,
+								output: null,
+								cacheRead: null,
+								cacheWrite: null,
+								total: null,
+								contextSize: null,
+								contextWindowSize: null,
+							},
+						};
+					},
+					persistRunState: () => {},
+				});
+				// The daemon's steer queue is the seam runExec subscribes on in
+				// production; here the stub subscribes the same way.
+				input.steerQueue?.subscribe(steer => {
+					runner.steer(steer);
+					releaseFirstTurn();
+				});
+				input.abortSignal?.addEventListener(
+					'abort',
+					() => {
+						runner.cancel();
+						releaseFirstTurn();
+					},
+					{once: true},
+				);
+				await runner.result;
 				await new Promise<void>(resolve => {
 					if (input.abortSignal?.aborted) return resolve();
 					input.abortSignal?.addEventListener('abort', () => resolve(), {
@@ -487,9 +569,15 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 6: a steer for the Run is accepted and recorded on it.
-		serverState.socket?.send(JSON.stringify(hubFrames.steer()));
+		// Scenario 6: a steer sent while Turn 1 is in flight is recorded on the
+		// Run, waits for the Turn boundary, and heads the next Turn's prompt.
 		try {
+			await waitFor(
+				() => runState.turnPrompts.length >= 1,
+				'the Run to start its first Turn before the steer',
+				stepTimeoutMs,
+			);
+			serverState.socket?.send(JSON.stringify(hubFrames.steer()));
 			await waitFor(
 				() =>
 					daemon!
@@ -502,16 +590,34 @@ export async function runLiveTransportHarness(
 				'steer recorded on the run',
 				stepTimeoutMs,
 			);
+			await waitFor(
+				() => runState.turnPrompts.length >= 2,
+				'the Turn after the steer to start',
+				stepTimeoutMs,
+			);
+			const [firstPrompt = '', secondPrompt = ''] = runState.turnPrompts;
+			const notInjected = !firstPrompt.includes(STEER_TEXT);
+			const atHead =
+				secondPrompt.startsWith(STEER_BLOCK_OPEN) &&
+				secondPrompt.includes(STEER_TEXT);
+			const journaled = runState.journalSeenByTurn2.includes(
+				'Human steer (via hub)',
+			);
 			checks.push(
-				pass(
-					'Steer accepted',
-					`steer frame for ${ASSIGNMENT_RUN_ID} was accepted and recorded on the Run.`,
-				),
+				notInjected && atHead && journaled
+					? pass(
+							'Steer delivered into the next Turn',
+							`steer frame for ${ASSIGNMENT_RUN_ID} was recorded, left Turn 1 untouched, headed Turn 2's prompt, and was journaled with its origin.`,
+						)
+					: fail(
+							'Steer delivered into the next Turn',
+							`notInjected=${notInjected} atHead=${atHead} journaled=${journaled}; turn 2 prompt: ${JSON.stringify(secondPrompt.slice(0, 200))}`,
+						),
 			);
 		} catch (err) {
 			checks.push(
 				fail(
-					'Steer accepted',
+					'Steer delivered into the next Turn',
 					err instanceof Error ? err.message : String(err),
 				),
 			);

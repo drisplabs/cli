@@ -6,6 +6,7 @@ import {
 import type {InstanceSocketClient} from './instanceSocketClient';
 import {
 	validateDashboardAssignment,
+	type ExecuteRemoteAssignmentInput,
 	type ValidatedAssignment,
 } from './remoteRunExecutor';
 
@@ -325,5 +326,88 @@ describe('DashboardPairedExecution', () => {
 		});
 
 		expect(execution.steerRun({runId: 'missing', text: 'hello'})).toBe(false);
+	});
+
+	it('hands a steer for a running Run to its executor through the steer queue, tagged hub (#191)', async () => {
+		const {client} = makeClient();
+		const received: unknown[] = [];
+		let resolveRun: () => void = () => {};
+		const executor = vi.fn(async (input: ExecuteRemoteAssignmentInput) => {
+			input.steerQueue?.subscribe(steer => received.push(steer));
+			await new Promise<void>(resolve => {
+				resolveRun = resolve;
+			});
+		}) as DashboardPairedExecutionExecutor;
+		const execution = createDashboardPairedExecution({
+			client,
+			executor,
+			projectDir: '/tmp/project',
+			decisionInbox: makeDecisionInbox(),
+			now: () => 777,
+		});
+
+		execution.admitAssignment(
+			validated({type: 'run.start', runId: 'run_live', runSpec: {prompt: 'a'}}),
+		);
+		await Promise.resolve();
+		execution.steerRun({runId: 'run_live', text: 'use the other branch'});
+		execution.steerRun({runId: 'run_live', text: 'be brief'});
+
+		expect(received).toEqual([
+			{text: 'use the other branch', origin: 'hub', receivedAt: 777},
+			{text: 'be brief', origin: 'hub', receivedAt: 777},
+		]);
+		expect(
+			execution.listRuns()[0]!.steers!.map(s => s.pending ?? false),
+		).toEqual([false, false]);
+		resolveRun();
+		await execution.stop();
+	});
+
+	it('holds a steer for a parked Run and delivers it when that Run is assigned again (#191)', async () => {
+		const {client} = makeClient();
+		const queues: unknown[][] = [];
+		const executor = vi.fn(async (input: ExecuteRemoteAssignmentInput) => {
+			const received: unknown[] = [];
+			queues.push(received);
+			input.steerQueue?.subscribe(steer => received.push(steer));
+		}) as DashboardPairedExecutionExecutor;
+		let clock = 100;
+		const execution = createDashboardPairedExecution({
+			client,
+			executor,
+			projectDir: '/tmp/project',
+			decisionInbox: makeDecisionInbox(),
+			now: () => clock,
+		});
+
+		const assignment = validated({
+			type: 'run.start',
+			runId: 'run_parked',
+			runSpec: {prompt: 'a'},
+		});
+		execution.admitAssignment(assignment);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(execution.listRuns()[0]!.status).toBe('completed');
+
+		// The Run has parked (its executor returned); a steer now is stored.
+		clock = 200;
+		expect(execution.steerRun({runId: 'run_parked', text: 'wake up'})).toBe(
+			true,
+		);
+		expect(execution.listRuns()[0]!.steers).toEqual([
+			{text: 'wake up', receivedAt: 200, pending: true},
+		]);
+
+		// The hub continues the same Run: the held steer heads its queue.
+		clock = 300;
+		execution.admitAssignment(assignment);
+		await new Promise(resolve => setImmediate(resolve));
+		expect(queues[1]).toEqual([
+			{text: 'wake up', origin: 'hub', receivedAt: 200},
+		]);
+		expect(execution.listRuns()[0]!.steers).toEqual([
+			{text: 'wake up', receivedAt: 200, pending: false},
+		]);
 	});
 });
