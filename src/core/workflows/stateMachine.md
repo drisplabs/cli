@@ -46,6 +46,20 @@ Rules:
 - The runner trusts markers unconditionally. A premature `WORKFLOW_COMPLETE` ends the run with no automatic recovery — write it only when its criteria are fully met.
 - Include a concrete reason after `NEEDS_HUMAN:` whenever possible — it is what the human sees when deciding how to answer you. Put the full question there.
 
+### Step block
+
+When the workflow has named steps — phases, gates, stages, whatever the workflow document calls them — keep one Turn Protocol block in the journal naming the step you are on, revised in place as you move:
+
+```
+<!-- TURN_PROTOCOL
+step: Build
+step_index: 3
+step_total: 5
+-->
+```
+
+`step` is the step's name as the workflow writes it. `step_index` and `step_total` are optional, 1-based, and `step_index` never exceeds `step_total`. The runner reads the block after every Turn and shows the step in the feed as the run's progress; it never changes what you do. Leave the block out when the workflow has no named steps. A block the runner cannot read is ignored with a warning — it never fails a Turn.
+
 ## The Dossier
 
 `.athena/<session_id>/` is the Dossier: the journal plus everywhere it can shed cold detail once shedding earns its keep.
@@ -161,6 +175,7 @@ The journal is the durable source of truth. Your harness's task tools are a sess
 - [ ] Shed a unit's detail into `units/<slug>.md` the moment it closes while another stays open, or the journal crosses ~8,000 tokens — cut, paste, pointer, never summarize
 - [ ] Project the journal plan into task tools at session start; keep both in sync as work lands
 - [ ] Follow the workflow steps as written; do not skip, reorder, or substitute your own process
+- [ ] Workflow has named steps? Keep the `TURN_PROTOCOL` step block in the journal naming the one you are on
 - [ ] Load the appropriate skill before each activity; do not rely on assumed knowledge
 - [ ] Use and record a dedicated git worktree for repository-changing work
 - [ ] Run quality gates in order; respect delegation constraints and retry limits
