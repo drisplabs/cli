@@ -1,13 +1,17 @@
 # Waking a suspended Workflow Run (human resume)
 
 Since ADR 0014 a Workflow Run that cannot proceed alone suspends in the
-non-terminal **`awaiting_attention`** status instead of dying. Every route in
-funnels here: a declared `NEEDS_HUMAN[: reason]`, an `AskUserQuestion`
-no attached human could answer, a hard failure (`auth` / `billing` /
+non-terminal **`awaiting_attention`** status instead of dying — `drisp runs`
+calls it **Parked**. Every route in funnels here: a declared
+`NEEDS_HUMAN[: reason]`, an `AskUserQuestion` no attached human could answer,
+an **ask rule** that fired on a permission prompt (#189), a permission left
+unclaimed under `guarded` / `standard`, a hard failure (`auth` / `billing` /
 `invalid_request` / `model_not_found` / unclassifiable), or an exhausted
-bound (Nudge cap, Retry cap, `maxIterations`) — the suspension message always
-names which. A suspended Run is waiting on you; this guide is how you find it
-and wake it.
+bound (Nudge cap, Retry cap, `maxIterations`) — the reason always names
+which. Under `--isolation autonomous` only the first two park a Run: the
+preset's policy answers every permission an ask rule does not claim, so the
+workflow completes with nobody watching. A parked Run is waiting on you; this
+guide is how you find it and wake it.
 
 ## The chosen entrypoint: the CLI
 
@@ -24,8 +28,9 @@ athena-flow runs --json # machine-readable
 ```
 
 Lists every Workflow Run whose session's most recent run is
-`awaiting_attention`, across all projects: the workflow name, the session id,
-why it suspended, and the exact wake command.
+`awaiting_attention`, across all projects, as **Parked**: the workflow name,
+the session id, why it parked (which ask rule fired, or the `NEEDS_HUMAN`
+reason), and the exact wake command.
 
 ## Wake: `athena-flow run --continue`
 
