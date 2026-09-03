@@ -2,7 +2,7 @@
  * Run-loop reducer (ADR 0016) — the pure decision core of a Workflow Run.
  *
  * `workflowRunner.ts` used to be one `while` loop that mixed every I/O call
- * (spawning Turns, reading/writing the Tracker, sleeping for a retry backoff,
+ * (spawning Turns, reading/writing the Journal, sleeping for a retry backoff,
  * persisting a snapshot) with every *decision* about what should happen next
  * (Nudge, Retry, Handover, suspend, stop). That made the decision logic
  * impossible to unit-test without mocking the whole harness, and — per ADR
@@ -19,13 +19,14 @@
  * calls `step` again — see `perform()` there.
  *
  * `RunMemory` is the part of a Run's state ADR 0016 §2 wants persisted
- * (Iteration, Nudge streak, Retry streak, the Tracker hash a Nudge resets
+ * (Iteration, Nudge streak, Retry streak, the Journal hash a Nudge resets
  * against, and the prompt/continuation last attempted) so a rehydrated Run
  * continues its budgets instead of restarting them (§6) — see
  * `createInitialRun`'s `resumedMemory` path.
  */
 
 import crypto from 'node:crypto';
+import type {Interruption} from '@drisp/protocol';
 import type {
 	HarnessProcessOverride,
 	TurnContinuation,
@@ -39,14 +40,15 @@ import {
 import type {TurnOutcome} from './terminalOutcome';
 import {
 	buildContinuePrompt,
+	buildJournalSizeNudgeSuffix,
 	buildNudgePrompt,
-	buildTrackerSizeNudgeSuffix,
-	DEFAULT_TRACKER_TOKEN_BOUND,
+	DEFAULT_JOURNAL_TOKEN_BOUND,
 	estimateTokenCount,
-	TRACKER_SKELETON_MARKER,
-} from './trackerReader';
+	hasSkeletonMarker,
+} from './journalReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
+import {prependSteerBlock, type QueuedSteer} from './steer';
 
 /**
  * Non-terminal phases carry `prompt`/`continuation` directly (rather than
@@ -91,7 +93,18 @@ export type RunPhase =
 			/** Set once this fork has already been retried once (ADR 0016 §8). */
 			retried?: boolean;
 	  }
-	| {kind: 'awaiting_attention'; stopReason: string}
+	| {
+			kind: 'awaiting_attention';
+			stopReason: string;
+			/**
+			 * The structured reason the Run parked, when the interpreter has one
+			 * (#190: a permission request deferred after the grace window). The
+			 * `stopReason` sentence stays the human-facing summary. On a wake it
+			 * is the parked Interruption rehydrated from the Run record, so the
+			 * `woken` row can shape the wake prompt into a replay instruction.
+			 */
+			interruption?: Interruption;
+	  }
 	| {kind: 'completed'}
 	| {kind: 'failed'; stopReason?: string}
 	| {kind: 'cancelled'};
@@ -114,14 +127,22 @@ export type RunMemory = {
 	nudgeStreak: number;
 	retryStreak: number;
 	/**
-	 * SHA-256 hex digest of the Tracker's content at the last stop, or `null`
+	 * SHA-256 hex digest of the Journal's content at the last stop, or `null`
 	 * before any stop has been observed. A hash rather than the raw content
-	 * keeps a persisted Run cheap regardless of Tracker size, and covers only
-	 * `tracker.md` itself (ADR 0016 §9) — not a future multi-file Dossier.
+	 * keeps a persisted Run cheap regardless of Journal size, and covers only
+	 * `journal.md` itself (ADR 0016 §9) — not a future multi-file Dossier.
 	 */
-	lastTrackerHash: string | null;
+	lastJournalHash: string | null;
 	lastStopPrompt: string;
 	lastStopContinuation: TurnContinuation;
+	/**
+	 * Steers (#191) received but not yet delivered, in arrival order. A Steer
+	 * is never injected into a running Turn: it waits here until the next
+	 * `start_turn`, which drains the whole queue into the head of that Turn's
+	 * prompt. Persisted so a Steer sent to a parked or restarting Run is
+	 * delivered on its continue rather than lost.
+	 */
+	pendingSteers: QueuedSteer[];
 	/**
 	 * Size in bytes of the most recent Handoff file written at a Handover
 	 * (ADR 0015 §8: Handoff size is a fidelity metric the Runner records), or
@@ -133,6 +154,119 @@ export type RunMemory = {
 	 */
 	lastHandoffSizeBytes: number | null;
 };
+
+/**
+ * Why an unattended Turn was interrupted to park the Run (#189) — the
+ * runner-side **Interruption** (see the glossary's wire section). With nobody
+ * attached, exactly three things stop a Turn for a person:
+ *
+ * - `ask_rule`: a permission an **ask rule** claimed (the rule pattern as
+ *   written in `workflow.json`, and the tool it matched);
+ * - `question`: the agent asked a question only a person can answer
+ *   (`AskUserQuestion`, a `user_input` request, an elicitation);
+ * - `unclaimed_permission`: a permission no rule answered under a preset
+ *   whose policy is to hold rather than auto-answer (`guarded` / `standard`).
+ *
+ * Under the `autonomous` preset an unclaimed permission is answered inside
+ * the Turn by the preset's policy and never reaches the reducer. The fourth
+ * way to park — the `NEEDS_HUMAN` marker — is a Journal end-state and arrives
+ * as a `suspend` outcome instead.
+ */
+export type RunInterruption =
+	| {
+			kind: 'ask_rule';
+			rule: string;
+			toolName: string;
+			/** Present when the claimed permission was held, then deferred (#190). */
+			permission?: DeferredPermission;
+	  }
+	| {kind: 'question'; question: string}
+	| {
+			kind: 'unclaimed_permission';
+			toolName: string;
+			/** Present when the unclaimed permission was held, then deferred (#190). */
+			permission?: DeferredPermission;
+	  };
+
+/**
+ * Hold, then park (#190): a permission request the runner held for the grace
+ * window without an answer arriving was refused with a "deferred" result and
+ * the Turn ended. What the park keeps so a later `answer` can be replayed
+ * into the re-issued call: the pending request's id, a one-line summary of
+ * the tool input (so the re-asked call can be recognised), and how long it
+ * was held.
+ */
+export type DeferredPermission = {
+	requestId: string;
+	inputSummary: string;
+	graceMs: number;
+};
+
+function formatGrace(ms: number): string {
+	return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+}
+
+/**
+ * How a deferred permission reads in the park sentence: held for a window
+ * that elapsed, or — with no hub attached to answer, so no window — deferred
+ * at once.
+ */
+function describeDeferral(permission: DeferredPermission): string {
+	return permission.graceMs > 0
+		? ` unanswered within the grace window (${formatGrace(permission.graceMs)}); deferred`
+		: ' deferred immediately (no hub attached to answer)';
+}
+
+/**
+ * The wire-shaped Interruption (`@drisp/protocol`) a deferred permission
+ * parks on — a `question` addressed by the request id, whose `question` is
+ * the call as asked (`<tool>: <input summary>`). Null for every interruption
+ * that carries no deferred permission: those park on their sentence alone.
+ */
+function protocolInterruptionFor(
+	interruption: RunInterruption,
+): Interruption | null {
+	if (interruption.kind === 'question' || !interruption.permission) return null;
+	return {
+		kind: 'question',
+		message: describeInterruption(interruption),
+		requestId: interruption.permission.requestId,
+		question: `${interruption.toolName}: ${interruption.permission.inputSummary}`,
+	};
+}
+
+/**
+ * The human sentence an `awaiting_attention` phase carries for an
+ * interruption — what `drisp runs` shows as the reason. Owned here, beside
+ * the retry-cap and nudge-cap sentences, so every park reason has one author.
+ */
+function describeInterruption(interruption: RunInterruption): string {
+	switch (interruption.kind) {
+		case 'ask_rule':
+			if (interruption.permission) {
+				return (
+					`ask rule "${interruption.rule}" fired on ${interruption.toolName}${describeDeferral(interruption.permission)}: ` +
+					`${interruption.permission.inputSummary} — wake with --answer=allow|deny`
+				);
+			}
+			return `ask rule "${interruption.rule}" fired on ${interruption.toolName} — needs a human`;
+		case 'question':
+			return interruption.question
+				? `agent asked a question with no human attached to answer: ${interruption.question}`
+				: 'agent asked a question with no human attached to answer';
+		case 'unclaimed_permission':
+			if (interruption.permission) {
+				return (
+					`permission request (${interruption.toolName})${describeDeferral(interruption.permission)}: ` +
+					`${interruption.permission.inputSummary} — wake with --answer=allow|deny, or rerun with --isolation autonomous`
+				);
+			}
+			return (
+				`agent requested sandbox approval (${interruption.toolName}) with no human attached to answer` +
+				` — rerun with --isolation autonomous, or wake with guidance`
+			);
+	}
+}
 
 /**
  * What `perform()` reports back after executing one phase's actions — the
@@ -151,11 +285,12 @@ export type RunEvent =
 			transportBroken: boolean;
 			/** The handle of a pending Handover request, or null when none. */
 			handoverRequestHandle: string | null;
-			suspension: {reason: string} | null;
+			/** Set when the Turn was interrupted to park the Run (#189). */
+			interruption: RunInterruption | null;
 			adapterSessionId: string | null;
-			/** Only computed on the success path once loop/tracker apply. */
+			/** Only computed on the success path once loop/journal apply. */
 			outcome: TurnOutcome | null;
-			trackerContent: string;
+			journalContent: string;
 	  }
 	| {
 			type: 'backoff_elapsed';
@@ -184,7 +319,13 @@ export type RunEvent =
 			 */
 			type: 'woken';
 			continuation: TurnContinuation;
-	  };
+	  }
+	/**
+	 * A Steer arrived (#191). Unlike the other events it is not the reply to
+	 * a kickoff action: it can land in any non-terminal phase and only queues,
+	 * leaving the phase — and any Turn in flight — untouched.
+	 */
+	| {type: 'steer'; steer: QueuedSteer};
 
 /** What the interpreter must do before the next Turn/backoff/fork can start. */
 export type RunAction =
@@ -203,7 +344,21 @@ export type RunAction =
 	| {type: 'wait'; ms: number}
 	| {type: 'notify_iteration_complete'}
 	| {type: 'purge_handoffs'}
-	| {type: 'degrade_handover'; handle: string};
+	| {type: 'degrade_handover'; handle: string}
+	/** Surface a non-fatal notice (e.g. a deprecated marker spelling, #185). */
+	| {type: 'warn'; message: string}
+	/**
+	 * The queued Steers were drained into the `start_turn` that follows this
+	 * action (#191) — the interpreter records each in the Journal, with its
+	 * origin and the Turn it was delivered into, before that Turn starts.
+	 */
+	| {type: 'steers_delivered'; steers: QueuedSteer[]; iteration: number}
+	/**
+	 * Record the Interruption a parking Run carries — in the Journal (so the
+	 * next Turn and `drisp runs` see the pending question) and on the Run
+	 * record (#190). Always precedes the `persist` of the parked phase.
+	 */
+	| {type: 'record_interruption'; interruption: Interruption};
 
 /** The immutable per-Run configuration the reducer needs. No callbacks. */
 export type StepConfig = {
@@ -211,8 +366,8 @@ export type StepConfig = {
 	/** The Run's top-level prompt — `WorkflowRunnerInput.prompt`, unchanging across Turns. */
 	initialPrompt: string;
 	loop?: LoopConfig;
-	trackerAbsPath: string | null;
-	trackerPromptPath?: string;
+	journalAbsPath: string | null;
+	journalPromptPath?: string;
 };
 
 export type StepResult = {
@@ -221,26 +376,26 @@ export type StepResult = {
 	actions: RunAction[];
 };
 
-function hashTrackerContent(content: string): string {
+function hashJournalContent(content: string): string {
 	return crypto.createHash('sha256').update(content).digest('hex');
 }
 
 /**
  * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
- * in-flight context the Tracker never checkpointed; the Tracker remains the
+ * in-flight context the Journal never checkpointed; the Journal remains the
  * durable ledger.
  */
 export function buildHandoverSeedPrompt(
 	handoffPath: string,
-	trackerPath: string | undefined,
+	journalPath: string | undefined,
 ): string {
 	return (
 		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
 		`Read the Handoff file at ${handoffPath}` +
-		(trackerPath ? ` and the tracker at ${trackerPath}` : '') +
-		`. Before any domain work: fold whatever durable content the Handoff file records into the tracker` +
-		(trackerPath ? ` at ${trackerPath}` : '') +
-		` and the open unit's record (ADR 0015 §8) — that fold-in is itself the tracker's next edit. ` +
+		(journalPath ? ` and the journal at ${journalPath}` : '') +
+		`. Before any domain work: fold whatever durable content the Handoff file records into the journal` +
+		(journalPath ? ` at ${journalPath}` : '') +
+		` and the open unit's record (ADR 0015 §8) — that fold-in is itself the journal's next edit. ` +
 		`Only once it is written should you continue the work from exactly where it stands. ` +
 		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
 	);
@@ -249,19 +404,39 @@ export function buildHandoverSeedPrompt(
 /**
  * First prompt of a woken (previously suspended) Run: the human's reply plus
  * enough framing that even a degraded fresh Agent Session — the session that
- * asked may be gone — re-orients from the Tracker instead of treating the
+ * asked may be gone — re-orients from the Journal instead of treating the
  * reply as a brand-new one-line task.
  */
 export function buildWakePrompt(
 	reply: string,
-	trackerPath: string | undefined,
+	journalPath: string | undefined,
+	parkedInterruption?: Interruption,
 ): string {
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
-		(trackerPath
-			? `Read the tracker at ${trackerPath} for the task and its current state, apply the reply, and continue the workflow. `
+		buildReplayGuidance(parkedInterruption) +
+		(journalPath
+			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
-		`Keep the tracker current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
+		`Keep the journal current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
+	);
+}
+
+/**
+ * Replay (#190): a Run parked because a permission request (or question) went
+ * unanswered inside the grace window was told "deferred" and its Turn ended.
+ * On wake the runner cannot re-issue a tool call itself — the agent does — so
+ * the wake prompt names the deferred call and asks for it verbatim. A stored
+ * answer is replayed into that re-asked call by the runner; without one the
+ * request is simply held again. Empty for every other Interruption.
+ */
+function buildReplayGuidance(parked: Interruption | undefined): string {
+	if (!parked || parked.kind !== 'question' || !parked.requestId) return '';
+	const call = parked.question ?? 'the same call';
+	return (
+		`Before your previous Turn ended, your request \`${call}\` (request ${parked.requestId}) was deferred because nobody answered it in time. ` +
+		`Re-issue that exact call now, with the same input: if an answer was stored while this run was parked it is applied automatically, otherwise the request is held again for a human. ` +
+		`Do not work around the deferred call or substitute a different one.\n\n`
 	);
 }
 
@@ -300,45 +475,69 @@ export function createInitialRun(
 		waking: boolean;
 		resumedMemory?: RunMemory;
 		/**
+		 * Steers already waiting when the Run starts (#191) — a local
+		 * `--steer`, or a Steer stored against a parked Run. Delivered at the
+		 * head of the first Turn's prompt, after any the resumed memory carries.
+		 */
+		initialSteers?: QueuedSteer[];
+		/**
+		 * The Interruption the Run being woken parked on, when its record has
+		 * one (#190). A deferred question shapes the wake prompt into a replay
+		 * instruction; any other kind leaves the plain wake prompt.
+		 */
+		parkedInterruption?: Interruption;
+		/**
 		 * The persisted `stop_reason` of the resumed run, when `waking` and
 		 * `resumedMemory` are both present. Only meaningful for that case.
 		 */
 		awaitingAttentionStopReason?: string;
 	},
-): {phase: RunPhase; memory: RunMemory} {
-	// A wake (ADR 0014 §6) of a Run whose persisted phase was
-	// `awaiting_attention`: rehydrate straight back into that phase rather
-	// than replaying whatever prompt/continuation last ran (§3/§6) — `step()`
-	// advances it on the next `woken` event via `handleAwaitingAttention`,
-	// which is what actually carries `resumedMemory.iteration` forward as the
-	// Run's budget across wakes (§2).
-	if (opts.waking && opts.resumedMemory) {
-		return {
-			phase: {
+): StepResult {
+	const initialSteers = opts.initialSteers ?? [];
+	if (opts.resumedMemory) {
+		const memory =
+			initialSteers.length === 0
+				? opts.resumedMemory
+				: {
+						...opts.resumedMemory,
+						pendingSteers: [
+							...opts.resumedMemory.pendingSteers,
+							...initialSteers,
+						],
+					};
+
+		// A wake (ADR 0014 §6) of a Run whose persisted phase was
+		// `awaiting_attention`: rehydrate straight back into that phase rather
+		// than replaying whatever prompt/continuation last ran (§3/§6) — `step()`
+		// advances it on the next `woken` event via `handleAwaitingAttention`,
+		// which is what actually carries `resumedMemory.iteration` forward as the
+		// Run's budget across wakes (§2). The parked Interruption (#190) rides
+		// on the phase so that row can shape the wake prompt into a replay.
+		if (opts.waking) {
+			const phase: RunPhase = {
 				kind: 'awaiting_attention',
 				stopReason: opts.awaitingAttentionStopReason ?? '',
-			},
-			memory: opts.resumedMemory,
-		};
-	}
+				...(opts.parkedInterruption
+					? {interruption: opts.parkedInterruption}
+					: {}),
+			};
+			return {phase, memory, actions: kickoffActionsFor(phase)};
+		}
 
-	// A process restart mid-Turn (crash recovery): `turn_in_flight` itself is
-	// never persisted (§6), so the interpreter reconstructs a zero-wait
-	// `backing_off` phase from the persisted prompt/continuation and
-	// re-issues the same Turn once fed a synthetic `backoff_elapsed` event.
-	if (opts.resumedMemory) {
-		return {
-			phase: {
-				kind: 'backing_off',
-				ms: 0,
-				resume: {
-					kind: 'turn',
-					prompt: opts.resumedMemory.lastStopPrompt,
-					continuation: opts.resumedMemory.lastStopContinuation,
-				},
+		// A process restart mid-Turn (crash recovery): `turn_in_flight` itself is
+		// never persisted (§6), so the interpreter reconstructs a zero-wait
+		// `backing_off` phase from the persisted prompt/continuation and
+		// re-issues the same Turn once fed a synthetic `backoff_elapsed` event.
+		const phase: RunPhase = {
+			kind: 'backing_off',
+			ms: 0,
+			resume: {
+				kind: 'turn',
+				prompt: opts.resumedMemory.lastStopPrompt,
+				continuation: opts.resumedMemory.lastStopContinuation,
 			},
-			memory: opts.resumedMemory,
 		};
+		return {phase, memory, actions: kickoffActionsFor(phase)};
 	}
 
 	const continuation = opts.initialContinuation ?? {mode: 'fresh'};
@@ -349,25 +548,104 @@ export function createInitialRun(
 		configOverride: undefined,
 	});
 	const prompt = opts.waking
-		? buildWakePrompt(cfg.initialPrompt, cfg.trackerPromptPath)
+		? buildWakePrompt(
+				cfg.initialPrompt,
+				cfg.journalPromptPath,
+				opts.parkedInterruption,
+			)
 		: prepared.prompt;
 
-	return {
-		phase: {
-			kind: 'turn_in_flight',
-			prompt,
-			continuation,
-			configOverride: prepared.configOverride,
-		},
+	const phase: RunPhase = {
+		kind: 'turn_in_flight',
+		prompt,
+		continuation,
+		configOverride: prepared.configOverride,
+	};
+	return deliverPendingSteers({
+		phase,
 		memory: {
 			iteration,
 			nudgeStreak: 0,
 			retryStreak: 0,
-			lastTrackerHash: null,
+			lastJournalHash: null,
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
+			pendingSteers: initialSteers,
 			lastHandoffSizeBytes: null,
 		},
+		actions: kickoffActionsFor(phase),
+	});
+}
+
+/** The kickoff action a freshly built phase implies — what the interpreter must start. */
+function kickoffActionsFor(phase: RunPhase): RunAction[] {
+	switch (phase.kind) {
+		case 'turn_in_flight':
+			return [
+				{
+					type: 'start_turn',
+					prompt: phase.prompt,
+					continuation: phase.continuation,
+					configOverride: phase.configOverride,
+				},
+			];
+		case 'backing_off':
+			return [{type: 'wait', ms: phase.ms}];
+		case 'handing_over':
+		case 'awaiting_attention':
+		case 'completed':
+		case 'failed':
+		case 'cancelled':
+			return [];
+	}
+}
+
+/**
+ * Turn-boundary delivery (#191): when a result starts a Turn and Steers are
+ * queued, drain the whole queue — in arrival order — into the head of that
+ * Turn's prompt and report the delivery just ahead of the `start_turn`. A
+ * result that starts no Turn (suspend, backoff, fork, terminal) leaves the
+ * queue exactly as it is, which is what keeps a Steer out of a running Turn.
+ */
+function deliverPendingSteers(result: StepResult): StepResult {
+	const steers = result.memory.pendingSteers;
+	if (steers.length === 0 || result.phase.kind !== 'turn_in_flight') {
+		return result;
+	}
+	const startIndex = result.actions.findIndex(a => a.type === 'start_turn');
+	if (startIndex === -1) return result;
+	const start = result.actions[startIndex] as Extract<
+		RunAction,
+		{type: 'start_turn'}
+	>;
+	const prompt = prependSteerBlock(start.prompt, steers);
+	const actions = [
+		...result.actions.slice(0, startIndex),
+		{
+			type: 'steers_delivered',
+			steers,
+			iteration: result.memory.iteration,
+		} satisfies RunAction,
+		{...start, prompt},
+		...result.actions.slice(startIndex + 1),
+	];
+	return {
+		phase: {...result.phase, prompt},
+		memory: {...result.memory, lastStopPrompt: prompt, pendingSteers: []},
+		actions,
+	};
+}
+
+/** A Steer only queues (#191): same phase, one more pending Steer, persisted. */
+function handleSteer(
+	phase: RunPhase,
+	memory: RunMemory,
+	steer: QueuedSteer,
+): StepResult {
+	return {
+		phase,
+		memory: {...memory, pendingSteers: [...memory.pendingSteers, steer]},
+		actions: [{type: 'persist'}],
 	};
 }
 
@@ -405,9 +683,36 @@ function handleTurnInFlight(
 		};
 	}
 
-	if (event.suspension) {
+	// Parked for a person (#189): an ask rule, a question, or an unclaimed
+	// permission under a holding preset. Checked before failure classification
+	// — interrupting the Turn ends the harness process abnormally, but the Run
+	// is suspended, not failed.
+	if (event.interruption) {
+		// Hold, then park (#190): a permission that went unanswered inside the
+		// grace window was deferred and carries its request id and call. That
+		// structured Interruption is recorded — journal and run record — before
+		// the parked phase is persisted, so `drisp runs` and the hub both show
+		// what was asked and an `answer` has something to address.
+		const deferred = protocolInterruptionFor(event.interruption);
+		if (deferred) {
+			return {
+				phase: {
+					kind: 'awaiting_attention',
+					stopReason: deferred.message,
+					interruption: deferred,
+				},
+				memory,
+				actions: [
+					{type: 'record_interruption', interruption: deferred},
+					{type: 'persist'},
+				],
+			};
+		}
 		return {
-			phase: {kind: 'awaiting_attention', stopReason: event.suspension.reason},
+			phase: {
+				kind: 'awaiting_attention',
+				stopReason: describeInterruption(event.interruption),
+			},
 			memory,
 			actions: [{type: 'persist'}],
 		};
@@ -545,34 +850,41 @@ function handleTurnInFlight(
 							kind: 'awaiting_attention',
 							stopReason: outcome.stopReason ?? 'stopped',
 						};
+		// A deprecated marker spelling reaches the same phase; the only
+		// difference is the notice the interpreter is asked to log (#185).
+		const deprecation =
+			outcome.kind === 'suspend' ? outcome.deprecation : undefined;
 		return {
 			phase: nextPhase,
 			memory: memoryAfterSuccess,
-			actions: [{type: 'persist'}],
+			actions: [
+				...(deprecation ? [{type: 'warn', message: deprecation} as const] : []),
+				{type: 'persist'},
+			],
 		};
 	}
 
 	// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same Agent
 	// Session with a corrective prompt. Bounded by the Nudge cap, which
-	// resets whenever the Tracker advances between stops (a hash comparison,
+	// resets whenever the Journal advances between stops (a hash comparison,
 	// ADR 0016 §7/§9).
-	const trackerHash = hashTrackerContent(event.trackerContent);
+	const journalHash = hashJournalContent(event.journalContent);
 	let nudgeStreak = memoryAfterSuccess.nudgeStreak;
-	if (trackerHash !== memoryAfterSuccess.lastTrackerHash) {
+	if (journalHash !== memoryAfterSuccess.lastJournalHash) {
 		nudgeStreak = 0;
 	}
 	const memoryWithHash = {
 		...memoryAfterSuccess,
-		lastTrackerHash: trackerHash,
+		lastJournalHash: journalHash,
 		nudgeStreak,
 	};
 
-	// Size nudge (ADR 0015 §3): never blocks, never edits the tracker — just a
+	// Size nudge (ADR 0015 §3): never blocks, never edits the journal — just a
 	// suffix appended to whichever prompt starts the next Turn, computed from
 	// the content already on the event (no new I/O).
 	const sizeNudgeSuffix =
-		estimateTokenCount(event.trackerContent) > DEFAULT_TRACKER_TOKEN_BOUND
-			? buildTrackerSizeNudgeSuffix(cfg.trackerPromptPath)
+		estimateTokenCount(event.journalContent) > DEFAULT_JOURNAL_TOKEN_BOUND
+			? buildJournalSizeNudgeSuffix(cfg.journalPromptPath)
 			: '';
 
 	if (event.adapterSessionId) {
@@ -584,7 +896,7 @@ function handleTurnInFlight(
 					kind: 'awaiting_attention',
 					stopReason: `nudge cap reached: ${nudgeCap} nudge${
 						nudgeCap === 1 ? '' : 's'
-					} (nudgeCap) without tracker progress or a terminal marker`,
+					} (nudgeCap) without journal progress or a terminal marker`,
 				},
 				memory: {...memoryWithHash, nudgeStreak: nextNudgeStreak},
 				actions: [{type: 'persist'}],
@@ -592,11 +904,9 @@ function handleTurnInFlight(
 		}
 		const promptOverride =
 			buildNudgePrompt(
-				{...loop, trackerPath: cfg.trackerPromptPath ?? loop.trackerPath},
+				{...loop, journalPath: cfg.journalPromptPath ?? loop.journalPath},
 				{
-					skeletonNotReplaced: event.trackerContent.includes(
-						TRACKER_SKELETON_MARKER,
-					),
+					skeletonNotReplaced: hasSkeletonMarker(event.journalContent),
 				},
 			) + sizeNudgeSuffix;
 		const nextIteration = memoryWithHash.iteration + 1;
@@ -705,7 +1015,7 @@ function handleBackingOff(
 	}
 
 	// Resume the same Agent Session if it reported one — it persists on disk,
-	// so resuming preserves in-flight work the Tracker never checkpointed.
+	// so resuming preserves in-flight work the Journal never checkpointed.
 	// Otherwise fall back to whichever continuation this attempt used.
 	const continuation: TurnContinuation = event.adapterSessionId
 		? {mode: 'resume', handle: event.adapterSessionId}
@@ -715,7 +1025,7 @@ function handleBackingOff(
 	// attempt is a fresh Agent Session. A `resume`d session already contains
 	// the prior instruction and failure record on disk — replaying it would
 	// duplicate that content — while a fresh session contains neither, so it
-	// needs the bare Continue Prompt to re-orient from the Tracker.
+	// needs the bare Continue Prompt to re-orient from the Journal.
 	const prompt =
 		continuation.mode === 'fresh'
 			? phase.resume.prompt
@@ -770,7 +1080,7 @@ function handleHandingOver(
 		const continuation: TurnContinuation = {mode: 'fresh'};
 		const seedPrompt = buildHandoverSeedPrompt(
 			event.handoffPath,
-			cfg.trackerAbsPath ?? undefined,
+			cfg.journalAbsPath ?? undefined,
 		);
 		const prepared = prepareWorkflowTurn(cfg.workflowState, {
 			prompt: cfg.initialPrompt,
@@ -863,15 +1173,21 @@ function handleHandingOver(
  * and this — like every other transition — runs through `step()` rather than
  * being special-cased outside the reducer. It advances the Iteration counter
  * (so `maxIterations` is a budget across wakes, not per-wake, §2) and frames
- * the human's reply with `buildWakePrompt`.
+ * the human's reply with `buildWakePrompt` — shaped into a replay instruction
+ * when the phase carries the deferred Interruption the Run parked on (#190).
  */
 function handleAwaitingAttention(
+	phase: Extract<RunPhase, {kind: 'awaiting_attention'}>,
 	memory: RunMemory,
 	event: Extract<RunEvent, {type: 'woken'}>,
 	cfg: StepConfig,
 ): StepResult {
 	const nextIteration = memory.iteration + 1;
-	const prompt = buildWakePrompt(cfg.initialPrompt, cfg.trackerPromptPath);
+	const prompt = buildWakePrompt(
+		cfg.initialPrompt,
+		cfg.journalPromptPath,
+		phase.interruption,
+	);
 	const prepared = prepareWorkflowTurn(cfg.workflowState, {
 		prompt: cfg.initialPrompt,
 		iteration: nextIteration,
@@ -925,28 +1241,36 @@ export function step(
 ): StepResult {
 	switch (phase.kind) {
 		case 'turn_in_flight': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'turn_finished') {
 				throw new Error(
 					`runMachine: phase 'turn_in_flight' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleTurnInFlight(phase, memory, event, cfg);
+			return deliverPendingSteers(
+				handleTurnInFlight(phase, memory, event, cfg),
+			);
 		}
 		case 'backing_off': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'backoff_elapsed') {
 				throw new Error(
 					`runMachine: phase 'backing_off' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleBackingOff(phase, memory, event, cfg);
+			return deliverPendingSteers(handleBackingOff(phase, memory, event, cfg));
 		}
 		case 'handing_over': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'fork_finished') {
 				throw new Error(
 					`runMachine: phase 'handing_over' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleHandingOver(phase, memory, event, cfg);
+			return deliverPendingSteers(handleHandingOver(phase, memory, event, cfg));
 		}
 		case 'awaiting_attention': {
 			if (event.type !== 'woken') {
@@ -954,7 +1278,9 @@ export function step(
 					`runMachine: phase 'awaiting_attention' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleAwaitingAttention(memory, event, cfg);
+			return deliverPendingSteers(
+				handleAwaitingAttention(phase, memory, event, cfg),
+			);
 		}
 		case 'completed':
 		case 'failed':
@@ -994,20 +1320,42 @@ export function deserializeRunMemory(
 	}
 	if (!parsed || typeof parsed !== 'object') return null;
 	const candidate = parsed as Record<string, unknown>;
+	// Snapshots persisted before #185 spell the hash `lastTrackerHash`; read
+	// it as `lastJournalHash` so an in-flight Run rehydrates across the rename.
+	// Removed in 0.7.0.
+	if (!('lastJournalHash' in candidate) && 'lastTrackerHash' in candidate) {
+		candidate.lastJournalHash = candidate.lastTrackerHash;
+		delete candidate.lastTrackerHash;
+	}
 	const continuation = candidate.lastStopContinuation as
 		| {mode?: unknown}
 		| undefined;
+	// Snapshots persisted before #191 carry no Steer queue: an absent queue is
+	// an empty one, but a present queue must be well-formed.
+	if (!('pendingSteers' in candidate)) candidate.pendingSteers = [];
 	if (
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||
 		typeof candidate.retryStreak !== 'number' ||
-		(candidate.lastTrackerHash !== null &&
-			typeof candidate.lastTrackerHash !== 'string') ||
+		(candidate.lastJournalHash !== null &&
+			typeof candidate.lastJournalHash !== 'string') ||
 		typeof candidate.lastStopPrompt !== 'string' ||
 		!continuation ||
-		typeof continuation.mode !== 'string'
+		typeof continuation.mode !== 'string' ||
+		!Array.isArray(candidate.pendingSteers) ||
+		!candidate.pendingSteers.every(isQueuedSteer)
 	) {
 		return null;
 	}
 	return candidate as unknown as RunMemory;
+}
+
+function isQueuedSteer(value: unknown): value is QueuedSteer {
+	if (!value || typeof value !== 'object') return false;
+	const steer = value as Record<string, unknown>;
+	return (
+		typeof steer.text === 'string' &&
+		(steer.origin === 'hub' || steer.origin === 'local') &&
+		typeof steer.receivedAt === 'number'
+	);
 }

@@ -14,7 +14,7 @@ import type {AthenaSession} from '../../infra/sessions/index';
  *
  * The single knob where the two modes deliberately differ is
  * {@link MissingRecentPolicy}: when a "resume most recent" request finds no
- * prior Athena session, headless exec errors and interactive starts fresh.
+ * prior Athena session, headless run errors and interactive starts fresh.
  * Historically that divergence was an accident of two hand-rolled resolvers;
  * it is now an explicit parameter each mode selects on purpose.
  */

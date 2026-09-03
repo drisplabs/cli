@@ -51,14 +51,14 @@ describe('resolveHarnessConfigProfile', () => {
 		expect(
 			profile.buildIsolationConfig({
 				projectDir: '/project',
-				isolationPreset: 'minimal',
+				isolationPreset: 'standard',
 				additionalDirectories: ['/global-dir', '/project-dir'],
 				pluginDirs: [],
 				verbose: true,
 				configuredModel: 'opus',
 			}),
 		).toEqual({
-			preset: 'minimal',
+			preset: 'standard',
 			additionalDirectories: ['/global-dir', '/project-dir'],
 			pluginDirs: undefined,
 			debug: true,
@@ -70,7 +70,7 @@ describe('resolveHarnessConfigProfile', () => {
 		const profile = resolveHarnessConfigProfile('claude-code');
 		const config = profile.buildIsolationConfig({
 			projectDir: '/project',
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 			additionalDirectories: [],
 			pluginDirs: [],
 			verbose: false,
@@ -83,7 +83,7 @@ describe('resolveHarnessConfigProfile', () => {
 		const profile = resolveHarnessConfigProfile('claude-code');
 		const config = profile.buildIsolationConfig({
 			projectDir: '/project',
-			isolationPreset: 'strict',
+			isolationPreset: 'guarded',
 			additionalDirectories: [],
 			pluginDirs: [],
 			verbose: false,

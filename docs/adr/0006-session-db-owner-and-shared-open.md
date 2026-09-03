@@ -3,6 +3,8 @@
 Status: Active
 Date: 2026-07-19
 
+> **Update (2026-09-03, #188, ADR 0017):** the two versionless dashboard databases in §2 (`dashboard-feed-outbox.db`, `dashboard-decision-inbox.db`) are now one versioned `runner.db` owned by the runner process, opened through the same `openVersionedDb` primitive; the legacy files are imported once on the first open and removed. The gateway state DB was deleted with the gateway (#195). The decision and the primitive below stand.
+
 ## Context
 
 Persistence in the CLI is opened and evolved by several modules that each re-invent the same

@@ -72,6 +72,21 @@ describe('hookController handleEvent', () => {
 		expect(result.decision!.intent).toEqual({kind: 'permission_allow'});
 	});
 
+	it('hands a permission an ask rule claims to the human, even under an approve-all rule (#189)', () => {
+		const cb = makeCallbacks();
+		cb._rules = [
+			{id: 'preset', toolName: '*', action: 'approve', addedBy: 'preset'},
+			{id: 'ask', toolName: 'Bash', action: 'ask', addedBy: 'workflow'},
+		];
+		const result = handleEvent(makeEvent('PermissionRequest'), cb);
+
+		expect(result.handled).toBe(true);
+		expect(result.decision).toBeUndefined();
+		expect(cb.enqueuePermission).toHaveBeenCalledWith(
+			expect.objectContaining({id: 'req-1'}),
+		);
+	});
+
 	it('returns immediate deny decision when deny rule matches', () => {
 		const cb = makeCallbacks();
 		cb._rules = [{id: '1', toolName: 'Bash', action: 'deny', addedBy: 'test'}];
@@ -165,27 +180,6 @@ describe('hookController handleEvent', () => {
 
 		expect(result.handled).toBe(true);
 		expect(cb.enqueueQuestion).toHaveBeenCalledWith('req-1');
-	});
-
-	it('relays AskUserQuestion PreToolUse events to channels', () => {
-		const cb = {...makeCallbacks(), relayQuestion: vi.fn()};
-		const event = makeEvent('PreToolUse', {toolName: 'AskUserQuestion'});
-		handleEvent(event, cb);
-
-		expect(cb.relayQuestion).toHaveBeenCalledWith(event);
-	});
-
-	it('relays Codex user_input permission requests to channels', () => {
-		const cb = {...makeCallbacks(), relayQuestion: vi.fn()};
-		const event = makeEvent('item/tool/requestUserInput', {
-			kind: 'permission.request',
-			hookName: 'tool/requestUserInput',
-			toolName: 'user_input',
-			data: {tool_name: 'user_input', tool_input: {questions: []}},
-		});
-		handleEvent(event, cb);
-
-		expect(cb.relayQuestion).toHaveBeenCalledWith(event);
 	});
 
 	it('auto-allows PreToolUse when no rule matches (no permission prompt)', () => {

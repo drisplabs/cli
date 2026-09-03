@@ -71,8 +71,61 @@ export type HarnessProcess<ConfigOverride = unknown> = {
 
 /**
  * Harness-neutral preset key used for process/runtime config profiles.
+ *
+ * The three presets order from least to most autonomous; a workflow may only
+ * ever raise the level a user chose, never lower it (`bootstrapConfig`).
  */
-export type HarnessProcessPreset = 'strict' | 'minimal' | 'permissive';
+export type HarnessProcessPreset = 'guarded' | 'standard' | 'autonomous';
+
+/** Every current preset name, least to most autonomous; the first is the default. */
+export const HARNESS_PROCESS_PRESETS: readonly HarnessProcessPreset[] = [
+	'guarded',
+	'standard',
+	'autonomous',
+];
+
+/**
+ * The pre-0.6 preset names and what each one maps onto (#185). Accepted for
+ * one release wherever a preset name is read; removed in 0.7.0.
+ */
+export const LEGACY_HARNESS_PROCESS_PRESETS: Readonly<
+	Record<string, HarnessProcessPreset>
+> = {
+	strict: 'guarded',
+	minimal: 'standard',
+	permissive: 'autonomous',
+};
+
+export type ResolvedHarnessProcessPreset = {
+	preset: HarnessProcessPreset;
+	/** Set when `raw` was a deprecated name; the notice to show the user. */
+	deprecation?: string;
+};
+
+/**
+ * Resolve a preset name as the user or a workflow wrote it: a current name
+ * resolves to itself; a deprecated name resolves to its replacement and
+ * carries the notice to print; anything else is `null` for the caller to
+ * reject or default.
+ */
+export function resolveHarnessProcessPreset(
+	raw: string,
+): ResolvedHarnessProcessPreset | null {
+	if ((HARNESS_PROCESS_PRESETS as readonly string[]).includes(raw)) {
+		return {preset: raw as HarnessProcessPreset};
+	}
+	const replacement = Object.prototype.hasOwnProperty.call(
+		LEGACY_HARNESS_PROCESS_PRESETS,
+		raw,
+	)
+		? LEGACY_HARNESS_PROCESS_PRESETS[raw]
+		: undefined;
+	if (!replacement) return null;
+	return {
+		preset: replacement,
+		deprecation: `preset '${raw}' is deprecated and is removed in 0.7.0; use '${replacement}'`,
+	};
+}
 
 /**
  * Harness-neutral process configuration shape used at app boundaries.

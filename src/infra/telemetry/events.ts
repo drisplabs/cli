@@ -113,43 +113,6 @@ export function trackClaudeStartupFailed(props: {
 	});
 }
 
-export type GatewayTransportKind = 'uds' | 'ws';
-
-export function trackGatewayTransportConnect(props: {
-	transport: GatewayTransportKind;
-	loopback: boolean;
-	tls: boolean;
-}): void {
-	capture('gateway.transport.connect', props);
-}
-
-export function trackGatewayTransportDisconnect(props: {
-	transport: GatewayTransportKind;
-	reason: 'closed' | 'auth_failed' | 'error' | 'shutdown';
-	durationMs: number;
-}): void {
-	capture('gateway.transport.disconnect', props);
-}
-
-export function trackGatewayTransportReconnect(props: {
-	transport: GatewayTransportKind;
-	attempt: number;
-	backoffMs: number;
-}): void {
-	capture('gateway.transport.reconnect', props);
-}
-
-export function trackGatewayRuntimeRebind(props: {
-	gapMs: number;
-	epoch: number;
-}): void {
-	capture('gateway.runtime.rebind', props);
-}
-
-export function trackGatewayRuntimeExpired(props: {gapMs: number}): void {
-	capture('gateway.runtime.expired', props);
-}
-
 export function trackWorkflowCommand(props: {
 	subcommand: string;
 	arg?: string;

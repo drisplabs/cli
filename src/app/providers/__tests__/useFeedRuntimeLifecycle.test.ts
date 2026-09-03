@@ -5,7 +5,6 @@ import {useFeed} from '../useFeed';
 import type {SessionStore} from '../../../infra/sessions/store';
 import type {
 	Runtime,
-	RuntimeEvent,
 	RuntimeEventHandler,
 	RuntimeDecisionHandler,
 	RuntimeStartupError,
@@ -65,25 +64,24 @@ const fakeSessionStore: SessionStore = {
 describe('useFeed runtime lifecycle ownership', () => {
 	it('does not start or stop runtime on dep changes or unmount', () => {
 		const runtime = createMockRuntime();
-		const relayA = vi.fn();
-		const relayB = vi.fn();
+		const publisherA = {publish: vi.fn()};
+		const publisherB = {publish: vi.fn()};
 
 		const {rerender, unmount} = renderHook(
-			({relay}: {relay: (e: RuntimeEvent) => void}) =>
+			({publisher}: {publisher: {publish: () => void}}) =>
 				useFeed(runtime, [], undefined, fakeSessionStore, {
-					relayPermission: relay,
+					dashboardFeedPublisher: publisher,
 				}),
-			{initialProps: {relay: relayA}},
+			{initialProps: {publisher: publisherA}},
 		);
 
 		expect(runtime.start).not.toHaveBeenCalled();
 		expect(runtime.stop).not.toHaveBeenCalled();
 
-		// Simulate the HookProvider transition: sessionBridge becomes
-		// available, so relayPermission identity changes and useFeed's
-		// effect re-runs.
+		// Simulate an option identity change (a new dashboard feed publisher)
+		// so useFeed's subscription effect re-runs.
 		act(() => {
-			rerender({relay: relayB});
+			rerender({publisher: publisherB});
 		});
 
 		// The bug being regressed: cleanup unconditionally called

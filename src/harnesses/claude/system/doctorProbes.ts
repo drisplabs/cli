@@ -308,8 +308,8 @@ function scanSettingsFiles(
 
 function classifyToken(value: string): CredentialKind {
 	// Console API keys: sk-ant-api… · OAuth access tokens: sk-ant-oat… ·
-	// long-lived OAuth: sk-ant-ort…. Helper-produced opaque values (proxy/
-	// gateway tokens) fall through to authToken so they're sent as Bearer.
+	// long-lived OAuth: sk-ant-ort…. Helper-produced opaque values (proxy
+	// tokens) fall through to authToken so they're sent as Bearer.
 	if (value.startsWith(SK_ANT_API_PREFIX)) return 'apiKey';
 	if (
 		value.startsWith(SK_ANT_OAT_PREFIX) ||

@@ -13,9 +13,10 @@ import {
 	resolveWorkflowInstall,
 	type ResolvedWorkflowSource,
 } from '../../infra/plugins/marketplace';
+import {InterruptionSchema, type RunStartFrame} from '@drisp/protocol';
+import {getLatestRunForSession} from '../../infra/sessions/index';
 import type {
 	InstanceSocketClient,
-	InstanceSocketFrame,
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import {
@@ -34,13 +35,10 @@ import {
 	type UploadObjectFn,
 } from './artifactCapture';
 import type {FeedSink} from './pairedFeedPublisher';
+import {interruptionFromSuspension} from './interruptionFromSuspension';
+import type {SteerQueue} from '../../core/workflows/steer';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
-
-type JobAssignmentFrame = Extract<
-	InstanceSocketFrame,
-	{type: 'job_assignment'}
->;
 
 export type RemoteRunSpec = {
 	prompt: string;
@@ -66,11 +64,17 @@ export type RemoteRunSpec = {
 
 export type ExecuteRemoteAssignmentInput = {
 	assignment: ValidatedAssignment;
-	client: Pick<InstanceSocketClient, 'sendRunEvent'>;
+	client: Pick<InstanceSocketClient, 'sendRunEvent' | 'sendNeedsHuman'>;
 	projectDir: string;
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
 	decisionInbox?: DashboardDecisionReader;
+	/**
+	 * The hub's Steers for this Run (#191), pushed by paired execution as
+	 * `steer` frames arrive; handed to `runExec`, whose Runner delivers each
+	 * at the head of the next Turn's prompt.
+	 */
+	steerQueue?: SteerQueue;
 	bootstrapRuntimeConfigFn?: typeof bootstrapRuntimeConfig;
 	now?: () => number;
 	abortSignal?: AbortSignal;
@@ -89,7 +93,32 @@ export type ExecuteRemoteAssignmentInput = {
 	 * "assignment received" frame.
 	 */
 	runStreamConnectTimeoutMs?: number;
+	/**
+	 * Wake a parked Run (#190): resume the Workflow Run and Agent Session its
+	 * session record names, with `reply` as the prompt. The stored answer for
+	 * the request it parked on is replayed by the run itself.
+	 */
+	wake?: {reply: string};
+	/** Test seam — where a wake finds the parked Run to resume. */
+	resolveWakeTargetFn?: (athenaSessionId: string) => WakeTarget | null;
 };
+
+/** The persisted Run a wake resumes, read from the session record. */
+export type WakeTarget = {
+	resumeRunId: string;
+	adapterResumeSessionId?: string;
+};
+
+function resolveWakeTarget(athenaSessionId: string): WakeTarget | null {
+	const run = getLatestRunForSession(athenaSessionId);
+	if (!run || run.status !== 'awaiting_attention') return null;
+	return {
+		resumeRunId: run.id,
+		...(run.adapterSessionId
+			? {adapterResumeSessionId: run.adapterSessionId}
+			: {}),
+	};
+}
 
 type JsonExecEvent = {
 	type?: unknown;
@@ -180,7 +209,7 @@ export type ValidatedAssignment = {
 	runId: string;
 	runnerId: string;
 	spec: RemoteRunSpec;
-	frame: JobAssignmentFrame;
+	frame: RunStartFrame;
 };
 
 export type AssignmentValidation =
@@ -195,7 +224,7 @@ export type AssignmentValidation =
  * frame once into a {@link ValidatedAssignment} or a first-class rejection.
  */
 export function validateDashboardAssignment(
-	frame: JobAssignmentFrame,
+	frame: RunStartFrame,
 ): AssignmentValidation {
 	const spec = parseRemoteRunSpec(frame.runSpec);
 	if (!spec) {
@@ -340,6 +369,7 @@ export async function executeRemoteAssignment({
 	log = () => {},
 	runExecFn = runExec,
 	decisionInbox,
+	steerQueue,
 	bootstrapRuntimeConfigFn = bootstrapRuntimeConfig,
 	now = Date.now,
 	abortSignal,
@@ -351,6 +381,8 @@ export async function executeRemoteAssignment({
 	uploadArtifactObjectFn,
 	dashboardFeedPublisher,
 	runStreamConnectTimeoutMs = 5_000,
+	wake,
+	resolveWakeTargetFn = resolveWakeTarget,
 }: ExecuteRemoteAssignmentInput): Promise<void> {
 	const lastTerminalFailureMessage: {current: string | null} = {current: null};
 	const deferredFailedCompletion: {current: JsonExecEvent | null} = {
@@ -361,6 +393,8 @@ export async function executeRemoteAssignment({
 	// guaranteed present and we consume it directly — no reparse. The raw frame
 	// is retained only for orthogonal concerns (artifact-upload spec parsing).
 	const {spec, runId, frame} = assignment;
+	const athenaSessionId =
+		spec.athenaSessionId ?? spec.sessionId ?? `athena-${runId}`;
 
 	const runEventPublisher: RemoteRunEventPublisher =
 		await createRemoteRunEventPublisher({
@@ -388,6 +422,31 @@ export async function executeRemoteAssignment({
 		runEventPublisher.publish(kind, payload, ts);
 	};
 
+	/**
+	 * The Run parked in `awaiting_attention` (the Runner's `run.suspended`
+	 * JSONL event): tell the hub with a `needs_human` frame carrying the
+	 * Interruption, over the instance socket. The run stream still relays the
+	 * event as before; this is the control-plane escalation beside it.
+	 */
+	const reportNeedsHuman = (event: JsonExecEvent): void => {
+		const data =
+			typeof event.data === 'object' && event.data !== null
+				? (event.data as {stopReason?: unknown; interruption?: unknown})
+				: {};
+		const stopReason =
+			typeof data.stopReason === 'string' ? data.stopReason : null;
+		// A Run parked on a structured Interruption (a deferred permission,
+		// #190) reports it as-is; only a bare sentence is classified.
+		const structured = InterruptionSchema.safeParse(data.interruption);
+		client.sendNeedsHuman({
+			runId,
+			athenaSessionId,
+			interruption: structured.success
+				? structured.data
+				: interruptionFromSuspension(stopReason),
+		});
+	};
+
 	send('progress', {message: 'assignment received'});
 
 	try {
@@ -413,7 +472,7 @@ export async function executeRemoteAssignment({
 			runtimeConfig = bootstrapRuntimeConfigFn({
 				projectDir,
 				showSetup: false,
-				isolationPreset: 'minimal',
+				isolationPreset: 'standard',
 				harnessOverride: spec.harness,
 				workflowOverride,
 			});
@@ -425,6 +484,15 @@ export async function executeRemoteAssignment({
 		}
 		for (const warning of runtimeConfig.warnings) {
 			send('warning', {message: warning});
+		}
+
+		// A wake resumes the parked Run its session record names (#190); a
+		// record that no longer says parked leaves the reply to run afresh.
+		const wakeTarget = wake ? resolveWakeTargetFn(athenaSessionId) : null;
+		if (wake && !wakeTarget) {
+			send('warning', {
+				message: `wake requested for ${athenaSessionId}, but its session record has no parked run to resume; running the reply as a new prompt`,
+			});
 		}
 
 		let buffered = '';
@@ -444,6 +512,7 @@ export async function executeRemoteAssignment({
 								continue;
 							}
 							send(eventKind(event), eventPayload(event), now());
+							if (event.type === 'run.suspended') reportNeedsHuman(event);
 						} catch (err) {
 							send('progress', {line});
 							log(
@@ -473,12 +542,14 @@ export async function executeRemoteAssignment({
 				spec.env,
 			);
 			const result = await runExecFn({
-				prompt: spec.prompt,
+				prompt: wake ? wake.reply : spec.prompt,
 				projectDir,
 				harness: runtimeConfig.harness,
-				athenaSessionId:
-					spec.athenaSessionId ?? spec.sessionId ?? `athena-${runId}`,
-				adapterResumeSessionId: spec.adapterResumeSessionId,
+				athenaSessionId,
+				adapterResumeSessionId:
+					wakeTarget?.adapterResumeSessionId ?? spec.adapterResumeSessionId,
+				...(wakeTarget ? {resumeRunId: wakeTarget.resumeRunId} : {}),
+				permissionGraceMs: runtimeConfig.permissionGraceMs,
 				isolationConfig: runtimeConfig.isolationConfig,
 				pluginMcpConfig: runtimeConfig.pluginMcpConfig,
 				workflow,
@@ -492,6 +563,7 @@ export async function executeRemoteAssignment({
 				stdout,
 				stderr,
 				...(decisionInbox ? {dashboardDecisionInbox: decisionInbox} : {}),
+				...(steerQueue ? {steerQueue} : {}),
 				...(dashboardFeedPublisher ? {dashboardFeedPublisher} : {}),
 				...(artifactUploadSpec
 					? {

@@ -9,6 +9,10 @@ import {fileURLToPath} from 'node:url';
 import App from '../shell/AppShell';
 import {processRegistry} from '../../shared/utils/processRegistry';
 import {type IsolationPreset} from '../../harnesses/claude/config/isolation';
+import {
+	HARNESS_PROCESS_PRESETS,
+	resolveHarnessProcessPreset,
+} from '../../core/runtime/process';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import {listHarnessAdapters} from '../../harnesses/registry';
 import {registerBuiltins} from '../commands/builtins/index';
@@ -29,16 +33,15 @@ import {writeGlobalConfig} from '../../infra/plugins/config';
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
 import {resolveTheme} from '../../ui/theme/index';
 import {shouldShowSetup} from '../../setup/shouldShowSetup';
-import {EXEC_EXIT_CODE} from '../exec';
+import {RUN_EXIT_CODE} from '../exec';
 import {runExecCommand} from './execCommand';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
 import {runMcpCommand} from './mcpCommand';
 import {runSkillCommand} from './skillCommand';
 import {runMarketplaceCommand} from './marketplaceCommand';
-import {runChannelCommand} from './channelCommand';
 import {runDashboardCommand} from './dashboardCommand';
-import {runGatewayCommand} from './gatewayCommand';
+import {runRunnerCommand} from './runnerCommand';
 import {runDoctorCommand} from './doctorCommand';
 import {runRunsCommand} from './runsCommand';
 import {resolveWorkflowInstall} from '../../infra/plugins/marketplace';
@@ -76,18 +79,19 @@ const KNOWN_COMMANDS = new Set([
 	'sessions',
 	'resume',
 	'runs',
+	'run',
+	// Deprecated alias of `run` (#185); removed in 0.7.0.
 	'exec',
 	'workflow',
 	'mcp',
 	'skill',
 	'marketplace',
-	'channel',
-	'gateway',
+	'runner',
+	// Deprecated alias of `runner` (#188); removed in 0.7.0.
 	'dashboard',
 	'telemetry',
 	'doctor',
 ]);
-const VALID_ISOLATION_PRESETS = ['strict', 'minimal', 'permissive'] as const;
 const VALID_HARNESSES = listHarnessAdapters()
 	.filter(a => a.enabled)
 	.map(a => a.id);
@@ -143,7 +147,7 @@ function printExecDryRunSummary(
 		override: context.workflowOverride,
 	});
 	const lines: string[] = [
-		'athena-flow exec --dry-run',
+		'athena-flow run --dry-run',
 		`  project:           ${context.projectDir}`,
 		`  harness:           ${runtimeConfig.harness}`,
 		`  active workflow:   ${selection.name} [${selection.source}]`,
@@ -240,7 +244,7 @@ function inkRenderOptions() {
 
 // Set terminal tab title immediately so it appears before React renders.
 // Only when stdout is a TTY — otherwise we'd be writing escape sequences
-// into a pipe (e.g. `athena gateway status --json | jq`) and corrupting
+// into a pipe (e.g. `drisp runner status --json | jq`) and corrupting
 // the consumer.
 if (process.stdout.isTTY) {
 	process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');
@@ -258,14 +262,15 @@ const cli = meow(
 			setup                 Re-run setup wizard
 			sessions              Launch interactive session picker
 			resume [sessionId]    Resume most recent (or specified) session
-			runs                  List workflow runs awaiting attention and how to wake them
-			exec "<prompt>"       Run non-interactively (CI/script mode)
+			runs                  List parked workflow runs (awaiting attention) and how to wake them
+			run "<prompt>"        Run non-interactively (CI/script mode)
 			workflow <sub>        Manage workflows (install, list, search, remove, upgrade, use)
 			mcp <sub>             Manage personal MCP servers (add, remove, list)
 			skill <sub>           Manage personal skills (install, remove, list)
 			marketplace <sub>     Manage marketplace sources (add, refresh, remove, list)
-			channel <sub>         Manage external channels
-			dashboard <sub>       Manage dashboard pairing and runtime daemon (pair, status, daemon, unpair)
+			runner [sub]          Run the runner that pairs this machine with the hub and executes its Runs
+			                      (no subcommand: foreground; --detach: background; status, stop, restart,
+			                      logs, runs, install, pair, unpair, refresh, doctor, list)
 			telemetry [action]    Manage anonymous telemetry (enable/disable/status)
 			doctor                Diagnose Claude headless setup (use with --harness=claude)
 
@@ -273,26 +278,30 @@ const cli = meow(
 			--project-dir   Project directory for hook socket (default: cwd)
 			--plugin        Path to a Claude Code plugin directory (repeatable)
 			--harness       Runtime harness: claude-code (default), openai-codex
-			--isolation     Isolation preset for spawned Claude process:
-			                  strict (default) - Full isolation, no MCP servers
-			                  minimal - Full isolation, allow project MCP servers
-			                  permissive - Full isolation, allow project MCP servers
+			--isolation     Isolation preset for the spawned harness process:
+			                  guarded (default) - core code tools only
+			                  standard - core tools + web + subagents + plugin MCP
+			                  autonomous - everything standard allows + notebooks; Codex never asks;
+			                    in run mode, permissions no ask rule claims are answered allow
+			                  (strict / minimal / permissive are deprecated aliases, removed in 0.7.0)
 			--verbose       Show additional rendering detail and streaming display
 			--theme         Color theme: dark (default), light, or high-contrast
 			--ascii         Use ASCII-only UI glyphs for compatibility
-			--continue      Resume most recent exec session, or use --continue=<athenaSessionId> (exec mode)
-			--json          Emit JSONL events to stdout (exec mode)
-			--output-last-message  Write final assistant message to a file (exec mode)
-			--ephemeral     Do not persist Athena session data (exec mode)
-			--timeout-ms    Hard timeout for exec run in milliseconds
+			--continue      Resume most recent run session, or use --continue=<athenaSessionId> (run mode)
+			--steer         Queue a human steer for the head of the next Turn's prompt (repeatable; run mode)
+			--answer        allow | deny: answer the permission a parked run is waiting on; replayed
+			                into the re-issued call on --continue (run mode)
+			--permission-grace-ms  How long a permission no rule answers is held for an attached
+			                hub before it is deferred and the run parks (default 60000; run mode)
+			--json          Emit JSONL events to stdout (run mode)
+			--output-last-message  Write final assistant message to a file (run mode)
+			--ephemeral     Do not persist Athena session data (run mode)
+			--timeout-ms    Hard timeout for the run in milliseconds
 			--workflow      Override the active workflow for this run only (no config change)
-			--channel       Attach a channel for permission/question relay (repeatable). Built-in: telegram
-			--bot-token     Telegram bot token (channel telegram configure)
-			--user-id       Telegram allowed user id (channel telegram configure)
-			--chat-id       Telegram destination chat id (defaults to --user-id)
-			--url           Dashboard origin (dashboard pair)
-			--name          Friendly machine name (dashboard pair)
-			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (exec mode)
+			--detach        Start the runner in the background (runner)
+			--url           Dashboard origin (runner pair)
+			--name          Friendly machine name (runner pair)
+			--dry-run       Print resolved bootstrap (workflow, isolation, plugins, harness) and exit (run mode)
 			--project       Scope workflow command to project config (workflow use)
 			--global        Scope workflow command to global config (workflow use, default)
 			--help          Show command help
@@ -300,6 +309,8 @@ const cli = meow(
 
 		Note: All isolation modes use --setting-sources "" to completely isolate
 		      from Claude Code's settings. athena-flow is fully self-contained.
+		      \`exec\` is a deprecated alias of \`run\` and is removed in 0.7.0.
+		      \`dashboard\` is a deprecated alias of \`runner\` and is removed in 0.7.0.
 
 	Config Files
 		Global:  ~/.config/athena/config.json
@@ -316,12 +327,11 @@ const cli = meow(
 		  $ athena-flow sessions
 		  $ athena-flow resume
 		  $ athena-flow resume <sessionId>
-		  $ athena-flow exec "summarize current repo status"
-		  $ athena-flow exec "run tests" --json
-		  $ athena-flow exec "delete /tmp/foo" --channel telegram
+		  $ athena-flow run "summarize current repo status"
+		  $ athena-flow run "run tests" --json
 		  $ athena-flow --project-dir=/my/project
 		  $ athena-flow --plugin=/path/to/my-plugin
-		  $ athena-flow --isolation=minimal
+		  $ athena-flow --isolation=standard
 		  $ athena-flow --verbose
 		  $ athena-flow --ascii
 	`,
@@ -342,7 +352,7 @@ const cli = meow(
 			},
 			isolation: {
 				type: 'string',
-				default: 'strict',
+				default: 'guarded',
 			},
 			verbose: {
 				type: 'boolean',
@@ -357,6 +367,16 @@ const cli = meow(
 			},
 			continue: {
 				type: 'string',
+			},
+			steer: {
+				type: 'string',
+				isMultiple: true,
+			},
+			answer: {
+				type: 'string',
+			},
+			permissionGraceMs: {
+				type: 'number',
 			},
 			json: {
 				type: 'boolean',
@@ -375,22 +395,6 @@ const cli = meow(
 			workflow: {
 				type: 'string',
 			},
-			channel: {
-				type: 'string',
-				isMultiple: true,
-			},
-			botToken: {
-				type: 'string',
-			},
-			userId: {
-				type: 'string',
-			},
-			chatId: {
-				type: 'string',
-			},
-			token: {
-				type: 'string',
-			},
 			url: {
 				type: 'string',
 			},
@@ -407,30 +411,15 @@ const cli = meow(
 				type: 'boolean',
 				default: false,
 			},
+			detach: {
+				type: 'boolean',
+				default: false,
+			},
 			active: {
 				type: 'boolean',
 				default: false,
 			},
 			limit: {
-				type: 'number',
-			},
-			tlsCa: {
-				type: 'string',
-			},
-			tlsCert: {
-				type: 'string',
-			},
-			tlsKey: {
-				type: 'string',
-			},
-			bind: {
-				type: 'string',
-			},
-			insecure: {
-				type: 'boolean',
-				default: false,
-			},
-			gracePeriodMs: {
 				type: 'number',
 			},
 			dryRun: {
@@ -463,6 +452,9 @@ const cli = meow(
 async function main(): Promise<void> {
 	const projectDir = path.resolve(cli.flags.projectDir);
 	const [command, ...commandArgs] = cli.input;
+	// `run` is the headless command; `exec` is its deprecated alias (#185) and
+	// behaves identically apart from the one-line notice below.
+	const isRunCommand = command === 'run' || command === 'exec';
 
 	if (command && !KNOWN_COMMANDS.has(command)) {
 		console.error(
@@ -471,6 +463,12 @@ async function main(): Promise<void> {
 		);
 		await exitWith(1);
 		return;
+	}
+
+	if (command === 'exec') {
+		console.error(
+			'drisp exec is deprecated and is removed in 0.7.0; use drisp run instead.',
+		);
 	}
 
 	if (
@@ -488,9 +486,9 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (command === 'exec' && commandArgs.length !== 1) {
-		console.error('Usage: athena-flow exec "<prompt>" [options]');
-		await exitWith(EXEC_EXIT_CODE.USAGE);
+	if (isRunCommand && commandArgs.length !== 1) {
+		console.error('Usage: athena-flow run "<prompt>" [options]');
+		await exitWith(RUN_EXIT_CODE.USAGE);
 		return;
 	}
 
@@ -584,75 +582,32 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (command === 'channel') {
-		await exitWith(
-			runChannelCommand({
-				subcommandArgs: commandArgs,
-				flags: {
-					botToken:
-						typeof cli.flags.botToken === 'string'
-							? cli.flags.botToken
-							: undefined,
-					userId:
-						typeof cli.flags.userId === 'string' ? cli.flags.userId : undefined,
-					chatId:
-						typeof cli.flags.chatId === 'string' ? cli.flags.chatId : undefined,
-				},
-			}),
-		);
-		return;
-	}
-
-	if (command === 'gateway') {
+	if (command === 'runner' || command === 'dashboard') {
 		const [subcommand = '', ...subcommandArgs] = commandArgs;
-		// Top-level meow consumes --json into cli.flags before subcommand args
-		// are sliced off; forward it so `gateway probe/status` see it.
-		if (cli.flags.json) subcommandArgs.push('--json');
-		if (typeof cli.flags.token === 'string') {
-			subcommandArgs.push('--token', cli.flags.token);
-		}
-		if (typeof cli.flags.tlsCa === 'string') {
-			subcommandArgs.push('--tls-ca', cli.flags.tlsCa);
-		}
-		if (typeof cli.flags.tlsCert === 'string') {
-			subcommandArgs.push('--tls-cert', cli.flags.tlsCert);
-		}
-		if (typeof cli.flags.tlsKey === 'string') {
-			subcommandArgs.push('--tls-key', cli.flags.tlsKey);
-		}
-		if (typeof cli.flags.bind === 'string') {
-			subcommandArgs.push('--bind', cli.flags.bind);
-		}
-		if (cli.flags.insecure) {
-			subcommandArgs.push('--insecure');
-		}
-		if (typeof cli.flags.gracePeriodMs === 'number') {
-			subcommandArgs.push('--grace-period-ms', String(cli.flags.gracePeriodMs));
-		}
-		await exitWith(await runGatewayCommand({subcommand, subcommandArgs}));
-		return;
-	}
-
-	if (command === 'dashboard') {
-		const [subcommand = '', ...subcommandArgs] = commandArgs;
+		const input = {
+			subcommand,
+			subcommandArgs,
+			flags: {
+				url: typeof cli.flags.url === 'string' ? cli.flags.url : undefined,
+				name: typeof cli.flags.name === 'string' ? cli.flags.name : undefined,
+				runner:
+					typeof cli.flags.runner === 'string' ? cli.flags.runner : undefined,
+				json: Boolean(cli.flags.json),
+				...(cli.flags.detach ? {detach: true} : {}),
+				...(typeof cli.flags.tail === 'number' ? {tail: cli.flags.tail} : {}),
+				...(cli.flags.follow ? {follow: true} : {}),
+				...(cli.flags.active ? {active: true} : {}),
+				...(typeof cli.flags.limit === 'number'
+					? {limit: cli.flags.limit}
+					: {}),
+			},
+		};
+		// `dashboard` is the deprecated alias (#188): it prints its own one-line
+		// notice and maps its subcommands onto the runner's.
 		await exitWith(
-			await runDashboardCommand({
-				subcommand,
-				subcommandArgs,
-				flags: {
-					url: typeof cli.flags.url === 'string' ? cli.flags.url : undefined,
-					name: typeof cli.flags.name === 'string' ? cli.flags.name : undefined,
-					runner:
-						typeof cli.flags.runner === 'string' ? cli.flags.runner : undefined,
-					json: Boolean(cli.flags.json),
-					...(typeof cli.flags.tail === 'number' ? {tail: cli.flags.tail} : {}),
-					...(cli.flags.follow ? {follow: true} : {}),
-					...(cli.flags.active ? {active: true} : {}),
-					...(typeof cli.flags.limit === 'number'
-						? {limit: cli.flags.limit}
-						: {}),
-				},
-			}),
+			command === 'runner'
+				? await runRunnerCommand(input)
+				: await runDashboardCommand(input),
 		);
 		return;
 	}
@@ -715,18 +670,23 @@ async function main(): Promise<void> {
 			console.error(
 				`Error: Invalid harness '${cli.flags.harness}'. Valid options: ${VALID_HARNESSES.join(', ')}`,
 			);
-			await exitWith(command === 'exec' ? EXEC_EXIT_CODE.USAGE : 1);
+			await exitWith(isRunCommand ? RUN_EXIT_CODE.USAGE : 1);
 			return;
 		}
 	}
 
-	// Validate isolation preset
-	let isolationPreset: IsolationPreset = 'strict';
-	if (isOneOf(cli.flags.isolation, VALID_ISOLATION_PRESETS)) {
-		isolationPreset = cli.flags.isolation;
-	} else if (cli.flags.isolation !== 'strict') {
+	// Validate isolation preset. Old names (strict / minimal / permissive)
+	// resolve to their replacements with a notice for one release (#185).
+	let isolationPreset: IsolationPreset = 'guarded';
+	const resolvedPreset = resolveHarnessProcessPreset(cli.flags.isolation);
+	if (resolvedPreset) {
+		isolationPreset = resolvedPreset.preset;
+		if (resolvedPreset.deprecation) {
+			console.error(`Warning: isolation ${resolvedPreset.deprecation}.`);
+		}
+	} else {
 		console.error(
-			`Warning: Invalid isolation preset '${cli.flags.isolation}', using 'strict'`,
+			`Warning: Invalid isolation preset '${cli.flags.isolation}' (valid: ${HARNESS_PROCESS_PRESETS.join(', ')}), using 'guarded'`,
 		);
 	}
 
@@ -736,16 +696,15 @@ async function main(): Promise<void> {
 	const projectConfig = readConfig(projectDir);
 
 	// Interactive setup wizard must not run in exec mode
-	const showSetup =
-		command === 'exec'
-			? false
-			: shouldShowSetup({
-					cliInput: cli.input,
-					setupComplete: globalConfig.setupComplete,
-					globalConfigExists: fs.existsSync(
-						path.join(os.homedir(), '.config', 'athena', 'config.json'),
-					),
-				});
+	const showSetup = isRunCommand
+		? false
+		: shouldShowSetup({
+				cliInput: cli.input,
+				setupComplete: globalConfig.setupComplete,
+				globalConfigExists: fs.existsSync(
+					path.join(os.homedir(), '.config', 'athena', 'config.json'),
+				),
+			});
 
 	let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 	try {
@@ -762,7 +721,7 @@ async function main(): Promise<void> {
 		});
 	} catch (error) {
 		console.error(`Error: ${(error as Error).message}`);
-		await exitWith(command === 'exec' ? EXEC_EXIT_CODE.BOOTSTRAP : 1);
+		await exitWith(isRunCommand ? RUN_EXIT_CODE.BOOTSTRAP : 1);
 		return;
 	}
 
@@ -770,10 +729,16 @@ async function main(): Promise<void> {
 		console.error(warning);
 	}
 
+	if ((cli.flags.steer ?? []).length > 0 && !isRunCommand) {
+		console.error('Error: --steer is only supported in run mode.');
+		await exitWith(RUN_EXIT_CODE.USAGE);
+		return;
+	}
+
 	if (cli.flags.dryRun) {
-		if (command !== 'exec') {
+		if (!isRunCommand) {
 			console.error('Error: --dry-run is only supported in exec mode.');
-			await exitWith(EXEC_EXIT_CODE.USAGE);
+			await exitWith(RUN_EXIT_CODE.USAGE);
 			return;
 		}
 		printExecDryRunSummary(runtimeConfig, {
@@ -802,25 +767,27 @@ async function main(): Promise<void> {
 	trackAppLaunched({version, harness: runtimeConfig.harness});
 
 	// Show telemetry notice on first run
-	if (command !== 'exec' && isFirstRun && globalConfig.telemetry !== false) {
+	if (!isRunCommand && isFirstRun && globalConfig.telemetry !== false) {
 		console.log(
 			'\n  Athena collects anonymous usage data to improve the product.' +
 				"\n  Run 'athena-flow telemetry disable' or set ATHENA_TELEMETRY_DISABLED=1 to opt out.\n",
 		);
 	}
 
-	if (command === 'exec') {
+	if (isRunCommand) {
 		const exitCode = await runExecCommand({
 			projectDir,
 			prompt: commandArgs[0]!,
 			flags: {
 				continueFlag: cli.flags.continue,
+				steers: cli.flags.steer,
 				json: cli.flags.json,
 				outputLastMessage: cli.flags.outputLastMessage,
 				ephemeral: cli.flags.ephemeral,
 				timeoutMs: cli.flags.timeoutMs,
 				verbose: cli.flags.verbose,
-				channels: cli.flags.channel ?? [],
+				permissionGraceMs: cli.flags.permissionGraceMs,
+				answer: cli.flags.answer,
 			},
 			runtimeConfig,
 		});
@@ -851,9 +818,6 @@ async function main(): Promise<void> {
 
 	const {athenaSessionId, initialSessionId} = interactiveSession;
 	const instanceId = process.pid;
-
-	// Channel attachments are deferred to the gateway in M6+; the legacy
-	// per-session channel-subprocess wiring has been removed.
 
 	render(
 		<App

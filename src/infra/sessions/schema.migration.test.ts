@@ -2,6 +2,14 @@ import {describe, it, expect} from 'vitest';
 import Database from 'better-sqlite3';
 import {initSchema} from './schema';
 
+function tableNames(db: Database.Database): string[] {
+	return (
+		db
+			.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+			.all() as Array<{name: string}>
+	).map(row => row.name);
+}
+
 describe('schema migrations', () => {
 	it('rejects duplicate global seq (different runs)', () => {
 		const db = new Database(':memory:');
@@ -88,7 +96,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		// Verify token columns exist and can be updated
 		db.prepare(
@@ -138,7 +146,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		db.prepare(
 			'INSERT INTO adapter_sessions (session_id, started_at, tokens_context_window_size) VALUES (?, ?, ?)',
@@ -183,7 +191,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		db.prepare(
 			`INSERT INTO workflow_runs (id, session_id, started_at, iteration, max_iterations, status)
@@ -216,7 +224,7 @@ describe('schema migrations', () => {
 		db.close();
 	});
 
-	it('migrates v5 → v6 by adding the channel_outbox table', () => {
+	it('migrates v5 → v6 as a version bump that creates no channel_outbox table', () => {
 		const db = new Database(':memory:');
 		db.exec('PRAGMA foreign_keys = ON');
 		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
@@ -250,25 +258,26 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
-		// channel_outbox: insert + due index works
-		db.prepare(
-			`INSERT INTO channel_outbox (channel_id, account_id, payload_json, next_attempt_at, created_at)
-			 VALUES (?, ?, ?, ?, ?)`,
-		).run(
-			'telegram',
-			'default',
-			'{"text":"hi"}',
-			Date.now() + 1000,
-			Date.now(),
-		);
-		const due = db
-			.prepare(
-				'SELECT count(*) as n FROM channel_outbox WHERE next_attempt_at >= ?',
-			)
-			.get(0) as {n: number};
-		expect(due.n).toBe(1);
+		// The channel queues went with the second runner (#183): no code path
+		// creates them any more. The feed outbox (feed_events) is untouched.
+		expect(tableNames(db)).not.toContain('channel_outbox');
+		expect(tableNames(db)).not.toContain('inbound_queue');
+		expect(tableNames(db)).toContain('feed_events');
+
+		db.close();
+	});
+
+	it('creates no channel_outbox or inbound_queue table on a fresh database', () => {
+		const db = new Database(':memory:');
+		initSchema(db);
+
+		const tables = tableNames(db);
+		expect(tables).not.toContain('channel_outbox');
+		expect(tables).not.toContain('inbound_queue');
+		expect(tables).toContain('feed_events');
+		expect(tables).toContain('workflow_runs');
 
 		db.close();
 	});
@@ -307,7 +316,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		// Existing row's prompt_id defaults to NULL...
 		const before = db
@@ -352,7 +361,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		// Existing row defaults to NULL...
 		const before = db
@@ -396,7 +405,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(9);
+		expect(row.version).toBe(10);
 
 		// Existing row defaults to NULL...
 		const before = db
@@ -413,6 +422,118 @@ describe('schema migrations', () => {
 			.prepare('SELECT run_memory_json FROM workflow_runs WHERE id = ?')
 			.get('run-1') as {run_memory_json: string};
 		expect(after.run_memory_json).toBe('{"iteration":1}');
+
+		// ...and the chain carries on to v10, so the #190 column exists too.
+		const columns = db
+			.prepare("SELECT name FROM pragma_table_info('workflow_runs')")
+			.all() as {name: string}[];
+		expect(columns.map(c => c.name)).toEqual(
+			expect.arrayContaining(['run_memory_json', 'interruption_json']),
+		);
+
+		db.close();
+	});
+
+	it('migrates a 0.5.28 v9 database (run_memory_json, no interruption_json) → v10 (#190)', () => {
+		const db = new Database(':memory:');
+		db.exec('PRAGMA foreign_keys = ON');
+		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(9);
+		db.exec(
+			'CREATE TABLE session (id TEXT PRIMARY KEY, project_dir TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, label TEXT, event_count INTEGER DEFAULT 0)',
+		);
+		// 0.5.28's v9 workflow_runs shape: run_memory_json present, no interruption_json.
+		db.exec(
+			"CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, workflow_name TEXT, started_at INTEGER NOT NULL, ended_at INTEGER, iteration INTEGER NOT NULL DEFAULT 0, max_iterations INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'running', stop_reason TEXT, tracker_path TEXT, adapter_session_id TEXT, run_memory_json TEXT, FOREIGN KEY (session_id) REFERENCES session(id))",
+		);
+		db.prepare(
+			'INSERT INTO session (id, project_dir, created_at, updated_at) VALUES (?, ?, ?, ?)',
+		).run('s1', '/tmp', Date.now(), Date.now());
+		db.prepare(
+			'INSERT INTO workflow_runs (id, session_id, started_at, run_memory_json) VALUES (?, ?, ?, ?)',
+		).run('run-1', 's1', Date.now(), '{"iteration":3}');
+
+		initSchema(db);
+
+		const row = db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		};
+		expect(row.version).toBe(10);
+
+		// The released column survives, the new one defaults to NULL...
+		const before = db
+			.prepare(
+				'SELECT run_memory_json, interruption_json FROM workflow_runs WHERE id = ?',
+			)
+			.get('run-1') as {
+			run_memory_json: string | null;
+			interruption_json: string | null;
+		};
+		expect(before.run_memory_json).toBe('{"iteration":3}');
+		expect(before.interruption_json).toBeNull();
+
+		// ...and is writable.
+		db.prepare(
+			'UPDATE workflow_runs SET interruption_json = ? WHERE id = ?',
+		).run('{"kind":"question","message":"m","requestId":"req-1"}', 'run-1');
+		const after = db
+			.prepare('SELECT interruption_json FROM workflow_runs WHERE id = ?')
+			.get('run-1') as {interruption_json: string};
+		expect(JSON.parse(after.interruption_json)).toEqual({
+			kind: 'question',
+			message: 'm',
+			requestId: 'req-1',
+		});
+
+		db.close();
+	});
+
+	it('migrates a pre-release v9 database (interruption_json, no run_memory_json) → v10 without losing either column', () => {
+		const db = new Database(':memory:');
+		db.exec('PRAGMA foreign_keys = ON');
+		db.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+		db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(9);
+		db.exec(
+			'CREATE TABLE session (id TEXT PRIMARY KEY, project_dir TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, label TEXT, event_count INTEGER DEFAULT 0)',
+		);
+		// The protocol-migration branch's own v9 shape before it merged 0.5.28:
+		// interruption_json present, no run_memory_json.
+		db.exec(
+			"CREATE TABLE workflow_runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, workflow_name TEXT, started_at INTEGER NOT NULL, ended_at INTEGER, iteration INTEGER NOT NULL DEFAULT 0, max_iterations INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'running', stop_reason TEXT, tracker_path TEXT, adapter_session_id TEXT, interruption_json TEXT, FOREIGN KEY (session_id) REFERENCES session(id))",
+		);
+		db.prepare(
+			'INSERT INTO session (id, project_dir, created_at, updated_at) VALUES (?, ?, ?, ?)',
+		).run('s1', '/tmp', Date.now(), Date.now());
+		db.prepare(
+			'INSERT INTO workflow_runs (id, session_id, started_at, interruption_json) VALUES (?, ?, ?, ?)',
+		).run('run-1', 's1', Date.now(), '{"kind":"blocked","message":"m"}');
+
+		initSchema(db);
+
+		const row = db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		};
+		expect(row.version).toBe(10);
+
+		const after = db
+			.prepare(
+				'SELECT run_memory_json, interruption_json FROM workflow_runs WHERE id = ?',
+			)
+			.get('run-1') as {
+			run_memory_json: string | null;
+			interruption_json: string | null;
+		};
+		expect(after.interruption_json).toBe('{"kind":"blocked","message":"m"}');
+		expect(after.run_memory_json).toBeNull();
+
+		db.prepare('UPDATE workflow_runs SET run_memory_json = ? WHERE id = ?').run(
+			'{"iteration":1}',
+			'run-1',
+		);
+		const written = db
+			.prepare('SELECT run_memory_json FROM workflow_runs WHERE id = ?')
+			.get('run-1') as {run_memory_json: string};
+		expect(written.run_memory_json).toBe('{"iteration":1}');
 
 		db.close();
 	});

@@ -142,7 +142,7 @@ describe('createClaudeSessionController', () => {
 
 	it('lets plugin MCP config win over a per-command mcpConfig override', async () => {
 		const {controller, getOptions, callbacks} = setup({
-			processConfig: 'strict',
+			processConfig: 'guarded',
 			pluginMcpConfig: '/plugin-mcp.json',
 		});
 
@@ -162,12 +162,12 @@ describe('createClaudeSessionController', () => {
 
 	it('passes the base preset through unchanged when there is nothing to merge', async () => {
 		const {controller, getOptions, callbacks} = setup({
-			processConfig: 'strict',
+			processConfig: 'guarded',
 		});
 
 		const turn = controller.startTurn({prompt: 'p'});
 		expect(getOptions()).toEqual(
-			expect.objectContaining({isolation: 'strict'}),
+			expect.objectContaining({isolation: 'guarded'}),
 		);
 
 		callbacks.onExit?.(0);

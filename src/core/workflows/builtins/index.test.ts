@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {
-	DEFAULT_BLOCKED_MARKER,
+	DEFAULT_NEEDS_HUMAN_MARKER,
 	DEFAULT_COMPLETION_MARKER,
-} from '../trackerReader';
+} from '../journalReader';
 import {resolveBuiltinWorkflow} from './index';
 
 const tempDirs: string[] = [];
@@ -31,16 +31,16 @@ describe('resolveBuiltinWorkflow', () => {
 		const workflow = resolveBuiltinWorkflow('default');
 
 		expect(workflow?.loop?.completionMarker).toBe(DEFAULT_COMPLETION_MARKER);
-		expect(workflow?.loop?.blockedMarker).toBe(DEFAULT_BLOCKED_MARKER);
+		expect(workflow?.loop?.needsHumanMarker).toBe(DEFAULT_NEEDS_HUMAN_MARKER);
 		expect(workflow?.workflowFile).toBeDefined();
 
 		const prompt = fs.readFileSync(workflow!.workflowFile!, 'utf-8');
 		expect(prompt).toContain(DEFAULT_COMPLETION_MARKER);
-		expect(prompt).toContain(`${DEFAULT_BLOCKED_MARKER} -->`);
-		expect(prompt).toContain(`${DEFAULT_BLOCKED_MARKER}: reason -->`);
-		expect(prompt).toContain('final non-empty line of the tracker file');
+		expect(prompt).toContain(`${DEFAULT_NEEDS_HUMAN_MARKER} -->`);
+		expect(prompt).toContain(`${DEFAULT_NEEDS_HUMAN_MARKER}: reason -->`);
+		expect(prompt).toContain('final non-empty line of the journal file');
 		expect(prompt).toContain(
-			'Do not write any tracker content after the terminal marker',
+			'Do not write any journal content after the terminal marker',
 		);
 		expect(prompt).not.toContain('TASK_COMPLETE');
 		expect(prompt).not.toContain('TASK_BLOCKED');

@@ -1,5 +1,6 @@
 // src/feed/types.ts
 
+import type {PhaseEvent} from '@drisp/protocol';
 import type {PermissionSuggestion} from '../../shared/types/permissionSuggestion';
 import type {RuntimeEventDataMap, ToolBatchCall} from '../runtime/events';
 
@@ -60,16 +61,8 @@ export type FeedEventKind =
 	| 'permission.denied'
 	| 'elicitation.request'
 	| 'elicitation.result'
-	| 'channel.permission.relayed'
-	| 'channel.permission.resolved'
-	| 'channel.question.relayed'
-	| 'channel.question.resolved'
-	| 'channel.chat.inbound'
-	| 'channel.chat.outbound'
-	| 'gateway.function.invoked'
-	| 'gateway.function.completed'
-	| 'gateway.function.failed'
-	| 'artifacts.manifest';
+	| 'artifacts.manifest'
+	| 'phase';
 
 export type FeedEventLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -451,84 +444,17 @@ export type ElicitationResultData = {
 	content?: Record<string, unknown>;
 };
 
-export type ChannelPermissionRelayedData = {
-	channel_name: string;
-	channel_request_id: string;
-	tool_name: string;
-};
-
-export type ChannelPermissionResolvedData = {
-	/** Name of the resolving channel for `source: 'channel'`; empty otherwise. */
-	channel_name: string;
-	channel_request_id: string;
-	source: 'local' | 'channel' | 'rule' | 'timeout';
-	tool_name: string;
-	/** allow/deny when known; null for cases like timeout fall-through. */
-	behavior: 'allow' | 'deny' | null;
-};
-
-export type ChannelQuestionRelayedData = {
-	channel_name: string;
-	channel_request_id: string;
-	title: string;
-};
-
-export type ChannelQuestionResolvedData = {
-	/** Name of the resolving channel for `source: 'channel'`; empty otherwise. */
-	channel_name: string;
-	channel_request_id: string;
-	source: 'local' | 'channel' | 'timeout';
-	title: string;
-	answers: Record<string, string> | null;
-};
-
-export type ChannelChatInboundData = {
-	channel_name: string;
-	sender_id: string;
-	content: string;
-};
-
-export type ChannelChatOutboundData = {
-	channel_name: string;
-	target_peer_id: string;
-	content: string;
-	provider_message_id?: string;
-	idempotency_key?: string;
-};
-
-export type GatewayFunctionCallerKind = 'agent' | 'channel' | 'hook';
-
-export type GatewayFunctionInvokedData = {
-	function_name: string;
-	caller_kind: GatewayFunctionCallerKind;
-	idempotency_key?: string;
-	args_preview?: string;
-};
-
-export type GatewayFunctionCompletedData = {
-	function_name: string;
-	caller_kind: GatewayFunctionCallerKind;
-	http_status?: number;
-	duration_ms: number;
-};
-
-export type GatewayFunctionFailedData = {
-	function_name: string;
-	caller_kind: GatewayFunctionCallerKind;
-	reason:
-		| 'http_error'
-		| 'timeout'
-		| 'transport'
-		| 'validation'
-		| 'unauthorized';
-	http_status?: number;
-	duration_ms: number;
-	error_message: string;
-};
-
 export type ArtifactsManifestData = {
 	manifest: unknown;
 };
+
+/**
+ * The workflow step a Workflow Run moved to, as the Journal's Turn Protocol
+ * block named it. Synthesized by the Runner (not the FeedMapper) once per
+ * change of step; the same shape `@drisp/protocol` publishes to the hub, so
+ * `runId` here is the Workflow Run id, not this event's Feed Run `run_id`.
+ */
+export type PhaseData = PhaseEvent;
 
 // Phase 2 stubs
 export type TodoPriority = 'p0' | 'p1' | 'p2';
@@ -635,45 +561,10 @@ export type FeedEvent =
 			data: ElicitationResultData;
 	  })
 	| (FeedEventBase & {
-			kind: 'channel.permission.relayed';
-			data: ChannelPermissionRelayedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'channel.permission.resolved';
-			data: ChannelPermissionResolvedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'channel.question.relayed';
-			data: ChannelQuestionRelayedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'channel.question.resolved';
-			data: ChannelQuestionResolvedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'channel.chat.inbound';
-			data: ChannelChatInboundData;
-	  })
-	| (FeedEventBase & {
-			kind: 'channel.chat.outbound';
-			data: ChannelChatOutboundData;
-	  })
-	| (FeedEventBase & {
-			kind: 'gateway.function.invoked';
-			data: GatewayFunctionInvokedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'gateway.function.completed';
-			data: GatewayFunctionCompletedData;
-	  })
-	| (FeedEventBase & {
-			kind: 'gateway.function.failed';
-			data: GatewayFunctionFailedData;
-	  })
-	| (FeedEventBase & {
 			kind: 'artifacts.manifest';
 			data: ArtifactsManifestData;
-	  });
+	  })
+	| (FeedEventBase & {kind: 'phase'; data: PhaseData});
 
 // ── Compile-time drift checks ────────────────────────────
 //

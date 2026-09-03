@@ -4,9 +4,9 @@
  * originating hook payload. Mirrors `buildSyntheticNotificationEvent` in
  * `src/app/providers/useFeed.ts`, the first such precedent.
  *
- * Used by the Tracker → task-tool projection (ADR 0015 §7): the Runner
- * parses the Tracker's `## Units` table plus each unit record's frontmatter
- * (see `trackerReader.ts`'s `projectTrackerTasks`) and the app layer turns
+ * Used by the Journal → task-tool projection (ADR 0015 §7): the Runner
+ * parses the Journal's `## Units` table plus each unit record's frontmatter
+ * (see `journalReader.ts`'s `projectJournalTasks`) and the app layer turns
  * that into `task.created`/`task.completed` events through this module, so
  * they flow through exactly the same `mapper.mapEvent()` path a live
  * `TodoWrite`/`TaskCreate`/`TaskUpdate` tool call would take.
@@ -30,7 +30,7 @@ const HOOK_NAME_BY_KIND: Record<SyntheticTaskEventKind, string> = {
 /**
  * Build a synthetic `task.created`/`task.completed` `RuntimeEvent` for a
  * task that did not arrive through a real tool call — e.g. one projected
- * from the Tracker's Dossier. Never persisted here; the caller decides
+ * from the Journal's Dossier. Never persisted here; the caller decides
  * whether to record the resulting `FeedEvent[]` (e.g. via
  * `SessionStore.recordFeedEvents`).
  */

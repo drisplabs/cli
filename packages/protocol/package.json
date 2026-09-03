@@ -1,0 +1,53 @@
+{
+	"name": "@drisp/protocol",
+	"version": "0.1.0",
+	"description": "Wire contract between a drisp runner and the hub: zod schemas, inferred types, and JSON Schema for the instance-socket frames, Run, Turn, Interruption, and the event stream",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/drisplabs/cli.git",
+		"directory": "packages/protocol"
+	},
+	"homepage": "https://github.com/drisplabs/cli/tree/main/packages/protocol#readme",
+	"bugs": {
+		"url": "https://github.com/drisplabs/cli/issues"
+	},
+	"keywords": [
+		"drisp",
+		"protocol",
+		"zod",
+		"json-schema"
+	],
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"exports": {
+		".": {
+			"source": "./src/index.ts",
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./schema/*.json": "./schema/*.json",
+		"./package.json": "./package.json"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist",
+		"!dist/**/*.js.map",
+		"schema"
+	],
+	"scripts": {
+		"build": "tsup",
+		"typecheck": "tsc --noEmit",
+		"schema:generate": "vite-node scripts/generate-schema.ts",
+		"prepublishOnly": "npm run build"
+	},
+	"dependencies": {
+		"zod": "^4.3.6"
+	}
+}

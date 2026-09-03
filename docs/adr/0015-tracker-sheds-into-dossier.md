@@ -5,6 +5,8 @@ Date: 2026-09-02
 Relates to: ADR 0003 (execution-unit terminology), ADR 0004 (terminal-outcome owner),
 ADR 0011 (KB storage and provenance), ADR 0014 (handover, retry, attention, continuation)
 
+> **Terminology note (2026-09-03, #185):** the **Tracker** this ADR splits is now the **Journal** (`journal.md`; an existing `tracker.md` keeps being read for one release). §1's phrase "the Dossier holds the journal" uses _journal_ in the diary sense — those files are the **Unit Records**; the index file is the **Journal**. The Dossier split itself, its triggers, and `cut → paste → pointer` are unchanged. The text below is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
+
 ## Context
 
 The **Tracker** is the only durable carrier of an **Athena Session**'s context. ADR 0014 added the

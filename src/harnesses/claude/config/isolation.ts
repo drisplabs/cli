@@ -10,8 +10,16 @@
  * and doesn't inherit unexpected behavior from user's Claude settings.
  */
 
-/** Preset key selecting an isolation profile from {@link ISOLATION_PRESETS}. */
-export type IsolationPreset = 'strict' | 'minimal' | 'permissive';
+import {
+	resolveHarnessProcessPreset,
+	type HarnessProcessPreset,
+} from '../../../core/runtime/process';
+
+/**
+ * Preset key selecting an isolation profile from {@link ISOLATION_PRESETS}:
+ * `guarded` (default) / `standard` / `autonomous` — the harness-neutral names.
+ */
+export type IsolationPreset = HarnessProcessPreset;
 
 /** Supported Claude reasoning-effort levels for the `--effort` launch knob. */
 export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -168,33 +176,33 @@ const DISALLOWED_FIRST_PARTY_MCPS = [
  * - `--disallowedTools` — explicitly block first-party cloud integrations
  *
  * Presets differ only in the allowedTools whitelist:
- * - `strict`:     Core code tools only (default)
- * - `minimal`:    Core + web + subagents + MCP wildcard
- * - `permissive`: Core + web + subagents + notebooks + MCP wildcard
+ * - `guarded`:    Core code tools only (default)
+ * - `standard`:   Core + web + subagents + MCP wildcard
+ * - `autonomous`: Core + web + subagents + notebooks + MCP wildcard
  */
 export const ISOLATION_PRESETS: Record<
 	IsolationPreset,
 	Partial<IsolationConfig>
 > = {
 	/**
-	 * Strict isolation (default):
+	 * Guarded (default):
 	 * - No Claude settings loaded (full isolation)
 	 * - Only MCP servers from athena's --mcp-config
 	 * - Allow core code tools (read, edit, search, bash)
 	 */
-	strict: {
+	guarded: {
 		strictMcpConfig: true,
 		allowedTools: ['Read', 'Edit', 'Glob', 'Grep', 'Bash', 'Write'],
 		disallowedTools: DISALLOWED_FIRST_PARTY_MCPS,
 	},
 
 	/**
-	 * Minimal isolation:
+	 * Standard:
 	 * - No Claude settings loaded (full isolation)
 	 * - Only MCP servers from athena's --mcp-config
 	 * - Allow core tools + web access + subagents + plugin MCP
 	 */
-	minimal: {
+	standard: {
 		strictMcpConfig: true,
 		allowedTools: [
 			'Read',
@@ -214,12 +222,12 @@ export const ISOLATION_PRESETS: Record<
 	},
 
 	/**
-	 * Permissive:
+	 * Autonomous:
 	 * - No Claude settings loaded (full isolation)
 	 * - Only MCP servers from athena's --mcp-config
 	 * - Allow all tools including MCP wildcard + notebooks
 	 */
-	permissive: {
+	autonomous: {
 		strictMcpConfig: true,
 		allowedTools: [
 			'Read',
@@ -240,26 +248,33 @@ export const ISOLATION_PRESETS: Record<
 	},
 };
 
+function normalizePreset(name: string): IsolationPreset {
+	return resolveHarnessProcessPreset(name)?.preset ?? 'guarded';
+}
+
 /**
  * Resolves an isolation preset or config into a full config.
  */
 export function resolveIsolationConfig(
 	isolation?: IsolationConfig | IsolationPreset,
 ): IsolationConfig {
-	// Default to strict isolation
+	// Default to guarded isolation
 	if (!isolation) {
-		return {...ISOLATION_PRESETS.strict};
+		return {...ISOLATION_PRESETS.guarded};
 	}
 
-	// If it's a string preset, expand it
+	// If it's a string preset, expand it. Names are read through the shared
+	// resolver so a pre-0.6 spelling that reached this seam from persisted
+	// config still selects its replacement (#185); the notice is the caller's
+	// job at the boundary where the name was read.
 	if (typeof isolation === 'string') {
-		return {...ISOLATION_PRESETS[isolation]};
+		return {...ISOLATION_PRESETS[normalizePreset(isolation)]};
 	}
 
 	// If it has a preset, merge with custom settings
 	if (isolation.preset) {
 		return {
-			...ISOLATION_PRESETS[isolation.preset],
+			...ISOLATION_PRESETS[normalizePreset(isolation.preset)],
 			...isolation,
 		};
 	}

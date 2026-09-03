@@ -20,7 +20,7 @@ export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
 /**
  * Default {@link LoopConfig.nudgeCap}: consecutive undeclared, progress-free
  * stops tolerated before the Run suspends in `awaiting_attention` (ADR 0014
- * §3). The cap resets whenever the Tracker advances between stops, so only
+ * §3). The cap resets whenever the Journal advances between stops, so only
  * unproductive repeated stops escalate.
  */
 export const DEFAULT_NUDGE_CAP = 3;
@@ -38,6 +38,17 @@ export const DEFAULT_RETRY_CAP = 3;
  */
 export const DEFAULT_RETRY_BACKOFF_MS = 10_000;
 
+/**
+ * Default permission grace window (#190): how long an unattended Workflow
+ * Run holds a permission request no rule answers, waiting for an attached
+ * hub to answer it, before refusing the call as "deferred" and parking the
+ * Run as needs-human. Configurable as `permissionGraceMs` in
+ * `~/.config/athena/config.json` / `.athena/config.json`, and per run with
+ * `drisp run --permission-grace-ms`. With no hub attached nothing can answer,
+ * so the request is deferred at once regardless of the window.
+ */
+export const DEFAULT_PERMISSION_GRACE_MS = 60_000;
+
 export type LoopConfig = {
 	enabled: boolean;
 	/**
@@ -47,8 +58,8 @@ export type LoopConfig = {
 	completionMarker?: string;
 	maxIterations: number;
 	/**
-	 * Consecutive Nudges tolerated without Tracker progress before the Run
-	 * suspends (ADR 0014 §3). Resets whenever the Tracker changes between
+	 * Consecutive Nudges tolerated without Journal progress before the Run
+	 * suspends (ADR 0014 §3). Resets whenever the Journal changes between
 	 * stops. Defaults to {@link DEFAULT_NUDGE_CAP} when omitted.
 	 */
 	nudgeCap?: number;
@@ -74,16 +85,30 @@ export type LoopConfig = {
 	 */
 	maxTurnTokenCount?: number;
 	/**
-	 * Prefix that signals the workflow is blocked.
-	 * Defaults to `<!-- WORKFLOW_BLOCKED` when omitted.
+	 * Prefix that signals the agent needs a human — a question only they can
+	 * answer, or an external blocker only they can clear. Defaults to
+	 * `<!-- NEEDS_HUMAN` when omitted.
+	 */
+	needsHumanMarker?: string;
+	/**
+	 * @deprecated Pre-0.6 name of {@link LoopConfig.needsHumanMarker}; read as
+	 * an alias when `needsHumanMarker` is absent. Removed in 0.7.0 (#185).
 	 */
 	blockedMarker?: string;
 	/**
-	 * Relative path to the tracker file. Supports `{sessionId}` substitution.
-	 * Defaults to `.athena/{sessionId}/tracker.md` when omitted.
+	 * Relative path to the journal file. Supports `{sessionId}` substitution.
+	 * Defaults to `.athena/{sessionId}/journal.md` when omitted.
+	 */
+	journalPath?: string;
+	/**
+	 * @deprecated Pre-0.6 name of {@link LoopConfig.journalPath}; read as an
+	 * alias when `journalPath` is absent. Removed in 0.7.0 (#185).
 	 */
 	trackerPath?: string;
-	/** Prompt template for iterations 2+; supports {trackerPath} placeholder */
+	/**
+	 * Prompt template for iterations 2+; supports the {journalPath} placeholder
+	 * (and, until 0.7.0, its deprecated {trackerPath} spelling).
+	 */
 	continuePrompt?: string;
 };
 
@@ -120,6 +145,16 @@ export type WorkflowConfig = {
 	promptTemplate: string;
 	loop?: LoopConfig;
 	isolation?: string;
+	/**
+	 * **Ask rules** (#189, provisional): tool-name patterns — `*`, an exact
+	 * tool name, or `mcp__server__*` — whose permission prompts must always
+	 * reach a person. Unattended (`drisp run`, no hub attached) a matching
+	 * prompt parks the Run as needs-human naming the pattern; it is never
+	 * answered by the isolation preset's policy, even under `autonomous`.
+	 * Gates as data (decision + consequences) supersede this once
+	 * drisplabs/drisp-desktop#39 fixes the Workflow format.
+	 */
+	askRules?: string[];
 	model?: string;
 	/** Reasoning effort level to pin for the harness (low/medium/high/xhigh/max) */
 	effort?: string;

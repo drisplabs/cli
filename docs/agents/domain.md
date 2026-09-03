@@ -9,7 +9,7 @@ This repo is **multi-context**: a `CONTEXT-MAP.md` at the root points to three b
 - **`CONTEXT-MAP.md`** (root) first — it names the three contexts and the cross-walk for the colliding words.
 - The glossary for the context you're touching:
   - **Feed-pipeline** (observation / projection — FeedMapper, FeedEvent, Feed Run): **`CONTEXT.md`**
-  - **Workflow-execution** (execution / control — Runner, Workflow Run, Turn, Tracker): **`UBIQUITOUS_LANGUAGE.md`**
+  - **Workflow-execution** (execution / control — Runner, Workflow Run, Turn, Journal): **`UBIQUITOUS_LANGUAGE.md`**
   - **Knowledge-base** (the LLM-maintained wiki — KB, Wiki Page, Drift finding): **`KNOWLEDGE_BASE.md`**
 - **`docs/adr/`** (root) — read the ADRs that touch the area you're about to work in.
 

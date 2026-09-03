@@ -3,17 +3,17 @@ import type {Writable} from 'node:stream';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {WorkflowConfig, WorkflowPlan} from '../../core/workflows';
 import type {HarnessProcessConfig} from '../../core/runtime/process';
+import type {RuntimeDecision} from '../../core/runtime/types';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {SessionStore} from '../../infra/sessions/store';
 import type {RuntimeFactory} from '../runtime/createRuntime';
 import type {SpawnClaudeOptions} from '../../harnesses/claude/process/types';
-import type {SessionBridge} from '../channels/sessionBridge';
-import type {StartSessionBridgeOptions} from '../channels/sessionBridgeLifecycle';
 import type {DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
 import type {FeedSink} from '../dashboard/pairedFeedPublisher';
 import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
 import type {FeedEvent} from '../../core/feed/types';
 import type {CapabilitySourceLayer} from '../../infra/capabilities/effective';
+import type {SteerQueue} from '../../core/workflows/steer';
 
 /**
  * A reporting-only summary of an active personal capability: name + source
@@ -31,7 +31,7 @@ export type PersonalCapabilitiesSummary = {
 	skills: ReadonlyArray<PersonalCapabilitySummaryEntry>;
 };
 
-export const EXEC_EXIT_CODE = {
+export const RUN_EXIT_CODE = {
 	SUCCESS: 0,
 	USAGE: 2,
 	BOOTSTRAP: 3,
@@ -45,7 +45,7 @@ export const EXEC_EXIT_CODE = {
 	WORKFLOW_EXHAUSTED: 9,
 } as const;
 
-export type ExecExitCode = (typeof EXEC_EXIT_CODE)[keyof typeof EXEC_EXIT_CODE];
+export type RunExitCode = (typeof RUN_EXIT_CODE)[keyof typeof RUN_EXIT_CODE];
 
 export type ExecRunOptions = {
 	prompt: string;
@@ -70,12 +70,20 @@ export type ExecRunOptions = {
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	/**
-	 * Channel ids passed via `--channel`. When non-empty, exec connects to the
-	 * gateway daemon and relays permission/question requests through it. When
-	 * empty, exec runs without a bridge — permission requests block until
-	 * `timeoutMs` (or forever if no timeout).
+	 * Permission grace window (#190): how long a permission request no rule
+	 * answers is held for an attached hub before it is refused as "deferred"
+	 * and the Run parks. Defaults to `DEFAULT_PERMISSION_GRACE_MS`. Only runs
+	 * while a `dashboardDecisionInbox` is attached — with no hub, nothing can
+	 * answer, so the request is deferred immediately.
 	 */
-	channels?: readonly string[];
+	permissionGraceMs?: number;
+	/**
+	 * An answer given locally for the Interruption the resumed Run parked on
+	 * (`drisp run --continue --answer=allow|deny`, #190). Replayed into the
+	 * re-issued call without a prompt; ignored when the Run did not park on a
+	 * deferred permission or the agent asks for something else.
+	 */
+	storedAnswer?: RuntimeDecision;
 	/**
 	 * Reporting-only summary of the effective personal capabilities active for
 	 * this session (name + source layer only). Surfaced in the `exec.started`
@@ -103,14 +111,17 @@ export type ExecRunOptions = {
 	dashboardOrigin?: DashboardFeedOrigin;
 	dashboardDecisionInbox?: DashboardDecisionReader;
 	dashboardDecisionPollIntervalMs?: number;
+	/**
+	 * Steers (#191) for this Run — from the hub's `steer` frame via the
+	 * runner process, or a local `--steer`. Each is queued on the Runner and
+	 * delivered at the head of the next Turn's prompt, never mid-Turn; the
+	 * runner emits `run.steer.queued` on receipt and `run.steer` on delivery.
+	 */
+	steerQueue?: SteerQueue;
 	beforeTerminalCompletion?: (input: {
 		result: ExecRunResult;
 		runId: string | null;
 	}) => Promise<readonly FeedEvent[] | void>;
-	/** Test seam: override the gateway connect step. */
-	bridgeFactory?: (
-		opts: StartSessionBridgeOptions,
-	) => Promise<SessionBridge | null>;
 	now?: () => number;
 };
 
@@ -124,6 +135,8 @@ export type ExecRunOptions = {
 export type ExecWorkflowFailureState =
 	| 'blocked'
 	| 'exhausted'
+	// The Journal was the "Tracker" before #185; the persisted JSON value keeps
+	// its historical spelling, like the `blocked` status.
 	| 'missing_tracker';
 
 export type ExecRunFailure =
@@ -139,7 +152,7 @@ export type ExecRunFailure =
 
 export type ExecRunResult = {
 	success: boolean;
-	exitCode: ExecExitCode;
+	exitCode: RunExitCode;
 	athenaSessionId: string | null;
 	adapterSessionId: string | null;
 	finalMessage: string | null;

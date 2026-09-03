@@ -35,7 +35,6 @@ import {
 	attachRuntimeEventLoop,
 	startDashboardDecisionDrain,
 } from '../runtime/runtimeEventLoop';
-import {writeGatewayTrace} from '../../infra/gatewayTrace';
 import {
 	getActivePerfCycleId,
 	logPerfEvent,
@@ -43,6 +42,8 @@ import {
 	startPerfStage,
 } from '../../shared/utils/perf';
 import {FeedStore} from '../../core/feed/feedStore';
+import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
+import type {PhaseData} from '../../core/feed/types';
 import {generateId} from '../../shared/utils/id';
 import {type DashboardFeedOrigin} from '../dashboard/dashboardFeedPublisher';
 import {
@@ -81,6 +82,12 @@ export type UseFeedResult = {
 	clearRules: () => void;
 	printTaskSnapshot: () => void;
 	emitNotification: (message: string, title?: string) => void;
+	/**
+	 * Put a Workflow Run's change of step (#192) on the feed: persisted to the
+	 * session store, pushed to the timeline, and published to the paired
+	 * dashboard feed — the interactive twin of exec's `onPhaseChange`.
+	 */
+	emitPhase: (phase: PhaseData) => void;
 	isDegraded: boolean;
 	postByToolUseId: Map<string, FeedEvent>;
 	allocateSeq: () => number;
@@ -139,8 +146,6 @@ export function useFeed(
 	initialAllowedTools?: string[],
 	sessionStore?: SessionStore,
 	options?: {
-		relayPermission?: (event: RuntimeEvent) => void;
-		relayQuestion?: (event: RuntimeEvent) => void;
 		dashboardFeedPublisher?: PairedFeedPublisher;
 		dashboardOrigin?: DashboardFeedOrigin;
 		athenaSessionId?: string;
@@ -438,6 +443,39 @@ export function useFeed(
 		[publishDashboardFeedEvents],
 	);
 
+	const emitPhase = useCallback(
+		(phase: PhaseData) => {
+			if (abortRef.current.signal.aborted) return;
+			// Not a RuntimeEvent, so it never crosses the mapper; it borrows the
+			// mapper's current Session / Feed Run and a seq so it sorts into the
+			// timeline it belongs to.
+			const mapper = mapperRef.current;
+			const sessionId = mapper.getSession()?.session_id ?? 'unknown';
+			const feedEvent = buildPhaseFeedEvent({
+				phase,
+				sessionId,
+				runId: mapper.getCurrentRun()?.run_id ?? `${sessionId}:R0`,
+				seq: mapper.allocateSeq(),
+				ts: Date.now(),
+			});
+			const store = sessionStoreRef.current;
+			if (store) {
+				try {
+					store.recordFeedEvents([feedEvent]);
+				} catch (err) {
+					store.markDegraded(
+						`recordFeedEvents failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}
+			feedStoreRef.current!.pushEvents([feedEvent]);
+			publishDashboardFeedEvents([feedEvent]);
+		},
+		[publishDashboardFeedEvents],
+	);
+
 	const refreshRuntimeStatus = useCallback(
 		(notify = false) => {
 			const nextIsServerRunning = runtime.getStatus() === 'running';
@@ -485,10 +523,6 @@ export function useFeed(
 			getRules: () => rulesRef.current,
 			enqueuePermission,
 			enqueueQuestion,
-			...(options?.relayPermission
-				? {relayPermission: options.relayPermission}
-				: {}),
-			...(options?.relayQuestion ? {relayQuestion: options.relayQuestion} : {}),
 			signal: abortRef.current.signal,
 		};
 
@@ -528,16 +562,6 @@ export function useFeed(
 					run();
 				} finally {
 					doneCause();
-				}
-			},
-			onEventReceived: runtimeEvent => {
-				if (
-					options?.relayPermission &&
-					runtimeEvent.kind === 'permission.request'
-				) {
-					writeGatewayTrace(
-						`useFeed permission event relay-enabled id=${runtimeEvent.id} tool=${runtimeEvent.toolName ?? ''}`,
-					);
 				}
 			},
 			emitEventFeed: (newFeedEvents, runtimeEvent) => {
@@ -617,8 +641,6 @@ export function useFeed(
 		dequeuePermission,
 		dequeueQuestion,
 		refreshRuntimeStatus,
-		options?.relayPermission,
-		options?.relayQuestion,
 		publishDashboardFeedEvents,
 	]);
 
@@ -671,6 +693,7 @@ export function useFeed(
 		clearRules,
 		printTaskSnapshot,
 		emitNotification,
+		emitPhase,
 		isDegraded: sessionStoreRef.current?.isDegraded ?? false,
 		postByToolUseId,
 		allocateSeq: () => mapperRef.current.allocateSeq(),

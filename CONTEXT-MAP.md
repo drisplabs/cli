@@ -10,7 +10,7 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
   events into a timeline (**FeedMapper**, **FeedEvent**, **Feed Run**).
 - [Workflow-execution](./UBIQUITOUS_LANGUAGE.md) — execution / control: drives
   the Turn Protocol loop (**Runner**, **Workflow Run**, **Turn**,
-  **Tracker**).
+  **Journal**).
 - [Knowledge-base](./KNOWLEDGE_BASE.md) — knowledge management: the durable,
   LLM-maintained wiki that reconciles intent with reality (**KB**, **Wiki
   Page**, **KB Source**, **Drift finding**).
@@ -23,7 +23,7 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
   `feed_events.run_id` (**Feed Run**) is unrelated to `workflow_runs.id`
   (**Workflow Run**).
 - **Knowledge-base → Workflow-execution**: the KB _reads_ a completed **Workflow
-  Run** — taken as its final **Tracker** plus the transitive closure of Dossier
+  Run** — taken as its final **Journal** plus the transitive closure of Dossier
   files it points to, passed through the **Redaction gate** — as a **KB
   Source**, and each **KB operation** _executes as_ a **KB Workflow** (a
   Workflow Run through the **Runner**). The KB never edits a source.

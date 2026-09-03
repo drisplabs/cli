@@ -9,12 +9,13 @@ import {
 	type ValidatedAssignment,
 } from './remoteRunExecutor';
 import type {ExecRunOptions} from '../exec/types';
+import {createSteerQueue} from '../../core/workflows/steer';
 import type {RunStreamClient, RunStreamFrameInput} from './runStreamClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
 
 function asValidatedAssignment(frame: {
-	type: 'job_assignment';
+	type: 'run.start';
 	runId: string;
 	runnerId?: string;
 	runSpec?: unknown;
@@ -43,7 +44,7 @@ function makeArtifactRepo(): string {
 describe('validateDashboardAssignment', () => {
 	it('produces a validated assignment with the parsed spec for a well-formed frame', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runnerId: 'runner_7',
 			runSpec: {prompt: 'say hello', sessionId: 'athena-run_42'},
@@ -62,7 +63,7 @@ describe('validateDashboardAssignment', () => {
 
 	it('defaults the runnerId to legacy when the frame omits it', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runSpec: {prompt: 'say hello'},
 		});
@@ -75,7 +76,7 @@ describe('validateDashboardAssignment', () => {
 
 	it('rejects a malformed assignment with a first-class malformed_assignment rejection', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runSpec: {sessionId: 'athena-run_42'},
 		});
@@ -91,6 +92,65 @@ describe('validateDashboardAssignment', () => {
 });
 
 describe('executeRemoteAssignment', () => {
+	it('forwards the steer queue to runExec so hub steers reach the Runner (#191)', async () => {
+		const steerQueue = createSteerQueue();
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => ({
+			success: true,
+			exitCode: 0 as const,
+			athenaSessionId: options.athenaSessionId ?? null,
+			adapterSessionId: null,
+			finalMessage: null,
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		}));
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_steer',
+				runSpec: {prompt: 'say hello'},
+			}),
+			client: {sendRunEvent: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			steerQueue,
+			bootstrapRuntimeConfigFn: () => ({
+				globalConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				projectConfig: {
+					plugins: [],
+					additionalDirectories: [],
+					workflowMarketplaceSources: [],
+					workflowSelections: {},
+				},
+				harness: 'claude-code',
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
+				workflowRef: undefined,
+				workflow: undefined,
+				workflowPlan: undefined,
+				modelName: null,
+				warnings: [],
+			}),
+			now: () => 999,
+		});
+
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({steerQueue}),
+		);
+	});
+
 	it('runs the assigned prompt and streams exec events back to the dashboard', async () => {
 		const sent: unknown[] = [];
 		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
@@ -129,7 +189,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'say hello',
@@ -158,7 +218,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: 'exploratory-testing',
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -232,7 +292,7 @@ describe('executeRemoteAssignment', () => {
 				workflowSelections: {},
 			},
 			harness: 'openai-codex' as const,
-			isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+			isolationConfig: {preset: 'standard' as const, additionalDirectories: []},
 			workflowRef: undefined,
 			workflow: undefined,
 			workflowPlan: undefined,
@@ -242,7 +302,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'say hello',
@@ -292,7 +352,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_continue',
 				runSpec: {
 					prompt: 'continue',
@@ -319,7 +379,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -365,7 +425,7 @@ describe('executeRemoteAssignment', () => {
 		try {
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env',
 					runSpec: {
 						prompt: 'env',
@@ -389,7 +449,7 @@ describe('executeRemoteAssignment', () => {
 						workflowSelections: {},
 					},
 					harness: 'openai-codex',
-					isolationConfig: {preset: 'minimal', additionalDirectories: []},
+					isolationConfig: {preset: 'standard', additionalDirectories: []},
 					workflowRef: undefined,
 					workflow: undefined,
 					workflowPlan: undefined,
@@ -451,7 +511,7 @@ describe('executeRemoteAssignment', () => {
 				workflowSelections: {},
 			},
 			harness: 'openai-codex' as const,
-			isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+			isolationConfig: {preset: 'standard' as const, additionalDirectories: []},
 			workflowRef: 'base',
 			workflow: {
 				name: 'base',
@@ -467,7 +527,7 @@ describe('executeRemoteAssignment', () => {
 		await Promise.all([
 			executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env_1',
 					runSpec: {prompt: 'one', env: {RUN: 'one'}},
 				}),
@@ -478,7 +538,7 @@ describe('executeRemoteAssignment', () => {
 			}),
 			executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env_2',
 					runSpec: {prompt: 'two', env: {RUN: 'two'}},
 				}),
@@ -526,7 +586,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_decisions',
 				runSpec: {prompt: 'needs approval'},
 			}),
@@ -548,7 +608,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -613,7 +673,7 @@ describe('executeRemoteAssignment', () => {
 				workflowSelections: {},
 			},
 			harness: 'openai-codex' as const,
-			isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+			isolationConfig: {preset: 'standard' as const, additionalDirectories: []},
 			workflowRef: 'smoke-testing',
 			workflow: undefined,
 			workflowPlan: undefined,
@@ -623,7 +683,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'define smoke',
@@ -706,7 +766,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_custom',
 				runSpec: {
 					prompt: 'run custom',
@@ -736,7 +796,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: 'custom-flow',
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -765,7 +825,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -834,7 +894,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -857,7 +917,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: 'playwright-automation',
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -890,7 +950,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -915,7 +975,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -1025,7 +1085,7 @@ describe('executeRemoteAssignment', () => {
 
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_callback',
 					runSpec: {
 						prompt: 'go',
@@ -1054,7 +1114,7 @@ describe('executeRemoteAssignment', () => {
 						workflowSelections: {},
 					},
 					harness: 'openai-codex',
-					isolationConfig: {preset: 'minimal', additionalDirectories: []},
+					isolationConfig: {preset: 'standard', additionalDirectories: []},
 					workflowRef: undefined,
 					workflow: undefined,
 					workflowPlan: undefined,
@@ -1103,7 +1163,7 @@ describe('executeRemoteAssignment', () => {
 
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_fallback',
 					runSpec: {
 						prompt: 'go',
@@ -1148,7 +1208,7 @@ describe('executeRemoteAssignment', () => {
 						workflowSelections: {},
 					},
 					harness: 'openai-codex',
-					isolationConfig: {preset: 'minimal', additionalDirectories: []},
+					isolationConfig: {preset: 'standard', additionalDirectories: []},
 					workflowRef: undefined,
 					workflow: undefined,
 					workflowPlan: undefined,
@@ -1206,7 +1266,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_artifacts',
 				runSpec: {
 					prompt: 'hello',
@@ -1237,7 +1297,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -1332,7 +1392,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_artifacts_feed',
 				runSpec: {
 					prompt: 'hello',
@@ -1364,7 +1424,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -1411,7 +1471,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_bad_artifacts',
 				runSpec: {
 					prompt: 'hello',
@@ -1439,7 +1499,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -1498,7 +1558,7 @@ describe('executeRemoteAssignment', () => {
 
 		const pending = executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_cancel',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -1521,7 +1581,7 @@ describe('executeRemoteAssignment', () => {
 					workflowSelections: {},
 				},
 				harness: 'openai-codex',
-				isolationConfig: {preset: 'minimal', additionalDirectories: []},
+				isolationConfig: {preset: 'standard', additionalDirectories: []},
 				workflowRef: undefined,
 				workflow: undefined,
 				workflowPlan: undefined,
@@ -1543,6 +1603,278 @@ describe('executeRemoteAssignment', () => {
 				payload: expect.objectContaining({
 					message: 'Execution cancelled.',
 				}),
+			}),
+		);
+	});
+});
+
+describe('executeRemoteAssignment: needs_human', () => {
+	const bootstrap = () => ({
+		globalConfig: {
+			plugins: [],
+			additionalDirectories: [],
+			workflowMarketplaceSources: [],
+			workflowSelections: {},
+		},
+		projectConfig: {
+			plugins: [],
+			additionalDirectories: [],
+			workflowMarketplaceSources: [],
+			workflowSelections: {},
+		},
+		harness: 'claude' as const,
+		isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+		workflowRef: undefined,
+		workflow: undefined,
+		workflowPlan: undefined,
+		modelName: null,
+		warnings: [],
+	});
+
+	it('emits a needs_human frame with the classified Interruption when the Run parks in awaiting_attention', async () => {
+		const sent: unknown[] = [];
+		const needsHuman: unknown[] = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'run.suspended',
+					ts: 100,
+					data: {
+						runId: 'wf-run-9',
+						status: 'awaiting_attention',
+						stopReason:
+							'agent declared NEEDS_HUMAN: need the staging credentials',
+					},
+				}) + '\n',
+			);
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					ts: 101,
+					data: {success: true, exitCode: 0, finalMessage: null},
+				}) + '\n',
+			);
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: null,
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {
+				sendRunEvent: frame => sent.push(frame),
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([
+			{
+				runId: 'run_parked',
+				athenaSessionId: 'athena-parked',
+				interruption: {
+					kind: 'blocked',
+					reason: 'need the staging credentials',
+					message: 'agent declared NEEDS_HUMAN: need the staging credentials',
+				},
+			},
+		]);
+		// The run stream still carries the suspension as before.
+		expect(sent).toContainEqual(
+			expect.objectContaining({
+				runId: 'run_parked',
+				kind: 'run.suspended',
+				payload: expect.objectContaining({status: 'awaiting_attention'}),
+			}),
+		);
+	});
+
+	it('does not emit needs_human when the Run ends without parking', async () => {
+		const needsHuman: unknown[] = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					ts: 101,
+					data: {success: true, exitCode: 0, finalMessage: 'done'},
+				}) + '\n',
+			);
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_done',
+				runSpec: {prompt: 'do the thing'},
+			}),
+			client: {
+				sendRunEvent: () => {},
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([]);
+	});
+
+	function okResult(options: ExecRunOptions) {
+		return {
+			success: true,
+			exitCode: 0 as const,
+			athenaSessionId: options.athenaSessionId ?? null,
+			adapterSessionId: null,
+			finalMessage: null,
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		};
+	}
+
+	it('carries the structured Interruption a parked Run reports as-is, instead of re-classifying the sentence (#190)', async () => {
+		const needsHuman: unknown[] = [];
+		const interruption = {
+			kind: 'question',
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'run.suspended',
+					ts: 100,
+					data: {
+						runId: 'wf-run-9',
+						status: 'awaiting_attention',
+						stopReason: interruption.message,
+						interruption,
+					},
+				}) + '\n',
+			);
+			return okResult(options);
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {
+				sendRunEvent: () => {},
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([
+			{runId: 'run_parked', athenaSessionId: 'athena-parked', interruption},
+		]);
+	});
+
+	it('forwards the configured permission grace window to the run (#190)', async () => {
+		const runExecFn = vi.fn(async (options: ExecRunOptions) =>
+			okResult(options),
+		);
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_grace',
+				runSpec: {prompt: 'do the thing'},
+			}),
+			client: {sendRunEvent: () => {}, sendNeedsHuman: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: () => ({
+				...bootstrap(),
+				permissionGraceMs: 12_000,
+			}),
+			now: () => 999,
+		});
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({permissionGraceMs: 12_000}),
+		);
+	});
+
+	it('wakes a parked Run: resumes the Run and Agent Session its record names, with the wake reply as the prompt (#190)', async () => {
+		const runExecFn = vi.fn(async (options: ExecRunOptions) =>
+			okResult(options),
+		);
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {sendRunEvent: () => {}, sendNeedsHuman: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+			wake: {reply: 'Your deferred Bash: git push was answered: allow.'},
+			resolveWakeTargetFn: athenaSessionId =>
+				athenaSessionId === 'athena-parked'
+					? {resumeRunId: 'wf-run-9', adapterResumeSessionId: 'claude-sess-9'}
+					: null,
+		});
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				athenaSessionId: 'athena-parked',
+				prompt: 'Your deferred Bash: git push was answered: allow.',
+				resumeRunId: 'wf-run-9',
+				adapterResumeSessionId: 'claude-sess-9',
 			}),
 		);
 	});

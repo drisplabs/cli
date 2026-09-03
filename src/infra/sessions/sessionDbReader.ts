@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
 import type {PersistedWorkflowRun, SessionRow} from './types';
+import {parsePersistedInterruption} from './types';
 
 /**
  * The single read-only SQL surface over a `session.db` file.
@@ -109,10 +110,11 @@ export function openSessionDbReadonly(
 					maxIterations: row['max_iterations'] as number,
 					status: row['status'] as PersistedWorkflowRun['status'],
 					stopReason: (row['stop_reason'] as string | null) ?? undefined,
-					trackerPath: (row['tracker_path'] as string | null) ?? undefined,
+					journalPath: (row['tracker_path'] as string | null) ?? undefined,
 					adapterSessionId:
 						(row['adapter_session_id'] as string | null | undefined) ??
 						undefined,
+					interruption: parsePersistedInterruption(row['interruption_json']),
 					runMemoryJson:
 						(row['run_memory_json'] as string | null | undefined) ?? undefined,
 				};

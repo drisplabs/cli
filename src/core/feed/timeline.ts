@@ -8,6 +8,7 @@ import {
 	extractFriendlyServerName,
 	parseToolName,
 } from '../../shared/utils/toolNameParser';
+import {phasePosition} from './phaseFeedEvent';
 import {summarizeToolResult} from './toolSummary';
 import {type FeedEvent, type FeedEventKind} from './types';
 import {resolveVerb} from './verbMap';
@@ -839,56 +840,6 @@ const elicitationResult: EventRenderer<'elicitation.result'> = defaultRenderer(
 	event => `${event.data.mcp_server} → ${event.data.action}`,
 );
 
-const channelPermissionRelayed: EventRenderer<'channel.permission.relayed'> =
-	defaultRenderer(
-		event =>
-			`${event.data.channel_name}: ${event.data.tool_name} (${event.data.channel_request_id})`,
-	);
-
-const channelPermissionResolved: EventRenderer<'channel.permission.resolved'> =
-	defaultRenderer(
-		event =>
-			`${event.data.channel_name} ${event.data.source} ${event.data.tool_name}`,
-	);
-
-const channelQuestionRelayed: EventRenderer<'channel.question.relayed'> =
-	defaultRenderer(
-		event =>
-			`${event.data.channel_name}: ${event.data.title} (${event.data.channel_request_id})`,
-	);
-
-const channelQuestionResolved: EventRenderer<'channel.question.resolved'> =
-	defaultRenderer(
-		event =>
-			`${event.data.channel_name || event.data.source} ${event.data.source} ${event.data.title}`,
-	);
-
-const channelChatInbound: EventRenderer<'channel.chat.inbound'> =
-	defaultRenderer(event => `${event.data.channel_name}: ${event.data.content}`);
-
-const channelChatOutbound: EventRenderer<'channel.chat.outbound'> =
-	defaultRenderer(
-		event =>
-			`${event.data.channel_name} → ${event.data.target_peer_id}: ${event.data.content}`,
-	);
-
-const gatewayFunctionInvoked: EventRenderer<'gateway.function.invoked'> =
-	defaultRenderer(
-		event =>
-			`fn invoked: ${event.data.function_name} (${event.data.caller_kind})`,
-	);
-
-const gatewayFunctionCompleted: EventRenderer<'gateway.function.completed'> =
-	defaultRenderer(
-		event => `fn ok: ${event.data.function_name} ${event.data.duration_ms}ms`,
-	);
-
-const gatewayFunctionFailed: EventRenderer<'gateway.function.failed'> =
-	defaultRenderer(
-		event =>
-			`fn ${event.data.reason}: ${event.data.function_name} — ${event.data.error_message}`,
-	);
-
 const artifactsManifest: EventRenderer<'artifacts.manifest'> = defaultRenderer(
 	event => {
 		const manifest = event.data.manifest as {entries?: unknown};
@@ -896,6 +847,24 @@ const artifactsManifest: EventRenderer<'artifacts.manifest'> = defaultRenderer(
 		return `artifacts manifest (${count} item${count === 1 ? '' : 's'})`;
 	},
 );
+
+/**
+ * The Runner-observed workflow step (`phase`): rendered as a step line —
+ * `Build (2/5)` — so a Run's progress through its workflow reads at a glance
+ * without opening the Journal.
+ */
+const phase: EventRenderer<'phase'> = {
+	operation: () => 'phase',
+	label: () => 'Step',
+	detail: event => phasePosition(event.data).trim() || '─',
+	summary: event => {
+		const position = phasePosition(event.data).trim();
+		return plainSummary(
+			position ? `${event.data.step} (${position})` : event.data.step,
+		);
+	},
+	expansion: dataExpansion,
+};
 
 // ── Registry ──────────────────────────────────────────────
 
@@ -954,16 +923,8 @@ const RENDERERS = {
 	'prompt.expansion': promptExpansion,
 	'elicitation.request': elicitationRequest,
 	'elicitation.result': elicitationResult,
-	'channel.permission.relayed': channelPermissionRelayed,
-	'channel.permission.resolved': channelPermissionResolved,
-	'channel.question.relayed': channelQuestionRelayed,
-	'channel.question.resolved': channelQuestionResolved,
-	'channel.chat.inbound': channelChatInbound,
-	'channel.chat.outbound': channelChatOutbound,
-	'gateway.function.invoked': gatewayFunctionInvoked,
-	'gateway.function.completed': gatewayFunctionCompleted,
-	'gateway.function.failed': gatewayFunctionFailed,
 	'artifacts.manifest': artifactsManifest,
+	phase,
 } as const satisfies RendererRegistry;
 
 /** Lookup helper: dispatches an event to its renderer with proper type narrowing. */

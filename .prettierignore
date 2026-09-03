@@ -1,3 +1,5 @@
 CLAUDE.md
 CHANGELOG.md
 docs/mockup.html
+packages/*/dist
+packages/*/CHANGELOG.md

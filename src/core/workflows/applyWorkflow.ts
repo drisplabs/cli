@@ -3,7 +3,7 @@ import {substituteVariables, type TemplateContext} from './templateVars';
 /**
  * Apply a prompt template by substituting variables.
  * For backward compatibility, `input` is a positional argument.
- * Additional context (sessionId, trackerPath) is optional.
+ * Additional context (sessionId, journalPath) is optional.
  */
 export function applyPromptTemplate(
 	template: string,

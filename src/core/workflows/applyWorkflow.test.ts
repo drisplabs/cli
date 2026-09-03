@@ -23,16 +23,16 @@ describe('applyPromptTemplate', () => {
 		);
 	});
 
-	it('substitutes {sessionId} and {trackerPath} when context provided', () => {
+	it('substitutes {sessionId} and {journalPath} when context provided', () => {
 		expect(
 			applyPromptTemplate(
-				'Run {input} at {trackerPath} for {sessionId}',
+				'Run {input} at {journalPath} for {sessionId}',
 				'task',
 				{
 					sessionId: 's1',
-					trackerPath: '.athena/s1/tracker.md',
+					journalPath: '.athena/s1/journal.md',
 				},
 			),
-		).toBe('Run task at .athena/s1/tracker.md for s1');
+		).toBe('Run task at .athena/s1/journal.md for s1');
 	});
 });

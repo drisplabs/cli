@@ -4,6 +4,8 @@ Status: Active
 Date: 2026-05-10
 Updated: 2026-05-17
 
+> **Terminology note (2026-09-03, #188):** the **dashboard runtime daemon** below is now the **runner process**, `drisp runner` (ADR 0017): one process, `runner.db`, a pid file and a status file in place of the control socket. `src/app/dashboard/runtimeDaemon.ts` keeps its name and its ownership as decided here; `src/app/entry/dashboardDaemon.ts` is `src/app/entry/runnerDaemon.ts`. `drisp dashboard` is a deprecated alias of `drisp runner` for one release. The text below is preserved as decided.
+
 ## Context
 
 Drisp pairs one local CLI instance with a dashboard. The dashboard owns the

@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -82,26 +82,17 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			-- surviving a process restart (ADR 0014).
 			adapter_session_id TEXT,
 			-- Opaque JSON snapshot of the run-loop reducer's RunMemory (nudge/
-			-- retry streaks, last tracker hash, in-flight stop prompt/
+			-- retry streaks, last journal hash, in-flight stop prompt/
 			-- continuation), so a resumed or woken process rehydrates the
 			-- reducer instead of restarting its counters (ADR 0016). Written
 			-- and read only by runMachine.ts's serializeRunMemory/
 			-- deserializeRunMemory — this layer stores it opaquely.
 			run_memory_json TEXT,
+			-- The structured Interruption a Run parked in awaiting_attention
+			-- carries (a @drisp/protocol Interruption as JSON; #190). NULL on a
+			-- running or ended Run, and cleared when a parked Run is woken.
+			interruption_json TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
-		);
-
-		-- Durable retry queue for outbound channel sends. Drained by the gateway
-		-- daemon on startup and after transient send failures.
-		CREATE TABLE IF NOT EXISTS channel_outbox (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel_id TEXT NOT NULL,
-			account_id TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			attempt INTEGER NOT NULL DEFAULT 0,
-			next_attempt_at INTEGER NOT NULL,
-			last_error TEXT,
-			created_at INTEGER NOT NULL
 		);
 	`);
 
@@ -111,7 +102,6 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_seq ON feed_events(seq);
 		CREATE INDEX IF NOT EXISTS idx_runtime_seq ON runtime_events(seq);
 		CREATE INDEX IF NOT EXISTS idx_workflow_runs_session ON workflow_runs(session_id);
-		CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
 	`);
 
 	// idx_feed_prompt indexes a column added in v7, so it can't live in the base
@@ -191,24 +181,13 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		}
 	).version;
 	if (versionAfterV5 === 5) {
-		// v6 originally also created `channel_messages` and
-		// `gateway_function_invocations`; both shipped without any production
-		// reader/writer and were dropped from the DDL (ADR 0006). Databases
-		// already migrated to v6 keep those empty tables harmlessly.
-		db.exec(`
-			CREATE TABLE IF NOT EXISTS channel_outbox (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				channel_id TEXT NOT NULL,
-				account_id TEXT NOT NULL,
-				payload_json TEXT NOT NULL,
-				attempt INTEGER NOT NULL DEFAULT 0,
-				next_attempt_at INTEGER NOT NULL,
-				last_error TEXT,
-				created_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_outbox_due ON channel_outbox(next_attempt_at);
-			UPDATE schema_version SET version = 6;
-		`);
+		// v6 originally created two audit tables that never got a reader or
+		// writer (dropped in ADR 0006) and the channel `channel_outbox` retry
+		// queue (dropped with the second runner in #183). Nothing reads or
+		// writes any of them, so v5 → v6 is now a pure version bump. Databases
+		// already migrated to v6 keep those empty tables harmlessly; the feed
+		// outbox (`feed_events`) is unrelated and untouched.
+		db.exec('UPDATE schema_version SET version = 6;');
 	}
 
 	const versionAfterV6 = (
@@ -258,7 +237,7 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 	).version;
 	if (versionAfterV8 === 8) {
 		// v9 adds the nullable opaque RunMemory snapshot (nudge/retry streaks,
-		// last tracker hash, in-flight stop prompt/continuation) so a resumed or
+		// last journal hash, in-flight stop prompt/continuation) so a resumed or
 		// woken process rehydrates the run-loop reducer instead of restarting
 		// its counters (ADR 0016). Guarded: a database migrating from pre-v5
 		// got workflow_runs from the base DDL above, which already carries the
@@ -275,6 +254,35 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			db.exec('ALTER TABLE workflow_runs ADD COLUMN run_memory_json TEXT;');
 		}
 		db.exec('UPDATE schema_version SET version = 9;');
+	}
+
+	const versionAfterV9 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV9 === 9) {
+		// v10 adds the nullable Interruption a parked Run carries (#190), so
+		// `drisp runs` and a wake can see the deferred question. Two v9 shapes
+		// exist in the wild: 0.5.28 numbered run_memory_json as v9 (above),
+		// while the pre-release protocol-migration branch numbered
+		// interruption_json as its own v9 — so this step guards both columns
+		// and adds whichever is missing. A database that got workflow_runs
+		// from the base DDL above already has both.
+		for (const column of ['run_memory_json', 'interruption_json']) {
+			const hasColumn =
+				(
+					db
+						.prepare(
+							`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = ?`,
+						)
+						.get(column) as {n: number}
+				).n > 0;
+			if (!hasColumn) {
+				db.exec(`ALTER TABLE workflow_runs ADD COLUMN ${column} TEXT;`);
+			}
+		}
+		db.exec('UPDATE schema_version SET version = 10;');
 	}
 };
 

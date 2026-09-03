@@ -1,5 +1,5 @@
-import type {ExecExitCode, ExecRunFailure} from './types';
-import {EXEC_EXIT_CODE} from './types';
+import type {RunExitCode, ExecRunFailure} from './types';
+import {RUN_EXIT_CODE} from './types';
 
 /**
  * Single-write failure latch for a runExec invocation.
@@ -33,14 +33,14 @@ export function createFailureLatch(
 /** Map an exec failure (or absence of one) to the process exit code. */
 export function exitCodeFromFailure(
 	failure: ExecRunFailure | undefined,
-): ExecExitCode {
-	if (!failure) return EXEC_EXIT_CODE.SUCCESS;
-	if (failure.kind === 'timeout') return EXEC_EXIT_CODE.TIMEOUT;
-	if (failure.kind === 'output') return EXEC_EXIT_CODE.OUTPUT;
+): RunExitCode {
+	if (!failure) return RUN_EXIT_CODE.SUCCESS;
+	if (failure.kind === 'timeout') return RUN_EXIT_CODE.TIMEOUT;
+	if (failure.kind === 'output') return RUN_EXIT_CODE.OUTPUT;
 	if (failure.kind === 'workflow') {
 		return failure.state === 'exhausted'
-			? EXEC_EXIT_CODE.WORKFLOW_EXHAUSTED
-			: EXEC_EXIT_CODE.WORKFLOW_BLOCKED;
+			? RUN_EXIT_CODE.WORKFLOW_EXHAUSTED
+			: RUN_EXIT_CODE.WORKFLOW_BLOCKED;
 	}
-	return EXEC_EXIT_CODE.RUNTIME;
+	return RUN_EXIT_CODE.RUNTIME;
 }

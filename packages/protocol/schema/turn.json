@@ -1,0 +1,135 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/turn.json",
+	"title": "turn",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"runId": {
+			"type": "string"
+		},
+		"iteration": {
+			"type": "integer",
+			"exclusiveMinimum": 0,
+			"maximum": 9007199254740991
+		},
+		"continuation": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"mode": {
+							"type": "string",
+							"const": "fresh"
+						}
+					},
+					"required": ["mode"],
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"properties": {
+						"mode": {
+							"type": "string",
+							"const": "resume"
+						},
+						"handle": {
+							"type": "string"
+						}
+					},
+					"required": ["mode", "handle"],
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"properties": {
+						"mode": {
+							"type": "string",
+							"const": "reuse-current"
+						}
+					},
+					"required": ["mode"],
+					"additionalProperties": false
+				}
+			]
+		},
+		"adapterSessionId": {
+			"type": "string"
+		},
+		"startedAt": {
+			"type": "number"
+		},
+		"endedAt": {
+			"type": "number"
+		},
+		"outcome": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"kind": {
+							"type": "string",
+							"const": "continue"
+						}
+					},
+					"required": ["kind"],
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"properties": {
+						"kind": {
+							"type": "string",
+							"const": "stop"
+						},
+						"status": {
+							"type": "string",
+							"enum": [
+								"running",
+								"awaiting_attention",
+								"completed",
+								"blocked",
+								"exhausted",
+								"failed",
+								"cancelled"
+							]
+						},
+						"stopReason": {
+							"type": "string"
+						}
+					},
+					"required": ["kind", "status"],
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"properties": {
+						"kind": {
+							"type": "string",
+							"const": "suspend"
+						},
+						"status": {
+							"type": "string",
+							"enum": [
+								"running",
+								"awaiting_attention",
+								"completed",
+								"blocked",
+								"exhausted",
+								"failed",
+								"cancelled"
+							]
+						},
+						"stopReason": {
+							"type": "string"
+						}
+					},
+					"required": ["kind", "status", "stopReason"],
+					"additionalProperties": false
+				}
+			]
+		}
+	},
+	"required": ["runId", "iteration", "continuation", "startedAt"],
+	"additionalProperties": false
+}

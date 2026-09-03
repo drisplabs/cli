@@ -3,14 +3,24 @@ import path from 'node:path';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
 import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
+import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
 import {buildSyntheticTaskEvent} from '../../core/feed/syntheticEvents';
-import type {TrackerTaskProjection} from '../../core/workflows/trackerReader';
+import type {JournalTaskProjection} from '../../core/workflows/journalReader';
 import {
+	type Runtime,
 	type RuntimeDecision,
 	type RuntimeEvent,
 } from '../../core/runtime/types';
 import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
-import {deserializeRunMemory} from '../../core/workflows/runMachine';
+import {
+	deserializeRunMemory,
+	type RunInterruption,
+} from '../../core/workflows/runMachine';
+import {
+	buildUnattendedRules,
+	matchRule,
+	type HookRule,
+} from '../../core/controller/rules';
 import type {TurnContinuation} from '../../core/runtime/process';
 import {
 	createSessionStore,
@@ -20,11 +30,6 @@ import {
 import {resolveHarnessAdapter} from '../../harnesses/registry';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import {createRuntime} from '../runtime/createRuntime';
-import {
-	createRelayPermissionCallback,
-	createRelayQuestionCallback,
-} from '../channels/relayAdapter';
-import {startSessionBridge} from '../channels/sessionBridgeLifecycle';
 import {
 	createPairedFeedPublisher,
 	type FeedSink,
@@ -38,7 +43,16 @@ import {findLastMappedAgentMessage, resolveFinalMessage} from './finalMessage';
 import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
 import type {ExecRunOptions, ExecRunResult} from './types';
-import {EXEC_EXIT_CODE} from './types';
+import {RUN_EXIT_CODE} from './types';
+import {DEFAULT_PERMISSION_GRACE_MS} from '../../core/workflows/types';
+import type {Interruption} from '@drisp/protocol';
+import {
+	deferredPermissionDecision,
+	describeAnswer,
+	describeCall,
+	matchesParkedCall,
+	summarizeToolInput,
+} from './permissionHold';
 
 const NULL_TOKENS: TokenUsage = {
 	input: null,
@@ -105,54 +119,65 @@ function formatCapabilityConflictNotice(summary: {
 	)}`;
 }
 
-/**
- * Human-facing description of a question the agent asked when no human is
- * attached to answer it. Used as the `awaiting_attention` suspension reason so
- * the question is preserved on the persisted Run (ADR 0014).
- */
-function describeAttentionRequest(event: RuntimeEvent): string {
+/** The question text an `AskUserQuestion` carries, joined; '' when none. */
+function extractQuestionText(event: RuntimeEvent): string {
 	const data = event.data as Record<string, unknown>;
 	const toolInput = data['tool_input'];
 	const questions =
 		typeof toolInput === 'object' && toolInput !== null
 			? (toolInput as Record<string, unknown>)['questions']
 			: undefined;
-	if (Array.isArray(questions)) {
-		const texts = questions
-			.map(q =>
-				typeof q === 'object' && q !== null
-					? (q as Record<string, unknown>)['question']
-					: undefined,
-			)
-			.filter((q): q is string => typeof q === 'string');
-		if (texts.length > 0) {
-			return `agent asked a question with no human attached to answer: ${texts.join(' | ')}`;
-		}
-	}
-	if (event.kind === 'permission.request' && event.toolName !== 'user_input') {
-		return (
-			`agent requested sandbox approval (${event.toolName ?? 'unknown tool'}) with no human attached to answer` +
-			` — rerun with a more permissive --isolation, or wake with guidance`
-		);
-	}
-	return 'agent asked a question with no human attached to answer';
+	if (!Array.isArray(questions)) return '';
+	return questions
+		.map(q =>
+			typeof q === 'object' && q !== null
+				? (q as Record<string, unknown>)['question']
+				: undefined,
+		)
+		.filter((q): q is string => typeof q === 'string')
+		.join(' | ');
 }
 
 /**
- * A question-shaped event: the agent needs a human answer to proceed. In an
- * unattended Workflow Run these previously waited forever on a null timeout;
- * per ADR 0014 they convert to an `awaiting_attention` suspension instead.
+ * What an unattended Workflow Run does with an event only a person could
+ * answer (#189): the Interruption that parks the Run, or null when the Turn
+ * keeps going. A permission is answered inside the Turn when a rule other
+ * than an ask rule matches it — under `autonomous` the preset's allow-all
+ * policy is such a rule — so only an ask rule, a question, or a permission
+ * left unclaimed under a holding preset interrupts. Previously every one of
+ * these waited forever on a null-timeout decision; per ADR 0014 they park.
  */
-function isQuestionEvent(event: RuntimeEvent): boolean {
-	return (
-		(event.kind === 'tool.pre' && event.toolName === 'AskUserQuestion') ||
+function classifyUnattendedEvent(
+	event: RuntimeEvent,
+	rules: HookRule[],
+): RunInterruption | null {
+	const data = event.data as Record<string, unknown>;
+	const toolName =
+		event.toolName ??
+		(typeof data['tool_name'] === 'string' ? data['tool_name'] : undefined);
+
+	if (event.kind === 'permission.request' && toolName !== 'user_input') {
 		// ANY permission request, not just Codex's 'user_input': a sandbox
 		// approval (e.g. item/fileChange/requestApproval under a read-only
 		// sandbox) is equally unanswerable unattended — observed live hanging a
 		// headless codex workflow run forever on the null-timeout decision.
-		event.kind === 'permission.request' ||
+		const rule = toolName ? matchRule(rules, toolName) : undefined;
+		if (rule?.action === 'ask') {
+			return {kind: 'ask_rule', rule: rule.toolName, toolName: toolName!};
+		}
+		if (rule) return null;
+		return {kind: 'unclaimed_permission', toolName: toolName ?? 'unknown tool'};
+	}
+
+	if (
+		(event.kind === 'tool.pre' && toolName === 'AskUserQuestion') ||
+		(event.kind === 'permission.request' && toolName === 'user_input') ||
 		event.kind === 'elicitation.request'
-	);
+	) {
+		return {kind: 'question', question: extractQuestionText(event)};
+	}
+
+	return null;
 }
 
 function buildEarlyFailureResult(input: {
@@ -164,7 +189,7 @@ function buildEarlyFailureResult(input: {
 }): ExecRunResult {
 	return {
 		success: false,
-		exitCode: EXEC_EXIT_CODE.RUNTIME,
+		exitCode: RUN_EXIT_CODE.RUNTIME,
 		athenaSessionId: input.ephemeral ? null : input.athenaSessionId,
 		adapterSessionId: null,
 		finalMessage: null,
@@ -221,9 +246,16 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		now,
 	});
 
-	// Exec does not pre-seed rules from isolation defaults; channel relay (or
-	// the absence of one) governs approvals.
-	const rules: import('../../core/controller/rules').HookRule[] = [];
+	// Unattended rules (#189): the Workflow's ask rules first, then the
+	// isolation preset's policy for whatever they leave unclaimed. Only
+	// `autonomous` has one (allow, within the tools the preset grants);
+	// under `guarded` / `standard` nothing is seeded, so with no hub attached
+	// an unclaimed permission holds until timeoutMs (or abort) — see README
+	// "Permissions with no hub" — or, in a Workflow Run, parks the Run.
+	const rules: HookRule[] = buildUnattendedRules({
+		preset: options.isolationConfig.preset,
+		askRules: options.workflow?.askRules,
+	});
 
 	let runtimeStarted = false;
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
@@ -232,9 +264,31 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
 	let beforeTerminalCompletionRan = false;
-	// Set when a Turn is interrupted because the agent asked a question no
-	// attached human can answer; the runner suspends the Run with this reason.
-	let attentionRequest: string | null = null;
+	let unsubscribeSteers: (() => void) | undefined;
+	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
+	// the agent asked a question no attached human can answer, or a permission
+	// went unclaimed under a holding preset. The reducer names the reason.
+	let interruption: RunInterruption | null = null;
+
+	// Hold, then park, then replay (#190). A permission request no rule
+	// answers is held for the grace window so an attached hub can answer it;
+	// with no hub there is nobody to wait for, so the window is zero. When it
+	// elapses the call is refused as "deferred" and the Turn ends, parking the
+	// Run on the request. On continue, an answer stored since — from the hub's
+	// inbox or `--answer` — is replayed into the re-issued call.
+	const dashboardDecisionInbox = options.dashboardDecisionInbox;
+	const permissionGraceMs = dashboardDecisionInbox
+		? Math.max(0, options.permissionGraceMs ?? DEFAULT_PERMISSION_GRACE_MS)
+		: 0;
+	let hold: {
+		eventId: string;
+		interruption: RunInterruption;
+		timer: ReturnType<typeof setTimeout> | null;
+	} | null = null;
+	// A decision to send once the event that triggered it has been ingested —
+	// the runtime-event loop ingests before it hands the event on, and a
+	// decision sent earlier would reach the feed before its request.
+	let afterIngest: (() => void) | null = null;
 
 	let store: SessionStore;
 	try {
@@ -265,7 +319,46 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		mapperBootstrap?.feedEvents ?? [],
 	);
 
-	let runtime;
+	// The Interruption the Run being woken parked on, when it is a deferred
+	// permission (#190): what the wake prompt asks the agent to re-issue, and
+	// what a stored answer is matched against.
+	const parkedInterruption: Interruption | undefined = options.resumeRunId
+		? store.getLatestRun()?.interruption
+		: undefined;
+	const parkedRequestId =
+		parkedInterruption?.kind === 'question'
+			? parkedInterruption.requestId
+			: undefined;
+	// The answer stored for that request, if any: given locally on the command
+	// line, else the hub's `answer` waiting in the inbox (left there, and out
+	// of the drain, until it is replayed).
+	let storedAnswer: {
+		decision: RuntimeDecision;
+		source: 'local' | 'hub';
+		consume: () => void;
+	} | null = null;
+	if (parkedRequestId !== undefined) {
+		if (options.storedAnswer) {
+			storedAnswer = {
+				decision: options.storedAnswer,
+				source: 'local',
+				consume: () => {},
+			};
+		} else if (dashboardDecisionInbox) {
+			const row = dashboardDecisionInbox
+				.pendingForSession({athenaSessionId, limit: 25})
+				.find(pending => pending.requestId === parkedRequestId);
+			if (row) {
+				storedAnswer = {
+					decision: row.decision,
+					source: 'hub',
+					consume: () => dashboardDecisionInbox.markConsumed({id: row.id}),
+				};
+			}
+		}
+	}
+
+	let runtime: Runtime;
 	try {
 		runtime = runtimeFactory({
 			harness: options.harness,
@@ -324,16 +417,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const currentAdapterSessionId = (): string | null => adapterSessionId;
 
-	const bridgeFactory = options.bridgeFactory ?? startSessionBridge;
-	const bridge =
-		options.channels && options.channels.length > 0
-			? await bridgeFactory({
-					runtimeId: athenaSessionId,
-					defaultAgentId: 'main',
-					...(options.signal ? {signal: options.signal} : {}),
-				})
-			: null;
-
 	// Handover state (ADR 0014 §5). A compact.pre on the Run's Agent Session
 	// blocks vendor compaction and interrupts the Turn; the workflow runner
 	// then forks, distills, and reseeds. While the fork writes the Handoff
@@ -362,16 +445,11 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const controllerCallbacks: ControllerCallbacks = {
 		getRules: () => rules,
-		// No UI queue in exec; with no bridge attached, the runtime never
-		// receives a decision and the request blocks until timeoutMs (or abort).
+		// No UI queue in exec; with no hub attached, the runtime never
+		// receives a decision and the request holds until timeoutMs (or abort).
+		// A Workflow Run parks instead — see `classifyUnattendedEvent` above.
 		enqueuePermission: () => {},
 		enqueueQuestion: () => {},
-		...(bridge
-			? {
-					relayPermission: createRelayPermissionCallback(bridge, runtime),
-					relayQuestion: createRelayQuestionCallback(bridge, runtime),
-				}
-			: {}),
 		// Handover interception is Claude-only for now: the fork transition
 		// rides --fork-session, which Codex has no equivalent for. Non-workflow
 		// sessions never intercept — vendor compaction proceeds unchanged.
@@ -381,9 +459,101 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		...(options.signal ? {signal: options.signal} : {}),
 	};
 
-	const dashboardDecisionInbox = options.dashboardDecisionInbox;
-
 	const linkedAdapterSessions = new Set<string>();
+
+	function clearHold(): void {
+		if (hold?.timer) clearTimeout(hold.timer);
+		hold = null;
+	}
+
+	/**
+	 * The grace window elapsed with no answer: refuse the call as deferred,
+	 * remember the request on the Interruption, and end the Turn so the Run
+	 * parks. The reducer turns the Interruption into the park sentence and the
+	 * wire-shaped `question` an `answer` can address.
+	 */
+	function deferHeldPermission(): void {
+		const held = hold;
+		if (!held) return;
+		hold = null;
+		interruption = held.interruption;
+		const toolName =
+			held.interruption.kind === 'question'
+				? 'question'
+				: held.interruption.toolName;
+		runtime.sendDecision(
+			held.eventId,
+			deferredPermissionDecision({toolName, graceMs: permissionGraceMs}),
+		);
+		output.emitJsonEvent('permission.deferred', {
+			requestId: held.eventId,
+			toolName,
+			graceMs: permissionGraceMs,
+		});
+		void sessionController.kill();
+	}
+
+	/**
+	 * A permission an ask rule claimed or no rule answered (#190): replay the
+	 * stored answer if this is the call the Run parked on, else hold it for the
+	 * grace window. Returns what to do once the event is ingested.
+	 */
+	function holdOrReplay(
+		runtimeEvent: RuntimeEvent,
+		next: Extract<RunInterruption, {kind: 'ask_rule' | 'unclaimed_permission'}>,
+	): () => void {
+		const inputSummary = summarizeToolInput(runtimeEvent);
+		const call = describeCall(next.toolName, inputSummary);
+
+		if (
+			storedAnswer &&
+			matchesParkedCall(parkedInterruption, next.toolName, inputSummary)
+		) {
+			const answer = storedAnswer;
+			storedAnswer = null;
+			const replayOf = parkedInterruption.requestId;
+			return () => {
+				runtime.sendDecision(runtimeEvent.id, answer.decision);
+				answer.consume();
+				output.notice(
+					`replayed the stored ${answer.source} answer (${describeAnswer(answer.decision)}) into the re-issued call ${call}`,
+				);
+				output.emitJsonEvent('permission.replayed', {
+					requestId: runtimeEvent.id,
+					replayOf,
+					toolName: next.toolName,
+					source: answer.source,
+					decision: answer.decision,
+				});
+			};
+		}
+
+		hold = {
+			eventId: runtimeEvent.id,
+			interruption: {
+				...next,
+				permission: {
+					requestId: runtimeEvent.id,
+					inputSummary,
+					graceMs: permissionGraceMs,
+				},
+			},
+			timer: null,
+		};
+		if (permissionGraceMs > 0) {
+			hold.timer = setTimeout(deferHeldPermission, permissionGraceMs);
+			output.notice(
+				`holding the ${next.toolName} permission request for ${Math.round(permissionGraceMs / 1000)}s awaiting an answer: ${inputSummary}`,
+			);
+			output.emitJsonEvent('permission.hold', {
+				requestId: runtimeEvent.id,
+				toolName: next.toolName,
+				graceMs: permissionGraceMs,
+			});
+			return () => {};
+		}
+		return deferHeldPermission;
+	}
 
 	function publishFeedEvents(feedEvents: readonly FeedEvent[]): void {
 		if (feedEvents.length === 0) return;
@@ -409,7 +579,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		});
 		const provisionalResult: ExecRunResult = {
 			success: true,
-			exitCode: EXEC_EXIT_CODE.SUCCESS,
+			exitCode: RUN_EXIT_CODE.SUCCESS,
 			athenaSessionId: options.ephemeral ? null : athenaSessionId,
 			adapterSessionId,
 			finalMessage: resolved.message,
@@ -467,18 +637,23 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
 
-			// Declared attention (ADR 0014): with no bridge, no human can ever
-			// answer a question — waiting on the null-timeout decision would hang
-			// the Run forever. Interrupt the Turn; the runner suspends the Run in
-			// `awaiting_attention` with the question preserved.
+			// Needs a person (ADR 0014, #189): with no hub attached, nobody can
+			// answer — waiting on the null-timeout decision would hang the Run
+			// forever. Interrupt the Turn; the runner parks the Run in
+			// `awaiting_attention` with the reason preserved. Permissions a rule
+			// answers (the autonomous policy, a deny) never get here.
 			if (
 				options.workflow?.loop?.enabled &&
-				!bridge &&
-				attentionRequest === null &&
-				isQuestionEvent(runtimeEvent)
+				interruption === null &&
+				hold === null
 			) {
-				attentionRequest = describeAttentionRequest(runtimeEvent);
-				void sessionController.kill();
+				const next = classifyUnattendedEvent(runtimeEvent, rules);
+				if (next?.kind === 'question') {
+					interruption = next;
+					void sessionController.kill();
+				} else if (next) {
+					afterIngest = holdOrReplay(runtimeEvent, next);
+				}
 			}
 
 			// Link new adapter sessions to the active workflow run
@@ -513,8 +688,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				}
 			}
 			publishFeedEvents(feedEvents);
+			// The permission event is ingested; a replayed answer or an
+			// immediate deferral can now follow it.
+			const pending = afterIngest;
+			afterIngest = null;
+			pending?.();
 		},
 		onDecisionReceived: (eventId: string, decision: RuntimeDecision) => {
+			// An answer for the held request arrived inside the grace window
+			// (the hub's inbox drain, or a rule): the hold is over and the Turn
+			// simply continues.
+			if (hold?.eventId === eventId) clearHold();
 			output.emitJsonEvent('runtime.decision', {
 				eventId,
 				decision,
@@ -581,6 +765,11 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				...(options.dashboardDecisionPollIntervalMs !== undefined
 					? {pollIntervalMs: options.dashboardDecisionPollIntervalMs}
 					: {}),
+				// The answer stored for the parked request is replayed into the
+				// re-issued call, not forwarded to a request id that is gone.
+				...(parkedRequestId !== undefined
+					? {shouldForward: row => row.requestId !== parkedRequestId}
+					: {}),
 				onError: error =>
 					output.warn(
 						`dashboard decision failed: ${
@@ -627,6 +816,39 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			prompt: options.prompt,
 			initialContinuation: nextContinuation,
 			resumeRunId: options.resumeRunId,
+			parkedInterruption,
+			// Runner-level notices (e.g. a deprecated marker spelling, #185) reach
+			// both the human stderr stream and the JSONL contract.
+			onWarning: message => {
+				output.warn(message);
+				output.emitJsonEvent('exec.warning', {message});
+			},
+			// The Run moved to a new workflow step (#192): one `phase` FeedEvent
+			// into the local feed and the paired feed, and one `run.phase` JSONL
+			// event. The phase is not a RuntimeEvent, so it never crosses the
+			// FeedMapper; it borrows the mapper's current Session / Feed Run and
+			// a mapper-allocated seq so it sorts into the timeline it belongs to.
+			onPhaseChange: phase => {
+				const sessionId =
+					mapper.getSession()?.session_id ??
+					adapterSessionId ??
+					athenaSessionId;
+				const feedEvent = buildPhaseFeedEvent({
+					phase,
+					sessionId,
+					runId: mapper.getCurrentRun()?.run_id ?? `${sessionId}:R0`,
+					seq: mapper.allocateSeq(),
+					ts: now(),
+				});
+				safePersist(
+					store,
+					() => store.recordFeedEvents([feedEvent]),
+					message => output.warn(message),
+					'recordFeedEvents failed',
+				);
+				publishFeedEvents([feedEvent]);
+				output.emitJsonEvent('run.phase', phase);
+			},
 			resumedRunMemory,
 			resumedStopReason,
 			startTurn: async turnInput => {
@@ -636,6 +858,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					configOverride: turnInput.configOverride,
 					onStderrLine: message => output.log(message),
 				});
+				// A Turn that ended on its own while a request was held leaves
+				// nothing to defer.
+				clearHold();
 
 				if (turnResult.streamMessage) {
 					streamFinalMessage = turnResult.streamMessage;
@@ -661,8 +886,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					'persistRun failed',
 				);
 			},
-			checkSuspension: () =>
-				attentionRequest !== null ? {reason: attentionRequest} : null,
+			checkInterruption: () => interruption,
 			currentAdapterSessionId,
 			handover: {
 				takeRequest: () => {
@@ -690,11 +914,26 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					status: runSnapshot.status,
 				});
 			},
-			// Task-tool projection (ADR 0015 §7): the Tracker's `## Units` table +
+			// A delivered Steer (#191) is reported per Turn it went into; the
+			// Runner has already recorded it in the Journal by this point.
+			onSteerDelivered: steers => {
+				for (const steer of steers) {
+					output.notice(
+						`steer delivered into Turn ${steer.iteration} (via ${steer.origin}): ${steer.text}`,
+					);
+					output.emitJsonEvent('run.steer', {
+						iteration: steer.iteration,
+						origin: steer.origin,
+						receivedAt: steer.receivedAt,
+						text: steer.text,
+					});
+				}
+			},
+			// Task-tool projection (ADR 0015 §7): the Journal's `## Units` table +
 			// unit-record frontmatter, diffed against what the Feed already knows
 			// and reconciled through the same `task.created`/`task.completed`
 			// path a live TodoWrite/TaskCreate/TaskUpdate call would take.
-			projectTasks: (tasks: TrackerTaskProjection[]) => {
+			projectTasks: (tasks: JournalTaskProjection[]) => {
 				const known = new Map(
 					mapper
 						.getTasks()
@@ -738,6 +977,26 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 		activeRunId = handle.runId;
 
+		// Steers reach the Runner through the queue's single subscriber; ones
+		// that arrived before this point are flushed here, in order. A Steer is
+		// queued, never injected — it heads the next Turn's prompt (#191).
+		unsubscribeSteers = options.steerQueue?.subscribe(steer => {
+			if (handle.steer(steer)) {
+				output.notice(
+					`steer queued for the next Turn (via ${steer.origin}): ${steer.text}`,
+				);
+				output.emitJsonEvent('run.steer.queued', {
+					origin: steer.origin,
+					receivedAt: steer.receivedAt,
+					text: steer.text,
+				});
+				return;
+			}
+			output.warn(
+				`steer ignored — the workflow run has already ended (via ${steer.origin}): ${steer.text}`,
+			);
+		});
+
 		const runResult = await handle.result;
 
 		// Accumulate tokens from the runner result
@@ -758,6 +1017,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					runId: runResult.runId,
 					status: 'awaiting_attention',
 					stopReason: runResult.stopReason ?? null,
+					// The structured Interruption when the Run parked on one (#190);
+					// the hub's `needs_human` carries it as-is.
+					interruption: runResult.interruption ?? null,
 				});
 			} else if (runResult.status === 'failed') {
 				latch.register({
@@ -776,7 +1038,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}
+		clearHold();
 		dashboardDecisionDrain?.stop();
+		unsubscribeSteers?.();
 		await writeLastMessageBeforeTerminalCompletion();
 		await runBeforeTerminalCompletion();
 		await sessionController.kill();
@@ -784,7 +1048,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		if (runtimeStarted) {
 			runtime.stop();
 		}
-		await bridge?.stop();
 		store.close();
 		ownedFeedPublisher?.close();
 	}
@@ -802,7 +1065,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const failure = latch.current();
 	const exitCode = exitCodeFromFailure(failure);
-	const success = exitCode === EXEC_EXIT_CODE.SUCCESS;
+	const success = exitCode === RUN_EXIT_CODE.SUCCESS;
 	const finalMessage = success ? resolvedFinalMessage.message : null;
 	if (success && finalMessage !== null) {
 		output.printFinalMessage(finalMessage);

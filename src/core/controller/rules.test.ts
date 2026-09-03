@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {matchRule, type HookRule} from './rules';
+import {buildUnattendedRules, matchRule, type HookRule} from './rules';
 
 function makeRule(
 	overrides: Partial<HookRule> & {toolName: string; action: HookRule['action']},
@@ -28,6 +28,23 @@ describe('matchRule', () => {
 	it('deny rules take precedence over approve rules', () => {
 		const rules = [
 			makeRule({toolName: 'Bash', action: 'approve'}),
+			makeRule({toolName: 'Bash', action: 'deny'}),
+		];
+		expect(matchRule(rules, 'Bash')!.action).toBe('deny');
+	});
+
+	it('ask rules take precedence over approve rules, including a wildcard (#189)', () => {
+		const rules = [
+			makeRule({toolName: '*', action: 'approve'}),
+			makeRule({toolName: 'Bash', action: 'ask'}),
+		];
+		expect(matchRule(rules, 'Bash')!.action).toBe('ask');
+		expect(matchRule(rules, 'Edit')!.action).toBe('approve');
+	});
+
+	it('deny rules still beat ask rules', () => {
+		const rules = [
+			makeRule({toolName: 'Bash', action: 'ask'}),
 			makeRule({toolName: 'Bash', action: 'deny'}),
 		];
 		expect(matchRule(rules, 'Bash')!.action).toBe('deny');
@@ -88,5 +105,40 @@ describe('matchRule', () => {
 				'deny',
 			);
 		});
+	});
+});
+
+describe('buildUnattendedRules (#189)', () => {
+	it('autonomous answers every unclaimed permission with an allow rule', () => {
+		const rules = buildUnattendedRules({preset: 'autonomous', askRules: []});
+		expect(rules).toHaveLength(1);
+		expect(rules[0]).toMatchObject({toolName: '*', action: 'approve'});
+		expect(matchRule(rules, 'Bash')!.action).toBe('approve');
+		expect(matchRule(rules, 'mcp__github__create_issue')!.action).toBe(
+			'approve',
+		);
+	});
+
+	it('guarded and standard seed no policy: an unclaimed permission holds for a person', () => {
+		expect(buildUnattendedRules({preset: 'guarded', askRules: []})).toEqual([]);
+		expect(buildUnattendedRules({preset: 'standard', askRules: []})).toEqual(
+			[],
+		);
+		expect(buildUnattendedRules({preset: undefined, askRules: []})).toEqual([]);
+	});
+
+	it('an ask rule claims its tool ahead of the autonomous policy, named as written', () => {
+		const rules = buildUnattendedRules({
+			preset: 'autonomous',
+			askRules: ['Bash', 'mcp__github__*'],
+		});
+		const bash = matchRule(rules, 'Bash')!;
+		expect(bash.action).toBe('ask');
+		expect(bash.toolName).toBe('Bash');
+		expect(bash.addedBy).toContain('workflow ask rule "Bash"');
+		expect(matchRule(rules, 'mcp__github__create_pull_request')!.action).toBe(
+			'ask',
+		);
+		expect(matchRule(rules, 'Edit')!.action).toBe('approve');
 	});
 });

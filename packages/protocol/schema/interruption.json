@@ -1,0 +1,92 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/interruption.json",
+	"title": "interruption",
+	"x-protocol-version": 1,
+	"oneOf": [
+		{
+			"type": "object",
+			"properties": {
+				"message": {
+					"type": "string"
+				},
+				"kind": {
+					"type": "string",
+					"const": "blocked"
+				},
+				"reason": {
+					"type": "string"
+				}
+			},
+			"required": ["message", "kind"],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"message": {
+					"type": "string"
+				},
+				"kind": {
+					"type": "string",
+					"const": "question"
+				},
+				"requestId": {
+					"type": "string"
+				},
+				"question": {
+					"type": "string"
+				}
+			},
+			"required": ["message", "kind"],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"message": {
+					"type": "string"
+				},
+				"kind": {
+					"type": "string",
+					"const": "hard_failure"
+				},
+				"code": {
+					"type": "string",
+					"enum": [
+						"auth",
+						"billing",
+						"invalid_request",
+						"model_not_found",
+						"unclassified"
+					]
+				}
+			},
+			"required": ["message", "kind", "code"],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"message": {
+					"type": "string"
+				},
+				"kind": {
+					"type": "string",
+					"const": "cap_exhausted"
+				},
+				"cap": {
+					"type": "string",
+					"enum": ["retry", "nudge", "iterations"]
+				},
+				"limit": {
+					"type": "integer",
+					"exclusiveMinimum": 0,
+					"maximum": 9007199254740991
+				}
+			},
+			"required": ["message", "kind", "cap"],
+			"additionalProperties": false
+		}
+	]
+}

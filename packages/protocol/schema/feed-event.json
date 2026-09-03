@@ -1,0 +1,105 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://raw.githubusercontent.com/drisplabs/cli/main/packages/protocol/schema/feed-event.json",
+	"title": "feed-event",
+	"x-protocol-version": 1,
+	"type": "object",
+	"properties": {
+		"event_id": {
+			"type": "string"
+		},
+		"seq": {
+			"type": "integer",
+			"minimum": 0,
+			"maximum": 9007199254740991
+		},
+		"ts": {
+			"type": "number"
+		},
+		"session_id": {
+			"type": "string"
+		},
+		"run_id": {
+			"type": "string"
+		},
+		"prompt_id": {
+			"type": "string"
+		},
+		"effort_level": {
+			"type": "string"
+		},
+		"kind": {
+			"type": "string"
+		},
+		"level": {
+			"type": "string",
+			"enum": ["debug", "info", "warn", "error"]
+		},
+		"actor_id": {
+			"type": "string"
+		},
+		"cause": {
+			"type": "object",
+			"properties": {
+				"parent_event_id": {
+					"type": "string"
+				},
+				"hook_request_id": {
+					"type": "string"
+				},
+				"tool_use_id": {
+					"type": "string"
+				},
+				"transcript_path": {
+					"type": "string"
+				}
+			},
+			"additionalProperties": false
+		},
+		"title": {
+			"type": "string"
+		},
+		"body": {
+			"type": "string"
+		},
+		"ui": {
+			"type": "object",
+			"properties": {
+				"collapsed_default": {
+					"type": "boolean"
+				},
+				"pin": {
+					"type": "boolean"
+				},
+				"badge": {
+					"type": "string"
+				}
+			},
+			"additionalProperties": false
+		},
+		"display": {
+			"type": "object",
+			"properties": {
+				"title": {
+					"type": "string"
+				}
+			},
+			"additionalProperties": false
+		},
+		"data": {},
+		"raw": {}
+	},
+	"required": [
+		"event_id",
+		"seq",
+		"ts",
+		"session_id",
+		"run_id",
+		"kind",
+		"level",
+		"actor_id",
+		"title",
+		"data"
+	],
+	"additionalProperties": {}
+}

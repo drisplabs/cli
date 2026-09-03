@@ -17,7 +17,7 @@ function makeTempDir(prefix = 'athena-remote-workspace-') {
 }
 
 function validated(frame: {
-	type: 'job_assignment';
+	type: 'run.start';
 	runId: string;
 	runnerId?: string;
 	runSpec?: unknown;
@@ -40,7 +40,7 @@ describe('resolveRemoteWorkspace', () => {
 		const projectDir = makeTempDir();
 		const result = resolveRemoteWorkspace(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_1',
 				runnerId: 'runner_1',
 				runSpec: {prompt: 'go', projectDir},
@@ -54,7 +54,7 @@ describe('resolveRemoteWorkspace', () => {
 		const home = makeTempDir('athena-remote-home-');
 		const result = resolveRemoteWorkspace(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_home',
 				runnerId: 'runner_1',
 				runSpec: {prompt: 'go', projectDir: home},
@@ -76,7 +76,7 @@ describe('resolveRemoteWorkspace', () => {
 		const state = makeTempDir('athena-remote-state-');
 		const result = resolveRemoteWorkspace(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_1',
 				runnerId: 'runner/one',
 				runSpec: {prompt: 'go', athenaSessionId: 'athena:session'},
@@ -105,7 +105,7 @@ describe('resolveRemoteWorkspace', () => {
 		const state = makeTempDir('athena-remote-state-');
 		const result = resolveRemoteWorkspace(
 			validated({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runnerId: 'runner_1',
 				runSpec: {prompt: 'go'},

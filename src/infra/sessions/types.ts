@@ -55,6 +55,7 @@ export type StoredSession = {
 };
 
 import type {RunStatus} from '../../core/workflows/types';
+import type {Interruption} from '@drisp/protocol';
 
 export type WorkflowRunSnapshot = {
 	runId: string;
@@ -64,7 +65,7 @@ export type WorkflowRunSnapshot = {
 	maxIterations?: number;
 	status: RunStatus;
 	stopReason?: string;
-	trackerPath?: string;
+	journalPath?: string;
 	/**
 	 * Vendor session id (Claude Code session / Codex thread) of the most recent
 	 * Turn's Agent Session. Absent until the harness reports one; every resume-
@@ -73,13 +74,20 @@ export type WorkflowRunSnapshot = {
 	adapterSessionId?: string;
 	/**
 	 * Opaque JSON snapshot of the run-loop reducer's `RunMemory` (nudge/retry
-	 * streaks, last tracker hash, in-flight stop prompt/continuation), so a
+	 * streaks, last journal hash, in-flight stop prompt/continuation), so a
 	 * resumed process can rehydrate the reducer instead of restarting its
 	 * counters (ADR 0016). Serialized/parsed by `src/core/workflows/runMachine`
 	 * — this layer stores and returns it as an opaque string, never inspects
 	 * its shape.
 	 */
 	runMemoryJson?: string;
+	/**
+	 * The structured Interruption a Run parked in `awaiting_attention` carries
+	 * (#190: a permission request deferred after the grace window — its
+	 * request id, the tool, and the input summary). Absent on a running or
+	 * ended Run, and cleared when a parked Run is woken.
+	 */
+	interruption?: Interruption;
 };
 
 export type PersistedWorkflowRun = {
@@ -92,9 +100,48 @@ export type PersistedWorkflowRun = {
 	maxIterations: number;
 	status: RunStatus;
 	stopReason?: string;
-	trackerPath?: string;
+	journalPath?: string;
 	/** Vendor session id of the Run's most recent Agent Session (ADR 0014). */
 	adapterSessionId?: string;
 	/** Opaque JSON snapshot of the run-loop reducer's `RunMemory` (ADR 0016). */
 	runMemoryJson?: string;
+	/** The Interruption a parked Run carries (#190); see `WorkflowRunSnapshot`. */
+	interruption?: Interruption;
 };
+
+const INTERRUPTION_KINDS: ReadonlySet<Interruption['kind']> = new Set([
+	'blocked',
+	'question',
+	'hard_failure',
+	'cap_exhausted',
+]);
+
+/**
+ * Parse a persisted `interruption_json` column. Tolerant: a row written by a
+ * newer runner with an Interruption kind this build does not know, or a
+ * corrupt value, reads as "no Interruption" rather than failing the whole
+ * run read — the `stop_reason` sentence still describes the park. The check
+ * is structural (a known `kind` and a `message`) rather than the package's
+ * zod schema, so this persistence layer keeps no runtime dependency on
+ * `@drisp/protocol`; the value was validated by the writer.
+ */
+export function parsePersistedInterruption(
+	json: unknown,
+): Interruption | undefined {
+	if (typeof json !== 'string' || json.length === 0) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(json);
+		if (typeof parsed !== 'object' || parsed === null) return undefined;
+		const candidate = parsed as {kind?: unknown; message?: unknown};
+		if (
+			typeof candidate.kind !== 'string' ||
+			!INTERRUPTION_KINDS.has(candidate.kind as Interruption['kind']) ||
+			typeof candidate.message !== 'string'
+		) {
+			return undefined;
+		}
+		return candidate as Interruption;
+	} catch {
+		return undefined;
+	}
+}

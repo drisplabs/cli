@@ -1,90 +1,32 @@
 import {WebSocket} from 'ws';
-import type {RuntimeDecision} from '../../core/runtime/types';
-import type {DashboardFeedEnvelope} from './dashboardFeedPublisher';
-
-export type RunEventFrame = {
-	type: 'run_event';
-	runId: string;
-	seq: number;
-	ts: number;
-	kind: string;
-	payload?: unknown;
-};
-
-export type FeedEventFrame = {
-	type: 'feed_event';
-	deliverySeq: number;
-	envelope: DashboardFeedEnvelope;
-};
-
-export type AssignmentRejectedReason =
-	| 'local_capacity'
-	| 'duplicate'
-	| 'malformed_assignment'
-	| 'workspace_unresolved'
-	| 'workspace_invalid';
-
-export type AssignmentRejectedFrame = {
-	type: 'assignment_rejected';
-	runId: string;
-	reason: AssignmentRejectedReason;
-	message?: string;
-};
-
-export type InstanceSocketFrame =
-	| {type: 'ping'; ts: number}
-	| {type: 'pong'; ts: number}
-	| {
-			type: 'job_assignment';
-			runId: string;
-			runSpec?: unknown;
-			/**
-			 * The runner this assignment is bound to. Top-level so the CLI can
-			 * route to the right Attachment without inspecting `runSpec`.
-			 * Optional: dashboards that do not emit it use the runtime daemon's
-			 * single-runtime semantics.
-			 */
-			runnerId?: string;
-	  }
-	| {type: 'assignment_accepted'; runId: string}
-	| AssignmentRejectedFrame
-	| {
-			type: 'decision_ack';
-			athenaSessionId: string;
-			requestId: string;
-	  }
-	| {type: 'feed_ack'; deliverySeq?: number; eventId?: string}
-	| {
-			type: 'dashboard_decision';
-			athenaSessionId: string;
-			requestId: string;
-			decision: RuntimeDecision;
-	  }
-	| {type: 'cancel'; runId: string; runnerId?: string}
-	| {
-			/**
-			 * Pushed by the dashboard when a runner is bound to or unbound from
-			 * this instance. Full-list semantics — the CLI's mirror reconciles
-			 * via `diffAttachments`. Optional fields mirror the pair-response
-			 * runner shape so the same parser fits both paths.
-			 */
-			type: 'attachments.changed';
-			attachments: Array<{
-				runnerId: string;
-				name?: string;
-				slug?: string;
-				executionTarget?: string;
-				remoteInstanceId?: string;
-			}>;
-	  }
-	| {type: 'error'; code: string; message?: string}
-	| RunEventFrame
-	| FeedEventFrame;
+import {
+	PROTOCOL_VERSION,
+	hello,
+	safeNormalizeFrame,
+	toLegacyFrame,
+	type AssignmentRejectedFrame,
+	type CanonicalFrame,
+	type DecisionAckFrame,
+	type FeedStreamEventFrame,
+	type HelloFrame,
+	type InstalledWorkflow,
+	type NeedsHumanFrame,
+	type RunStreamEventFrame,
+} from '@drisp/protocol';
 
 export type InstanceSocketLogger = (
 	level: 'debug' | 'info' | 'warn' | 'error',
 	message: string,
 ) => void;
+
+/**
+ * Which frame-name set this connection puts on the wire. Every frame is built
+ * under its canonical name; `legacy` rewrites it through `toLegacyFrame()` at
+ * the socket boundary for a hub that has not migrated. A connection starts
+ * `legacy` and becomes `canonical` only once the hub's `hello` announces the
+ * protocol version this runner speaks (protocol doc §17).
+ */
+export type InstanceSocketWireMode = 'legacy' | 'canonical';
 
 export type InstanceSocketClientOptions = {
 	dashboardUrl: string;
@@ -103,18 +45,31 @@ export type InstanceSocketClientOptions = {
 	 */
 	makeWebSocket?: (url: string, accessToken: string) => WebSocket;
 	now?: () => number;
+	/**
+	 * The Workflows installed on this machine, read at connect time so every
+	 * `hello` (first connection and each reconnect) carries the current
+	 * inventory (protocol §17.4). When omitted the hello does not report
+	 * workflows at all.
+	 */
+	installedWorkflows?: () => InstalledWorkflow[];
 };
 
 export type InstanceSocketClient = {
 	connect(): Promise<void>;
 	close(reason?: string): void;
-	onFrame(handler: (frame: InstanceSocketFrame) => void): void;
+	/** Every inbound frame, already normalised to its canonical name. */
+	onFrame(handler: (frame: CanonicalFrame) => void): void;
 	onClose(handler: (reason: string) => void): void;
+	/** The frame-name set currently on the wire for this connection. */
+	wireMode(): InstanceSocketWireMode;
 	sendAssignmentAccepted(runId: string): void;
 	sendAssignmentRejected(input: Omit<AssignmentRejectedFrame, 'type'>): void;
-	sendRunEvent(event: Omit<RunEventFrame, 'type'>): void;
-	sendFeedEvent(event: Omit<FeedEventFrame, 'type'>): void;
-	sendDecisionAck(input: {athenaSessionId: string; requestId: string}): void;
+	sendRunEvent(event: Omit<RunStreamEventFrame, 'type' | 'stream'>): void;
+	sendFeedEvent(event: Omit<FeedStreamEventFrame, 'type' | 'stream'>): void;
+	sendNeedsHuman(input: Omit<NeedsHumanFrame, 'type'>): void;
+	sendDecisionAck(input: Omit<DecisionAckFrame, 'type'>): void;
+	/** Full-list replace of the installed Workflows (protocol §17.4). */
+	sendWorkflowsChanged(workflows: InstalledWorkflow[]): void;
 };
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
@@ -144,13 +99,14 @@ export function createInstanceSocketClient(
 		((url: string, accessToken: string): WebSocket =>
 			new WebSocket(url, [accessToken]));
 
-	const frameHandlers = new Set<(frame: InstanceSocketFrame) => void>();
+	const frameHandlers = new Set<(frame: CanonicalFrame) => void>();
 	const closeHandlers = new Set<(reason: string) => void>();
 	let ws: WebSocket | null = null;
 	let heartbeat: NodeJS.Timeout | null = null;
 	let droppedSinceClose = 0;
+	let wireMode: InstanceSocketWireMode = 'legacy';
 
-	function send(frame: InstanceSocketFrame): void {
+	function send(frame: CanonicalFrame): void {
 		if (!ws || ws.readyState !== ws.OPEN) {
 			droppedSinceClose += 1;
 			if (droppedSinceClose === 1) {
@@ -162,8 +118,9 @@ export function createInstanceSocketClient(
 			return;
 		}
 		droppedSinceClose = 0;
+		const onWire = wireMode === 'legacy' ? toLegacyFrame(frame) : frame;
 		try {
-			ws.send(JSON.stringify(frame));
+			ws.send(JSON.stringify(onWire));
 		} catch (err) {
 			log(
 				'warn',
@@ -201,7 +158,7 @@ export function createInstanceSocketClient(
 		}
 	}
 
-	function handleFrame(parsed: InstanceSocketFrame): void {
+	function handleFrame(parsed: CanonicalFrame): void {
 		for (const handler of [...frameHandlers]) {
 			try {
 				handler(parsed);
@@ -216,10 +173,80 @@ export function createInstanceSocketClient(
 		}
 	}
 
+	/**
+	 * The hub's `hello` decides the wire mode for the rest of this connection.
+	 * A version we speak switches emission to the canonical names; a version
+	 * we do not speak is answered with an `error` and the socket is closed
+	 * (the reconnect loop owns what happens next). Returns whether the frame
+	 * should still reach the frame handlers.
+	 */
+	function handleHello(frame: HelloFrame): boolean {
+		if (frame.protocolVersion === PROTOCOL_VERSION) {
+			wireMode = 'canonical';
+			log(
+				'info',
+				`instance socket: hub speaks protocol v${frame.protocolVersion}; emitting canonical frame names`,
+			);
+			return true;
+		}
+		const message = `hub announced protocol v${frame.protocolVersion}; this runner speaks v${PROTOCOL_VERSION}`;
+		log('error', `instance socket: ${message}`);
+		send({type: 'error', code: 'unsupported_protocol_version', message});
+		// A client-initiated close does not fire the `ws` close listener for
+		// this socket (it is no longer `ws`), so tell the owner directly: the
+		// daemon must know the control channel is gone.
+		close('unsupported protocol version');
+		emitClose('unsupported protocol version');
+		return false;
+	}
+
+	function receive(data: unknown): void {
+		let json: unknown;
+		try {
+			json = JSON.parse(String(data));
+		} catch (err) {
+			const message = `instance socket frame is not JSON: ${
+				err instanceof Error ? err.message : String(err)
+			}`;
+			log('warn', message);
+			send({type: 'error', code: 'malformed_frame', message});
+			return;
+		}
+		const parsed = safeNormalizeFrame(json);
+		if (!parsed.success) {
+			const type =
+				typeof json === 'object' && json !== null && 'type' in json
+					? String((json as {type: unknown}).type)
+					: 'unknown';
+			const message = `instance socket frame rejected (type=${type}): ${parsed.error.message}`;
+			log('warn', message);
+			send({type: 'error', code: 'malformed_frame', message});
+			return;
+		}
+		const frame = parsed.frame;
+		if (frame.type === 'hello' && !handleHello(frame)) return;
+		handleFrame(frame);
+	}
+
 	async function connect(): Promise<void> {
 		if (ws) throw new Error('instance socket already connected');
 		const url = instanceSocketUrl(opts.dashboardUrl, opts.instanceId);
 		const next = makeWebSocket(url, opts.accessToken);
+
+		// Listen before the upgrade completes: a hub that greets us with its
+		// `hello` right after the upgrade can deliver it in the same read as
+		// the handshake, i.e. synchronously after `open` and before any
+		// continuation of the promise below would have attached a listener.
+		next.on('message', receive);
+		next.on('close', (_code, reasonBuf) => {
+			if (next !== ws) return;
+			ws = null;
+			const reason = reasonBuf.toString() || 'closed';
+			emitClose(reason);
+		});
+		next.on('error', err => {
+			log('warn', `instance socket error: ${err.message}`);
+		});
 
 		try {
 			await new Promise<void>((resolve, reject) => {
@@ -233,6 +260,12 @@ export function createInstanceSocketClient(
 					if (settled) return;
 					settled = true;
 					cleanup();
+					// Adopt the socket synchronously on `open` so a frame that
+					// arrives in the same tick is received (and answerable).
+					ws = next;
+					// A fresh connection starts on the legacy names until the
+					// hub's hello says otherwise.
+					wireMode = 'legacy';
 					resolve();
 				};
 				const onError = (err: Error): void => {
@@ -255,10 +288,10 @@ export function createInstanceSocketClient(
 				next.once('error', onError);
 			});
 		} catch (err) {
-			// Swallow any late 'error' events emitted by terminate() so they
-			// don't surface as unhandled — `ws` re-emits an error when the
-			// underlying socket is torn down before the upgrade completes.
-			next.on('error', () => {});
+			// The permanent 'error' listener above also swallows any late
+			// 'error' events emitted by terminate() so they don't surface as
+			// unhandled — `ws` re-emits an error when the underlying socket is
+			// torn down before the upgrade completes.
 			try {
 				next.terminate();
 			} catch {
@@ -267,35 +300,18 @@ export function createInstanceSocketClient(
 			throw err;
 		}
 
-		ws = next;
+		// First frame on the wire: who we are, which protocol we speak, and
+		// what we can run.
+		send(
+			hello({
+				role: 'runner',
+				instanceId: opts.instanceId,
+				...(opts.installedWorkflows
+					? {workflows: opts.installedWorkflows()}
+					: {}),
+			}),
+		);
 		startHeartbeat();
-
-		next.on('message', data => {
-			let parsed: InstanceSocketFrame;
-			try {
-				parsed = JSON.parse(String(data)) as InstanceSocketFrame;
-			} catch (err) {
-				log(
-					'warn',
-					`instance socket frame parse failed: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-				return;
-			}
-			handleFrame(parsed);
-		});
-
-		next.on('close', (_code, reasonBuf) => {
-			if (next !== ws) return;
-			ws = null;
-			const reason = reasonBuf.toString() || 'closed';
-			emitClose(reason);
-		});
-
-		next.on('error', err => {
-			log('warn', `instance socket error: ${err.message}`);
-		});
 	}
 
 	function close(reason?: string): void {
@@ -310,7 +326,7 @@ export function createInstanceSocketClient(
 		ws = null;
 	}
 
-	function onFrame(handler: (frame: InstanceSocketFrame) => void): void {
+	function onFrame(handler: (frame: CanonicalFrame) => void): void {
 		frameHandlers.add(handler);
 	}
 
@@ -333,19 +349,36 @@ export function createInstanceSocketClient(
 		);
 	}
 
-	function sendRunEvent(event: Omit<RunEventFrame, 'type'>): void {
-		send({type: 'run_event', ...event});
+	function sendRunEvent(
+		event: Omit<RunStreamEventFrame, 'type' | 'stream'>,
+	): void {
+		send({type: 'event', stream: 'run', ...event});
 	}
 
-	function sendFeedEvent(event: Omit<FeedEventFrame, 'type'>): void {
-		send({type: 'feed_event', ...event});
+	function sendFeedEvent(
+		event: Omit<FeedStreamEventFrame, 'type' | 'stream'>,
+	): void {
+		send({type: 'event', stream: 'feed', ...event});
 	}
 
-	function sendDecisionAck(input: {
-		athenaSessionId: string;
-		requestId: string;
-	}): void {
+	function sendNeedsHuman(input: Omit<NeedsHumanFrame, 'type'>): void {
+		send({type: 'needs_human', ...input});
+		log(
+			'info',
+			`instance socket: needs_human runId=${input.runId} kind=${input.interruption.kind}`,
+		);
+	}
+
+	function sendDecisionAck(input: Omit<DecisionAckFrame, 'type'>): void {
 		send({type: 'decision_ack', ...input});
+	}
+
+	function sendWorkflowsChanged(workflows: InstalledWorkflow[]): void {
+		send({type: 'workflows.changed', workflows});
+		log(
+			'info',
+			`instance socket: workflows.changed (${workflows.length} installed)`,
+		);
 	}
 
 	return {
@@ -353,10 +386,13 @@ export function createInstanceSocketClient(
 		close,
 		onFrame,
 		onClose,
+		wireMode: () => wireMode,
 		sendAssignmentAccepted,
 		sendAssignmentRejected,
 		sendRunEvent,
 		sendFeedEvent,
+		sendNeedsHuman,
 		sendDecisionAck,
+		sendWorkflowsChanged,
 	};
 }

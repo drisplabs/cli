@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type {Interruption} from '@drisp/protocol';
 import type {
 	HarnessProcessOverride,
 	TurnContinuation,
@@ -10,17 +11,24 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
-import type {TrackerMarkers, TrackerTaskProjection} from './trackerReader';
-import {createWorkflowRunState, resolveTrackerPath} from './sessionPlan';
+import type {JournalMarkers, JournalTaskProjection} from './journalReader';
+import {createWorkflowRunState, resolveJournalPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
-	readTracker,
-	TRACKER_SKELETON_MARKER,
+	readJournal,
+	JOURNAL_SKELETON_MARKER,
 	demoteTerminalMarkers,
-	projectTrackerTasks,
-} from './trackerReader';
+	insertAboveTerminalMarker,
+	projectJournalTasks,
+} from './journalReader';
 import {substituteVariables} from './templateVars';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
+import {createPhaseTracker} from './turnProtocolBlock';
+import {
+	formatSteerJournalEntry,
+	type DeliveredSteer,
+	type QueuedSteer,
+} from './steer';
 import {
 	step,
 	createInitialRun,
@@ -29,6 +37,7 @@ import {
 	type RunMemory,
 	type RunEvent,
 	type RunAction,
+	type RunInterruption,
 	type StepConfig,
 } from './runMachine';
 
@@ -36,6 +45,20 @@ export type TurnInput = {
 	prompt: string;
 	continuation: TurnContinuation;
 	configOverride?: HarnessProcessOverride;
+};
+
+/**
+ * The Run moved to a new workflow step: what the Journal's Turn Protocol
+ * block named after the Turn at `turn`. Emitted once per change of step, so
+ * two consecutive Turns on the same step produce one, not two. Mirrors the
+ * `phase` event in `@drisp/protocol`.
+ */
+export type PhaseChange = {
+	runId: string;
+	turn: number;
+	step: string;
+	stepIndex?: number;
+	stepTotal?: number;
 };
 
 export type WorkflowRunnerInput = {
@@ -64,6 +87,13 @@ export type WorkflowRunnerInput = {
 	 */
 	resumedRunMemory?: RunMemory;
 	/**
+	 * The Interruption the Run being woken parked on (#190), read from its
+	 * record by the caller. A deferred question turns the wake prompt into a
+	 * replay instruction — re-issue that exact call — so the runner can apply
+	 * a stored answer to it without asking again.
+	 */
+	parkedInterruption?: Interruption;
+	/**
 	 * The persisted `stop_reason` of the resumed Run (ADR 0016 §2, §6/§7) —
 	 * only meaningful alongside `resumedRunMemory` when `resumeRunId` names a
 	 * Run that was `awaiting_attention`. Restores the bound-tripped message a
@@ -76,15 +106,39 @@ export type WorkflowRunnerInput = {
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
 	onIterationComplete?: (snapshot: WorkflowRunSnapshot) => void;
 	abortCurrentTurn?: () => void;
-	createTracker?: (trackerPath: string, content: string) => void;
+	createJournal?: (journalPath: string, content: string) => void;
+	/**
+	 * Receives non-fatal Runner notices — today, the deprecation logged when
+	 * a Turn declares itself with the legacy `WORKFLOW_BLOCKED` marker (#185).
+	 * Optional: an unwired caller simply drops the notice.
+	 */
+	onWarning?: (message: string) => void;
+	/**
+	 * Receives the Steers the Runner drained into a Turn's prompt (#191), each
+	 * tagged with the Turn it was delivered into — called just before that
+	 * Turn starts, after the Journal entry is written. Optional.
+	 */
+	onSteerDelivered?: (steers: DeliveredSteer[]) => void;
+	/**
+	 * Receives a {@link PhaseChange} when a Turn's Journal names a workflow
+	 * step different from the last one seen (the Turn Protocol block, ADR
+	 * 0015 §7). Derived in the journal-read path after a successful Turn;
+	 * never touches the Run's phase/memory. A malformed block is reported
+	 * through `onWarning` instead, once per distinct defect.
+	 */
+	onPhaseChange?: (change: PhaseChange) => void;
 	/**
 	 * Consulted after each Turn, before failure classification. A non-null
-	 * result suspends the Run in `awaiting_attention` with the given reason
-	 * (ADR 0014) — used when a Turn was interrupted because the agent asked a
-	 * question no attached human can answer. Takes precedence over the Turn's
-	 * exit code: interrupting the Turn to suspend is not a failure.
+	 * result parks the Run in `awaiting_attention` (ADR 0014, #189) — used when
+	 * a Turn was interrupted because an ask rule fired, the agent asked a
+	 * question no attached human can answer, or a permission went unclaimed
+	 * under a holding preset. The reducer names the reason. Takes precedence
+	 * over the Turn's exit code: interrupting the Turn to park is not a
+	 * failure. A permission that was held for the grace window and then
+	 * deferred (#190) carries `permission`; the Runner records the resulting
+	 * Interruption in the Journal and on the run record.
 	 */
-	checkSuspension?: () => {reason: string} | null;
+	checkInterruption?: () => RunInterruption | null;
 	/**
 	 * Vendor session id (Claude session / Codex thread) of the most recent
 	 * Turn's Agent Session, as observed by the caller's runtime. Snapshotted on
@@ -98,7 +152,7 @@ export type WorkflowRunnerInput = {
 	 * harness's `compact.pre`, blocks the compaction, interrupts the Turn, and
 	 * records the request; the Runner then forks the live conversation, has
 	 * the `handoff` skill write a Handoff file, discards the fork, and starts
-	 * a fresh Turn seeded with the Handoff file + Tracker — the only
+	 * a fresh Turn seeded with the Handoff file + Journal — the only
 	 * transition that resets context instead of resuming.
 	 */
 	handover?: {
@@ -117,13 +171,13 @@ export type WorkflowRunnerInput = {
 	};
 	/**
 	 * Task-tool projection seam (ADR 0015 §7). Called best-effort after every
-	 * `persist` action with the Tracker's `## Units` table + unit-record
+	 * `persist` action with the Journal's `## Units` table + unit-record
 	 * frontmatter projected into a harness-neutral shape — or not called at
-	 * all when {@link projectTrackerTasks} finds no table to project. A parse
+	 * all when {@link projectJournalTasks} finds no table to project. A parse
 	 * miss or a throw from this callback is swallowed: this can never fail a
 	 * Turn or a Run. Optional — omitted, the Runner behaves exactly as before.
 	 */
-	projectTasks?: (tasks: TrackerTaskProjection[]) => void;
+	projectTasks?: (tasks: JournalTaskProjection[]) => void;
 };
 
 export type WorkflowRunResult = {
@@ -131,6 +185,8 @@ export type WorkflowRunResult = {
 	status: RunStatus;
 	iterations: number;
 	stopReason?: string;
+	/** The Interruption an `awaiting_attention` Run parked on, when structured (#190). */
+	interruption?: Interruption;
 	tokens: TokenUsage;
 };
 
@@ -139,6 +195,14 @@ export type WorkflowRunnerHandle = {
 	result: Promise<WorkflowRunResult>;
 	cancel: () => void;
 	kill: () => void;
+	/**
+	 * Queue a Steer (#191). It is never injected into a Turn in flight: it
+	 * waits for the next Turn boundary and is delivered, with any others in
+	 * arrival order, at the head of that Turn's prompt. A Steer sent before
+	 * the first Turn starts heads the first prompt. Returns `false` once the
+	 * Run has ended — a parked Run is steered through its continue instead.
+	 */
+	steer: (steer: QueuedSteer) => boolean;
 };
 
 const NULL_TOKENS: TokenUsage = {
@@ -151,17 +215,17 @@ const NULL_TOKENS: TokenUsage = {
 	contextWindowSize: null,
 };
 
-const TRACKER_SKELETON_TEMPLATE = `${TRACKER_SKELETON_MARKER}
-# Workflow Tracker
+const JOURNAL_SKELETON_TEMPLATE = `${JOURNAL_SKELETON_MARKER}
+# Workflow Journal
 
 **Session**: {sessionId}
-**Tracker**: {trackerPath}
+**Journal**: {journalPath}
 **Goal**: {input}
 
 ---
 
-> This tracker was created by the runner. Update it as you work.
-> See the Turn Protocol for tracker conventions.
+> This journal was created by the runner. Update it as you work.
+> See the Turn Protocol for journal conventions.
 
 ## Status
 
@@ -177,12 +241,12 @@ _No progress yet._
 `;
 
 /**
- * Open a new Workflow Run's section on an existing Tracker.
+ * Open a new Workflow Run's section on an existing Journal.
  *
- * `DEFAULT_TRACKER_PATH` is keyed on the Athena Session, so every Workflow Run
- * in a Session shares one Tracker and the skeleton — the only place the Run's
+ * `DEFAULT_JOURNAL_PATH` is keyed on the Athena Session, so every Workflow Run
+ * in a Session shares one Journal and the skeleton — the only place the Run's
  * `{input}` goal is recorded — is written just once, for the first Run. Later
- * Runs then worked against a Tracker that never said what they had been asked
+ * Runs then worked against a Journal that never said what they had been asked
  * to do, and inherited their predecessor's Terminal Marker along with it.
  *
  * Opening a section fixes both: it records this Run's goal, and it demotes the
@@ -190,12 +254,12 @@ _No progress yet._
  * as misplaced once it writes below them.
  */
 function openRunSection(
-	trackerPath: string,
-	opts: {runId: string; goal: string; markers: TrackerMarkers},
+	journalPath: string,
+	opts: {runId: string; goal: string; markers: JournalMarkers},
 ): void {
 	let existing: string;
 	try {
-		existing = fs.readFileSync(trackerPath, 'utf-8');
+		existing = fs.readFileSync(journalPath, 'utf-8');
 	} catch {
 		return;
 	}
@@ -208,12 +272,88 @@ function openRunSection(
 
 	try {
 		fs.writeFileSync(
-			trackerPath,
+			journalPath,
 			demoteTerminalMarkers(existing.trimEnd(), opts.markers) + banner,
 			'utf-8',
 		);
 	} catch {
-		// A Tracker that cannot be rewritten is left as-is; the Run still starts.
+		// A Journal that cannot be rewritten is left as-is; the Run still starts.
+	}
+}
+
+/**
+ * Record delivered Steers in the Journal (#191): each with its origin, when it
+ * arrived, and the Turn it was delivered into. Written above any Terminal
+ * Marker the Journal ends with — on a wake the answered `NEEDS_HUMAN` line
+ * stays last, as the agent left it — so the entry never reads as prose after
+ * a marker. Best-effort, like the Run-section banner.
+ */
+function recordSteersInJournal(
+	journalPath: string,
+	steers: readonly QueuedSteer[],
+	iteration: number,
+	markers: JournalMarkers,
+): void {
+	let existing: string;
+	try {
+		existing = fs.readFileSync(journalPath, 'utf-8');
+	} catch {
+		return;
+	}
+	const entries = steers
+		.map(steer => formatSteerJournalEntry(steer, iteration))
+		.join('');
+	try {
+		fs.writeFileSync(
+			journalPath,
+			insertAboveTerminalMarker(existing, entries, markers),
+			'utf-8',
+		);
+	} catch {
+		// A Journal that cannot be rewritten is left as-is; the Turn still starts.
+	}
+}
+
+/**
+ * Record the Interruption a parking Run carries on the Journal (#190) — a
+ * runner-owned note in the same spirit as the Run section: the next Turn
+ * reads the pending question there, and a human reading the Journal sees why
+ * the Run stopped. Appended below whatever the agent wrote; the agent's prose
+ * is never edited (ADR 0015 §7).
+ */
+function appendInterruptionNote(
+	journalPath: string,
+	interruption: Interruption,
+): void {
+	const lines = [
+		'',
+		'',
+		'---',
+		'',
+		'## Needs human (runner note)',
+		'',
+		interruption.message,
+		'',
+	];
+	if (interruption.kind === 'question') {
+		if (interruption.question) lines.push(`- call: ${interruption.question}`);
+		if (interruption.requestId)
+			lines.push(`- request: ${interruption.requestId}`);
+		lines.push(
+			'',
+			'_Written by the runner: the request above was deferred and this run is parked until a human answers it. ' +
+				'On continue the agent re-issues the call; a stored answer is replayed into it without asking again._',
+		);
+	} else {
+		lines.push(
+			'_Written by the runner: this run is parked until a human replies._',
+		);
+	}
+	try {
+		fs.appendFileSync(journalPath, lines.join('\n') + '\n', 'utf-8');
+	} catch {
+		// A Journal that cannot be appended to still leaves the run record as
+		// the durable carrier of the Interruption.
 	}
 }
 
@@ -256,7 +396,7 @@ function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 function buildHandoffInvocationPrompt(handoffPath: string): string {
 	return (
 		`Invoke the handoff skill to write a Handoff file to ${handoffPath}. ` +
-		`Do nothing else: no code changes, no tracker updates — only the Handoff file.`
+		`Do nothing else: no code changes, no journal updates — only the Handoff file.`
 	);
 }
 
@@ -305,7 +445,7 @@ function handoffPathFor(dir: string, seq: number): string {
  * A fresh sequence number per Handover is what lets `existsSync` prove that
  * *this* fork wrote the file — the job the pre-Handover `rmSync` used to do,
  * at the cost of destroying Handoff N before N+1 was written. Past the second
- * Handover that left the Tracker as the sole carrier again, which is the
+ * Handover that left the Journal as the sole carrier again, which is the
  * condition ADR 0014 §5 exists to relieve.
  */
 function nextHandoffPath(dir: string): string {
@@ -326,10 +466,10 @@ function purgeHandoffs(dir: string, keep: number): void {
 	}
 }
 
-function defaultCreateTracker(trackerPath: string, content: string): void {
-	fs.mkdirSync(path.dirname(trackerPath), {recursive: true});
+function defaultCreateJournal(journalPath: string, content: string): void {
+	fs.mkdirSync(path.dirname(journalPath), {recursive: true});
 	try {
-		fs.writeFileSync(trackerPath, content, {encoding: 'utf-8', flag: 'wx'});
+		fs.writeFileSync(journalPath, content, {encoding: 'utf-8', flag: 'wx'});
 	} catch (e) {
 		if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
 	}
@@ -382,15 +522,21 @@ export function createWorkflowRunner(
 	let status: RunStatus = 'running';
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let stopReason: string | undefined;
+	let interruption: Interruption | undefined;
 	let memory: RunMemory | undefined;
+	// Steers (#191) that arrive before the interpreter loop is up are held
+	// here and seeded into the first Turn; once the loop runs, `applySteer`
+	// feeds them to the reducer instead.
+	const preStartSteers: QueuedSteer[] = [];
+	let applySteer: ((steer: QueuedSteer) => boolean) | null = null;
 
-	const trackerResolved = resolveTrackerPath({
+	const journalResolved = resolveJournalPath({
 		projectDir: input.projectDir,
 		sessionId: input.sessionId,
 		workflow: input.workflow,
 	});
-	const trackerAbsPath = trackerResolved?.absolutePath ?? null;
-	const trackerPromptPath = trackerResolved?.promptPath;
+	const journalAbsPath = journalResolved?.absolutePath ?? null;
+	const journalPromptPath = journalResolved?.promptPath;
 
 	function snapshot(): WorkflowRunSnapshot {
 		const adapterSessionId = input.currentAdapterSessionId?.() ?? undefined;
@@ -402,9 +548,10 @@ export function createWorkflowRunner(
 			maxIterations: input.workflow?.loop?.maxIterations ?? 1,
 			status,
 			stopReason,
-			trackerPath: trackerPromptPath,
+			journalPath: journalPromptPath,
 			...(adapterSessionId ? {adapterSessionId} : {}),
 			...(memory ? {runMemoryJson: serializeRunMemory(memory)} : {}),
+			...(interruption ? {interruption} : {}),
 		};
 	}
 
@@ -416,10 +563,33 @@ export function createWorkflowRunner(
 		}
 	}
 
+	/**
+	 * The step the Journal's Turn Protocol block names after a Turn, reported
+	 * only when it changed. Lives beside the Journal read in the interpreter —
+	 * it is an observation of the Dossier, not a decision, so the reducer
+	 * never sees it (ADR 0016 §1).
+	 */
+	const phaseTracker = createPhaseTracker();
+	function observePhase(journalContent: string, turn: number): void {
+		const observation = phaseTracker.observe(journalContent);
+		if (observation.kind === 'new_step') {
+			const {name, index, total} = observation.step;
+			input.onPhaseChange?.({
+				runId,
+				turn,
+				step: name,
+				...(index !== undefined ? {stepIndex: index} : {}),
+				...(total !== undefined ? {stepTotal: total} : {}),
+			});
+		} else if (observation.kind === 'malformed' && observation.warning) {
+			input.onWarning?.(observation.warning);
+		}
+	}
+
 	function handoffDirFor(): string {
 		return path.join(
-			trackerAbsPath
-				? path.dirname(trackerAbsPath)
+			journalAbsPath
+				? path.dirname(journalAbsPath)
 				: path.resolve(
 						input.projectDir,
 						'.athena',
@@ -436,24 +606,25 @@ export function createWorkflowRunner(
 		// returned handle is assigned.
 		await Promise.resolve();
 
-		// Create tracker skeleton if needed
-		if (trackerAbsPath && input.workflow?.loop?.enabled) {
-			const content = substituteVariables(TRACKER_SKELETON_TEMPLATE, {
+		// Create journal skeleton if needed
+		if (journalAbsPath && input.workflow?.loop?.enabled) {
+			const content = substituteVariables(JOURNAL_SKELETON_TEMPLATE, {
 				sessionId: input.sessionId,
-				trackerPath: trackerPromptPath,
+				journalPath: journalPromptPath,
 				input: input.prompt,
 			});
-			const write = input.createTracker ?? defaultCreateTracker;
+			const write = input.createJournal ?? defaultCreateJournal;
 			// Write-if-absent: the skeleton belongs to the Session's first Run.
-			const trackerExisted = fs.existsSync(trackerAbsPath);
-			write(trackerAbsPath, content);
+			const journalExisted = fs.existsSync(journalAbsPath);
+			write(journalAbsPath, content);
 			// A wake continues the same Run, so it opens no new section.
-			if (trackerExisted && !input.resumeRunId) {
-				openRunSection(trackerAbsPath, {
+			if (journalExisted && !input.resumeRunId) {
+				openRunSection(journalAbsPath, {
 					runId,
 					goal: input.prompt,
 					markers: {
 						completionMarker: input.workflow.loop.completionMarker,
+						needsHumanMarker: input.workflow.loop.needsHumanMarker,
 						blockedMarker: input.workflow.loop.blockedMarker,
 					},
 				});
@@ -474,18 +645,33 @@ export function createWorkflowRunner(
 			workflowState,
 			initialPrompt: input.prompt,
 			loop,
-			trackerAbsPath,
-			trackerPromptPath,
+			journalAbsPath,
+			journalPromptPath,
 		};
 
 		const initial = createInitialRun(cfg, {
 			initialContinuation: input.initialContinuation,
 			waking: !!(input.resumeRunId && loop?.enabled),
 			resumedMemory: input.resumedRunMemory,
+			initialSteers: preStartSteers.splice(0),
+			parkedInterruption: input.parkedInterruption,
 			awaitingAttentionStopReason: input.resumedStopReason,
 		});
 		let phase: RunPhase = initial.phase;
 		memory = initial.memory;
+
+		// From here on a Steer goes straight to the reducer: it only queues
+		// (same phase, persisted), so applying it while a Turn is in flight is
+		// safe and the queue is drained by whichever transition next starts a
+		// Turn (#191).
+		applySteer = steer => {
+			if (isTerminalPhase(phase)) return false;
+			const stepResult = step(phase, memory!, {type: 'steer', steer}, cfg);
+			phase = stepResult.phase;
+			memory = stepResult.memory;
+			runSideEffects(stepResult.actions);
+			return true;
+		};
 
 		// --- action execution -------------------------------------------------
 
@@ -509,16 +695,16 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension: null,
+					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 
-			// Handover (ADR 0014 §5): checked before suspension and failure
+			// Handover (ADR 0014 §5): checked before interruption and failure
 			// classification — the interruption is neither.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
@@ -530,18 +716,18 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: handoverRequest.handle,
-					suspension: null,
+					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
-			// Declared attention interrupted this Turn. Checked before failure
-			// classification: the interruption ends the harness process
-			// abnormally, but the Run is suspended, not failed.
-			const suspension = input.checkSuspension?.() ?? null;
-			if (suspension) {
+			// An Interruption parked this Turn (#189). Checked before failure
+			// classification: interrupting ends the harness process abnormally,
+			// but the Run is suspended, not failed.
+			const interruption = input.checkInterruption?.() ?? null;
+			if (interruption) {
 				return {
 					type: 'turn_finished',
 					cancelled: false,
@@ -550,10 +736,10 @@ export function createWorkflowRunner(
 					streamMessage: null,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension,
+					interruption,
 					adapterSessionId: null,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -573,10 +759,10 @@ export function createWorkflowRunner(
 					streamMessage: turnResult.streamMessage,
 					transportBroken: false,
 					handoverRequestHandle: null,
-					suspension: null,
+					interruption: null,
 					adapterSessionId,
 					outcome: null,
-					trackerContent: '',
+					journalContent: '',
 				};
 			}
 
@@ -587,18 +773,19 @@ export function createWorkflowRunner(
 				transport.preToolUseEvents === 0
 			);
 
-			// Looped: one owner (`resolveTurnOutcome`) maps the Tracker's end-state
+			// Looped: one owner (`resolveTurnOutcome`) maps the Journal's end-state
 			// to a final Run Status — only consulted on the success path, once the
 			// hook transport is known-good, matching the original's lazy read.
-			let trackerContent = '';
+			let journalContent = '';
 			let outcome = null;
-			if (!transportBroken && loop?.enabled && trackerAbsPath) {
-				trackerContent = readTracker(trackerAbsPath);
+			if (!transportBroken && loop?.enabled && journalAbsPath) {
+				journalContent = readJournal(journalAbsPath);
 				outcome = resolveTurnOutcome({
-					trackerPath: trackerAbsPath,
+					journalPath: journalAbsPath,
 					loop,
 					iteration: memory!.iteration,
 				});
+				observePhase(journalContent, memory!.iteration);
 			}
 
 			return {
@@ -609,10 +796,10 @@ export function createWorkflowRunner(
 				streamMessage: turnResult.streamMessage,
 				transportBroken,
 				handoverRequestHandle: null,
-				suspension: null,
+				interruption: null,
 				adapterSessionId,
 				outcome,
-				trackerContent,
+				journalContent,
 			};
 		}
 
@@ -700,31 +887,33 @@ export function createWorkflowRunner(
 		}
 
 		/**
-		 * Execute every non-kickoff (side-effect) action in order, then the
-		 * kickoff action (if any) — a phase's actions always carry at most one.
-		 * Returns the event the kickoff action produced, or `null` for a
-		 * terminal phase's actions (persist only, no kickoff).
+		 * Execute every non-kickoff (side-effect) action in order and return
+		 * the kickoff action, if any — a phase's actions always carry at most
+		 * one.
 		 */
-		async function runActions(actions: RunAction[]): Promise<RunEvent | null> {
+		function runSideEffects(actions: RunAction[]): RunAction | null {
 			let kickoff: RunAction | null = null;
 			for (const action of actions) {
 				if (isKickoffAction(action)) {
 					kickoff = action;
 					continue;
 				}
-				// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- kickoff action types are filtered out above by isKickoffAction and handled in the switch below
+				// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- kickoff action types are filtered out above by isKickoffAction and handled by runActions
 				switch (action.type) {
 					case 'persist':
 						persist();
-						if (trackerAbsPath && input.projectTasks) {
+						if (journalAbsPath && input.projectTasks) {
 							try {
-								const tasks = projectTrackerTasks(trackerAbsPath);
+								const tasks = projectJournalTasks(journalAbsPath);
 								if (tasks) input.projectTasks(tasks);
 							} catch {
 								// A parse miss or a throwing callback can never fail a Turn
 								// or a Run (ADR 0015 §7: degrade to no projection).
 							}
 						}
+						break;
+					case 'warn':
+						input.onWarning?.(action.message);
 						break;
 					case 'notify_iteration_complete':
 						input.onIterationComplete?.(snapshot());
@@ -735,8 +924,47 @@ export function createWorkflowRunner(
 					case 'degrade_handover':
 						input.handover?.onDegraded?.(action.handle);
 						break;
+					case 'steers_delivered':
+						if (journalAbsPath && loop?.enabled) {
+							recordSteersInJournal(
+								journalAbsPath,
+								action.steers,
+								action.iteration,
+								{
+									completionMarker: loop.completionMarker,
+									needsHumanMarker: loop.needsHumanMarker,
+									blockedMarker: loop.blockedMarker,
+								},
+							);
+						}
+						input.onSteerDelivered?.(
+							action.steers.map(steer => ({
+								...steer,
+								iteration: action.iteration,
+							})),
+						);
+						break;
+					case 'record_interruption':
+						// Ordered before the parked phase's `persist`, so the snapshot
+						// that marks the Run awaiting_attention already carries it.
+						interruption = action.interruption;
+						if (journalAbsPath) {
+							appendInterruptionNote(journalAbsPath, action.interruption);
+						}
+						break;
 				}
 			}
+			return kickoff;
+		}
+
+		/**
+		 * Execute every non-kickoff (side-effect) action in order, then the
+		 * kickoff action (if any). Returns the event the kickoff action
+		 * produced, or `null` for a terminal phase's actions (persist only, no
+		 * kickoff).
+		 */
+		async function runActions(actions: RunAction[]): Promise<RunEvent | null> {
+			const kickoff = runSideEffects(actions);
 			if (!kickoff) return null;
 			// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- non-kickoff action types are handled in the switch above
 			switch (kickoff.type) {
@@ -763,9 +991,9 @@ export function createWorkflowRunner(
 		// the interpreter synthesizes the `woken` event here and runs `step()`
 		// once, immediately, using its actions (which include the `persist` that
 		// checkpoints the wake before the Turn it kicks off starts) as the
-		// bootstrap actions below, exactly like a phase built directly by
-		// `createInitialRun` would.
-		let bootstrapActions: RunAction[];
+		// bootstrap actions below, exactly like the kickoff actions
+		// `createInitialRun` returns for every other initial phase.
+		let bootstrapActions: RunAction[] = initial.actions;
 		if (phase.kind === 'awaiting_attention') {
 			const wokenEvent: RunEvent = {
 				type: 'woken',
@@ -775,19 +1003,6 @@ export function createWorkflowRunner(
 			phase = stepResult.phase;
 			memory = stepResult.memory;
 			bootstrapActions = stepResult.actions;
-		} else if (phase.kind === 'turn_in_flight') {
-			bootstrapActions = [
-				{
-					type: 'start_turn',
-					prompt: phase.prompt,
-					continuation: phase.continuation,
-					configOverride: phase.configOverride,
-				},
-			];
-		} else if (phase.kind === 'backing_off') {
-			bootstrapActions = [{type: 'wait', ms: phase.ms}];
-		} else {
-			bootstrapActions = [];
 		}
 
 		let pendingEvent = await runActions(bootstrapActions);
@@ -813,6 +1028,7 @@ export function createWorkflowRunner(
 			status,
 			iterations: memory.iteration,
 			stopReason,
+			...(interruption ? {interruption} : {}),
 			tokens: cumulativeTokens,
 		};
 	})();
@@ -826,6 +1042,11 @@ export function createWorkflowRunner(
 		kill() {
 			cancelled = true;
 			input.abortCurrentTurn?.();
+		},
+		steer(steer) {
+			if (applySteer) return applySteer(steer);
+			preStartSteers.push(steer);
+			return true;
 		},
 	};
 }

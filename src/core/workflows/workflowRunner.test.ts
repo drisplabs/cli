@@ -4,8 +4,9 @@ import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
-import {TRACKER_SKELETON_MARKER} from './trackerReader';
-import type {TrackerTaskProjection} from './trackerReader';
+import {JOURNAL_SKELETON_MARKER} from './journalReader';
+import type {JournalTaskProjection} from './journalReader';
+import {STEER_BLOCK_END, STEER_BLOCK_OPEN} from './steer';
 import type {RunMemory} from './runMachine';
 import {deserializeRunMemory} from './runMachine';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
@@ -64,19 +65,19 @@ describe('createWorkflowRunner', () => {
 
 	it('loops until completion marker is found', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const startTurn = vi
 			.fn()
 			.mockImplementationOnce(async () => {
-				fs.writeFileSync(trackerPath, '## Plan\n- task 1\n- task 2', 'utf-8');
+				fs.writeFileSync(journalPath, '## Plan\n- task 1\n- task 2', 'utf-8');
 				return OK_RESULT;
 			})
 			.mockImplementationOnce(async () => {
 				fs.writeFileSync(
-					trackerPath,
+					journalPath,
 					'## Plan\n- [x] task 1\n- [x] task 2\n<!-- WORKFLOW_COMPLETE -->',
 					'utf-8',
 				);
@@ -104,16 +105,16 @@ describe('createWorkflowRunner', () => {
 		expect(startTurn).toHaveBeenCalledTimes(2);
 	});
 
-	it('creates tracker skeleton before first turn when loop enabled', async () => {
+	it('creates journal skeleton before first turn when loop enabled', async () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
-		let trackerExistsBeforeFirstTurn = false;
-		let trackerContent = '';
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+		let journalExistsBeforeFirstTurn = false;
+		let journalContent = '';
 
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
-			trackerExistsBeforeFirstTurn = fs.existsSync(trackerPath);
-			trackerContent = fs.readFileSync(trackerPath, 'utf-8');
-			fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+			journalExistsBeforeFirstTurn = fs.existsSync(journalPath);
+			journalContent = fs.readFileSync(journalPath, 'utf-8');
+			fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 			return OK_RESULT;
 		});
 
@@ -132,16 +133,16 @@ describe('createWorkflowRunner', () => {
 		});
 
 		await handle.result;
-		expect(trackerExistsBeforeFirstTurn).toBe(true);
-		expect(trackerContent).toContain(TRACKER_SKELETON_MARKER);
-		expect(trackerContent).toContain('s1');
+		expect(journalExistsBeforeFirstTurn).toBe(true);
+		expect(journalContent).toContain(JOURNAL_SKELETON_MARKER);
+		expect(journalContent).toContain('s1');
 	});
 
 	it('cancel stops the loop after current turn', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		let turnCount = 0;
 		// handleRef is declared here and assigned after createWorkflowRunner returns.
@@ -151,7 +152,7 @@ describe('createWorkflowRunner', () => {
 
 		const startTurn = vi.fn().mockImplementation(async () => {
 			turnCount++;
-			fs.writeFileSync(trackerPath, 'still running', 'utf-8');
+			fs.writeFileSync(journalPath, 'still running', 'utf-8');
 			if (turnCount === 1) {
 				handleRef.current!.cancel();
 			}
@@ -179,10 +180,10 @@ describe('createWorkflowRunner', () => {
 
 	it('kill aborts the current turn', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
-		fs.writeFileSync(trackerPath, 'running', 'utf-8');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(journalPath, 'running', 'utf-8');
 
 		const abortCurrentTurn = vi.fn();
 		let resolveFirstTurn: ((r: TurnExecutionResult) => void) | null = null;
@@ -220,14 +221,14 @@ describe('createWorkflowRunner', () => {
 		expect(result.status).toBe('cancelled');
 	});
 
-	it('suspends as awaiting_attention when the tracker declares a block', async () => {
+	it('suspends as awaiting_attention when the journal declares a block', async () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
 
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
 			fs.writeFileSync(
-				trackerPath,
-				'## Notes\nNeed a human.\n<!-- WORKFLOW_BLOCKED: which env? -->',
+				journalPath,
+				'## Notes\nNeed a human.\n<!-- NEEDS_HUMAN: which env? -->',
 				'utf-8',
 			);
 			return OK_RESULT;
@@ -250,20 +251,89 @@ describe('createWorkflowRunner', () => {
 
 		const result = await handle.result;
 		expect(result.status).toBe('awaiting_attention');
-		expect(result.stopReason).toBe(
-			'agent declared WORKFLOW_BLOCKED: which env?',
-		);
+		expect(result.stopReason).toBe('agent declared NEEDS_HUMAN: which env?');
 		expect(startTurn).toHaveBeenCalledTimes(1);
 		expect(persistRunState).toHaveBeenLastCalledWith(
 			expect.objectContaining({status: 'awaiting_attention'}),
 		);
 	});
 
-	it('suspends via checkSuspension even when the interrupted turn exited abnormally', async () => {
+	it('reaches the same suspended outcome on the legacy WORKFLOW_BLOCKED marker and warns once', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+		const onWarning = vi.fn();
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				journalPath,
+				'## Notes\nNeed a human.\n<!-- WORKFLOW_BLOCKED: which env? -->',
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			onWarning,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toBe('agent declared NEEDS_HUMAN: which env?');
+		expect(onWarning).toHaveBeenCalledTimes(1);
+		expect(onWarning.mock.calls[0]![0]).toMatch(/WORKFLOW_BLOCKED.*deprecated/);
+	});
+
+	it('writes the journal skeleton to journal.md, but keeps reading a legacy tracker.md the session already has', async () => {
+		const projectDir = makeTempDir();
+		const dossier = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(dossier, {recursive: true});
+		const legacyPath = path.join(dossier, 'tracker.md');
+		fs.writeFileSync(legacyPath, '# Workflow Tracker\nprior work\n', 'utf-8');
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.appendFileSync(legacyPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
+			return OK_RESULT;
+		});
+
+		const persistRunState = vi.fn();
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'continue',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(fs.existsSync(path.join(dossier, 'journal.md'))).toBe(false);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({journalPath: '.athena/s1/tracker.md'}),
+		);
+	});
+
+	it('parks via checkInterruption even when the interrupted turn exited abnormally', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		fs.writeFileSync(path.join(journalDir, 'journal.md'), 'working', 'utf-8');
 
 		// The Turn was killed to suspend (e.g. an unanswerable AskUserQuestion),
 		// so the harness process exited non-zero — that must not read as failure.
@@ -286,8 +356,9 @@ describe('createWorkflowRunner', () => {
 			},
 			startTurn,
 			persistRunState,
-			checkSuspension: () => ({
-				reason: 'agent asked a question with no human attached to answer',
+			checkInterruption: () => ({
+				kind: 'question',
+				question: 'Deploy to prod or staging?',
 			}),
 		});
 
@@ -295,6 +366,122 @@ describe('createWorkflowRunner', () => {
 		expect(result.status).toBe('awaiting_attention');
 		expect(result.stopReason).toContain('asked a question');
 		expect(startTurn).toHaveBeenCalledTimes(1);
+	});
+
+	it('parks on a deferred permission: records the Interruption in the journal and on the run record (#190)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(journalPath, '## Status\n\nworking', 'utf-8');
+
+		// The Turn was interrupted after the grace window elapsed; the harness
+		// process exited non-zero — still a park, not a failure.
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 143,
+			error: new Error('killed'),
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+			checkInterruption: () => ({
+				kind: 'unclaimed_permission',
+				toolName: 'Bash',
+				permission: {
+					requestId: 'req-42',
+					inputSummary: 'git push origin main',
+					graceMs: 60_000,
+				},
+			}),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain(
+			'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+		);
+		const interruption = {
+			kind: 'question',
+			message: result.stopReason,
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		expect(result.interruption).toEqual(interruption);
+
+		// The run record carries the structured Interruption so `drisp runs`
+		// and the hub can show the pending question.
+		const last = persistRunState.mock.calls.at(-1)![0];
+		expect(last).toMatchObject({
+			status: 'awaiting_attention',
+			stopReason: result.stopReason,
+			interruption,
+		});
+
+		// The journal records it too — the next Turn reads it there — without
+		// disturbing what the agent wrote.
+		const journal = fs.readFileSync(journalPath, 'utf-8');
+		expect(journal.startsWith('## Status\n\nworking')).toBe(true);
+		expect(journal).toContain('Needs human');
+		expect(journal).toContain('req-42');
+		expect(journal).toContain('Bash: git push origin main');
+	});
+
+	it('wakes a run parked on a deferred question by asking the agent to re-issue that call (#190)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'Go ahead and push.',
+			resumeRunId: 'run-parked',
+			parkedInterruption: {
+				kind: 'question',
+				message:
+					'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+				requestId: 'req-42',
+				question: 'Bash: git push origin main',
+			},
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts[0]).toContain('Go ahead and push.');
+		expect(prompts[0]).toContain('Bash: git push origin main');
+		expect(prompts[0]).toContain('Re-issue that exact call');
+		// Resumed: the parked Interruption is not carried onto the resumed record.
+		expect(result.interruption).toBeUndefined();
 	});
 
 	it('reports failed when turn exits non-zero', async () => {
@@ -355,10 +542,10 @@ describe('createWorkflowRunner', () => {
 
 	it('nudges an untouched skeleton with a bootstrap corrective, then honors the declaration', async () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
 
 		// Turn 1: the agent asked its question in chat and never touched the
-		// tracker. Turn 2 (the nudged resume) declares it properly.
+		// journal. Turn 2 (the nudged resume) declares it properly.
 		const prompts: string[] = [];
 		const startTurn = vi
 			.fn()
@@ -366,8 +553,8 @@ describe('createWorkflowRunner', () => {
 				prompts.push(turnInput.prompt);
 				if (prompts.length === 2) {
 					fs.writeFileSync(
-						trackerPath,
-						'## Status\nNeed the operator.\n<!-- WORKFLOW_BLOCKED: English or French? -->',
+						journalPath,
+						'## Status\nNeed the operator.\n<!-- NEEDS_HUMAN: English or French? -->',
 						'utf-8',
 					);
 				}
@@ -392,7 +579,7 @@ describe('createWorkflowRunner', () => {
 		const result = await handle.result;
 		expect(result.status).toBe('awaiting_attention');
 		expect(result.stopReason).toContain(
-			'agent declared WORKFLOW_BLOCKED: English or French?',
+			'agent declared NEEDS_HUMAN: English or French?',
 		);
 		expect(startTurn).toHaveBeenCalledTimes(2);
 		// The corrective names the bootstrap duty and the declare-don't-chat rule.
@@ -434,13 +621,13 @@ describe('createWorkflowRunner', () => {
 		expect(startTurn).toHaveBeenCalledTimes(3);
 	});
 
-	it('fails fast when a terminal marker is not the final tracker line', async () => {
+	it('fails fast when a terminal marker is not the final journal line', async () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
 
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
 			fs.writeFileSync(
-				trackerPath,
+				journalPath,
 				[
 					'## Summary',
 					'All work was completed.',
@@ -479,14 +666,14 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('surfaces a human-readable reason when the tracker disappears mid-run', async () => {
+	it('surfaces a human-readable reason when the journal disappears mid-run', async () => {
 		const projectDir = makeTempDir();
-		const trackerPath = path.join(projectDir, '.athena', 's1', 'tracker.md');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
 
-		// The agent removes the tracker during the turn. The Runner must report a
+		// The agent removes the journal during the turn. The Runner must report a
 		// terminal outcome the user can read — never the raw Stop Reason enum.
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
-			fs.rmSync(trackerPath, {force: true});
+			fs.rmSync(journalPath, {force: true});
 			return OK_RESULT;
 		});
 		const persistRunState = vi.fn();
@@ -507,22 +694,22 @@ describe('createWorkflowRunner', () => {
 
 		const result = await handle.result;
 		expect(result.status).toBe('failed');
-		expect(result.stopReason).not.toContain('missing_tracker');
-		expect(result.stopReason).toMatch(/tracker/i);
+		expect(result.stopReason).not.toContain('missing_journal');
+		expect(result.stopReason).toMatch(/journal/i);
 		expect(startTurn).toHaveBeenCalledTimes(1);
 		expect(persistRunState).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				status: 'failed',
-				stopReason: expect.stringMatching(/tracker/i),
+				stopReason: expect.stringMatching(/journal/i),
 			}),
 		);
 	});
 
 	it('nudges an undeclared markerless stop by resuming the same Agent Session with a corrective prompt', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const calls: Array<{continuation: unknown; prompt: string}> = [];
 		const startTurn = vi
@@ -530,14 +717,14 @@ describe('createWorkflowRunner', () => {
 			.mockImplementationOnce(
 				async (input: {continuation: unknown; prompt: string}) => {
 					calls.push(input);
-					fs.writeFileSync(trackerPath, 'working', 'utf-8');
+					fs.writeFileSync(journalPath, 'working', 'utf-8');
 					return OK_RESULT;
 				},
 			)
 			.mockImplementationOnce(
 				async (input: {continuation: unknown; prompt: string}) => {
 					calls.push(input);
-					fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 					return OK_RESULT;
 				},
 			);
@@ -569,19 +756,19 @@ describe('createWorkflowRunner', () => {
 		// The corrective prompt states both options: finish, or declare.
 		expect(calls[1]!.prompt).toContain('continue it now');
 		expect(calls[1]!.prompt).toContain('<!-- WORKFLOW_COMPLETE -->');
-		expect(calls[1]!.prompt).toContain('<!-- WORKFLOW_BLOCKED');
+		expect(calls[1]!.prompt).toContain('<!-- NEEDS_HUMAN');
 	});
 
-	it('suspends after the nudge cap with no tracker progress, naming the bound', async () => {
+	it('suspends after the nudge cap with no journal progress, naming the bound', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		// Every Turn stops cleanly without a marker and without touching the
-		// tracker after the first write — pure unproductive spinning.
+		// journal after the first write — pure unproductive spinning.
 		const startTurn = vi.fn().mockImplementation(async () => {
-			fs.writeFileSync(trackerPath, 'stuck', 'utf-8');
+			fs.writeFileSync(journalPath, 'stuck', 'utf-8');
 			return OK_RESULT;
 		});
 		const persistRunState = vi.fn();
@@ -612,22 +799,22 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('resets the nudge cap whenever the tracker advances between stops', async () => {
+	it('resets the nudge cap whenever the journal advances between stops', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
-		// Six markerless stops, each advancing the tracker (a checkpointing
+		// Six markerless stops, each advancing the journal (a checkpointing
 		// workflow), then completion. With nudgeCap 2 this must NOT suspend —
 		// only unproductive repeated stops escalate.
 		let turn = 0;
 		const startTurn = vi.fn().mockImplementation(async () => {
 			turn++;
 			if (turn <= 6) {
-				fs.writeFileSync(trackerPath, `progress step ${turn}`, 'utf-8');
+				fs.writeFileSync(journalPath, `progress step ${turn}`, 'utf-8');
 			} else {
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 			}
 			return OK_RESULT;
 		});
@@ -654,21 +841,21 @@ describe('createWorkflowRunner', () => {
 
 	it('falls back to a fresh Turn on a markerless stop when no vendor session id exists', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const continuations: unknown[] = [];
 		const startTurn = vi
 			.fn()
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				continuations.push(input.continuation);
-				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
 				return OK_RESULT;
 			})
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				continuations.push(input.continuation);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -693,9 +880,9 @@ describe('createWorkflowRunner', () => {
 
 	it('retries a transient failure by resuming the same Agent Session after a backoff', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const calls: Array<{continuation: unknown}> = [];
 		const statuses: string[] = [];
@@ -703,7 +890,7 @@ describe('createWorkflowRunner', () => {
 			.fn()
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
 				return {
 					...OK_RESULT,
 					exitCode: 1,
@@ -712,7 +899,7 @@ describe('createWorkflowRunner', () => {
 			})
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -754,9 +941,9 @@ describe('createWorkflowRunner', () => {
 		// message on stdout. The classifier must see it, or every transient
 		// failure suspends as hard/unclassified.
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const startTurn = vi
 			.fn()
@@ -767,7 +954,7 @@ describe('createWorkflowRunner', () => {
 					'API Error: Connection refused — a firewall or proxy may be blocking it (ConnectionRefused)',
 			}))
 			.mockImplementationOnce(async () => {
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -793,9 +980,9 @@ describe('createWorkflowRunner', () => {
 
 	it('suspends when the retry cap is exhausted, naming the retry cap', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		fs.writeFileSync(path.join(journalDir, 'journal.md'), 'working', 'utf-8');
 
 		const startTurn = vi.fn().mockResolvedValue({
 			...OK_RESULT,
@@ -834,9 +1021,9 @@ describe('createWorkflowRunner', () => {
 
 	it('suspends immediately on a hard failure without retrying', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		fs.writeFileSync(path.join(journalDir, 'journal.md'), 'working', 'utf-8');
 
 		const startTurn = vi.fn().mockResolvedValue({
 			...OK_RESULT,
@@ -867,9 +1054,9 @@ describe('createWorkflowRunner', () => {
 
 	it('classifies from the stderr tail when the first line is teardown noise', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		fs.writeFileSync(path.join(trackerDir, 'tracker.md'), 'working', 'utf-8');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		fs.writeFileSync(path.join(journalDir, 'journal.md'), 'working', 'utf-8');
 
 		// Observed live: the first stderr line was a cancelled SessionEnd hook,
 		// and the 401 arrived later. Classification must see the tail — this is
@@ -923,16 +1110,16 @@ describe('createWorkflowRunner', () => {
 
 	it('degrades a failed nudge resume to a fresh replay of the same iteration', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const continuations: unknown[] = [];
 		const startTurn = vi
 			.fn()
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				continuations.push(input.continuation);
-				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
 				return OK_RESULT;
 			})
 			// The nudge resume dies at startup (the vendor session is gone).
@@ -947,7 +1134,7 @@ describe('createWorkflowRunner', () => {
 			// The fresh replay of the same iteration completes the workflow.
 			.mockImplementationOnce(async (input: {continuation: unknown}) => {
 				continuations.push(input.continuation);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1007,11 +1194,11 @@ describe('createWorkflowRunner', () => {
 
 	it('runs a Handover: fork writes the Handoff file, then a fresh Turn is seeded with it', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		// The Handoff chain starts at 001 (ADR 0014 §5).
-		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
+		const handoffPath = path.join(journalDir, 'handoff', '001.md');
 
 		let pendingHandover: {handle: string} | null = null;
 		const forkStates: boolean[] = [];
@@ -1027,7 +1214,7 @@ describe('createWorkflowRunner', () => {
 			// process killed) — exits abnormally with a pending request.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
+				fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
 				pendingHandover = {handle: 'claude-sess-primary'};
 				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 			})
@@ -1041,7 +1228,7 @@ describe('createWorkflowRunner', () => {
 			// The fresh post-Handover Turn completes the workflow.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1085,28 +1272,28 @@ describe('createWorkflowRunner', () => {
 		// Compaction stayed blocked exactly while the fork ran.
 		expect(forkStates).toEqual([true, false]);
 
-		// The post-Handover Turn is fresh and seeded with Handoff file + Tracker.
+		// The post-Handover Turn is fresh and seeded with Handoff file + Journal.
 		expect(calls[2]!.continuation).toEqual({mode: 'fresh'});
 		expect(calls[2]!.prompt).toContain('Handover occurred');
 		expect(calls[2]!.prompt).toContain(handoffPath);
-		expect(calls[2]!.prompt).toContain(trackerPath);
+		expect(calls[2]!.prompt).toContain(journalPath);
 		// The post-Handover Turn must fold the Handoff in before domain work (ADR 0015 §8).
 		expect(calls[2]!.prompt.toLowerCase()).toContain('before any domain work');
 	});
 
 	it('records the Handoff file size on the run snapshot once the fork writes it', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
-		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffPath = path.join(journalDir, 'handoff', '001.md');
 		const handoffBody = '# Handoff\nwhere things stand';
 
 		let pendingHandover: {handle: string} | null = null;
 		const startTurn = vi
 			.fn()
 			.mockImplementationOnce(async () => {
-				fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
+				fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
 				pendingHandover = {handle: 'claude-sess-primary'};
 				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 			})
@@ -1116,7 +1303,7 @@ describe('createWorkflowRunner', () => {
 				return OK_RESULT;
 			})
 			.mockImplementationOnce(async () => {
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1159,10 +1346,10 @@ describe('createWorkflowRunner', () => {
 
 	it('keeps prior Handoff files: each Handover writes the next numbered file', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
-		const handoffDir = path.join(trackerDir, 'handoff');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffDir = path.join(journalDir, 'handoff');
 
 		let pendingHandover: {handle: string} | null = null;
 		const calls: Array<{prompt: string; continuation: unknown}> = [];
@@ -1180,7 +1367,7 @@ describe('createWorkflowRunner', () => {
 			// Turn 1 → first Handover.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, 'work in progress', 'utf-8');
+				fs.writeFileSync(journalPath, 'work in progress', 'utf-8');
 				pendingHandover = {handle: 'sess-a'};
 				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 			})
@@ -1205,7 +1392,7 @@ describe('createWorkflowRunner', () => {
 			// Turn 3 finishes.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1251,10 +1438,10 @@ describe('createWorkflowRunner', () => {
 
 	it('purges old Handoff files, keeping the two most recent', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
-		const handoffDir = path.join(trackerDir, 'handoff');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffDir = path.join(journalDir, 'handoff');
 
 		let pendingHandover: {handle: string} | null = null;
 		let handovers = 0;
@@ -1270,11 +1457,11 @@ describe('createWorkflowRunner', () => {
 				}
 				if (handovers < 3) {
 					handovers += 1;
-					fs.writeFileSync(trackerPath, `work ${handovers}`, 'utf-8');
+					fs.writeFileSync(journalPath, `work ${handovers}`, 'utf-8');
 					pendingHandover = {handle: `sess-${handovers}`};
 					return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 				}
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1307,9 +1494,9 @@ describe('createWorkflowRunner', () => {
 
 	it('degrades a failed Handover to vendor compaction: resume in place, stop intercepting', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		let pendingHandover: {handle: string} | null = null;
 		const degraded: string[] = [];
@@ -1319,7 +1506,7 @@ describe('createWorkflowRunner', () => {
 			.fn()
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
 				pendingHandover = {handle: 'claude-sess-primary'};
 				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 			})
@@ -1331,7 +1518,7 @@ describe('createWorkflowRunner', () => {
 			// Degraded continuation: resume the interrupted conversation in place.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1368,9 +1555,9 @@ describe('createWorkflowRunner', () => {
 
 	it('retries a transient fork failure once with backoff before completing the Handover', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		let pendingHandover: {handle: string} | null = null;
 		const degraded: string[] = [];
@@ -1380,7 +1567,7 @@ describe('createWorkflowRunner', () => {
 			.fn()
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, 'working', 'utf-8');
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
 				pendingHandover = {handle: 'claude-sess-primary'};
 				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
 			})
@@ -1407,7 +1594,7 @@ describe('createWorkflowRunner', () => {
 			// The post-Handover Turn completes the workflow.
 			.mockImplementationOnce(async (input: never) => {
 				calls.push(input);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1447,16 +1634,16 @@ describe('createWorkflowRunner', () => {
 
 	it('frames the human reply with wake context on the first Turn of a woken run', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 
 		const prompts: string[] = [];
 		const startTurn = vi
 			.fn()
 			.mockImplementation(async (input: {prompt: string}) => {
 				prompts.push(input.prompt);
-				fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
 
@@ -1478,22 +1665,22 @@ describe('createWorkflowRunner', () => {
 		const result = await handle.result;
 		expect(result.status).toBe('completed');
 		// Not the bare reply: the wake framing carries the reply, points at the
-		// tracker, and demands the protocol bookkeeping even on a degraded
+		// journal, and demands the protocol bookkeeping even on a degraded
 		// fresh session.
 		expect(prompts[0]).toContain('suspended awaiting a human');
 		expect(prompts[0]).toContain('French, please.');
-		expect(prompts[0]).toContain('tracker');
+		expect(prompts[0]).toContain('journal');
 		expect(prompts[0]).toContain('terminal marker');
 	});
 
 	it('wakes from resumedRunMemory: carries the iteration budget across the wake and seeds the wake prompt', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		fs.writeFileSync(
-			trackerPath,
-			'# Workflow Tracker\n\nstuck on a question\n',
+			journalPath,
+			'# Workflow Journal\n\nstuck on a question\n',
 			'utf-8',
 		);
 
@@ -1505,7 +1692,7 @@ describe('createWorkflowRunner', () => {
 				async (input: {prompt: string; continuation: unknown}) => {
 					prompts.push(input.prompt);
 					continuations.push(input.continuation);
-					fs.writeFileSync(trackerPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 					return OK_RESULT;
 				},
 			);
@@ -1516,9 +1703,11 @@ describe('createWorkflowRunner', () => {
 			iteration: 7,
 			nudgeStreak: 3,
 			retryStreak: 1,
-			lastTrackerHash: 'deadbeef',
+			lastJournalHash: 'deadbeef',
 			lastStopPrompt: 'the stale pre-wake prompt',
 			lastStopContinuation: {mode: 'fresh'},
+			pendingSteers: [],
+			lastHandoffSizeBytes: null,
 		};
 
 		const handle = createWorkflowRunner({
@@ -1528,7 +1717,7 @@ describe('createWorkflowRunner', () => {
 			resumeRunId: 'run-suspended',
 			resumedRunMemory,
 			resumedStopReason:
-				'nudge cap reached: 2 nudges (nudgeCap) without tracker progress or a terminal marker',
+				'nudge cap reached: 2 nudges (nudgeCap) without journal progress or a terminal marker',
 			workflow: {
 				name: 'wf',
 				plugins: [],
@@ -1573,20 +1762,20 @@ describe('createWorkflowRunner', () => {
 		);
 	});
 
-	it('records each Workflow Run goal when the Tracker already exists', async () => {
+	it('records each Workflow Run goal when the Journal already exists', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		// A prior Workflow Run in the same Athena Session left this behind.
 		fs.writeFileSync(
-			trackerPath,
-			'# Workflow Tracker\n\nprior run work\n',
+			journalPath,
+			'# Workflow Journal\n\nprior run work\n',
 			'utf-8',
 		);
 
 		const startTurn = vi.fn().mockImplementation(async () => {
-			fs.appendFileSync(trackerPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
+			fs.appendFileSync(journalPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
 			return OK_RESULT;
 		});
 
@@ -1606,21 +1795,21 @@ describe('createWorkflowRunner', () => {
 
 		await handle.result;
 
-		const tracker = fs.readFileSync(trackerPath, 'utf-8');
-		// The new Run's goal is on the Tracker, and the prior Run's work survives.
-		expect(tracker).toContain('the second goal');
-		expect(tracker).toContain('prior run work');
+		const journal = fs.readFileSync(journalPath, 'utf-8');
+		// The new Run's goal is on the Journal, and the prior Run's work survives.
+		expect(journal).toContain('the second goal');
+		expect(journal).toContain('prior run work');
 	});
 
 	it('does not inherit a prior Run terminal marker', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		// The prior Run finished and left its completion marker as the last line.
 		fs.writeFileSync(
-			trackerPath,
-			'# Workflow Tracker\n\nprior run work\n\n<!-- WORKFLOW_COMPLETE -->\n',
+			journalPath,
+			'# Workflow Journal\n\nprior run work\n\n<!-- WORKFLOW_COMPLETE -->\n',
 			'utf-8',
 		);
 
@@ -1628,12 +1817,12 @@ describe('createWorkflowRunner', () => {
 		const startTurn = vi
 			.fn()
 			.mockImplementationOnce(async () => {
-				fs.appendFileSync(trackerPath, '\nworking on the new goal\n', 'utf-8');
+				fs.appendFileSync(journalPath, '\nworking on the new goal\n', 'utf-8');
 				return OK_RESULT;
 			})
 			.mockImplementationOnce(async () => {
 				fs.appendFileSync(
-					trackerPath,
+					journalPath,
 					'\n<!-- WORKFLOW_COMPLETE -->\n',
 					'utf-8',
 				);
@@ -1661,7 +1850,7 @@ describe('createWorkflowRunner', () => {
 		expect(result.status).toBe('completed');
 		// ...and it was demoted rather than left to read as a misplaced marker.
 		const afterBanner = fs
-			.readFileSync(trackerPath, 'utf-8')
+			.readFileSync(journalPath, 'utf-8')
 			.split('the second goal')[0]!;
 		expect(afterBanner).not.toContain('<!-- WORKFLOW_COMPLETE -->');
 		expect(afterBanner).toContain('Prior Run ended');
@@ -1669,17 +1858,17 @@ describe('createWorkflowRunner', () => {
 
 	it('does not open a new Run section when waking a suspended Run', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		fs.writeFileSync(
-			trackerPath,
-			'# Workflow Tracker\n\nmid-run work\n',
+			journalPath,
+			'# Workflow Journal\n\nmid-run work\n',
 			'utf-8',
 		);
 
 		const startTurn = vi.fn().mockImplementation(async () => {
-			fs.appendFileSync(trackerPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
+			fs.appendFileSync(journalPath, '\n<!-- WORKFLOW_COMPLETE -->\n', 'utf-8');
 			return OK_RESULT;
 		});
 
@@ -1701,13 +1890,13 @@ describe('createWorkflowRunner', () => {
 		await handle.result;
 
 		// A wake continues the same Run, so it opens no new Run section.
-		expect(fs.readFileSync(trackerPath, 'utf-8')).not.toContain(
+		expect(fs.readFileSync(journalPath, 'utf-8')).not.toContain(
 			'New Workflow Run',
 		);
 	});
 
-	it('uses injected createTracker instead of fs', async () => {
-		const createTracker = vi.fn();
+	it('uses injected createJournal instead of fs', async () => {
+		const createJournal = vi.fn();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
 
 		const handle = createWorkflowRunner({
@@ -1722,30 +1911,387 @@ describe('createWorkflowRunner', () => {
 			},
 			startTurn,
 			persistRunState: vi.fn(),
-			createTracker,
+			createJournal,
 		});
 
 		await handle.result;
-		expect(createTracker).toHaveBeenCalledTimes(1);
-		expect(createTracker.mock.calls[0][0]).toContain('.athena/s1/tracker.md');
-		expect(createTracker.mock.calls[0][1]).toContain(TRACKER_SKELETON_MARKER);
+		expect(createJournal).toHaveBeenCalledTimes(1);
+		expect(createJournal.mock.calls[0][0]).toContain('.athena/s1/journal.md');
+		expect(createJournal.mock.calls[0][1]).toContain(JOURNAL_SKELETON_MARKER);
+	});
+});
+
+describe('createWorkflowRunner — steering (#191)', () => {
+	const LOOPED = {
+		name: 'wf',
+		plugins: [],
+		promptTemplate: '{input}',
+		loop: {enabled: true, maxIterations: 5},
+	};
+
+	it('holds a mid-Turn steer for the boundary and delivers it at the head of the next Turn', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+
+		const prompts: string[] = [];
+		let journalSeenByTurn2 = '';
+		let releaseFirstTurn: (() => void) | null = null;
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				if (prompts.length === 1) {
+					await new Promise<void>(resolve => {
+						releaseFirstTurn = resolve;
+					});
+					fs.writeFileSync(journalPath, 'turn 1 progress', 'utf-8');
+					return OK_RESULT;
+				}
+				journalSeenByTurn2 = fs.readFileSync(journalPath, 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+		const delivered: unknown[] = [];
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState,
+			onSteerDelivered: steers => delivered.push(...steers),
+		});
+
+		// Wait for Turn 1 to be in flight, then steer it.
+		await vi.waitFor(() => expect(releaseFirstTurn).not.toBeNull());
+		expect(
+			handle.steer({
+				text: 'use the other branch',
+				origin: 'hub',
+				receivedAt: 5,
+			}),
+		).toBe(true);
+		// Queued, not injected: Turn 1 is still the only Turn, and the queued
+		// steer is already on the persisted snapshot.
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				runMemoryJson: expect.stringContaining('use the other branch'),
+			}),
+		);
+		releaseFirstTurn!();
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).not.toContain('use the other branch');
+		expect(prompts[1]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[1]).toContain('via hub');
+		expect(prompts[1]).toContain('use the other branch');
+		expect(prompts[1]!.indexOf(STEER_BLOCK_END)).toBeLessThan(
+			prompts[1]!.indexOf('journal'),
+		);
+		expect(delivered).toEqual([
+			{
+				text: 'use the other branch',
+				origin: 'hub',
+				receivedAt: 5,
+				iteration: 2,
+			},
+		]);
+		// The Journal records the steer — origin and the Turn it went into —
+		// before that Turn starts, so Turn 2 reads it alongside Turn 1's work.
+		expect(journalSeenByTurn2).toContain('turn 1 progress');
+		expect(journalSeenByTurn2).toContain('Human steer (via hub)');
+		expect(journalSeenByTurn2).toContain('delivered into Turn 2');
+		expect(journalSeenByTurn2).toContain('> use the other branch');
 	});
 
-	it('projects the tracker unit table into the task tools after each Turn (ADR 0015 §7)', async () => {
+	it('delivers a steer queued before the Run starts at the head of the first Turn', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(path.join(trackerDir, 'units'), {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		handle.steer({text: 'first', origin: 'local', receivedAt: 1});
+		handle.steer({text: 'second', origin: 'hub', receivedAt: 2});
+
+		await handle.result;
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[0]).toContain('1 of 2, via local');
+		expect(prompts[0]).toContain('2 of 2, via hub');
+		expect(prompts[0]!.indexOf('first')).toBeLessThan(
+			prompts[0]!.indexOf('second'),
+		);
+		expect(prompts[0]!.endsWith('do it')).toBe(true);
+	});
+
+	it('on a wake, records the steer above the answered NEEDS_HUMAN marker so the Journal stays well-formed', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		fs.writeFileSync(
-			path.join(trackerDir, 'units', 'first-unit.md'),
+			journalPath,
+			'# Journal\n\nasked which env\n\n<!-- NEEDS_HUMAN: which env? -->\n',
+			'utf-8',
+		);
+
+		let journalSeenByTurn = '';
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				journalSeenByTurn = fs.readFileSync(journalPath, 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'staging',
+			resumeRunId: 'run-suspended',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		handle.steer({text: 'and be quick', origin: 'local', receivedAt: 9});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts[0]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[0]).toContain('suspended awaiting a human');
+		expect(prompts[0]).toContain('staging');
+		// Recorded before the Turn started, above the marker, marker still last.
+		expect(journalSeenByTurn).toContain('Human steer (via local)');
+		expect(journalSeenByTurn).toContain('delivered into Turn 1');
+		expect(
+			journalSeenByTurn.trimEnd().endsWith('<!-- NEEDS_HUMAN: which env? -->'),
+		).toBe(true);
+	});
+
+	it('rejects a steer once the Run has ended', async () => {
+		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir: makeTempDir(),
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		await handle.result;
+		expect(handle.steer({text: 'late', origin: 'hub', receivedAt: 1})).toBe(
+			false,
+		);
+		expect(startTurn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('createWorkflowRunner phase events', () => {
+	const LOOPED_WORKFLOW = {
+		name: 'wf',
+		plugins: [],
+		promptTemplate: '{input}',
+		loop: {enabled: true, maxIterations: 5},
+	};
+
+	function journalWith(block: string[], ...tail: string[]): string {
+		return [
+			'# Journal',
+			'## Status',
+			'Working.',
+			'<!-- TURN_PROTOCOL',
+			...block,
+			'-->',
+			...tail,
+		].join('\n');
+	}
+
+	it('emits one phase change when a Turn names a new step and none while the step stays the same', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(['step: Orient', 'step_index: 1', 'step_total: 3']),
+					'utf-8',
+				);
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(
+						['step: Orient', 'step_index: 1', 'step_total: 3'],
+						'More notes.',
+					),
+					'utf-8',
+				);
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(
+						['step: Build', 'step_index: 2', 'step_total: 3'],
+						'<!-- WORKFLOW_COMPLETE -->',
+					),
+					'utf-8',
+				);
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(3);
+		expect(onWarning).not.toHaveBeenCalled();
+		expect(onPhaseChange.mock.calls.map(call => call[0])).toEqual([
+			{
+				runId: handle.runId,
+				turn: 1,
+				step: 'Orient',
+				stepIndex: 1,
+				stepTotal: 3,
+			},
+			{
+				runId: handle.runId,
+				turn: 3,
+				step: 'Build',
+				stepIndex: 2,
+				stepTotal: 3,
+			},
+		]);
+	});
+
+	it('ignores a malformed block with one warning and keeps the Run going', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(journalPath, journalWith(['step_index: 2']), 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(
+					journalPath,
+					journalWith(['step_index: 2'], '<!-- WORKFLOW_COMPLETE -->'),
+					'utf-8',
+				);
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(2);
+		expect(onPhaseChange).not.toHaveBeenCalled();
+		expect(onWarning).toHaveBeenCalledTimes(1);
+		expect(onWarning.mock.calls[0]![0]).toMatch(/TURN_PROTOCOL/);
+	});
+
+	it('emits no phase and no warning for a journal without a block', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const onPhaseChange = vi.fn();
+		const onWarning = vi.fn();
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				journalPath,
+				'## Plan\n- [x] done\n<!-- WORKFLOW_COMPLETE -->',
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED_WORKFLOW,
+			startTurn,
+			persistRunState: vi.fn(),
+			onPhaseChange,
+			onWarning,
+		});
+
+		await handle.result;
+		expect(onPhaseChange).not.toHaveBeenCalled();
+		expect(onWarning).not.toHaveBeenCalled();
+	});
+
+	it('projects the journal unit table into the task tools after each Turn (ADR 0015 §7)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(journalDir, 'units'), {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(
+			path.join(journalDir, 'units', 'first-unit.md'),
 			['---', 'status: closed', '---', '', 'Done.'].join('\n'),
 		);
 
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
 			fs.writeFileSync(
-				trackerPath,
+				journalPath,
 				[
-					'# Workflow Tracker',
+					'# Workflow Journal',
 					'',
 					'## Units',
 					'',
@@ -1760,7 +2306,7 @@ describe('createWorkflowRunner', () => {
 			return OK_RESULT;
 		});
 
-		const projected: TrackerTaskProjection[][] = [];
+		const projected: JournalTaskProjection[][] = [];
 		const handle = createWorkflowRunner({
 			sessionId: 's1',
 			projectDir,
@@ -1784,7 +2330,7 @@ describe('createWorkflowRunner', () => {
 		]);
 	});
 
-	it('never fails a Turn when the tracker has no unit table to project (parse miss degrades silently)', async () => {
+	it('never fails a Turn when the journal has no unit table to project (parse miss degrades silently)', async () => {
 		const projectDir = makeTempDir();
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
 		const projectTasks = vi.fn();
@@ -1805,17 +2351,17 @@ describe('createWorkflowRunner', () => {
 
 	it('never fails a Turn when the projectTasks callback itself throws', async () => {
 		const projectDir = makeTempDir();
-		const trackerDir = path.join(projectDir, '.athena', 's1');
-		fs.mkdirSync(path.join(trackerDir, 'units'), {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(journalDir, 'units'), {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
 		fs.writeFileSync(
-			path.join(trackerDir, 'units', 'u.md'),
+			path.join(journalDir, 'units', 'u.md'),
 			['---', 'status: open', '---', ''].join('\n'),
 		);
 
 		const startTurn = vi.fn().mockImplementationOnce(async () => {
 			fs.writeFileSync(
-				trackerPath,
+				journalPath,
 				[
 					'## Units',
 					'| Unit | Record |',

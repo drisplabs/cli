@@ -29,6 +29,7 @@ export function useRuntimeSelectors() {
 	const clearEvents = useHookContextSelector(v => v.clearEvents);
 	const printTaskSnapshot = useHookContextSelector(v => v.printTaskSnapshot);
 	const emitNotification = useHookContextSelector(v => v.emitNotification);
+	const emitPhase = useHookContextSelector(v => v.emitPhase);
 	const recordTokens = useHookContextSelector(v => v.recordTokens);
 	const restoredTokens = useHookContextSelector(v => v.restoredTokens);
 
@@ -55,6 +56,7 @@ export function useRuntimeSelectors() {
 		allocateSeq,
 		clearEvents,
 		emitNotification,
+		emitPhase,
 		recordTokens,
 		restoredTokens,
 		hookCommandFeed,

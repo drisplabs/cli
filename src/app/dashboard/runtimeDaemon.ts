@@ -2,6 +2,7 @@ import {
 	createInstanceSocketClient,
 	type InstanceSocketClient,
 	type InstanceSocketLogger,
+	type InstanceSocketWireMode,
 } from './instanceSocketClient';
 import {
 	executeRemoteAssignment,
@@ -38,6 +39,12 @@ import {
 import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
 import {routeDashboardRunFrame} from './dashboardFrameRouter';
 import {resolveRemoteWorkspace} from './remoteWorkspaceResolver';
+import type {InstalledWorkflow} from '@drisp/protocol';
+import {
+	listInstalledWorkflows,
+	watchInstalledWorkflows,
+	type InstalledWorkflowInventoryOptions,
+} from '../../core/workflows/inventory';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -48,6 +55,12 @@ export type RuntimeDaemonRunRecord = DashboardPairedExecutionRunRecord;
 export type RuntimeDaemonSnapshot = {
 	startedAt: number;
 	socketConnected: boolean;
+	/**
+	 * Which frame-name set the current connection puts on the wire: `legacy`
+	 * until the hub's `hello` announces the protocol version this runner
+	 * speaks, then `canonical`. Absent while disconnected.
+	 */
+	wireMode?: InstanceSocketWireMode;
 	lastFrameAt?: number;
 	activeRuns: number;
 	completedRuns: number;
@@ -81,6 +94,8 @@ export type RunDashboardRuntimeDaemonOptions = {
 		instanceId: string;
 		accessToken: string;
 		log: InstanceSocketLogger;
+		/** The current Workflow inventory, read at connect time for the hello. */
+		installedWorkflows: () => InstalledWorkflow[];
 	}) => InstanceSocketClient;
 	executeRemoteAssignment?: RuntimeDaemonAssignmentExecutor;
 	projectDir?: string;
@@ -138,6 +153,14 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 * fast and report the startup error directly.
 	 */
 	retryInitialConnect?: boolean;
+	/**
+	 * The Workflow store the runner reports to the hub (`hello.workflows`,
+	 * `workflows.changed`). Production uses the registry dir under the user's
+	 * home; tests and the live-transport harness point it at a temp dir.
+	 */
+	workflowStoreDir?: string;
+	/** The CLI's own version, reported as the built-in Workflows' version. */
+	cliVersion?: string;
 };
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -169,6 +192,7 @@ export async function runDashboardRuntimeDaemon(
 				instanceId: opts.instanceId,
 				accessToken: opts.accessToken,
 				log: opts.log,
+				installedWorkflows: opts.installedWorkflows,
 			}));
 	const executor = options.executeRemoteAssignment ?? executeRemoteAssignment;
 	const projectDir = options.projectDir ?? process.cwd();
@@ -196,6 +220,14 @@ export async function runDashboardRuntimeDaemon(
 		});
 	const decisionInbox = options.decisionInbox ?? createDashboardDecisionInbox();
 	const retryInitialConnect = options.retryInitialConnect ?? true;
+	const inventoryOptions: InstalledWorkflowInventoryOptions = {
+		...(options.workflowStoreDir !== undefined
+			? {storeDir: options.workflowStoreDir}
+			: {}),
+		...(options.cliVersion !== undefined
+			? {cliVersion: options.cliVersion}
+			: {}),
+	};
 
 	const startedAt = now();
 	let stopped = false;
@@ -210,18 +242,29 @@ export async function runDashboardRuntimeDaemon(
 	let cooldownUntil = 0;
 	const executionClient: Pick<
 		InstanceSocketClient,
-		'sendRunEvent' | 'sendDecisionAck'
+		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
 	> = {
 		sendRunEvent(event) {
 			const current = client ?? lastSocketClient;
 			if (!current) {
 				log(
 					'warn',
-					`instance socket dropped run_event (socket not connected): runId=${event.runId} kind=${event.kind}`,
+					`instance socket dropped run event (socket not connected): runId=${event.runId} kind=${event.kind}`,
 				);
 				return;
 			}
 			current.sendRunEvent(event);
+		},
+		sendNeedsHuman(input) {
+			const current = client ?? lastSocketClient;
+			if (!current) {
+				log(
+					'warn',
+					`instance socket dropped needs_human (socket not connected): runId=${input.runId} kind=${input.interruption.kind}`,
+				);
+				return;
+			}
+			current.sendNeedsHuman(input);
 		},
 		sendDecisionAck(input) {
 			const current = client;
@@ -246,6 +289,20 @@ export async function runDashboardRuntimeDaemon(
 			? {fetchAttachments: options.fetchAttachments}
 			: {}),
 		now,
+	});
+	// The hub's picture of what this machine can run: `hello` carries the
+	// inventory on every connect (read at connect time), and a change to the
+	// store while connected is pushed as a full-list replace — the same
+	// semantics as the hub's `attachments.changed` push, in the other
+	// direction. While disconnected nothing is sent; the next hello is current.
+	const workflowWatcher = watchInstalledWorkflows({
+		...inventoryOptions,
+		log,
+		onChange: workflows => {
+			const current = client;
+			if (!current) return;
+			current.sendWorkflowsChanged(workflows);
+		},
 	});
 	const assignmentIntake = createDashboardAssignmentIntake({
 		client: {
@@ -337,9 +394,7 @@ export async function runDashboardRuntimeDaemon(
 	async function connectOnce(): Promise<void> {
 		const config = readConfig();
 		if (!config) {
-			throw new Error(
-				'dashboard runtime daemon: not paired. Run "drisp dashboard pair" first.',
-			);
+			throw new Error('runner: not paired. Run "drisp runner pair" first.');
 		}
 		// If the circuit breaker has tripped, sleep until the cooldown expires
 		// rather than throwing immediately. Throwing inside reconnectLoop with a
@@ -369,6 +424,7 @@ export async function runDashboardRuntimeDaemon(
 			instanceId: token.instanceId,
 			accessToken: token.accessToken,
 			log,
+			installedWorkflows: () => listInstalledWorkflows(inventoryOptions),
 		});
 		next.onFrame(frame => {
 			lastFrameAt = now();
@@ -401,11 +457,34 @@ export async function runDashboardRuntimeDaemon(
 				pairedFeedPublisher.handleAck(frame);
 				return;
 			}
-			if (frame.type === 'job_assignment') {
+			if (frame.type === 'run.start') {
 				assignmentIntake.receive(frame);
 				return;
 			}
-			routeDashboardRunFrame(pairedExecution, frame);
+			if (frame.type === 'hello') {
+				// The socket client already negotiated the wire mode; this is the
+				// daemon's record of who is on the other end.
+				log(
+					'info',
+					`runtime daemon: hub hello protocolVersion=${frame.protocolVersion}${
+						frame.agent ? ` agent=${frame.agent.name}` : ''
+					}`,
+				);
+				return;
+			}
+			if (frame.type === 'error') {
+				log(
+					'warn',
+					`runtime daemon: hub error frame code=${frame.code}${
+						frame.message ? `: ${frame.message}` : ''
+					}`,
+				);
+				return;
+			}
+			if (frame.type === 'pong') return;
+			if (!routeDashboardRunFrame(pairedExecution, frame)) {
+				log('debug', `runtime daemon: unhandled frame type=${frame.type}`);
+			}
 		});
 		next.onClose(reason => {
 			if (stopped || client !== next) return;
@@ -507,6 +586,7 @@ export async function runDashboardRuntimeDaemon(
 			return {
 				startedAt,
 				socketConnected: client !== null,
+				...(client ? {wireMode: client.wireMode()} : {}),
 				...(lastFrameAt !== undefined ? {lastFrameAt} : {}),
 				activeRuns: executionSnapshot.activeRuns,
 				completedRuns: executionSnapshot.completedRuns,
@@ -521,6 +601,7 @@ export async function runDashboardRuntimeDaemon(
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
+			workflowWatcher.close();
 			pairedFeedPublisher.close();
 			const current = client;
 			client = null;

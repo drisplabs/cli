@@ -30,8 +30,13 @@ import {
 	writeWorkflowSourceMetadata,
 } from './sourceMetadata';
 
-function registryDir(): string {
+/** The Workflow store: one `{name}/workflow.json` per installed Workflow. */
+export function workflowRegistryDir(): string {
 	return path.join(os.homedir(), '.config', 'athena', 'workflows');
+}
+
+function registryDir(): string {
+	return workflowRegistryDir();
 }
 
 function ensurePathWithinRoot(
@@ -120,6 +125,18 @@ export function resolveWorkflow(name: string): ResolvedWorkflowConfig {
 	) {
 		throw new Error(
 			`Invalid workflow.json: "examplePrompts" must be an array of strings`,
+		);
+	}
+
+	if (
+		raw['askRules'] !== undefined &&
+		(!Array.isArray(raw['askRules']) ||
+			!raw['askRules'].every(
+				(e: unknown) => typeof e === 'string' && e.trim().length > 0,
+			))
+	) {
+		throw new Error(
+			`Invalid workflow.json: "askRules" must be an array of non-empty tool-name patterns`,
 		);
 	}
 

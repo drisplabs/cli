@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from 'vitest';
 import {runExecCommand, type ExecRuntimeConfig} from './execCommand';
-import {EXEC_EXIT_CODE} from '../exec';
+import {RUN_EXIT_CODE} from '../exec';
 
 const BASE_RUNTIME_CONFIG: ExecRuntimeConfig = {
 	harness: 'claude-code' as const,
@@ -11,6 +11,7 @@ const BASE_RUNTIME_CONFIG: ExecRuntimeConfig = {
 	personalMcpServers: [],
 	personalSkills: [],
 	capabilityConflicts: {mcpServers: [], skills: []},
+	permissionGraceMs: 60_000,
 };
 
 const BASE_FLAGS = {
@@ -37,7 +38,7 @@ describe('runExecCommand', () => {
 			{logError, runExecFn: runExecFn as never},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.USAGE);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -56,7 +57,7 @@ describe('runExecCommand', () => {
 			{logError, runExecFn: runExecFn as never},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.USAGE);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -79,7 +80,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -102,7 +103,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalled();
 	});
@@ -127,17 +128,117 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).not.toHaveBeenCalled();
 		expect(logError).toHaveBeenCalledWith(
 			expect.stringContaining('Failed to resolve --continue session'),
 		);
 	});
 
+	it('rejects --answer without --continue', async () => {
+		const logError = vi.fn();
+		const runExecFn = vi.fn();
+		const code = await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS, answer: 'allow'},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn, logError},
+		);
+		expect(code).toBe(RUN_EXIT_CODE.USAGE);
+		expect(runExecFn).not.toHaveBeenCalled();
+		expect(logError).toHaveBeenCalledWith(
+			expect.stringContaining('--answer only applies with --continue'),
+		);
+	});
+
+	it('rejects an --answer that is neither allow nor deny, and a negative grace window', async () => {
+		const logError = vi.fn();
+		const runExecFn = vi.fn();
+		expect(
+			await runExecCommand(
+				{
+					projectDir: '/tmp',
+					prompt: 'hello',
+					flags: {...BASE_FLAGS, continueFlag: 'athena-1', answer: 'maybe'},
+					runtimeConfig: BASE_RUNTIME_CONFIG,
+				},
+				{runExecFn, logError},
+			),
+		).toBe(RUN_EXIT_CODE.USAGE);
+		expect(
+			await runExecCommand(
+				{
+					projectDir: '/tmp',
+					prompt: 'hello',
+					flags: {...BASE_FLAGS, permissionGraceMs: -1},
+					runtimeConfig: BASE_RUNTIME_CONFIG,
+				},
+				{runExecFn, logError},
+			),
+		).toBe(RUN_EXIT_CODE.USAGE);
+		expect(runExecFn).not.toHaveBeenCalled();
+	});
+
+	it('forwards the configured grace window, lets the flag override it, and turns --answer into a stored decision (#190)', async () => {
+		const runExecFn = vi
+			.fn()
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
+		const getSessionMetaFn = vi.fn(() => ({
+			id: 'athena-1',
+			projectDir: '/tmp',
+			createdAt: 1,
+			updatedAt: 1,
+			adapterSessionIds: ['adapter-1'],
+		}));
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'go ahead',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: {...BASE_RUNTIME_CONFIG, permissionGraceMs: 12_000},
+			},
+			{runExecFn},
+		);
+		expect(runExecFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({permissionGraceMs: 12_000}),
+		);
+		expect(runExecFn.mock.calls.at(-1)![0]).not.toHaveProperty('storedAnswer');
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'go ahead',
+				flags: {
+					...BASE_FLAGS,
+					continueFlag: 'athena-1',
+					answer: 'deny',
+					permissionGraceMs: 0,
+				},
+				runtimeConfig: {...BASE_RUNTIME_CONFIG, permissionGraceMs: 12_000},
+			},
+			{runExecFn, getSessionMetaFn},
+		);
+		expect(runExecFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				athenaSessionId: 'athena-1',
+				permissionGraceMs: 0,
+				storedAnswer: {
+					type: 'json',
+					source: 'user',
+					intent: expect.objectContaining({kind: 'permission_deny'}),
+				},
+			}),
+		);
+	});
+
 	it('runs exec with resolved resume info and returns exit code', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.RUNTIME});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.RUNTIME});
 
 		const code = await runExecCommand(
 			{
@@ -152,7 +253,7 @@ describe('runExecCommand', () => {
 			},
 		);
 
-		expect(code).toBe(EXEC_EXIT_CODE.RUNTIME);
+		expect(code).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(runExecFn).toHaveBeenCalledWith(
 			expect.objectContaining({
 				athenaSessionId: 'athena-new',
@@ -160,10 +261,54 @@ describe('runExecCommand', () => {
 		);
 	});
 
+	it('queues --steer texts as local steers, in order, on a steer queue (#191)', async () => {
+		const runExecFn = vi.fn().mockResolvedValue({exitCode: 0});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {
+					...BASE_FLAGS,
+					steers: ['use the other branch', '  ', 'be brief'],
+				},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn, now: () => 4_242},
+		);
+
+		const options = runExecFn.mock.calls[0]![0] as {
+			steerQueue?: {subscribe: (listener: (s: unknown) => void) => void};
+		};
+		expect(options.steerQueue).toBeDefined();
+		const received: unknown[] = [];
+		options.steerQueue!.subscribe(steer => received.push(steer));
+		expect(received).toEqual([
+			{text: 'use the other branch', origin: 'local', receivedAt: 4_242},
+			{text: 'be brief', origin: 'local', receivedAt: 4_242},
+		]);
+	});
+
+	it('passes no steer queue when --steer is absent', async () => {
+		const runExecFn = vi.fn().mockResolvedValue({exitCode: 0});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn},
+		);
+
+		expect(runExecFn.mock.calls[0]![0]).not.toHaveProperty('steerQueue');
+	});
+
 	it('forwards a stripped personal capabilities summary (name + layer only)', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{
@@ -212,7 +357,7 @@ describe('runExecCommand', () => {
 	it('forwards a stripped capability-conflicts summary (name + layer only)', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{
@@ -263,7 +408,7 @@ describe('runExecCommand', () => {
 	it('uses most recent session when bare --continue is provided', async () => {
 		const runExecFn = vi
 			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
+			.mockResolvedValue({exitCode: RUN_EXIT_CODE.SUCCESS});
 
 		await runExecCommand(
 			{
@@ -289,26 +434,6 @@ describe('runExecCommand', () => {
 				athenaSessionId: 'athena-1',
 				adapterResumeSessionId: 'a-2',
 			}),
-		);
-	});
-
-	it('forwards --channel values to runExec', async () => {
-		const runExecFn = vi
-			.fn()
-			.mockResolvedValue({exitCode: EXEC_EXIT_CODE.SUCCESS});
-
-		await runExecCommand(
-			{
-				projectDir: '/tmp',
-				prompt: 'hello',
-				flags: {...BASE_FLAGS, channels: ['telegram']},
-				runtimeConfig: BASE_RUNTIME_CONFIG,
-			},
-			{runExecFn, createSessionId: () => 'athena-new'},
-		);
-
-		expect(runExecFn).toHaveBeenCalledWith(
-			expect.objectContaining({channels: ['telegram']}),
 		);
 	});
 });
