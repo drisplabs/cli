@@ -17,6 +17,7 @@ import {
 	JOURNAL_SKELETON_MARKER,
 } from './journalReader';
 import type {WorkflowRunState} from './sessionPlan';
+import {STEER_BLOCK_OPEN} from './steer';
 import type {LoopConfig, WorkflowConfig} from './types';
 import crypto from 'node:crypto';
 
@@ -65,6 +66,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		lastJournalHash: null,
 		lastStopPrompt: 'do the task',
 		lastStopContinuation: {mode: 'fresh'},
+		pendingSteers: [],
 		...overrides,
 	};
 }
@@ -812,5 +814,220 @@ describe('RunMemory serialization', () => {
 		expect(deserializeRunMemory('{}')).toBeNull();
 		expect(deserializeRunMemory('{"iteration": 1}')).toBeNull();
 		expect(deserializeRunMemory('[1,2,3]')).toBeNull();
+	});
+});
+
+describe('steering (#191)', () => {
+	const HUB_STEER = {
+		text: 'use the other branch',
+		origin: 'hub' as const,
+		receivedAt: 1_000,
+	};
+	const LOCAL_STEER = {
+		text: 'and skip the docs',
+		origin: 'local' as const,
+		receivedAt: 2_000,
+	};
+
+	it('a steer received mid-Turn is queued, persisted, and never injected into the running Turn', () => {
+		const phase = turnInFlight({prompt: 'turn 1 prompt'});
+		const result = step(
+			phase,
+			makeMemory(),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		expect(result.phase).toEqual(phase);
+		expect(result.memory.pendingSteers).toEqual([HUB_STEER]);
+		expect(result.actions).toEqual([{type: 'persist'}]);
+	});
+
+	it('drains the queue into the head of the next Turn prompt at the Turn boundary', () => {
+		const queued = step(
+			turnInFlight(),
+			makeMemory(),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		const next = step(
+			turnInFlight(),
+			queued.memory,
+			turnFinished({
+				adapterSessionId: 'sess-1',
+				outcome: {kind: 'continue'},
+				journalContent: 'progress',
+			}),
+			makeCfg(),
+		);
+		const start = next.actions.find(a => a.type === 'start_turn');
+		expect(start).toBeDefined();
+		if (start?.type !== 'start_turn') throw new Error('unreachable');
+		expect(start.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(start.prompt).toContain('use the other branch');
+		expect(start.prompt).toContain(buildNudgePrompt(LOOP));
+		expect(next.phase).toMatchObject({
+			kind: 'turn_in_flight',
+			prompt: start.prompt,
+		});
+		expect(next.memory.pendingSteers).toEqual([]);
+		expect(next.memory.lastStopPrompt).toBe(start.prompt);
+		// The delivery is reported ahead of the Turn so the interpreter can
+		// journal it before the Turn starts.
+		const startIndex = next.actions.indexOf(start);
+		expect(next.actions[startIndex - 1]).toEqual({
+			type: 'steers_delivered',
+			steers: [HUB_STEER],
+			iteration: 2,
+		});
+	});
+
+	it('delivers several queued steers in arrival order in one Turn', () => {
+		const first = step(
+			turnInFlight(),
+			makeMemory(),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		const second = step(
+			turnInFlight(),
+			first.memory,
+			{type: 'steer', steer: LOCAL_STEER},
+			makeCfg(),
+		);
+		expect(second.memory.pendingSteers).toEqual([HUB_STEER, LOCAL_STEER]);
+		const next = step(
+			turnInFlight(),
+			second.memory,
+			turnFinished({outcome: {kind: 'continue'}, journalContent: 'p'}),
+			makeCfg(),
+		);
+		const start = next.actions.find(a => a.type === 'start_turn');
+		if (start?.type !== 'start_turn') throw new Error('unreachable');
+		expect(start.prompt.indexOf('use the other branch')).toBeLessThan(
+			start.prompt.indexOf('and skip the docs'),
+		);
+		expect(next.actions).toContainEqual({
+			type: 'steers_delivered',
+			steers: [HUB_STEER, LOCAL_STEER],
+			iteration: 2,
+		});
+	});
+
+	it('a steer received while backing off waits for the retried Turn', () => {
+		const queued = step(
+			backingOff(),
+			makeMemory({retryStreak: 1}),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		expect(queued.phase).toEqual(backingOff());
+		expect(queued.actions).toEqual([{type: 'persist'}]);
+		const next = step(backingOff(), queued.memory, backoffElapsed(), makeCfg());
+		const start = next.actions.find(a => a.type === 'start_turn');
+		if (start?.type !== 'start_turn') throw new Error('unreachable');
+		expect(start.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(next.memory.pendingSteers).toEqual([]);
+	});
+
+	it('a steer received during a Handover fork rides into the seeded fresh Turn', () => {
+		const queued = step(
+			handingOver(),
+			makeMemory(),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		expect(queued.phase).toEqual(handingOver());
+		const next = step(handingOver(), queued.memory, forkFinished(), makeCfg());
+		const start = next.actions.find(a => a.type === 'start_turn');
+		if (start?.type !== 'start_turn') throw new Error('unreachable');
+		expect(start.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(start.prompt).toContain('A Handover occurred');
+	});
+
+	it('a steer stays queued through a transition that starts no Turn (suspend)', () => {
+		const queued = step(
+			turnInFlight(),
+			makeMemory(),
+			{type: 'steer', steer: HUB_STEER},
+			makeCfg(),
+		);
+		const parked = step(
+			turnInFlight(),
+			queued.memory,
+			turnFinished({suspension: {reason: 'agent declared NEEDS_HUMAN: q'}}),
+			makeCfg(),
+		);
+		expect(parked.phase.kind).toBe('awaiting_attention');
+		expect(parked.memory.pendingSteers).toEqual([HUB_STEER]);
+		expect(parked.actions.some(a => a.type === 'steers_delivered')).toBe(false);
+	});
+
+	it('createInitialRun delivers initial steers at the head of the first Turn prompt', () => {
+		const initial = createInitialRun(makeCfg(), {
+			waking: false,
+			initialSteers: [LOCAL_STEER],
+		});
+		expect(initial.phase.kind).toBe('turn_in_flight');
+		if (initial.phase.kind !== 'turn_in_flight') throw new Error('unreachable');
+		expect(initial.phase.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(initial.phase.prompt.endsWith('Orient: do the task')).toBe(true);
+		expect(initial.memory.pendingSteers).toEqual([]);
+		expect(initial.actions).toEqual([
+			{type: 'steers_delivered', steers: [LOCAL_STEER], iteration: 1},
+			{
+				type: 'start_turn',
+				prompt: initial.phase.prompt,
+				continuation: {mode: 'fresh'},
+				configOverride: undefined,
+			},
+		]);
+	});
+
+	it('createInitialRun on a wake puts the steer ahead of the wake framing', () => {
+		const initial = createInitialRun(
+			makeCfg({initialPrompt: 'French, please.'}),
+			{waking: true, initialSteers: [HUB_STEER]},
+		);
+		if (initial.phase.kind !== 'turn_in_flight') throw new Error('unreachable');
+		expect(initial.phase.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(initial.phase.prompt).toContain('suspended awaiting a human');
+		expect(initial.phase.prompt).toContain('French, please.');
+	});
+
+	it('createInitialRun keeps a rehydrated Run steers pending until its backoff elapses', () => {
+		const resumed = makeMemory({
+			iteration: 3,
+			lastStopPrompt: 'carried',
+			pendingSteers: [HUB_STEER],
+		});
+		const initial = createInitialRun(makeCfg(), {
+			waking: false,
+			resumedMemory: resumed,
+			initialSteers: [LOCAL_STEER],
+		});
+		expect(initial.phase.kind).toBe('backing_off');
+		expect(initial.memory.pendingSteers).toEqual([HUB_STEER, LOCAL_STEER]);
+		expect(initial.actions).toEqual([{type: 'wait', ms: 0}]);
+	});
+
+	it('serializes pending steers and rehydrates a pre-#191 snapshot with an empty queue', () => {
+		const withSteers = makeMemory({pendingSteers: [HUB_STEER]});
+		expect(deserializeRunMemory(serializeRunMemory(withSteers))).toEqual(
+			withSteers,
+		);
+		const legacy = JSON.stringify({
+			iteration: 2,
+			nudgeStreak: 0,
+			retryStreak: 0,
+			lastJournalHash: null,
+			lastStopPrompt: 'p',
+			lastStopContinuation: {mode: 'fresh'},
+		});
+		expect(deserializeRunMemory(legacy)?.pendingSteers).toEqual([]);
+	});
+
+	it('rejects a snapshot whose pending steers are malformed', () => {
+		const bad = JSON.stringify({...makeMemory(), pendingSteers: [{text: 1}]});
+		expect(deserializeRunMemory(bad)).toBeNull();
 	});
 });
