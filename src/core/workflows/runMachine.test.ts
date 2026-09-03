@@ -954,7 +954,7 @@ describe('steering (#191)', () => {
 		const parked = step(
 			turnInFlight(),
 			queued.memory,
-			turnFinished({suspension: {reason: 'agent declared NEEDS_HUMAN: q'}}),
+			turnFinished({interruption: {kind: 'question', question: 'which env?'}}),
 			makeCfg(),
 		);
 		expect(parked.phase.kind).toBe('awaiting_attention');

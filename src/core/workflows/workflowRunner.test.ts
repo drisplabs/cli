@@ -1603,6 +1603,7 @@ describe('createWorkflowRunner — steering (#191)', () => {
 		const journalPath = path.join(journalDir, 'journal.md');
 
 		const prompts: string[] = [];
+		let journalSeenByTurn2 = '';
 		let releaseFirstTurn: (() => void) | null = null;
 		const startTurn = vi
 			.fn()
@@ -1615,6 +1616,7 @@ describe('createWorkflowRunner — steering (#191)', () => {
 					fs.writeFileSync(journalPath, 'turn 1 progress', 'utf-8');
 					return OK_RESULT;
 				}
+				journalSeenByTurn2 = fs.readFileSync(journalPath, 'utf-8');
 				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
 				return OK_RESULT;
 			});
@@ -1668,11 +1670,12 @@ describe('createWorkflowRunner — steering (#191)', () => {
 				iteration: 2,
 			},
 		]);
-		// The Journal records the steer with its origin and the Turn it went into.
-		const journal = fs.readFileSync(journalPath, 'utf-8');
-		expect(journal).toContain('Human steer (via hub)');
-		expect(journal).toContain('delivered into Turn 2');
-		expect(journal).toContain('> use the other branch');
+		// The Journal records the steer — origin and the Turn it went into —
+		// before that Turn starts, so Turn 2 reads it alongside Turn 1's work.
+		expect(journalSeenByTurn2).toContain('turn 1 progress');
+		expect(journalSeenByTurn2).toContain('Human steer (via hub)');
+		expect(journalSeenByTurn2).toContain('delivered into Turn 2');
+		expect(journalSeenByTurn2).toContain('> use the other branch');
 	});
 
 	it('delivers a steer queued before the Run starts at the head of the first Turn', async () => {

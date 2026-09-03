@@ -282,6 +282,35 @@ export function demoteTerminalMarkers(
 		.join('\n');
 }
 
+/**
+ * Append `entry` to Journal content without displacing a Terminal Marker.
+ *
+ * The protocol makes the last non-empty line authoritative and forbids prose
+ * after a marker, so a Runner-written entry (a delivered Steer, #191) that
+ * landed below a marker would turn it into a misplaced marker and fail the
+ * next Turn. When the content ends in a marker line the entry is inserted
+ * just above it — the marker stays last, exactly as the agent left it;
+ * otherwise the entry is appended.
+ */
+export function insertAboveTerminalMarker(
+	content: string,
+	entry: string,
+	markers: JournalMarkers = {},
+): string {
+	const completionMarker =
+		markers.completionMarker ?? DEFAULT_COMPLETION_MARKER;
+	const needsHumanMarkers = needsHumanMarkersFor(markers);
+	const trimmed = content.trimEnd();
+	const lastBreak = trimmed.lastIndexOf('\n');
+	const lastLine = trimmed.slice(lastBreak + 1).trim();
+	if (!isTerminalMarkerLine(lastLine, completionMarker, needsHumanMarkers)) {
+		return content + entry;
+	}
+	const above = lastBreak === -1 ? '' : trimmed.slice(0, lastBreak);
+	const markerLine = trimmed.slice(lastBreak + 1);
+	return `${above.trimEnd()}${entry.replace(/\n*$/, '\n')}\n${markerLine}\n`;
+}
+
 export function buildContinuePrompt(loop: LoopConfig): string {
 	const template = loop.continuePrompt ?? DEFAULT_CONTINUE_PROMPT;
 	return substituteVariables(template, {journalPath: loopJournalPath(loop)});

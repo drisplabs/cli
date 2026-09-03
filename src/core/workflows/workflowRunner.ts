@@ -17,8 +17,14 @@ import {
 	readJournal,
 	JOURNAL_SKELETON_MARKER,
 	demoteTerminalMarkers,
+	insertAboveTerminalMarker,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
+import {
+	formatSteerJournalEntry,
+	type DeliveredSteer,
+	type QueuedSteer,
+} from './steer';
 import {
 	step,
 	createInitialRun,
@@ -74,6 +80,12 @@ export type WorkflowRunnerInput = {
 	 */
 	onWarning?: (message: string) => void;
 	/**
+	 * Receives the Steers the Runner drained into a Turn's prompt (#191), each
+	 * tagged with the Turn it was delivered into — called just before that
+	 * Turn starts, after the Journal entry is written. Optional.
+	 */
+	onSteerDelivered?: (steers: DeliveredSteer[]) => void;
+	/**
 	 * Consulted after each Turn, before failure classification. A non-null
 	 * result parks the Run in `awaiting_attention` (ADR 0014, #189) — used when
 	 * a Turn was interrupted because an ask rule fired, the agent asked a
@@ -128,6 +140,14 @@ export type WorkflowRunnerHandle = {
 	result: Promise<WorkflowRunResult>;
 	cancel: () => void;
 	kill: () => void;
+	/**
+	 * Queue a Steer (#191). It is never injected into a Turn in flight: it
+	 * waits for the next Turn boundary and is delivered, with any others in
+	 * arrival order, at the head of that Turn's prompt. A Steer sent before
+	 * the first Turn starts heads the first prompt. Returns `false` once the
+	 * Run has ended — a parked Run is steered through its continue instead.
+	 */
+	steer: (steer: QueuedSteer) => boolean;
 };
 
 const NULL_TOKENS: TokenUsage = {
@@ -203,6 +223,39 @@ function openRunSection(
 		);
 	} catch {
 		// A Journal that cannot be rewritten is left as-is; the Run still starts.
+	}
+}
+
+/**
+ * Record delivered Steers in the Journal (#191): each with its origin, when it
+ * arrived, and the Turn it was delivered into. Written above any Terminal
+ * Marker the Journal ends with — on a wake the answered `NEEDS_HUMAN` line
+ * stays last, as the agent left it — so the entry never reads as prose after
+ * a marker. Best-effort, like the Run-section banner.
+ */
+function recordSteersInJournal(
+	journalPath: string,
+	steers: readonly QueuedSteer[],
+	iteration: number,
+	markers: JournalMarkers,
+): void {
+	let existing: string;
+	try {
+		existing = fs.readFileSync(journalPath, 'utf-8');
+	} catch {
+		return;
+	}
+	const entries = steers
+		.map(steer => formatSteerJournalEntry(steer, iteration))
+		.join('');
+	try {
+		fs.writeFileSync(
+			journalPath,
+			insertAboveTerminalMarker(existing, entries, markers),
+			'utf-8',
+		);
+	} catch {
+		// A Journal that cannot be rewritten is left as-is; the Turn still starts.
 	}
 }
 
@@ -372,6 +425,11 @@ export function createWorkflowRunner(
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let stopReason: string | undefined;
 	let memory: RunMemory | undefined;
+	// Steers (#191) that arrive before the interpreter loop is up are held
+	// here and seeded into the first Turn; once the loop runs, `applySteer`
+	// feeds them to the reducer instead.
+	const preStartSteers: QueuedSteer[] = [];
+	let applySteer: ((steer: QueuedSteer) => boolean) | null = null;
 
 	const journalResolved = resolveJournalPath({
 		projectDir: input.projectDir,
@@ -472,9 +530,23 @@ export function createWorkflowRunner(
 			initialContinuation: input.initialContinuation,
 			waking: !!(input.resumeRunId && loop?.enabled),
 			resumedMemory: input.resumedRunMemory,
+			initialSteers: preStartSteers.splice(0),
 		});
 		let phase: RunPhase = initial.phase;
 		memory = initial.memory;
+
+		// From here on a Steer goes straight to the reducer: it only queues
+		// (same phase, persisted), so applying it while a Turn is in flight is
+		// safe and the queue is drained by whichever transition next starts a
+		// Turn (#191).
+		applySteer = steer => {
+			if (isTerminalPhase(phase)) return false;
+			const stepResult = step(phase, memory!, {type: 'steer', steer}, cfg);
+			phase = stepResult.phase;
+			memory = stepResult.memory;
+			runSideEffects(stepResult.actions);
+			return true;
+		};
 
 		// --- action execution -------------------------------------------------
 
@@ -661,19 +733,18 @@ export function createWorkflowRunner(
 		}
 
 		/**
-		 * Execute every non-kickoff (side-effect) action in order, then the
-		 * kickoff action (if any) — a phase's actions always carry at most one.
-		 * Returns the event the kickoff action produced, or `null` for a
-		 * terminal phase's actions (persist only, no kickoff).
+		 * Execute every non-kickoff (side-effect) action in order and return
+		 * the kickoff action, if any — a phase's actions always carry at most
+		 * one.
 		 */
-		async function runActions(actions: RunAction[]): Promise<RunEvent | null> {
+		function runSideEffects(actions: RunAction[]): RunAction | null {
 			let kickoff: RunAction | null = null;
 			for (const action of actions) {
 				if (isKickoffAction(action)) {
 					kickoff = action;
 					continue;
 				}
-				// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- kickoff action types are filtered out above by isKickoffAction and handled in the switch below
+				// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- kickoff action types are filtered out above by isKickoffAction and handled by runActions
 				switch (action.type) {
 					case 'persist':
 						persist();
@@ -690,8 +761,39 @@ export function createWorkflowRunner(
 					case 'degrade_handover':
 						input.handover?.onDegraded?.(action.handle);
 						break;
+					case 'steers_delivered':
+						if (journalAbsPath && loop?.enabled) {
+							recordSteersInJournal(
+								journalAbsPath,
+								action.steers,
+								action.iteration,
+								{
+									completionMarker: loop.completionMarker,
+									needsHumanMarker: loop.needsHumanMarker,
+									blockedMarker: loop.blockedMarker,
+								},
+							);
+						}
+						input.onSteerDelivered?.(
+							action.steers.map(steer => ({
+								...steer,
+								iteration: action.iteration,
+							})),
+						);
+						break;
 				}
 			}
+			return kickoff;
+		}
+
+		/**
+		 * Execute every non-kickoff (side-effect) action in order, then the
+		 * kickoff action (if any). Returns the event the kickoff action
+		 * produced, or `null` for a terminal phase's actions (persist only, no
+		 * kickoff).
+		 */
+		async function runActions(actions: RunAction[]): Promise<RunEvent | null> {
+			const kickoff = runSideEffects(actions);
 			if (!kickoff) return null;
 			// eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- non-kickoff action types are handled in the switch above
 			switch (kickoff.type) {
@@ -712,21 +814,7 @@ export function createWorkflowRunner(
 
 		// --- interpreter loop ---------------------------------------------------
 
-		const bootstrapActions: RunAction[] =
-			phase.kind === 'turn_in_flight'
-				? [
-						{
-							type: 'start_turn',
-							prompt: phase.prompt,
-							continuation: phase.continuation,
-							configOverride: phase.configOverride,
-						},
-					]
-				: phase.kind === 'backing_off'
-					? [{type: 'wait', ms: phase.ms}]
-					: [];
-
-		let pendingEvent = await runActions(bootstrapActions);
+		let pendingEvent = await runActions(initial.actions);
 
 		while (pendingEvent) {
 			const stepResult = step(phase, memory, pendingEvent, cfg);
@@ -762,6 +850,11 @@ export function createWorkflowRunner(
 		kill() {
 			cancelled = true;
 			input.abortCurrentTurn?.();
+		},
+		steer(steer) {
+			if (applySteer) return applySteer(steer);
+			preStartSteers.push(steer);
+			return true;
 		},
 	};
 }
