@@ -160,6 +160,50 @@ describe('runExecCommand', () => {
 		);
 	});
 
+	it('queues --steer texts as local steers, in order, on a steer queue (#191)', async () => {
+		const runExecFn = vi.fn().mockResolvedValue({exitCode: 0});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {
+					...BASE_FLAGS,
+					steers: ['use the other branch', '  ', 'be brief'],
+				},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn, now: () => 4_242},
+		);
+
+		const options = runExecFn.mock.calls[0]![0] as {
+			steerQueue?: {subscribe: (listener: (s: unknown) => void) => void};
+		};
+		expect(options.steerQueue).toBeDefined();
+		const received: unknown[] = [];
+		options.steerQueue!.subscribe(steer => received.push(steer));
+		expect(received).toEqual([
+			{text: 'use the other branch', origin: 'local', receivedAt: 4_242},
+			{text: 'be brief', origin: 'local', receivedAt: 4_242},
+		]);
+	});
+
+	it('passes no steer queue when --steer is absent', async () => {
+		const runExecFn = vi.fn().mockResolvedValue({exitCode: 0});
+
+		await runExecCommand(
+			{
+				projectDir: '/tmp',
+				prompt: 'hello',
+				flags: {...BASE_FLAGS},
+				runtimeConfig: BASE_RUNTIME_CONFIG,
+			},
+			{runExecFn},
+		);
+
+		expect(runExecFn.mock.calls[0]![0]).not.toHaveProperty('steerQueue');
+	});
+
 	it('forwards a stripped personal capabilities summary (name + layer only)', async () => {
 		const runExecFn = vi
 			.fn()

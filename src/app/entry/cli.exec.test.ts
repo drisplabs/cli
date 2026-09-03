@@ -338,6 +338,56 @@ describe('cli exec mode', () => {
 		}
 	});
 
+	it('queues repeated --steer texts for the Run, in order, alongside --continue (#191)', async () => {
+		getMostRecentAthenaSessionMock.mockReturnValue({
+			id: 'athena-1',
+			adapterSessionIds: ['adapter-1'],
+		});
+
+		const cli = await runCli([
+			'run',
+			'staging',
+			'--continue',
+			'--steer',
+			'use the other branch',
+			'--steer',
+			'be brief',
+		]);
+		try {
+			const options = runExecMock.mock.calls.at(-1)![0] as {
+				athenaSessionId: string;
+				steerQueue?: {subscribe: (listener: (s: unknown) => void) => void};
+			};
+			expect(options.athenaSessionId).toBe('athena-1');
+			const received: unknown[] = [];
+			options.steerQueue!.subscribe(steer => received.push(steer));
+			expect(received).toEqual([
+				expect.objectContaining({
+					text: 'use the other branch',
+					origin: 'local',
+				}),
+				expect.objectContaining({text: 'be brief', origin: 'local'}),
+			]);
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.SUCCESS);
+		} finally {
+			cli.restore();
+		}
+	});
+
+	it('--steer is rejected outside run mode', async () => {
+		const cli = await runCli(['--steer', 'nope']);
+		try {
+			expect(runExecMock).not.toHaveBeenCalled();
+			expect(renderMock).not.toHaveBeenCalled();
+			expect(cli.exitSpy).toHaveBeenCalledWith(RUN_EXIT_CODE.USAGE);
+			expect(cli.errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining('--steer is only supported in run mode'),
+			);
+		} finally {
+			cli.restore();
+		}
+	});
+
 	it('fails when explicit --continue session id is unknown', async () => {
 		getSessionMetaMock.mockReturnValue(null);
 

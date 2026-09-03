@@ -283,6 +283,7 @@ const cli = meow(
 			--theme         Color theme: dark (default), light, or high-contrast
 			--ascii         Use ASCII-only UI glyphs for compatibility
 			--continue      Resume most recent run session, or use --continue=<athenaSessionId> (run mode)
+			--steer         Queue a human steer for the head of the next Turn's prompt (repeatable; run mode)
 			--json          Emit JSONL events to stdout (run mode)
 			--output-last-message  Write final assistant message to a file (run mode)
 			--ephemeral     Do not persist Athena session data (run mode)
@@ -355,6 +356,10 @@ const cli = meow(
 			},
 			continue: {
 				type: 'string',
+			},
+			steer: {
+				type: 'string',
+				isMultiple: true,
 			},
 			json: {
 				type: 'boolean',
@@ -697,6 +702,12 @@ async function main(): Promise<void> {
 		console.error(warning);
 	}
 
+	if ((cli.flags.steer ?? []).length > 0 && !isRunCommand) {
+		console.error('Error: --steer is only supported in run mode.');
+		await exitWith(RUN_EXIT_CODE.USAGE);
+		return;
+	}
+
 	if (cli.flags.dryRun) {
 		if (!isRunCommand) {
 			console.error('Error: --dry-run is only supported in exec mode.');
@@ -742,6 +753,7 @@ async function main(): Promise<void> {
 			prompt: commandArgs[0]!,
 			flags: {
 				continueFlag: cli.flags.continue,
+				steers: cli.flags.steer,
 				json: cli.flags.json,
 				outputLastMessage: cli.flags.outputLastMessage,
 				ephemeral: cli.flags.ephemeral,

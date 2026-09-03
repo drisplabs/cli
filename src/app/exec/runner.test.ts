@@ -13,6 +13,7 @@ import type {
 } from '../../core/runtime/types';
 import {runExec} from './runner';
 import {RUN_EXIT_CODE} from './types';
+import {createSteerQueue, STEER_BLOCK_OPEN} from '../../core/workflows/steer';
 import {
 	createSessionStore,
 	listAwaitingAttentionRuns,
@@ -1823,5 +1824,139 @@ describe('runExec', () => {
 		expect(result.exitCode).toBe(RUN_EXIT_CODE.RUNTIME);
 		expect(result.failure?.kind).toBe('process');
 		expect(result.failure?.message).toContain('runtime init failed');
+	});
+
+	it('queues a steer received mid-Turn and delivers it at the head of the next Turn (#191)', async () => {
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+		const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-steer-'));
+		const journalPath = path.join(projectDir, 'journal.md');
+		const steerQueue = createSteerQueue();
+
+		const spawns: SpawnArgs[] = [];
+		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
+			spawns.push(opts);
+			const spawnIndex = spawns.length;
+			const child = makeChildProcess();
+			setImmediate(() => {
+				if (spawnIndex === 1) {
+					// The hub steers while Turn 1 is still running: it must wait.
+					steerQueue.push({
+						text: 'use the other branch',
+						origin: 'hub',
+						receivedAt: 4_242,
+					});
+					expect(spawns).toHaveLength(1);
+					fs.writeFileSync(journalPath, 'turn 1 progress', 'utf-8');
+				} else {
+					fs.writeFileSync(journalPath, '<!-- DONE -->', 'utf-8');
+				}
+				opts.onExit?.(0);
+			});
+			return child;
+		});
+
+		try {
+			const result = await runExec({
+				prompt: 'hello',
+				projectDir,
+				harness: 'claude-code',
+				isolationConfig: {},
+				ephemeral: true,
+				json: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+				steerQueue,
+				workflow: {
+					name: 'test-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						completionMarker: '<!-- DONE -->',
+						maxIterations: 5,
+						journalPath: 'journal.md',
+					},
+				},
+			});
+
+			expect(result.success).toBe(true);
+			expect(spawns).toHaveLength(2);
+			expect(spawns[0]!.prompt).not.toContain('use the other branch');
+			expect(spawns[1]!.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+			expect(spawns[1]!.prompt).toContain('via hub');
+			expect(spawns[1]!.prompt).toContain('use the other branch');
+
+			const events = stdout
+				.read()
+				.split('\n')
+				.filter(line => line.length > 0)
+				.map(line => JSON.parse(line) as {type: string; data: unknown});
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: 'run.steer.queued',
+					data: {
+						origin: 'hub',
+						receivedAt: 4_242,
+						text: 'use the other branch',
+					},
+				}),
+			);
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: 'run.steer',
+					data: {
+						iteration: 2,
+						origin: 'hub',
+						receivedAt: 4_242,
+						text: 'use the other branch',
+					},
+				}),
+			);
+			const queuedIndex = events.findIndex(e => e.type === 'run.steer.queued');
+			const deliveredIndex = events.findIndex(e => e.type === 'run.steer');
+			expect(queuedIndex).toBeLessThan(deliveredIndex);
+		} finally {
+			fs.rmSync(projectDir, {recursive: true, force: true});
+		}
+	});
+
+	it('delivers a steer queued before the Run starts at the head of the first Turn (#191)', async () => {
+		const runtime = new MockRuntime();
+		const stderr = createWriteCapture();
+		const stdout = createWriteCapture();
+		const steerQueue = createSteerQueue();
+		steerQueue.push({text: 'be brief', origin: 'local', receivedAt: 1});
+
+		const spawns: SpawnArgs[] = [];
+		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
+			spawns.push(opts);
+			const child = makeChildProcess();
+			setImmediate(() => opts.onExit?.(0));
+			return child;
+		};
+
+		const result = await runExec({
+			prompt: 'hello',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			stdout: stdout.writer,
+			stderr: stderr.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess,
+			steerQueue,
+		});
+
+		expect(result.success).toBe(true);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0]!.prompt.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(spawns[0]!.prompt).toContain('via local');
+		expect(spawns[0]!.prompt.endsWith('hello')).toBe(true);
+		expect(stderr.read()).toContain('steer delivered into Turn 1 (via local)');
 	});
 });
