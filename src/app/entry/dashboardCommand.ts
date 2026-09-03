@@ -31,8 +31,8 @@ import {
 } from '../../infra/config/attachmentMirror';
 import type {AttachmentReconcilerFetchInput} from '../dashboard/attachmentReconciler';
 import {
-	daemonStatePaths,
-	type DaemonStatePaths,
+	runnerStatePaths,
+	type RunnerStatePaths,
 } from '../../infra/daemon/stateDir';
 import {readPidLock} from '../../infra/daemon/pidLock';
 import {
@@ -160,7 +160,7 @@ export type DashboardCommandDeps = {
 		timeoutMs?: number;
 	}) => Promise<RuntimeDaemonStopResult>;
 	queryRuntimeDaemon?: (req: UdsRequest) => Promise<UdsResponse>;
-	daemonStatePaths?: () => DaemonStatePaths;
+	runnerStatePaths?: () => RunnerStatePaths;
 	tailDaemonLog?: (opts: {tail: number; follow: boolean}) => Promise<number>;
 	installServiceUnit?: () => ServiceInstallResult;
 	/**
@@ -1438,7 +1438,7 @@ const SOCKET_PROBE_INTERVAL_MS = 200;
 async function defaultStartRuntimeDaemon(opts: {
 	log: (msg: string) => void;
 }): Promise<RuntimeDaemonStartResult> {
-	const paths = daemonStatePaths();
+	const paths = runnerStatePaths();
 
 	// If a daemon is already alive, send a stop+start cycle so it picks up the
 	// rotated refresh token from the just-completed pair. Falling through into
@@ -1589,7 +1589,7 @@ async function defaultStartRuntimeDaemon(opts: {
 async function defaultStopRuntimeDaemon(
 	opts: {timeoutMs?: number} = {},
 ): Promise<RuntimeDaemonStopResult> {
-	const paths = daemonStatePaths();
+	const paths = runnerStatePaths();
 	const existing = readPidLock(paths.pidPath);
 	if (existing.state !== 'held') {
 		return {ok: true, wasRunning: false, message: 'daemon not running'};
@@ -1626,7 +1626,7 @@ async function defaultStopRuntimeDaemon(
 async function defaultQueryRuntimeDaemon(
 	req: UdsRequest,
 ): Promise<UdsResponse> {
-	const paths = daemonStatePaths();
+	const paths = runnerStatePaths();
 	const existing = readPidLock(paths.pidPath);
 	if (existing.state !== 'held') {
 		return {ok: false, error: 'daemon not running'};
@@ -1638,7 +1638,7 @@ async function defaultTailDaemonLog(opts: {
 	tail: number;
 	follow: boolean;
 }): Promise<number> {
-	const paths = daemonStatePaths();
+	const paths = runnerStatePaths();
 	let stream: fs.ReadStream | null = null;
 	let watcher: fs.FSWatcher | null = null;
 	try {

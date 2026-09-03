@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {daemonStatePaths} from '../../infra/daemon/stateDir';
+import {runnerStatePaths} from '../../infra/daemon/stateDir';
 import type {AssignmentRejectedReason} from '@drisp/protocol';
 import type {ValidatedAssignment} from './remoteRunExecutor';
 
@@ -34,7 +34,7 @@ export function resolveRemoteWorkspace(
 
 	const sessionId = spec.athenaSessionId ?? spec.sessionId;
 	const deploymentSlug = deploymentSlugFromUrl(options.dashboardUrl);
-	const stateDir = daemonStatePaths(options.env).dir;
+	const stateDir = runnerStatePaths(options.env).dir;
 	const projectDir = sessionId
 		? path.join(
 				stateDir,

@@ -1,7 +1,6 @@
 import type Database from 'better-sqlite3';
 import type {FeedEvent} from '../../core/feed/types';
-import {openVersionedDb} from '../../infra/db/openVersionedDb';
-import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
+import {openRunnerDb, type RunnerDb} from '../runner/runnerDb';
 
 export type DashboardFeedOrigin = 'local' | 'dashboard';
 
@@ -42,36 +41,19 @@ export type DashboardFeedOutbox = {
 	close(): void;
 };
 
+/**
+ * The outbox is a table in `runner.db` (see `runnerDb.ts`, which owns the
+ * schema). Pass the owner's open handle to share it — `close()` then leaves
+ * the handle open; with no handle the outbox opens `runner.db` itself (a
+ * local `drisp run` or the TUI enqueueing without a runner in the process)
+ * and owns that connection.
+ */
 export type CreateDashboardFeedOutboxOptions = {
+	/** An open `runner.db` handle to share (the runner's). */
+	db?: Database.Database;
+	/** Open `runner.db` at this path instead of the state dir's (tests). */
 	dbPath?: string;
 };
-
-function dashboardFeedOutboxPath(): string {
-	return `${ensureDaemonStateDir().dir}/dashboard-feed-outbox.db`;
-}
-
-function initOutboxSchema(db: Database.Database): void {
-	db.exec(`
-		CREATE TABLE IF NOT EXISTS dashboard_feed_outbox (
-			delivery_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-			instance_id TEXT NOT NULL,
-			athena_session_id TEXT NOT NULL,
-			run_id TEXT NOT NULL,
-			origin TEXT NOT NULL CHECK(origin IN ('local', 'dashboard')),
-			event_id TEXT NOT NULL,
-			emitted_at INTEGER NOT NULL,
-			feed_event_json TEXT NOT NULL,
-			attempt INTEGER NOT NULL DEFAULT 0,
-			next_attempt_at INTEGER NOT NULL,
-			last_error TEXT,
-			acked_at INTEGER,
-			UNIQUE(instance_id, event_id)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_dashboard_feed_outbox_pending
-			ON dashboard_feed_outbox(acked_at, next_attempt_at, delivery_seq);
-	`);
-}
 
 function makeEnvelope(input: {
 	instanceId: string;
@@ -96,9 +78,12 @@ function makeEnvelope(input: {
 export function createDashboardFeedOutbox(
 	options: CreateDashboardFeedOutboxOptions = {},
 ): DashboardFeedOutbox {
-	const db = openVersionedDb(options.dbPath ?? dashboardFeedOutboxPath(), {
-		migrate: initOutboxSchema,
-	});
+	const owned: RunnerDb | null = options.db
+		? null
+		: openRunnerDb({
+				...(options.dbPath !== undefined ? {dbPath: options.dbPath} : {}),
+			});
+	const db = options.db ?? owned!.db;
 
 	const insert = db.prepare(`
 		INSERT OR IGNORE INTO dashboard_feed_outbox (
@@ -229,7 +214,7 @@ export function createDashboardFeedOutbox(
 			}
 		},
 		close() {
-			db.close();
+			owned?.close();
 		},
 	};
 }

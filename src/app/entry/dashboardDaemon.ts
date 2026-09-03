@@ -3,7 +3,7 @@ import {refreshDashboardAccessToken} from '../../infra/config/dashboardAuth';
 import {readDashboardClientConfig} from '../../infra/config/dashboardClient';
 import {acquirePidLock} from '../../infra/daemon/pidLock';
 import {openDaemonLog} from '../../infra/daemon/logFile';
-import {ensureDaemonStateDir} from '../../infra/daemon/stateDir';
+import {ensureRunnerStateDir} from '../../infra/daemon/stateDir';
 import {
 	startUdsServer,
 	type UdsHandler,
@@ -21,7 +21,7 @@ import {
  *   - the supervising launchd/systemd unit restart-loops on non-zero
  */
 export async function runDashboardDaemonEntry(): Promise<number> {
-	const stateDir = ensureDaemonStateDir();
+	const stateDir = ensureRunnerStateDir();
 	const writer = openDaemonLog(stateDir.logPath);
 	const log = (level: 'debug' | 'info' | 'warn' | 'error', message: string) =>
 		writer.write(level, message);

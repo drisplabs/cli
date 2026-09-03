@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {daemonStatePaths} from './stateDir';
+import {runnerStatePaths} from './stateDir';
 
 export type ServiceInstallResult = {
 	ok: boolean;
@@ -47,7 +47,7 @@ export function installServiceUnit(
 		const target =
 			options.targetPath ??
 			path.join(home, 'Library', 'LaunchAgents', 'ai.drisp.daemon.plist');
-		const paths = daemonStatePaths(env);
+		const paths = runnerStatePaths(env);
 		const plist = renderLaunchdPlist({
 			label: 'ai.drisp.daemon',
 			nodeBinary: options.nodeBinary,
