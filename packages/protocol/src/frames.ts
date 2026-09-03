@@ -256,6 +256,8 @@ export type StopFrame = z.infer<typeof StopFrameSchema>;
 export type SteerFrame = z.infer<typeof SteerFrameSchema>;
 export type NeedsHumanFrame = z.infer<typeof NeedsHumanFrameSchema>;
 export type EventFrame = z.infer<typeof EventFrameSchema>;
+export type RunStreamEventFrame = z.infer<typeof RunStreamEventFrameSchema>;
+export type FeedStreamEventFrame = z.infer<typeof FeedStreamEventFrameSchema>;
 export type JobAssignmentFrame = z.infer<typeof JobAssignmentFrameSchema>;
 export type DashboardDecisionFrame = z.infer<
 	typeof DashboardDecisionFrameSchema

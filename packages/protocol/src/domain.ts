@@ -137,8 +137,14 @@ export const InterruptionSchema = z.discriminatedUnion('kind', [
 	z.object({
 		...interruptionBase,
 		kind: z.literal('question'),
-		/** The pending request an `answer` frame must address. */
-		requestId: z.string(),
+		/**
+		 * The pending request an `answer` frame must address. Absent when the
+		 * runner interrupted the Turn instead of leaving the question waiting
+		 * (an unattended Workflow Run kills the Agent Session on a question,
+		 * so there is no request left to answer); such a Run is woken with a
+		 * `steer` carrying the human's guidance.
+		 */
+		requestId: z.string().optional(),
 		question: z.string().optional(),
 	}),
 	z.object({
