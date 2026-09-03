@@ -11,7 +11,7 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
-import type {JournalMarkers} from './journalReader';
+import type {JournalMarkers, JournalTaskProjection} from './journalReader';
 import {createWorkflowRunState, resolveJournalPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
 import {
@@ -19,8 +19,10 @@ import {
 	JOURNAL_SKELETON_MARKER,
 	demoteTerminalMarkers,
 	insertAboveTerminalMarker,
+	projectJournalTasks,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
+import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 import {createPhaseTracker} from './turnProtocolBlock';
 import {
 	formatSteerJournalEntry,
@@ -77,10 +79,11 @@ export type WorkflowRunnerInput = {
 	 * A previously persisted `RunMemory` (ADR 0016 §2, §6) to rehydrate from
 	 * instead of starting fresh — so a resumed Run continues its Iteration,
 	 * Nudge streak, and Retry streak budgets rather than restarting them.
-	 * Optional and additive: omitted, this Runner behaves exactly as before —
-	 * no caller is wired to load and pass this yet (that plumbing is left to
-	 * a follow-up; the mechanism itself is exercised directly by
-	 * `runMachine.test.ts`).
+	 * Optional and additive: omitted, this Runner behaves exactly as before.
+	 * The headless `runExec` path (`src/app/exec/runner.ts`) derives this from
+	 * `store.getLatestRun()` when `resumeRunId` is set; the interactive
+	 * `useWorkflowSessionController` path does not yet pass `resumeRunId` at
+	 * all, so it has no wake-from-suspend of its own to wire this through.
 	 */
 	resumedRunMemory?: RunMemory;
 	/**
@@ -90,6 +93,14 @@ export type WorkflowRunnerInput = {
 	 * a stored answer to it without asking again.
 	 */
 	parkedInterruption?: Interruption;
+	/**
+	 * The persisted `stop_reason` of the resumed Run (ADR 0016 §2, §6/§7) —
+	 * only meaningful alongside `resumedRunMemory` when `resumeRunId` names a
+	 * Run that was `awaiting_attention`. Restores the bound-tripped message a
+	 * wake's `awaiting_attention` phase carries until the woken Turn advances
+	 * it.
+	 */
+	resumedStopReason?: string;
 
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
@@ -158,6 +169,15 @@ export type WorkflowRunnerInput = {
 		 */
 		onDegraded?: (handle: string) => void;
 	};
+	/**
+	 * Task-tool projection seam (ADR 0015 §7). Called best-effort after every
+	 * `persist` action with the Journal's `## Units` table + unit-record
+	 * frontmatter projected into a harness-neutral shape — or not called at
+	 * all when {@link projectJournalTasks} finds no table to project. A parse
+	 * miss or a throw from this callback is swallowed: this can never fail a
+	 * Turn or a Run. Optional — omitted, the Runner behaves exactly as before.
+	 */
+	projectTasks?: (tasks: JournalTaskProjection[]) => void;
 };
 
 export type WorkflowRunResult = {
@@ -635,6 +655,7 @@ export function createWorkflowRunner(
 			resumedMemory: input.resumedRunMemory,
 			initialSteers: preStartSteers.splice(0),
 			parkedInterruption: input.parkedInterruption,
+			awaitingAttentionStopReason: input.resumedStopReason,
 		});
 		let phase: RunPhase = initial.phase;
 		memory = initial.memory;
@@ -791,6 +812,9 @@ export function createWorkflowRunner(
 
 			input.handover?.onForkStateChange?.(true);
 			let forkOk = false;
+			// Classified only on failure (ADR 0016 §8) — a successful fork never
+			// consults this, so it defaults to non-transient until proven otherwise.
+			let transient = false;
 			try {
 				const forkResult = await input.startTurn({
 					prompt: buildHandoffInvocationPrompt(handoffAbsPath),
@@ -802,10 +826,33 @@ export function createWorkflowRunner(
 					!forkResult.error &&
 					(forkResult.exitCode === null || forkResult.exitCode === 0) &&
 					fs.existsSync(handoffAbsPath);
-			} catch {
+				if (!forkOk) {
+					transient =
+						classifyTurnFailure({
+							errorMessage: forkResult.error?.message,
+							lastStderr: forkResult.stderrTail ?? forkResult.lastStderr,
+							lastMessage: forkResult.streamMessage,
+						}).kind === 'transient';
+				}
+			} catch (e) {
 				forkOk = false;
+				transient =
+					classifyTurnFailure({
+						errorMessage: e instanceof Error ? e.message : String(e),
+					}).kind === 'transient';
 			} finally {
 				input.handover?.onForkStateChange?.(false);
+			}
+
+			// Fidelity metric only (ADR 0015 §8) — a read-only stat, never a write,
+			// so this never touches the one-owner property (ADR 0004).
+			let handoffSizeBytes: number | null = null;
+			if (forkOk) {
+				try {
+					handoffSizeBytes = fs.statSync(handoffAbsPath).size;
+				} catch {
+					handoffSizeBytes = null;
+				}
 			}
 
 			return {
@@ -813,6 +860,8 @@ export function createWorkflowRunner(
 				ok: forkOk,
 				cancelled,
 				handoffPath: handoffAbsPath,
+				handoffSizeBytes,
+				transient,
 			};
 		}
 
@@ -853,6 +902,15 @@ export function createWorkflowRunner(
 				switch (action.type) {
 					case 'persist':
 						persist();
+						if (journalAbsPath && input.projectTasks) {
+							try {
+								const tasks = projectJournalTasks(journalAbsPath);
+								if (tasks) input.projectTasks(tasks);
+							} catch {
+								// A parse miss or a throwing callback can never fail a Turn
+								// or a Run (ADR 0015 §7: degrade to no projection).
+							}
+						}
 						break;
 					case 'warn':
 						input.onWarning?.(action.message);
@@ -927,7 +985,27 @@ export function createWorkflowRunner(
 
 		// --- interpreter loop ---------------------------------------------------
 
-		let pendingEvent = await runActions(initial.actions);
+		// Wake-from-attention as a row of the transition table (ADR 0016 §7): a
+		// resumed Run whose persisted phase is `awaiting_attention` has no
+		// kickoff action of its own — the human's reply is what woke it — so
+		// the interpreter synthesizes the `woken` event here and runs `step()`
+		// once, immediately, using its actions (which include the `persist` that
+		// checkpoints the wake before the Turn it kicks off starts) as the
+		// bootstrap actions below, exactly like the kickoff actions
+		// `createInitialRun` returns for every other initial phase.
+		let bootstrapActions: RunAction[] = initial.actions;
+		if (phase.kind === 'awaiting_attention') {
+			const wokenEvent: RunEvent = {
+				type: 'woken',
+				continuation: input.initialContinuation ?? {mode: 'fresh'},
+			};
+			const stepResult = step(phase, memory, wokenEvent, cfg);
+			phase = stepResult.phase;
+			memory = stepResult.memory;
+			bootstrapActions = stepResult.actions;
+		}
+
+		let pendingEvent = await runActions(bootstrapActions);
 
 		while (pendingEvent) {
 			const stepResult = step(phase, memory, pendingEvent, cfg);

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.28](https://github.com/drisplabs/cli/compare/cli-v0.5.27...cli-v0.5.28) (2026-09-03)
+
+
+### Features
+
+* **workflows:** land the ADR 0016 continuation fixes as transition-table rows ([#194](https://github.com/drisplabs/cli/issues/194)) ([7d63442](https://github.com/drisplabs/cli/commit/7d6344281beab85c4f6bbe224e60a1c366096a37))
+* **workflows:** tracker size nudge, Handoff fold-in, task-tool projection (ADR 0015) ([#193](https://github.com/drisplabs/cli/issues/193)) ([f457d11](https://github.com/drisplabs/cli/commit/f457d11de5979a00d61b1318e7636e93d637fb7d))
+
 ## [0.5.27](https://github.com/drisplabs/cli/compare/cli-v0.5.26...cli-v0.5.27) (2026-08-26)
 
 

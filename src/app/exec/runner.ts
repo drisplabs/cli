@@ -4,13 +4,18 @@ import type {ControllerCallbacks} from '../../core/controller/runtimeController'
 import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
 import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
+import {buildSyntheticTaskEvent} from '../../core/feed/syntheticEvents';
+import type {JournalTaskProjection} from '../../core/workflows/journalReader';
 import {
 	type Runtime,
 	type RuntimeDecision,
 	type RuntimeEvent,
 } from '../../core/runtime/types';
 import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
-import type {RunInterruption} from '../../core/workflows/runMachine';
+import {
+	deserializeRunMemory,
+	type RunInterruption,
+} from '../../core/workflows/runMachine';
 import {
 	buildUnattendedRules,
 	matchRule,
@@ -786,6 +791,23 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			? {mode: 'resume', handle: options.adapterResumeSessionId}
 			: {mode: 'fresh'};
 
+		// Waking a suspended Run (ADR 0016 §2/§6): rehydrate its persisted
+		// `RunMemory` and stop reason from the session DB rather than letting
+		// `createWorkflowRunner` restart the Run's budgets from zero. This
+		// session's store is scoped to `athenaSessionId`, so `getLatestRun()`
+		// names the very Run `resumeRunId` points at — guarded defensively in
+		// case a future caller ever passes a foreign run id.
+		let resumedRunMemory;
+		let resumedStopReason;
+		if (options.resumeRunId) {
+			const resumedRun = store.getLatestRun();
+			if (resumedRun?.id === options.resumeRunId) {
+				resumedRunMemory =
+					deserializeRunMemory(resumedRun.runMemoryJson) ?? undefined;
+				resumedStopReason = resumedRun.stopReason;
+			}
+		}
+
 		const handle = createWorkflowRunner({
 			sessionId: athenaSessionId,
 			projectDir: options.projectDir,
@@ -827,6 +849,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				publishFeedEvents([feedEvent]);
 				output.emitJsonEvent('run.phase', phase);
 			},
+			resumedRunMemory,
+			resumedStopReason,
 			startTurn: async turnInput => {
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
@@ -903,6 +927,50 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 						receivedAt: steer.receivedAt,
 						text: steer.text,
 					});
+				}
+			},
+			// Task-tool projection (ADR 0015 §7): the Journal's `## Units` table +
+			// unit-record frontmatter, diffed against what the Feed already knows
+			// and reconciled through the same `task.created`/`task.completed`
+			// path a live TodoWrite/TaskCreate/TaskUpdate call would take.
+			projectTasks: (tasks: JournalTaskProjection[]) => {
+				const known = new Map(
+					mapper
+						.getTasks()
+						.filter(task => task.taskId)
+						.map(task => [task.taskId!, task] as const),
+				);
+				const newEvents: FeedEvent[] = [];
+				for (const task of tasks) {
+					const existing = known.get(task.taskId);
+					if (!existing) {
+						newEvents.push(
+							...mapper.mapEvent(
+								buildSyntheticTaskEvent('task.created', athenaSessionId, {
+									task_id: task.taskId,
+									task_subject: task.content,
+								}),
+							),
+						);
+					}
+					if (task.status === 'completed' && existing?.status !== 'completed') {
+						newEvents.push(
+							...mapper.mapEvent(
+								buildSyntheticTaskEvent('task.completed', athenaSessionId, {
+									task_id: task.taskId,
+									task_subject: task.content,
+								}),
+							),
+						);
+					}
+				}
+				if (newEvents.length > 0) {
+					safePersist(
+						store,
+						() => store.recordFeedEvents(newEvents),
+						message => output.warn(message),
+						'recordFeedEvents failed',
+					);
 				}
 			},
 		});

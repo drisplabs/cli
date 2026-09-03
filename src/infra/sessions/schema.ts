@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -81,6 +81,13 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			-- transition (Nudge, Retry, human-resume, Handover) depends on it
 			-- surviving a process restart (ADR 0014).
 			adapter_session_id TEXT,
+			-- Opaque JSON snapshot of the run-loop reducer's RunMemory (nudge/
+			-- retry streaks, last journal hash, in-flight stop prompt/
+			-- continuation), so a resumed or woken process rehydrates the
+			-- reducer instead of restarting its counters (ADR 0016). Written
+			-- and read only by runMachine.ts's serializeRunMemory/
+			-- deserializeRunMemory — this layer stores it opaquely.
+			run_memory_json TEXT,
 			-- The structured Interruption a Run parked in awaiting_attention
 			-- carries (a @drisp/protocol Interruption as JSON; #190). NULL on a
 			-- running or ended Run, and cleared when a parked Run is woken.
@@ -229,22 +236,53 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 		}
 	).version;
 	if (versionAfterV8 === 8) {
-		// v9 adds the nullable Interruption a parked Run carries (#190), so
-		// `drisp runs` and a wake can see the deferred question. Guarded like
-		// v8: a database that got workflow_runs from the base DDL above already
-		// has the column.
-		const hasColumn =
+		// v9 adds the nullable opaque RunMemory snapshot (nudge/retry streaks,
+		// last journal hash, in-flight stop prompt/continuation) so a resumed or
+		// woken process rehydrates the run-loop reducer instead of restarting
+		// its counters (ADR 0016). Guarded: a database migrating from pre-v5
+		// got workflow_runs from the base DDL above, which already carries the
+		// column.
+		const hasRunMemoryColumn =
 			(
 				db
 					.prepare(
-						`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = 'interruption_json'`,
+						`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = 'run_memory_json'`,
 					)
 					.get() as {n: number}
 			).n > 0;
-		if (!hasColumn) {
-			db.exec('ALTER TABLE workflow_runs ADD COLUMN interruption_json TEXT;');
+		if (!hasRunMemoryColumn) {
+			db.exec('ALTER TABLE workflow_runs ADD COLUMN run_memory_json TEXT;');
 		}
 		db.exec('UPDATE schema_version SET version = 9;');
+	}
+
+	const versionAfterV9 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV9 === 9) {
+		// v10 adds the nullable Interruption a parked Run carries (#190), so
+		// `drisp runs` and a wake can see the deferred question. Two v9 shapes
+		// exist in the wild: 0.5.28 numbered run_memory_json as v9 (above),
+		// while the pre-release protocol-migration branch numbered
+		// interruption_json as its own v9 — so this step guards both columns
+		// and adds whichever is missing. A database that got workflow_runs
+		// from the base DDL above already has both.
+		for (const column of ['run_memory_json', 'interruption_json']) {
+			const hasColumn =
+				(
+					db
+						.prepare(
+							`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = ?`,
+						)
+						.get(column) as {n: number}
+				).n > 0;
+			if (!hasColumn) {
+				db.exec(`ALTER TABLE workflow_runs ADD COLUMN ${column} TEXT;`);
+			}
+		}
+		db.exec('UPDATE schema_version SET version = 10;');
 	}
 };
 

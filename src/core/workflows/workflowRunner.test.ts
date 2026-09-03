@@ -5,7 +5,11 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
 import {JOURNAL_SKELETON_MARKER} from './journalReader';
+import type {JournalTaskProjection} from './journalReader';
 import {STEER_BLOCK_END, STEER_BLOCK_OPEN} from './steer';
+import type {RunMemory} from './runMachine';
+import {deserializeRunMemory} from './runMachine';
+import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
 
 const NULL_TOKENS = {
 	input: null,
@@ -1273,6 +1277,71 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('Handover occurred');
 		expect(calls[2]!.prompt).toContain(handoffPath);
 		expect(calls[2]!.prompt).toContain(journalPath);
+		// The post-Handover Turn must fold the Handoff in before domain work (ADR 0015 §8).
+		expect(calls[2]!.prompt.toLowerCase()).toContain('before any domain work');
+	});
+
+	it('records the Handoff file size on the run snapshot once the fork writes it', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffPath = path.join(journalDir, 'handoff', '001.md');
+		const handoffBody = '# Handoff\nwhere things stand';
+
+		let pendingHandover: {handle: string} | null = null;
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			.mockImplementationOnce(async () => {
+				fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+				fs.writeFileSync(handoffPath, handoffBody, 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async () => {
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const snapshots: WorkflowRunSnapshot[] = [];
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: snapshot => snapshots.push(snapshot),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onForkStateChange: () => {},
+			},
+		});
+
+		await handle.result;
+
+		// Some snapshot taken after the fork must carry the Handoff's byte size.
+		const memories = snapshots
+			.map(s =>
+				s.runMemoryJson ? deserializeRunMemory(s.runMemoryJson) : null,
+			)
+			.filter(m => m !== null);
+		const sawHandoffSize = memories.some(
+			m => m!.lastHandoffSizeBytes === Buffer.byteLength(handoffBody, 'utf-8'),
+		);
+		expect(sawHandoffSize).toBe(true);
 	});
 
 	it('keeps prior Handoff files: each Handover writes the next numbered file', async () => {
@@ -1484,6 +1553,85 @@ describe('createWorkflowRunner', () => {
 		});
 	});
 
+	it('retries a transient fork failure once with backoff before completing the Handover', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+
+		let pendingHandover: {handle: string} | null = null;
+		const degraded: string[] = [];
+		const calls: Array<{continuation: unknown}> = [];
+
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(journalPath, 'working', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			// First fork attempt: a transient infra failure — no Handoff file
+			// written, so it must retry rather than degrade immediately.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				return {
+					...OK_RESULT,
+					exitCode: 1,
+					error: new Error('API Error: 503 Service Unavailable'),
+				};
+			})
+			// The retried fork attempt succeeds.
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input as never);
+				const named = /(\S*handoff\S*\.md)/.exec(input.prompt);
+				if (!named)
+					throw new Error(`no Handoff path in prompt: ${input.prompt}`);
+				fs.mkdirSync(path.dirname(named[1]!), {recursive: true});
+				fs.writeFileSync(named[1]!, '# Handoff', 'utf-8');
+				return OK_RESULT;
+			})
+			// The post-Handover Turn completes the workflow.
+			.mockImplementationOnce(async (input: never) => {
+				calls.push(input);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5, retryBackoffMs: 1},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+				onDegraded: handle_ => degraded.push(handle_),
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The retry succeeded — the Handover never degraded to in-place vendor
+		// compaction.
+		expect(degraded).toEqual([]);
+		// Turn 1, the failed fork, the retried fork, the post-Handover Turn.
+		expect(startTurn).toHaveBeenCalledTimes(4);
+		// Turn 1 (interrupted) + post-Handover Turn tick; neither fork attempt
+		// does.
+		expect(result.iterations).toBe(2);
+	});
+
 	it('frames the human reply with wake context on the first Turn of a woken run', async () => {
 		const projectDir = makeTempDir();
 		const journalDir = path.join(projectDir, '.athena', 's1');
@@ -1523,6 +1671,75 @@ describe('createWorkflowRunner', () => {
 		expect(prompts[0]).toContain('French, please.');
 		expect(prompts[0]).toContain('journal');
 		expect(prompts[0]).toContain('terminal marker');
+	});
+
+	it('wakes from resumedRunMemory: carries the iteration budget across the wake and seeds the wake prompt', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(
+			journalPath,
+			'# Workflow Journal\n\nstuck on a question\n',
+			'utf-8',
+		);
+
+		const prompts: string[] = [];
+		const continuations: unknown[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(
+				async (input: {prompt: string; continuation: unknown}) => {
+					prompts.push(input.prompt);
+					continuations.push(input.continuation);
+					fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					return OK_RESULT;
+				},
+			);
+
+		// A Run suspended at iteration 7 (ADR 0016 §2/§6) — the wake must
+		// continue that budget, not restart it at 1.
+		const resumedRunMemory: RunMemory = {
+			iteration: 7,
+			nudgeStreak: 3,
+			retryStreak: 1,
+			lastJournalHash: 'deadbeef',
+			lastStopPrompt: 'the stale pre-wake prompt',
+			lastStopContinuation: {mode: 'fresh'},
+			pendingSteers: [],
+			lastHandoffSizeBytes: null,
+		};
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the human reply',
+			resumeRunId: 'run-suspended',
+			resumedRunMemory,
+			resumedStopReason:
+				'nudge cap reached: 2 nudges (nudgeCap) without journal progress or a terminal marker',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 20},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		// The wake ticks the iteration once from the rehydrated budget — a
+		// Run-wide ceiling across wakes, not restarted at 1.
+		expect(result.iterations).toBe(8);
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(continuations[0]).toEqual({mode: 'fresh'});
+		expect(prompts[0]).toContain('suspended awaiting a human');
+		expect(prompts[0]).toContain('the human reply');
+		// Not the stale pre-wake prompt the suspended Run last attempted — the
+		// replay invariant (ADR 0016 §3) never replays it on a wake.
+		expect(prompts[0]).not.toContain('the stale pre-wake prompt');
 	});
 
 	it('reuses a resumed run id so the suspended run returns to running', async () => {
@@ -2058,5 +2275,117 @@ describe('createWorkflowRunner phase events', () => {
 		await handle.result;
 		expect(onPhaseChange).not.toHaveBeenCalled();
 		expect(onWarning).not.toHaveBeenCalled();
+	});
+
+	it('projects the journal unit table into the task tools after each Turn (ADR 0015 §7)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(journalDir, 'units'), {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(
+			path.join(journalDir, 'units', 'first-unit.md'),
+			['---', 'status: closed', '---', '', 'Done.'].join('\n'),
+		);
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				journalPath,
+				[
+					'# Workflow Journal',
+					'',
+					'## Units',
+					'',
+					'| Unit | Record |',
+					'| --- | --- |',
+					'| First unit | units/first-unit.md |',
+					'',
+					'<!-- WORKFLOW_COMPLETE -->',
+				].join('\n'),
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const projected: JournalTaskProjection[][] = [];
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 3},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks: tasks => projected.push(tasks),
+		});
+
+		await handle.result;
+
+		expect(projected.length).toBeGreaterThan(0);
+		expect(projected[projected.length - 1]).toEqual([
+			{taskId: 'first-unit', content: 'First unit', status: 'completed'},
+		]);
+	});
+
+	it('never fails a Turn when the journal has no unit table to project (parse miss degrades silently)', async () => {
+		const projectDir = makeTempDir();
+		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+		const projectTasks = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks,
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(projectTasks).not.toHaveBeenCalled();
+	});
+
+	it('never fails a Turn when the projectTasks callback itself throws', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(path.join(journalDir, 'units'), {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(
+			path.join(journalDir, 'units', 'u.md'),
+			['---', 'status: open', '---', ''].join('\n'),
+		);
+
+		const startTurn = vi.fn().mockImplementationOnce(async () => {
+			fs.writeFileSync(
+				journalPath,
+				[
+					'## Units',
+					'| Unit | Record |',
+					'| --- | --- |',
+					'| Unit | units/u.md |',
+					'<!-- WORKFLOW_COMPLETE -->',
+				].join('\n'),
+				'utf-8',
+			);
+			return OK_RESULT;
+		});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+			projectTasks: () => {
+				throw new Error('boom');
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
 	});
 });
