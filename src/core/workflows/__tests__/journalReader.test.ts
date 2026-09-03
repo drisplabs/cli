@@ -11,6 +11,7 @@ import {
 	LEGACY_TRACKER_SKELETON_MARKER,
 	LEGACY_BLOCKED_MARKER,
 	demoteTerminalMarkers,
+	insertAboveTerminalMarker,
 } from '../journalReader';
 
 const DEFAULT_MARKERS = {
@@ -333,5 +334,45 @@ describe('demoteTerminalMarkers', () => {
 	it('leaves a Journal with no markers untouched', () => {
 		const content = '# Workflow Journal\n\nstill working\n';
 		expect(demoteTerminalMarkers(content)).toBe(content);
+	});
+});
+
+describe('insertAboveTerminalMarker', () => {
+	it('appends at the end when the Journal has no terminal marker', () => {
+		const out = insertAboveTerminalMarker(
+			'# Journal\n\nworking\n',
+			'\n## Entry\n',
+		);
+		expect(out).toBe('# Journal\n\nworking\n\n## Entry\n');
+		expect(parseJournalState(out).completed).toBe(false);
+	});
+
+	it('keeps a terminal marker as the final non-empty line by inserting above it', () => {
+		const out = insertAboveTerminalMarker(
+			'# Journal\n\nasked a question\n\n<!-- NEEDS_HUMAN: which env? -->\n',
+			'\n## Entry\n',
+		);
+		const state = parseJournalState(out);
+		expect(state.needsHuman).toBe(true);
+		expect(state.needsHumanReason).toBe('which env?');
+		expect(state.misplacedTerminalMarker).toBeUndefined();
+		expect(out.indexOf('## Entry')).toBeLessThan(
+			out.indexOf('<!-- NEEDS_HUMAN'),
+		);
+		expect(out.indexOf('asked a question')).toBeLessThan(
+			out.indexOf('## Entry'),
+		);
+	});
+
+	it('honours configured markers', () => {
+		const out = insertAboveTerminalMarker(
+			'done\n<!-- ALL_DONE -->\n',
+			'\n## Entry\n',
+			{completionMarker: '<!-- ALL_DONE -->'},
+		);
+		expect(
+			parseJournalState(out, {completionMarker: '<!-- ALL_DONE -->'}).completed,
+		).toBe(true);
+		expect(out.indexOf('## Entry')).toBeLessThan(out.indexOf('<!-- ALL_DONE'));
 	});
 });
