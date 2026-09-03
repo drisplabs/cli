@@ -5,6 +5,7 @@
  */
 import {z} from 'zod';
 import {
+	InstalledWorkflowSchema,
 	InterruptionSchema,
 	RunSchema,
 	RunSpecSchema,
@@ -33,6 +34,7 @@ export const JSON_SCHEMA_SOURCES = {
 	run: RunSchema,
 	turn: TurnSchema,
 	interruption: InterruptionSchema,
+	'installed-workflow': InstalledWorkflowSchema,
 	'run-spec': RunSpecSchema,
 	'runtime-decision': RuntimeDecisionSchema,
 	'run-stream-event': RunStreamEventSchema,

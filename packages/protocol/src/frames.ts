@@ -12,6 +12,7 @@ import {z} from 'zod';
 import {
 	AssignmentRejectedReasonSchema,
 	AttachmentSchema,
+	InstalledWorkflowSchema,
 	InterruptionSchema,
 	RunSpecSchema,
 	RuntimeDecisionSchema,
@@ -125,6 +126,10 @@ export const FeedEventFrameSchema = z.object({
  * First frame either side sends: the protocol version it speaks, its role,
  * and what it is. A receiver that sees a `protocolVersion` it does not speak
  * replies with an `error` and closes.
+ *
+ * A runner's hello also carries `workflows`: every Workflow installed on that
+ * machine (protocol §17.4), so the hub knows what the runner can run. A hub's
+ * hello omits it.
  */
 export const HelloFrameSchema = z.object({
 	type: z.literal('hello'),
@@ -135,6 +140,18 @@ export const HelloFrameSchema = z.object({
 		.object({name: z.string(), version: z.string().optional()})
 		.optional(),
 	capabilities: z.array(z.string()).optional(),
+	workflows: z.array(InstalledWorkflowSchema).optional(),
+});
+
+/**
+ * Full-list replace of the runner's installed Workflows (protocol §17.4):
+ * sent by the runner whenever its Workflow store changes while connected.
+ * `hello` carries the list on connect; this frame keeps it current. Mirrors
+ * the semantics of `attachments.changed` in the other direction.
+ */
+export const WorkflowsChangedFrameSchema = z.object({
+	type: z.literal('workflows.changed'),
+	workflows: z.array(InstalledWorkflowSchema),
 });
 
 export const RunStartFrameSchema = z.object({
@@ -224,6 +241,7 @@ export const CanonicalFrameSchema = z.discriminatedUnion('type', [
 	StopFrameSchema,
 	SteerFrameSchema,
 	NeedsHumanFrameSchema,
+	WorkflowsChangedFrameSchema,
 	EventFrameSchema,
 	...unchangedFrames,
 ]);
@@ -243,6 +261,7 @@ export const FrameSchema = z.discriminatedUnion('type', [
 	StopFrameSchema,
 	SteerFrameSchema,
 	NeedsHumanFrameSchema,
+	WorkflowsChangedFrameSchema,
 	EventFrameSchema,
 	...unchangedFrames,
 ]);
@@ -255,6 +274,7 @@ export type AnswerFrame = z.infer<typeof AnswerFrameSchema>;
 export type StopFrame = z.infer<typeof StopFrameSchema>;
 export type SteerFrame = z.infer<typeof SteerFrameSchema>;
 export type NeedsHumanFrame = z.infer<typeof NeedsHumanFrameSchema>;
+export type WorkflowsChangedFrame = z.infer<typeof WorkflowsChangedFrameSchema>;
 export type EventFrame = z.infer<typeof EventFrameSchema>;
 export type RunStreamEventFrame = z.infer<typeof RunStreamEventFrameSchema>;
 export type FeedStreamEventFrame = z.infer<typeof FeedStreamEventFrameSchema>;

@@ -12,6 +12,7 @@ import {
 	normalizeFrame,
 	toLegacyFrame,
 	type CanonicalFrame,
+	type InstalledWorkflow,
 } from '@drisp/protocol';
 import {
 	runDashboardRuntimeDaemon,
@@ -39,7 +40,10 @@ import type {
  * `readConfig`, `refreshAccessToken`, `executeRemoteAssignment`,
  * `reconnectDelaysMs`, and the disk-writing seams (`writeMirror`,
  * `pairedFeedPublisher`, `decisionInbox`) so the run leaves no working-tree or
- * state-dir pollution.
+ * state-dir pollution. The Workflow store is REAL but pointed at a temp dir
+ * (`workflowStoreDir`), so the inventory the runner reports on `hello` and the
+ * `workflows.changed` push after an install go through the real store read
+ * and the real directory watch.
  *
  * The fake hub speaks one of two frame-name sets (`hubProtocol`):
  *
@@ -63,6 +67,22 @@ const ASSIGNMENT_RUN_ID = 'run_live_harness_1';
 const ATHENA_SESSION_ID = 'athena-live-harness';
 const STEER_TEXT = 'live-transport harness steer';
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
+const CLI_VERSION = 'live-harness';
+const SEEDED_WORKFLOW: InstalledWorkflow = {
+	name: 'harness-review',
+	version: '1.0.0',
+	source: {kind: 'marketplace-remote', ref: 'review@drisp/harness'},
+};
+const INSTALLED_WORKFLOW: InstalledWorkflow = {
+	name: 'harness-scratch',
+	version: '0.2.0',
+	source: {kind: 'filesystem', path: '/home/harness/scratch/workflow.json'},
+};
+const BUILTIN_WORKFLOW: InstalledWorkflow = {
+	name: 'default',
+	version: CLI_VERSION,
+	source: {kind: 'builtin'},
+};
 
 export type HubProtocol = 'legacy' | 'canonical';
 
@@ -96,6 +116,30 @@ function fail(label: string, message: string): HarnessVerificationCheck {
 }
 
 type WireFrame = {connection: number; frame: Record<string, unknown>};
+
+/**
+ * Write a Workflow into the store the way `installWorkflowFromSource` does:
+ * `{name}/workflow.json` plus its `source.json`.
+ */
+function installIntoStore(storeDir: string, workflow: InstalledWorkflow): void {
+	const dir = path.join(storeDir, workflow.name);
+	fs.mkdirSync(dir, {recursive: true});
+	fs.writeFileSync(
+		path.join(dir, 'workflow.json'),
+		JSON.stringify({
+			name: workflow.name,
+			version: workflow.version,
+			plugins: [],
+			promptTemplate: '{input}',
+			workflowFile: 'WORKFLOW.md',
+		}),
+	);
+	fs.writeFileSync(path.join(dir, 'WORKFLOW.md'), '# harness workflow\n');
+	fs.writeFileSync(
+		path.join(dir, 'source.json'),
+		JSON.stringify({v: 2, ...workflow.source}),
+	);
+}
 
 /**
  * The fake hub's view of one runner frame: does it parse under the package,
@@ -176,6 +220,12 @@ export async function runLiveTransportHarness(
 	const tempWorkspace = fs.mkdtempSync(
 		path.join(os.tmpdir(), 'athena-live-transport-harness-'),
 	);
+	// A hermetic Workflow store seeded with one installed Workflow, so the
+	// inventory on hello is known and an install/removal can be observed.
+	const workflowStoreDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), 'athena-live-transport-workflows-'),
+	);
+	installIntoStore(workflowStoreDir, SEEDED_WORKFLOW);
 
 	const httpServer = http.createServer((req, res) => {
 		if (req.url && /^\/api\/instances\/[^/]+\/attachments$/.test(req.url)) {
@@ -292,30 +342,37 @@ export async function runLiveTransportHarness(
 			writeMirror: () => {},
 			pairedFeedPublisher,
 			decisionInbox,
+			workflowStoreDir,
+			cliVersion: CLI_VERSION,
 		});
 
 		// Scenario 1: the very first frame the runner puts on the wire is a
-		// versioned hello.
+		// versioned hello that reports the installed Workflows: the built-in
+		// (versioned by the CLI) and the one seeded in the store.
 		await waitFor(
 			() => socketConnections >= 1 && framesOnConnection(1).length >= 1,
 			'first frame on the initial connection',
 			stepTimeoutMs,
 		);
 		const first = framesOnConnection(1).at(0);
+		const initialInventory = [BUILTIN_WORKFLOW, SEEDED_WORKFLOW];
 		checks.push(
 			isDeepStrictEqual(first, {
 				type: 'hello',
 				protocolVersion: PROTOCOL_VERSION,
 				role: 'runner',
 				instanceId: INSTANCE_ID,
+				workflows: initialInventory,
 			})
 				? pass(
 						'Versioned hello first',
-						`First frame on the wire was hello (protocolVersion=${PROTOCOL_VERSION}, role=runner, instanceId=${INSTANCE_ID}).`,
+						`First frame on the wire was hello (protocolVersion=${PROTOCOL_VERSION}, role=runner, instanceId=${INSTANCE_ID}) reporting workflows ${initialInventory
+							.map(w => `${w.name}@${w.version ?? '?'} (${w.source.kind})`)
+							.join(', ')}.`,
 					)
 				: fail(
 						'Versioned hello first',
-						`First frame on the wire was ${JSON.stringify(first)}, not a versioned hello.`,
+						`First frame on the wire was ${JSON.stringify(first)}, not a versioned hello reporting ${JSON.stringify(initialInventory)}.`,
 					),
 		);
 
@@ -523,9 +580,64 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 9: drop the socket from the server and confirm the daemon
-		// reconnects through the real reconnect loop — and re-negotiates the
-		// wire mode on the new connection.
+		// Scenario 9: a Workflow installed into the store while connected is
+		// pushed as a full-list replace (`workflows.changed`), and so is a
+		// removal. The store is watched for real; nothing tells the daemon.
+		const changesBefore = framesOfType('workflows.changed').length;
+		const afterInstall = [
+			BUILTIN_WORKFLOW,
+			SEEDED_WORKFLOW,
+			INSTALLED_WORKFLOW,
+		];
+		const afterRemoval = [BUILTIN_WORKFLOW, INSTALLED_WORKFLOW];
+		try {
+			installIntoStore(workflowStoreDir, INSTALLED_WORKFLOW);
+			await waitFor(
+				() =>
+					framesOfType('workflows.changed')
+						.slice(changesBefore)
+						.some(f => isDeepStrictEqual(f['workflows'], afterInstall)),
+				`workflows.changed reporting ${INSTALLED_WORKFLOW.name} after install`,
+				stepTimeoutMs,
+			);
+			fs.rmSync(path.join(workflowStoreDir, SEEDED_WORKFLOW.name), {
+				recursive: true,
+				force: true,
+			});
+			await waitFor(
+				() =>
+					framesOfType('workflows.changed')
+						.slice(changesBefore)
+						.some(f => isDeepStrictEqual(f['workflows'], afterRemoval)),
+				`workflows.changed without ${SEEDED_WORKFLOW.name} after removal`,
+				stepTimeoutMs,
+			);
+			checks.push(
+				pass(
+					'Workflow store change pushed',
+					`Installing ${INSTALLED_WORKFLOW.name}@${INSTALLED_WORKFLOW.version} into the store produced workflows.changed listing ${afterInstall
+						.map(w => w.name)
+						.join(
+							', ',
+						)}; removing ${SEEDED_WORKFLOW.name} produced workflows.changed listing ${afterRemoval
+						.map(w => w.name)
+						.join(', ')}.`,
+				),
+			);
+		} catch (err) {
+			checks.push(
+				fail(
+					'Workflow store change pushed',
+					`${err instanceof Error ? err.message : String(err)}; saw ${JSON.stringify(
+						framesOfType('workflows.changed').slice(changesBefore),
+					)}`,
+				),
+			);
+		}
+
+		// Scenario 10: drop the socket from the server and confirm the daemon
+		// reconnects through the real reconnect loop — re-negotiating the wire
+		// mode and re-reading the store for the new connection's hello.
 		const connectionsBeforeClose = socketConnections;
 		serverState.socket?.close();
 		try {
@@ -551,15 +663,23 @@ export async function runLiveTransportHarness(
 			);
 			const reconnectFirst = framesOnConnection(socketConnections).at(0);
 			const helloAgain = reconnectFirst?.['type'] === 'hello';
+			const inventoryCurrent = isDeepStrictEqual(
+				reconnectFirst?.['workflows'],
+				afterRemoval,
+			);
 			checks.push(
-				helloAgain
+				helloAgain && inventoryCurrent
 					? pass(
 							'Reconnect after close',
-							`Daemon re-established the real socket (connection #${socketConnections}), sent hello first, and is back on ${hubProtocol} frame names.`,
+							`Daemon re-established the real socket (connection #${socketConnections}), sent hello first with the current workflows (${afterRemoval
+								.map(w => w.name)
+								.join(', ')}), and is back on ${hubProtocol} frame names.`,
 						)
 					: fail(
 							'Reconnect after close',
-							`Reconnected but the first frame was ${JSON.stringify(reconnectFirst)}, not hello.`,
+							helloAgain
+								? `Reconnected with hello, but its workflows were ${JSON.stringify(reconnectFirst['workflows'])}, not the current store ${JSON.stringify(afterRemoval)}.`
+								: `Reconnected but the first frame was ${JSON.stringify(reconnectFirst)}, not hello.`,
 						),
 			);
 		} catch (err) {
@@ -571,7 +691,7 @@ export async function runLiveTransportHarness(
 			);
 		}
 
-		// Scenario 10: every frame the runner put on the wire parsed under the
+		// Scenario 11: every frame the runner put on the wire parsed under the
 		// package and was in the name set this hub speaks.
 		checks.push(
 			violations.length === 0
@@ -613,6 +733,7 @@ export async function runLiveTransportHarness(
 		});
 		try {
 			fs.rmSync(tempWorkspace, {recursive: true, force: true});
+			fs.rmSync(workflowStoreDir, {recursive: true, force: true});
 		} catch {
 			// best-effort cleanup
 		}

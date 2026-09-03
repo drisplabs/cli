@@ -34,24 +34,25 @@ Both name sets parse. `normalizeFrame()` returns the canonical (new-name) form;
 `toLegacyFrame()` is its inverse for frames that have an old name. Each old name
 maps to exactly one new name (`FRAME_NAME_MAP`).
 
-| Old name (CLI emits/consumes today) | New name                   | Direction    | Notes                                                                |
-| ----------------------------------- | -------------------------- | ------------ | -------------------------------------------------------------------- |
-| `job_assignment`                    | `run.start`                | hub → runner | `{runId, runSpec?, runnerId?}`                                       |
-| `dashboard_decision`                | `answer`                   | hub → runner | `{athenaSessionId, requestId, decision}`                             |
-| `cancel`                            | `stop`                     | hub → runner | `{runId, runnerId?}`                                                 |
-| `run_event`                         | `event` + `stream: 'run'`  | runner → hub | compatibility per-Run stream (`seq`, `kind`, `payload`)              |
-| `feed_event`                        | `event` + `stream: 'feed'` | runner → hub | canonical FeedEvent channel (`deliverySeq`, `envelope`)              |
-| `ping`                              | `ping`                     | runner → hub | unchanged                                                            |
-| `pong`                              | `pong`                     | hub → runner | unchanged                                                            |
-| `assignment_accepted`               | `assignment_accepted`      | runner → hub | unchanged                                                            |
-| `assignment_rejected`               | `assignment_rejected`      | runner → hub | unchanged                                                            |
-| `decision_ack`                      | `decision_ack`             | runner → hub | unchanged                                                            |
-| `feed_ack`                          | `feed_ack`                 | hub → runner | unchanged                                                            |
-| `attachments.changed`               | `attachments.changed`      | hub → runner | unchanged                                                            |
-| `error`                             | `error`                    | either       | unchanged                                                            |
-| —                                   | `hello`                    | either       | **new** — carries `protocolVersion` (`PROTOCOL_VERSION`)             |
-| —                                   | `steer`                    | hub → runner | **new** — a human turn text for a Run                                |
-| —                                   | `needs_human`              | runner → hub | **new** — a Run parking in `awaiting_attention` with an Interruption |
+| Old name (CLI emits/consumes today) | New name                   | Direction    | Notes                                                                                                                   |
+| ----------------------------------- | -------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `job_assignment`                    | `run.start`                | hub → runner | `{runId, runSpec?, runnerId?}`                                                                                          |
+| `dashboard_decision`                | `answer`                   | hub → runner | `{athenaSessionId, requestId, decision}`                                                                                |
+| `cancel`                            | `stop`                     | hub → runner | `{runId, runnerId?}`                                                                                                    |
+| `run_event`                         | `event` + `stream: 'run'`  | runner → hub | compatibility per-Run stream (`seq`, `kind`, `payload`)                                                                 |
+| `feed_event`                        | `event` + `stream: 'feed'` | runner → hub | canonical FeedEvent channel (`deliverySeq`, `envelope`)                                                                 |
+| `ping`                              | `ping`                     | runner → hub | unchanged                                                                                                               |
+| `pong`                              | `pong`                     | hub → runner | unchanged                                                                                                               |
+| `assignment_accepted`               | `assignment_accepted`      | runner → hub | unchanged                                                                                                               |
+| `assignment_rejected`               | `assignment_rejected`      | runner → hub | unchanged                                                                                                               |
+| `decision_ack`                      | `decision_ack`             | runner → hub | unchanged                                                                                                               |
+| `feed_ack`                          | `feed_ack`                 | hub → runner | unchanged                                                                                                               |
+| `attachments.changed`               | `attachments.changed`      | hub → runner | unchanged                                                                                                               |
+| `error`                             | `error`                    | either       | unchanged                                                                                                               |
+| —                                   | `hello`                    | either       | **new** — carries `protocolVersion` (`PROTOCOL_VERSION`); a runner's also carries `workflows` (its installed Workflows) |
+| —                                   | `steer`                    | hub → runner | **new** — a human turn text for a Run                                                                                   |
+| —                                   | `needs_human`              | runner → hub | **new** — a Run parking in `awaiting_attention` with an Interruption                                                    |
+| —                                   | `workflows.changed`        | runner → hub | **new** — full-list replace of the runner's installed Workflows (`InstalledWorkflow[]`)                                 |
 
 The `event` frame folds two old names into one, told apart by `stream`. Every
 other mapping is a pure rename of `type`; bodies are shared.
@@ -79,26 +80,27 @@ npm run schema:generate   # from the repo root
 `src/jsonSchema.test.ts` fails when the checked-in files differ from a fresh
 generation, so they cannot drift.
 
-| File                           | Zod export              |
-| ------------------------------ | ----------------------- |
-| `schema/frame.json`            | `FrameSchema`           |
-| `schema/canonical-frame.json`  | `CanonicalFrameSchema`  |
-| `schema/legacy-frame.json`     | `LegacyFrameSchema`     |
-| `schema/hello.json`            | `HelloFrameSchema`      |
-| `schema/run.json`              | `RunSchema`             |
-| `schema/turn.json`             | `TurnSchema`            |
-| `schema/interruption.json`     | `InterruptionSchema`    |
-| `schema/run-spec.json`         | `RunSpecSchema`         |
-| `schema/runtime-decision.json` | `RuntimeDecisionSchema` |
-| `schema/run-stream-event.json` | `RunStreamEventSchema`  |
-| `schema/feed-event.json`       | `FeedEventSchema`       |
-| `schema/feed-envelope.json`    | `FeedEnvelopeSchema`    |
+| File                             | Zod export                |
+| -------------------------------- | ------------------------- |
+| `schema/frame.json`              | `FrameSchema`             |
+| `schema/canonical-frame.json`    | `CanonicalFrameSchema`    |
+| `schema/legacy-frame.json`       | `LegacyFrameSchema`       |
+| `schema/hello.json`              | `HelloFrameSchema`        |
+| `schema/run.json`                | `RunSchema`               |
+| `schema/turn.json`               | `TurnSchema`              |
+| `schema/interruption.json`       | `InterruptionSchema`      |
+| `schema/installed-workflow.json` | `InstalledWorkflowSchema` |
+| `schema/run-spec.json`           | `RunSpecSchema`           |
+| `schema/runtime-decision.json`   | `RuntimeDecisionSchema`   |
+| `schema/run-stream-event.json`   | `RunStreamEventSchema`    |
+| `schema/feed-event.json`         | `FeedEventSchema`         |
+| `schema/feed-envelope.json`      | `FeedEnvelopeSchema`      |
 
 ## Layout
 
 ```
 src/version.ts     PROTOCOL_VERSION
-src/domain.ts      Run, Turn, Interruption, RunSpec, RuntimeDecision, Attachment
+src/domain.ts      Run, Turn, Interruption, RunSpec, RuntimeDecision, Attachment, InstalledWorkflow
 src/events.ts      RunStreamEvent, FeedEvent, FeedEnvelope
 src/frames.ts      every frame under its old and new name; hello()
 src/normalize.ts   FRAME_NAME_MAP, normalizeFrame(), toLegacyFrame()

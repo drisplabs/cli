@@ -780,6 +780,7 @@ export async function runDashboardCommand(
 					fetchAttachments: deps.fetchAttachments,
 					writeMirror,
 					retryInitialConnect: false,
+					cliVersion: readPackageVersion(),
 					log: (level, message) => {
 						if (level === 'error' || level === 'warn') {
 							logError(`dashboard daemon: ${message}`);

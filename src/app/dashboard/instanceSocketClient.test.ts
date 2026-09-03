@@ -4,7 +4,13 @@ import {
 	type WebSocket as ServerWebSocket,
 	type WebSocket as WS,
 } from 'ws';
-import {PROTOCOL_VERSION, type CanonicalFrame} from '@drisp/protocol';
+import {
+	FrameSchema,
+	HelloFrameSchema,
+	PROTOCOL_VERSION,
+	type CanonicalFrame,
+	type InstalledWorkflow,
+} from '@drisp/protocol';
 import {
 	createInstanceSocketClient,
 	instanceSocketUrl,
@@ -415,13 +421,21 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 		};
 	}
 
-	function makeClient(overrides: {heartbeatIntervalMs?: number} = {}) {
+	function makeClient(
+		overrides: {
+			heartbeatIntervalMs?: number;
+			installedWorkflows?: () => InstalledWorkflow[];
+		} = {},
+	) {
 		return createInstanceSocketClient({
 			dashboardUrl: `http://127.0.0.1:${port}`,
 			instanceId: 'inst_1',
 			accessToken: 'access-1',
 			heartbeatIntervalMs: overrides.heartbeatIntervalMs ?? 60_000,
 			now: () => 42,
+			...(overrides.installedWorkflows
+				? {installedWorkflows: overrides.installedWorkflows}
+				: {}),
 		});
 	}
 
@@ -474,6 +488,76 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 		});
 		expect(h.wire[1]).toEqual({type: 'ping', ts: 42});
 	});
+
+	it('the hello carries the installed workflows read at connect time', async () => {
+		const h = hub();
+		let inventory = [
+			{name: 'default', version: '0.6.0', source: {kind: 'builtin' as const}},
+			{
+				name: 'review',
+				version: '1.2.0',
+				source: {
+					kind: 'marketplace-remote' as const,
+					ref: 'review@acme/workflows',
+				},
+			},
+		];
+		const client = makeClient({
+			heartbeatIntervalMs: 60_000,
+			installedWorkflows: () => inventory,
+		});
+		await client.connect();
+		await vi.waitFor(() => expect(h.wire.length).toBeGreaterThanOrEqual(1));
+		expect(h.wire[0]).toEqual({
+			type: 'hello',
+			protocolVersion: PROTOCOL_VERSION,
+			role: 'runner',
+			instanceId: 'inst_1',
+			workflows: inventory,
+		});
+		expect(HelloFrameSchema.safeParse(h.wire[0]).success).toBe(true);
+		client.close('done');
+
+		// A reconnect re-reads the inventory rather than replaying the first.
+		inventory = inventory.slice(0, 1);
+		const h2 = hub();
+		const again = makeClient({
+			heartbeatIntervalMs: 60_000,
+			installedWorkflows: () => inventory,
+		});
+		await again.connect();
+		await vi.waitFor(() => expect(h2.wire.length).toBeGreaterThanOrEqual(1));
+		expect(h2.wire[0]).toEqual(
+			expect.objectContaining({type: 'hello', workflows: inventory}),
+		);
+		again.close('done');
+	});
+
+	it.each(['legacy', 'canonical'] as const)(
+		'workflows.changed is a full-list replace that goes out unchanged in %s mode',
+		async mode => {
+			const h = hub();
+			const client = makeClient({heartbeatIntervalMs: 60_000});
+			await client.connect();
+			if (mode === 'canonical') {
+				h.send({type: 'hello', protocolVersion: PROTOCOL_VERSION, role: 'hub'});
+				await vi.waitFor(() => expect(client.wireMode()).toBe('canonical'));
+			}
+			client.sendWorkflowsChanged([
+				{name: 'default', source: {kind: 'builtin'}},
+			]);
+			await vi.waitFor(() =>
+				expect(h.wire.some(f => f['type'] === 'workflows.changed')).toBe(true),
+			);
+			const frame = h.wire.find(f => f['type'] === 'workflows.changed');
+			expect(frame).toEqual({
+				type: 'workflows.changed',
+				workflows: [{name: 'default', source: {kind: 'builtin'}}],
+			});
+			expect(FrameSchema.safeParse(frame).success).toBe(true);
+			client.close('done');
+		},
+	);
 
 	it('emits legacy names by default (no hub hello) and reports wireMode legacy', async () => {
 		const h = hub();

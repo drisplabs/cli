@@ -38,7 +38,7 @@ export type FrameNameMap = typeof FRAME_NAME_MAP;
 /** Canonical frames that exist only under the new name set. */
 export type NewOnlyFrame = Extract<
 	CanonicalFrame,
-	{type: 'hello' | 'steer' | 'needs_human'}
+	{type: 'hello' | 'steer' | 'needs_human' | 'workflows.changed'}
 >;
 
 /** What `toLegacyFrame` yields: a legacy frame, or a new-only frame unchanged. */
@@ -91,8 +91,8 @@ function canonicalize(frame: Frame): CanonicalFrame {
 /**
  * The inverse of `normalizeFrame` for frames that have a legacy name: what a
  * runner still speaking the old names must put on the wire. Frames that exist
- * only under the new names (`hello`, `steer`, `needs_human`) come back
- * unchanged.
+ * only under the new names (`hello`, `steer`, `needs_human`,
+ * `workflows.changed`) come back unchanged.
  */
 export function toLegacyFrame(frame: CanonicalFrame): EmittableLegacyFrame {
 	switch (frame.type) {

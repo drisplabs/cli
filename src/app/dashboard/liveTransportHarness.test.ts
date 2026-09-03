@@ -33,6 +33,7 @@ describe.each<HubProtocol>(['legacy', 'canonical'])(
 				'Steer accepted',
 				'Malformed frames answered with error',
 				'Stop cancels the run',
+				'Workflow store change pushed',
 				'Reconnect after close',
 				'Every runner frame in the expected name set',
 			]);

@@ -9,6 +9,7 @@ import {
 	type DecisionAckFrame,
 	type FeedStreamEventFrame,
 	type HelloFrame,
+	type InstalledWorkflow,
 	type NeedsHumanFrame,
 	type RunStreamEventFrame,
 } from '@drisp/protocol';
@@ -44,6 +45,13 @@ export type InstanceSocketClientOptions = {
 	 */
 	makeWebSocket?: (url: string, accessToken: string) => WebSocket;
 	now?: () => number;
+	/**
+	 * The Workflows installed on this machine, read at connect time so every
+	 * `hello` (first connection and each reconnect) carries the current
+	 * inventory (protocol §17.4). When omitted the hello does not report
+	 * workflows at all.
+	 */
+	installedWorkflows?: () => InstalledWorkflow[];
 };
 
 export type InstanceSocketClient = {
@@ -60,6 +68,8 @@ export type InstanceSocketClient = {
 	sendFeedEvent(event: Omit<FeedStreamEventFrame, 'type' | 'stream'>): void;
 	sendNeedsHuman(input: Omit<NeedsHumanFrame, 'type'>): void;
 	sendDecisionAck(input: Omit<DecisionAckFrame, 'type'>): void;
+	/** Full-list replace of the installed Workflows (protocol §17.4). */
+	sendWorkflowsChanged(workflows: InstalledWorkflow[]): void;
 };
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
@@ -290,8 +300,17 @@ export function createInstanceSocketClient(
 			throw err;
 		}
 
-		// First frame on the wire: who we are and which protocol we speak.
-		send(hello({role: 'runner', instanceId: opts.instanceId}));
+		// First frame on the wire: who we are, which protocol we speak, and
+		// what we can run.
+		send(
+			hello({
+				role: 'runner',
+				instanceId: opts.instanceId,
+				...(opts.installedWorkflows
+					? {workflows: opts.installedWorkflows()}
+					: {}),
+			}),
+		);
 		startHeartbeat();
 	}
 
@@ -354,6 +373,14 @@ export function createInstanceSocketClient(
 		send({type: 'decision_ack', ...input});
 	}
 
+	function sendWorkflowsChanged(workflows: InstalledWorkflow[]): void {
+		send({type: 'workflows.changed', workflows});
+		log(
+			'info',
+			`instance socket: workflows.changed (${workflows.length} installed)`,
+		);
+	}
+
 	return {
 		connect,
 		close,
@@ -366,5 +393,6 @@ export function createInstanceSocketClient(
 		sendFeedEvent,
 		sendNeedsHuman,
 		sendDecisionAck,
+		sendWorkflowsChanged,
 	};
 }

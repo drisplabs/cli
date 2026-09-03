@@ -30,8 +30,13 @@ import {
 	writeWorkflowSourceMetadata,
 } from './sourceMetadata';
 
-function registryDir(): string {
+/** The Workflow store: one `{name}/workflow.json` per installed Workflow. */
+export function workflowRegistryDir(): string {
 	return path.join(os.homedir(), '.config', 'athena', 'workflows');
+}
+
+function registryDir(): string {
+	return workflowRegistryDir();
 }
 
 function ensurePathWithinRoot(

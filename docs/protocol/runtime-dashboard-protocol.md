@@ -341,17 +341,18 @@ CLI's dashboard daemon) is wired to the package: it has no frame types of its
 own, parses every inbound frame through it, and builds every outbound frame
 under the canonical name.
 
-| Legacy name (hub of today) | Canonical name                                          |
-| -------------------------- | ------------------------------------------------------- |
-| `job_assignment`           | `run.start`                                             |
-| `dashboard_decision`       | `answer`                                                |
-| `cancel`                   | `stop`                                                  |
-| `run_event`                | `event` + `stream: 'run'`                               |
-| `feed_event`               | `event` + `stream: 'feed'`                              |
-| all other frames           | unchanged                                               |
-| —                          | `hello` (new; carries `protocolVersion`)                |
-| —                          | `steer` (new; a human turn text)                        |
-| —                          | `needs_human` (new; a Run parking with an Interruption) |
+| Legacy name (hub of today) | Canonical name                                                                   |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `job_assignment`           | `run.start`                                                                      |
+| `dashboard_decision`       | `answer`                                                                         |
+| `cancel`                   | `stop`                                                                           |
+| `run_event`                | `event` + `stream: 'run'`                                                        |
+| `feed_event`               | `event` + `stream: 'feed'`                                                       |
+| all other frames           | unchanged                                                                        |
+| —                          | `hello` (new; carries `protocolVersion` and, from a runner, `workflows`)         |
+| —                          | `steer` (new; a human turn text)                                                 |
+| —                          | `needs_human` (new; a Run parking with an Interruption)                          |
+| —                          | `workflows.changed` (new; full-list replace of the runner's installed Workflows) |
 
 Each legacy name maps to exactly one canonical name; see the package README for
 the full table and the direction of each frame.
@@ -368,7 +369,7 @@ value:
 | `answer` / `dashboard_decision`                    | `answer`    | decision inbox, then `decision_ack`                                               |
 | `stop` / `cancel`                                  | `stop`      | aborts the active Run                                                             |
 | `steer`                                            | `steer`     | recorded on the Run (`steers[]`); carried into the next Turn is drisplabs/cli#191 |
-| `hello`                                            | `hello`     | wire-mode negotiation (§17.3)                                                     |
+| `hello`                                            | `hello`     | wire-mode negotiation (§17.3); a hub's hello carries no `workflows`               |
 | `feed_ack`, `attachments.changed`, `pong`, `error` | unchanged   | as before (`error` is logged)                                                     |
 
 A frame that is not JSON, or does not parse under the package (unknown `type`,
@@ -380,13 +381,14 @@ stays up.
 
 | Frame                                         | When                                                                                                                                                                                                            |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hello`                                       | First frame on every connection: `{protocolVersion: PROTOCOL_VERSION, role: 'runner', instanceId}`                                                                                                              |
+| `hello`                                       | First frame on every connection: `{protocolVersion: PROTOCOL_VERSION, role: 'runner', instanceId, workflows}` — `workflows` is the installed-Workflow inventory read from the store at connect time (§17.4)     |
 | `ping`                                        | Heartbeat                                                                                                                                                                                                       |
 | `assignment_accepted` / `assignment_rejected` | Admission outcome of a `run.start`                                                                                                                                                                              |
 | `event` + `stream: 'run'`                     | The compatibility per-Run stream (§11), when no per-run callback channel is open                                                                                                                                |
 | `event` + `stream: 'feed'`                    | The canonical FeedEvent channel (§11), from the durable outbox                                                                                                                                                  |
 | `needs_human`                                 | The Run parked in `awaiting_attention`: emitted from the remote-run executor when the Runner reports `run.suspended`, with the `Interruption` classified from the stop reason (`interruptionFromSuspension.ts`) |
 | `decision_ack`                                | After an `answer` is durably stored                                                                                                                                                                             |
+| `workflows.changed`                           | The Workflow store changed while connected (an install, upgrade, or removal): the full new inventory (§17.4)                                                                                                    |
 | `error`                                       | `malformed_frame` (§17.1) or `unsupported_protocol_version` (§17.3)                                                                                                                                             |
 
 ### 17.3 Wire mode: which names actually reach the hub
@@ -396,8 +398,8 @@ name set it puts on the wire:
 
 1. Every connection starts in **legacy** mode: outbound frames are rewritten
    through `toLegacyFrame()` at the socket boundary (`run_event`,
-   `feed_event`, …). New-only frames (`hello`, `needs_human`, `error`) have no
-   legacy twin and go out unchanged.
+   `feed_event`, …). New-only frames (`hello`, `needs_human`,
+   `workflows.changed`, `error`) have no legacy twin and go out unchanged.
 2. If the hub answers with a `hello` whose `protocolVersion` equals the
    runner's `PROTOCOL_VERSION`, the connection switches to **canonical** mode
    and every frame from then on uses the new names.
@@ -413,6 +415,45 @@ The mode is re-negotiated on every reconnect and is visible in
 (`src/app/dashboard/liveTransportHarness.ts`) runs the daemon against a fake
 hub in both modes and validates every runner frame against the package under
 the name set that hub expects.
+
+### 17.4 Installed Workflows: what the runner can run
+
+The hub needs to know which Workflows each runner can execute (to offer only
+those when starting a Run there). The runner tells it, and keeps it current,
+without the hub ever asking:
+
+1. **On connect**, the runner's `hello` carries `workflows`: every Workflow
+   installed on that machine, read from the Workflow store
+   (`~/.config/athena/workflows`) at connect time — so a reconnect reports the
+   store as it is then, not as it was at daemon start. A hub's `hello` omits
+   the field; a runner that predates it does too.
+2. **While connected**, a change to the store — `drisp workflow install`,
+   `upgrade`, or `remove`, or any other edit — is pushed as
+   `workflows.changed` with the full new inventory. This is a **full-list
+   replace**, the same semantics as the hub's `attachments.changed` push in
+   the other direction (§7): the hub replaces what it holds for that runner;
+   it never merges. The runner watches the store directory (the install and
+   remove commands run in their own process, so there is nothing to hook),
+   coalesces a burst of writes into one push, and only pushes when the
+   inventory actually differs. While disconnected nothing is sent; the next
+   `hello` is current.
+3. A second `hello` is never sent mid-connection: `hello` is the first frame
+   of a connection (§17.3), and re-sending it would blur the wire-mode
+   negotiation. `workflows.changed` exists so the inventory can change without
+   touching the handshake.
+
+Each entry is an `InstalledWorkflow` (`schema/installed-workflow.json`):
+
+| Field     | Meaning                                                                                                                                                                                                                                                                     |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`    | The name the Workflow is installed under (what a `runSpec` references)                                                                                                                                                                                                      |
+| `version` | The Workflow's declared version (`workflow.json`), else the version pinned by its marketplace install; absent when neither exists. Built-ins ship with the CLI and carry its version                                                                                        |
+| `source`  | Where it came from, as the store records it: `{kind: 'builtin'}`, `{kind: 'marketplace-remote', ref}`, `{kind: 'marketplace-local', repoDir, workflowName}`, `{kind: 'filesystem', path}`, or `{kind: 'unknown'}` for a Workflow installed by a CLI that recorded no source |
+
+An installed Workflow that shares a built-in's name shadows it (one entry, the
+installed one), exactly as local resolution prefers the store over the
+built-ins. The list is ordered built-ins first, then the store by name, so two
+reports of the same store compare equal.
 
 ## 18. Current Compatibility Notes
 
