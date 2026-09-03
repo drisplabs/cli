@@ -1,19 +1,22 @@
-# Live-transport dashboard-daemon harness
+# Live-transport drisp runner harness
 
-A reusable, replayable integration harness for the dashboard daemon's wire
-contract: a **fake hub built from the `@drisp/protocol` schemas**, driven over
-a **real** transport. It boots the production `runDashboardRuntimeDaemon`
-against a local `http` + `ws` server on a loopback port, so it exercises the
+A reusable, replayable integration harness for the `drisp runner` process's
+wire contract: a **fake hub built from the `@drisp/protocol` schemas**, driven
+over a **real** transport. It boots the production runner through its public
+seam (`startRunnerProcess`, with the state dir pointed at a temp dir) against
+a local `http` + `ws` server on a loopback port, so it exercises the
 production path — real `ws` socket (access token sent as a WebSocket
 subprotocol), the `hello` handshake, frame normalisation through the package,
-and the real `fetch`-based attachment reconcile — rather than the injected
-seams the unit tests use. The Workflow store is real too, pointed at a temp
-directory: the inventory on `hello` and the `workflows.changed` push after an
-install go through the real store read and the real directory watch.
+the real `fetch`-based attachment reconcile, and the runner's own pid file,
+status file, and `runner.db` (feed outbox + decision inbox) — rather than the
+injected seams the unit tests use. The Workflow store is real too, pointed at
+a temp directory: the inventory on `hello` and the `workflows.changed` push
+after an install go through the real store read and the real directory
+watch.
 
 This is the live-transport companion to the in-process unit coverage in
-`runtimeDaemon.test.ts`; it does not re-implement that in-process
-reconnect-guard test.
+`runtimeDaemon.test.ts` and `runnerProcess.test.ts`; it does not re-implement
+those in-process tests.
 
 ## Two hubs
 
@@ -40,9 +43,9 @@ adapter harnesses in `src/harnesses/`):
    `workflows` listing the built-in Workflow (versioned by the CLI) and the one
    seeded in the temp store.
 2. **Graceful degradation on 503 reconcile** — the attachment reconcile hits a
-   real `503` and the daemon stays connected in push-only mode.
+   real `503` and the runner stays connected in push-only mode.
 3. **Wire mode negotiated** — `legacy` when the hub said nothing, `canonical`
-   once its `hello` carried our version (`daemon.snapshot().wireMode`).
+   once its `hello` carried our version (`runner.snapshot().wireMode`).
 4. **Assignment admitted over the wire** — the hub's assignment frame (under
    its own name) is admitted and `assignment_accepted` comes back.
 5. **Run stream and needs_human on the wire** — the Run's stream arrives under
@@ -72,11 +75,34 @@ adapter harnesses in `src/harnesses/`):
 11. **Workflow store change pushed** — writing a Workflow into the store (the
     way `drisp workflow install` does) produces a `workflows.changed` with the
     full new inventory; removing one produces another without it.
-12. **Reconnect after close** — the daemon re-establishes the socket, sends
+12. **Reconnect after close** — the runner re-establishes the socket, sends
     `hello` first again (with the store as it is now), and re-negotiates the
     wire mode.
 13. **Every runner frame in the expected name set** — no schema or name-set
     violations across the whole session.
+
+### Crash recovery (`runRunnerRecoveryHarness`)
+
+The same fake hub drives a second harness at the runner's public seam (#188):
+a runner streaming a Run whose feed frames the hub has not acked, and holding
+an `answer` the Run has not consumed, is killed and restarted on the same
+state dir. The kill is simulated in-process — an abrupt stop that drains and
+consumes nothing, plus the residue a `kill -9` leaves (a pid file naming a
+dead process and a stale status file) written back before the restart.
+
+1. **Runner paired** — `hello` first; `runner.pid` held; the status file
+   reports the socket connected.
+2. **Run streamed, acks withheld** — the Run's two feed events reach the hub
+   and stay pending in `runner.db`.
+3. **Answer persisted and acked** — the hub's answer is acked and pending in
+   `runner.db`.
+4. **Killed mid-Run and restarted** — the restarted runner reaps the stale pid
+   file, holds `runner.pid`, rewrites the status file, and reconnects.
+5. **Outbox drained after restart** — the same two event ids are re-sent on
+   the new connection and, acked now, leave `runner.db`.
+6. **Pending decision re-delivered** — the hub continues the Run and the
+   answer the first runner never consumed is handed to it.
+7. **Every runner frame in the expected name set**.
 
 ## How to run
 
@@ -84,7 +110,7 @@ adapter harnesses in `src/harnesses/`):
 npx vitest run src/app/dashboard/liveTransportHarness.test.ts
 ```
 
-The test runs the harness once per hub mode. It runs fully offline: it binds
+The test runs both harnesses once per hub mode. It runs fully offline: it binds
 only to `127.0.0.1` on an ephemeral port and needs no real dashboard,
 credentials, or network access.
 
@@ -93,10 +119,10 @@ credentials, or network access.
 A passing run prints the standard Vitest summary, for example:
 
 ```
- ✓ src/app/dashboard/liveTransportHarness.test.ts (2 tests) ...
+ ✓ src/app/dashboard/liveTransportHarness.test.ts (4 tests) ...
 
  Test Files  1 passed (1)
-      Tests  2 passed (2)
+      Tests  4 passed (4)
 ```
 
 ### Exit codes
@@ -107,9 +133,10 @@ A passing run prints the standard Vitest summary, for example:
 
 ## Cleanup guarantee
 
-Teardown runs in a `finally` block even when a scenario fails: the daemon is
-stopped, the `ws` and `http` servers are closed, and the temporary workspace
-and Workflow-store directories (created under the OS temp dir) are removed. No ports, timers, or
+Teardown runs in a `finally` block even when a scenario fails: the runner is
+stopped, the `ws` and `http` servers are closed, and the temporary workspace,
+Workflow-store, and runner-state directories (created under the OS temp dir)
+are removed. No ports, timers, or
 disk artifacts are left behind, and the working tree is never modified.
 
 ## Calling it directly
