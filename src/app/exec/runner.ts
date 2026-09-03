@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
 import type {FeedEvent} from '../../core/feed/types';
 import {createFeedMapper} from '../../core/feed/mapper';
+import {buildPhaseFeedEvent} from '../../core/feed/phaseFeedEvent';
 import {
 	type RuntimeDecision,
 	type RuntimeEvent,
@@ -617,6 +618,32 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			onWarning: message => {
 				output.warn(message);
 				output.emitJsonEvent('exec.warning', {message});
+			},
+			// The Run moved to a new workflow step (#192): one `phase` FeedEvent
+			// into the local feed and the paired feed, and one `run.phase` JSONL
+			// event. The phase is not a RuntimeEvent, so it never crosses the
+			// FeedMapper; it borrows the mapper's current Session / Feed Run and
+			// a mapper-allocated seq so it sorts into the timeline it belongs to.
+			onPhaseChange: phase => {
+				const sessionId =
+					mapper.getSession()?.session_id ??
+					adapterSessionId ??
+					athenaSessionId;
+				const feedEvent = buildPhaseFeedEvent({
+					phase,
+					sessionId,
+					runId: mapper.getCurrentRun()?.run_id ?? `${sessionId}:R0`,
+					seq: mapper.allocateSeq(),
+					ts: now(),
+				});
+				safePersist(
+					store,
+					() => store.recordFeedEvents([feedEvent]),
+					message => output.warn(message),
+					'recordFeedEvents failed',
+				);
+				publishFeedEvents([feedEvent]);
+				output.emitJsonEvent('run.phase', phase);
 			},
 			startTurn: async turnInput => {
 				const turnResult = await sessionController.startTurn({

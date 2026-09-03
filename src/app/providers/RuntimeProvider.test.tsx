@@ -65,6 +65,7 @@ describe('HookProvider runtime factory wiring', () => {
 			clearRules: vi.fn(),
 			printTaskSnapshot: vi.fn(),
 			emitNotification: vi.fn(),
+			emitPhase: vi.fn(),
 			isDegraded: false,
 			runtimeError: null,
 			postByToolUseId: new Map(),

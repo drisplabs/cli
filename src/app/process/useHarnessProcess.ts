@@ -10,6 +10,7 @@ import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {UseSessionControllerResult} from '../../harnesses/contracts/session';
 import {resolveHarnessAdapter} from '../../harnesses/registry';
 import {useWorkflowSessionController} from '../../core/workflows/useWorkflowSessionController';
+import type {PhaseChange} from '../../core/workflows/workflowRunner';
 import {useRuntime, useSessionStore} from '../providers/RuntimeProvider';
 
 export type HarnessProcessResult =
@@ -28,6 +29,8 @@ export type UseHarnessProcessInput = {
 	workflow?: WorkflowConfig;
 	workflowPlan?: WorkflowPlan;
 	options?: HarnessProcessOptions;
+	/** The Workflow Run moved to a new workflow step (#192). */
+	onPhaseChange?: (change: PhaseChange) => void;
 };
 
 export function useHarnessProcess(
@@ -55,6 +58,7 @@ export function useHarnessProcess(
 		persistRunState: sessionStore
 			? snapshot => sessionStore.persistRun(snapshot)
 			: undefined,
+		onPhaseChange: input.onPhaseChange,
 	});
 
 	return {

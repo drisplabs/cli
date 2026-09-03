@@ -8,6 +8,7 @@ import {
 	extractFriendlyServerName,
 	parseToolName,
 } from '../../shared/utils/toolNameParser';
+import {phasePosition} from './phaseFeedEvent';
 import {summarizeToolResult} from './toolSummary';
 import {type FeedEvent, type FeedEventKind} from './types';
 import {resolveVerb} from './verbMap';
@@ -847,6 +848,24 @@ const artifactsManifest: EventRenderer<'artifacts.manifest'> = defaultRenderer(
 	},
 );
 
+/**
+ * The Runner-observed workflow step (`phase`): rendered as a step line —
+ * `Build (2/5)` — so a Run's progress through its workflow reads at a glance
+ * without opening the Journal.
+ */
+const phase: EventRenderer<'phase'> = {
+	operation: () => 'phase',
+	label: () => 'Step',
+	detail: event => phasePosition(event.data).trim() || '─',
+	summary: event => {
+		const position = phasePosition(event.data).trim();
+		return plainSummary(
+			position ? `${event.data.step} (${position})` : event.data.step,
+		);
+	},
+	expansion: dataExpansion,
+};
+
 // ── Registry ──────────────────────────────────────────────
 
 const RENDERERS = {
@@ -905,6 +924,7 @@ const RENDERERS = {
 	'elicitation.request': elicitationRequest,
 	'elicitation.result': elicitationResult,
 	'artifacts.manifest': artifactsManifest,
+	phase,
 } as const satisfies RendererRegistry;
 
 /** Lookup helper: dispatches an event to its renderer with proper type narrowing. */

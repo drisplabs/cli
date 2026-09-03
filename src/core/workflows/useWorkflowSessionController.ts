@@ -7,6 +7,7 @@ import type {
 } from '../runtime/process';
 import {
 	createWorkflowRunner,
+	type PhaseChange,
 	type WorkflowRunnerHandle,
 } from './workflowRunner';
 import type {WorkflowConfig} from './types';
@@ -19,6 +20,8 @@ export type UseWorkflowSessionControllerInput = {
 	harness?: AthenaHarness;
 	workflow?: WorkflowConfig;
 	persistRunState?: (snapshot: WorkflowRunSnapshot) => void;
+	/** The Run moved to a new workflow step (the Journal's Turn Protocol block). */
+	onPhaseChange?: (change: PhaseChange) => void;
 };
 
 export function useWorkflowSessionController(
@@ -85,6 +88,7 @@ export function useWorkflowSessionController(
 						turnInput.configOverride,
 					),
 				persistRunState: input.persistRunState ?? (() => {}),
+				onPhaseChange: input.onPhaseChange,
 				abortCurrentTurn: () => void base.kill().catch(() => {}),
 			});
 
@@ -118,6 +122,7 @@ export function useWorkflowSessionController(
 			input.harness,
 			input.workflow,
 			input.persistRunState,
+			input.onPhaseChange,
 		],
 	);
 
