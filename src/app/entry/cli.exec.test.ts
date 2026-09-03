@@ -258,7 +258,7 @@ describe('cli exec mode', () => {
 				.join('\n');
 
 			expect(help).toContain('dashboard <sub>');
-			expect(help).toContain('exec "<prompt>"');
+			expect(help).toContain('run "<prompt>"');
 			// One door into drisp (#183): no second runner, no channel surface.
 			expect(help).not.toContain('gateway');
 			expect(help).not.toContain('Gateway');
