@@ -13,7 +13,8 @@ import {
 	resolveWorkflowInstall,
 	type ResolvedWorkflowSource,
 } from '../../infra/plugins/marketplace';
-import type {RunStartFrame} from '@drisp/protocol';
+import {InterruptionSchema, type RunStartFrame} from '@drisp/protocol';
+import {getLatestRunForSession} from '../../infra/sessions/index';
 import type {
 	InstanceSocketClient,
 	InstanceSocketLogger,
@@ -92,7 +93,32 @@ export type ExecuteRemoteAssignmentInput = {
 	 * "assignment received" frame.
 	 */
 	runStreamConnectTimeoutMs?: number;
+	/**
+	 * Wake a parked Run (#190): resume the Workflow Run and Agent Session its
+	 * session record names, with `reply` as the prompt. The stored answer for
+	 * the request it parked on is replayed by the run itself.
+	 */
+	wake?: {reply: string};
+	/** Test seam — where a wake finds the parked Run to resume. */
+	resolveWakeTargetFn?: (athenaSessionId: string) => WakeTarget | null;
 };
+
+/** The persisted Run a wake resumes, read from the session record. */
+export type WakeTarget = {
+	resumeRunId: string;
+	adapterResumeSessionId?: string;
+};
+
+function resolveWakeTarget(athenaSessionId: string): WakeTarget | null {
+	const run = getLatestRunForSession(athenaSessionId);
+	if (!run || run.status !== 'awaiting_attention') return null;
+	return {
+		resumeRunId: run.id,
+		...(run.adapterSessionId
+			? {adapterResumeSessionId: run.adapterSessionId}
+			: {}),
+	};
+}
 
 type JsonExecEvent = {
 	type?: unknown;
@@ -355,6 +381,8 @@ export async function executeRemoteAssignment({
 	uploadArtifactObjectFn,
 	dashboardFeedPublisher,
 	runStreamConnectTimeoutMs = 5_000,
+	wake,
+	resolveWakeTargetFn = resolveWakeTarget,
 }: ExecuteRemoteAssignmentInput): Promise<void> {
 	const lastTerminalFailureMessage: {current: string | null} = {current: null};
 	const deferredFailedCompletion: {current: JsonExecEvent | null} = {
@@ -403,14 +431,19 @@ export async function executeRemoteAssignment({
 	const reportNeedsHuman = (event: JsonExecEvent): void => {
 		const data =
 			typeof event.data === 'object' && event.data !== null
-				? (event.data as {stopReason?: unknown})
+				? (event.data as {stopReason?: unknown; interruption?: unknown})
 				: {};
 		const stopReason =
 			typeof data.stopReason === 'string' ? data.stopReason : null;
+		// A Run parked on a structured Interruption (a deferred permission,
+		// #190) reports it as-is; only a bare sentence is classified.
+		const structured = InterruptionSchema.safeParse(data.interruption);
 		client.sendNeedsHuman({
 			runId,
 			athenaSessionId,
-			interruption: interruptionFromSuspension(stopReason),
+			interruption: structured.success
+				? structured.data
+				: interruptionFromSuspension(stopReason),
 		});
 	};
 
@@ -451,6 +484,15 @@ export async function executeRemoteAssignment({
 		}
 		for (const warning of runtimeConfig.warnings) {
 			send('warning', {message: warning});
+		}
+
+		// A wake resumes the parked Run its session record names (#190); a
+		// record that no longer says parked leaves the reply to run afresh.
+		const wakeTarget = wake ? resolveWakeTargetFn(athenaSessionId) : null;
+		if (wake && !wakeTarget) {
+			send('warning', {
+				message: `wake requested for ${athenaSessionId}, but its session record has no parked run to resume; running the reply as a new prompt`,
+			});
 		}
 
 		let buffered = '';
@@ -500,11 +542,14 @@ export async function executeRemoteAssignment({
 				spec.env,
 			);
 			const result = await runExecFn({
-				prompt: spec.prompt,
+				prompt: wake ? wake.reply : spec.prompt,
 				projectDir,
 				harness: runtimeConfig.harness,
 				athenaSessionId,
-				adapterResumeSessionId: spec.adapterResumeSessionId,
+				adapterResumeSessionId:
+					wakeTarget?.adapterResumeSessionId ?? spec.adapterResumeSessionId,
+				...(wakeTarget ? {resumeRunId: wakeTarget.resumeRunId} : {}),
+				permissionGraceMs: runtimeConfig.permissionGraceMs,
 				isolationConfig: runtimeConfig.isolationConfig,
 				pluginMcpConfig: runtimeConfig.pluginMcpConfig,
 				workflow,

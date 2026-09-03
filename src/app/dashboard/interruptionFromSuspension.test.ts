@@ -32,6 +32,28 @@ describe('interruptionFromSuspension', () => {
 		},
 		{
 			stopReason:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+			expected: {kind: 'question', question: 'Bash: git push origin main'},
+		},
+		{
+			stopReason:
+				'permission request (Edit) deferred immediately (no hub attached to answer): src/index.ts — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+			expected: {kind: 'question', question: 'Edit: src/index.ts'},
+		},
+		{
+			stopReason:
+				'ask rule "mcp__github__*" fired on mcp__github__create_pull_request unanswered within the grace window (500ms); deferred: title: Ship it — wake with --answer=allow|deny',
+			expected: {
+				kind: 'question',
+				question: 'mcp__github__create_pull_request: title: Ship it',
+			},
+		},
+		{
+			stopReason: 'ask rule "Bash" fired on Bash — needs a human',
+			expected: {kind: 'question'},
+		},
+		{
+			stopReason:
 				'hard failure (auth): 401 unauthorized — not retried; needs a human',
 			expected: {kind: 'hard_failure', code: 'auth'},
 		},

@@ -364,6 +364,122 @@ describe('createWorkflowRunner', () => {
 		expect(startTurn).toHaveBeenCalledTimes(1);
 	});
 
+	it('parks on a deferred permission: records the Interruption in the journal and on the run record (#190)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(journalPath, '## Status\n\nworking', 'utf-8');
+
+		// The Turn was interrupted after the grace window elapsed; the harness
+		// process exited non-zero — still a park, not a failure.
+		const startTurn = vi.fn().mockResolvedValue({
+			...OK_RESULT,
+			exitCode: 143,
+			error: new Error('killed'),
+		});
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState,
+			checkInterruption: () => ({
+				kind: 'unclaimed_permission',
+				toolName: 'Bash',
+				permission: {
+					requestId: 'req-42',
+					inputSummary: 'git push origin main',
+					graceMs: 60_000,
+				},
+			}),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('awaiting_attention');
+		expect(result.stopReason).toContain(
+			'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+		);
+		const interruption = {
+			kind: 'question',
+			message: result.stopReason,
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		expect(result.interruption).toEqual(interruption);
+
+		// The run record carries the structured Interruption so `drisp runs`
+		// and the hub can show the pending question.
+		const last = persistRunState.mock.calls.at(-1)![0];
+		expect(last).toMatchObject({
+			status: 'awaiting_attention',
+			stopReason: result.stopReason,
+			interruption,
+		});
+
+		// The journal records it too — the next Turn reads it there — without
+		// disturbing what the agent wrote.
+		const journal = fs.readFileSync(journalPath, 'utf-8');
+		expect(journal.startsWith('## Status\n\nworking')).toBe(true);
+		expect(journal).toContain('Needs human');
+		expect(journal).toContain('req-42');
+		expect(journal).toContain('Bash: git push origin main');
+	});
+
+	it('wakes a run parked on a deferred question by asking the agent to re-issue that call (#190)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'Go ahead and push.',
+			resumeRunId: 'run-parked',
+			parkedInterruption: {
+				kind: 'question',
+				message:
+					'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+				requestId: 'req-42',
+				question: 'Bash: git push origin main',
+			},
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts[0]).toContain('Go ahead and push.');
+		expect(prompts[0]).toContain('Bash: git push origin main');
+		expect(prompts[0]).toContain('Re-issue that exact call');
+		// Resumed: the parked Interruption is not carried onto the resumed record.
+		expect(result.interruption).toBeUndefined();
+	});
+
 	it('reports failed when turn exits non-zero', async () => {
 		const startTurn = vi.fn().mockResolvedValue({
 			...OK_RESULT,

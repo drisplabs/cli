@@ -1757,4 +1757,125 @@ describe('executeRemoteAssignment: needs_human', () => {
 
 		expect(needsHuman).toEqual([]);
 	});
+
+	function okResult(options: ExecRunOptions) {
+		return {
+			success: true,
+			exitCode: 0 as const,
+			athenaSessionId: options.athenaSessionId ?? null,
+			adapterSessionId: null,
+			finalMessage: null,
+			tokens: {
+				input: null,
+				output: null,
+				cacheRead: null,
+				cacheWrite: null,
+				total: null,
+				contextSize: null,
+				contextWindowSize: null,
+			},
+			durationMs: 1,
+		};
+	}
+
+	it('carries the structured Interruption a parked Run reports as-is, instead of re-classifying the sentence (#190)', async () => {
+		const needsHuman: unknown[] = [];
+		const interruption = {
+			kind: 'question',
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main — wake with --answer=allow|deny, or rerun with --isolation autonomous',
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'run.suspended',
+					ts: 100,
+					data: {
+						runId: 'wf-run-9',
+						status: 'awaiting_attention',
+						stopReason: interruption.message,
+						interruption,
+					},
+				}) + '\n',
+			);
+			return okResult(options);
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {
+				sendRunEvent: () => {},
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([
+			{runId: 'run_parked', athenaSessionId: 'athena-parked', interruption},
+		]);
+	});
+
+	it('forwards the configured permission grace window to the run (#190)', async () => {
+		const runExecFn = vi.fn(async (options: ExecRunOptions) =>
+			okResult(options),
+		);
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_grace',
+				runSpec: {prompt: 'do the thing'},
+			}),
+			client: {sendRunEvent: () => {}, sendNeedsHuman: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: () => ({
+				...bootstrap(),
+				permissionGraceMs: 12_000,
+			}),
+			now: () => 999,
+		});
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({permissionGraceMs: 12_000}),
+		);
+	});
+
+	it('wakes a parked Run: resumes the Run and Agent Session its record names, with the wake reply as the prompt (#190)', async () => {
+		const runExecFn = vi.fn(async (options: ExecRunOptions) =>
+			okResult(options),
+		);
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {sendRunEvent: () => {}, sendNeedsHuman: () => {}},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+			wake: {reply: 'Your deferred Bash: git push was answered: allow.'},
+			resolveWakeTargetFn: athenaSessionId =>
+				athenaSessionId === 'athena-parked'
+					? {resumeRunId: 'wf-run-9', adapterResumeSessionId: 'claude-sess-9'}
+					: null,
+		});
+		expect(runExecFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				athenaSessionId: 'athena-parked',
+				prompt: 'Your deferred Bash: git push was answered: allow.',
+				resumeRunId: 'wf-run-9',
+				adapterResumeSessionId: 'claude-sess-9',
+			}),
+		);
+	});
 });

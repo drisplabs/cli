@@ -378,6 +378,41 @@ describe('SessionStore', () => {
 		expect(run!.status).toBe('awaiting_attention');
 	});
 
+	it('persists the Interruption a parked run carries and clears it once the run resumes (#190)', () => {
+		store = createSessionStore({
+			sessionId: 's1',
+			projectDir: '/tmp',
+			dbPath: ':memory:',
+		});
+		const interruption = {
+			kind: 'question' as const,
+			message:
+				'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+			requestId: 'req-42',
+			question: 'Bash: git push origin main',
+		};
+
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 1,
+			status: 'awaiting_attention',
+			stopReason: interruption.message,
+			interruption,
+		});
+		expect(store.getLatestRun()!.interruption).toEqual(interruption);
+
+		// Woken: the snapshot no longer carries an Interruption, so the record
+		// must not keep advertising a question that is being re-asked.
+		store.persistRun({
+			runId: 'run-1',
+			sessionId: 's1',
+			iteration: 2,
+			status: 'running',
+		});
+		expect(store.getLatestRun()!.interruption).toBeUndefined();
+	});
+
 	it('the vendor session id survives a process restart (reopened database)', () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-store-'));
 		const dbPath = path.join(dir, 'session.db');

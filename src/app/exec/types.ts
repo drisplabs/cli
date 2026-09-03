@@ -3,6 +3,7 @@ import type {Writable} from 'node:stream';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {WorkflowConfig, WorkflowPlan} from '../../core/workflows';
 import type {HarnessProcessConfig} from '../../core/runtime/process';
+import type {RuntimeDecision} from '../../core/runtime/types';
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {SessionStore} from '../../infra/sessions/store';
 import type {RuntimeFactory} from '../runtime/createRuntime';
@@ -68,6 +69,21 @@ export type ExecRunOptions = {
 	ephemeral?: boolean;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * Permission grace window (#190): how long a permission request no rule
+	 * answers is held for an attached hub before it is refused as "deferred"
+	 * and the Run parks. Defaults to `DEFAULT_PERMISSION_GRACE_MS`. Only runs
+	 * while a `dashboardDecisionInbox` is attached — with no hub, nothing can
+	 * answer, so the request is deferred immediately.
+	 */
+	permissionGraceMs?: number;
+	/**
+	 * An answer given locally for the Interruption the resumed Run parked on
+	 * (`drisp run --continue --answer=allow|deny`, #190). Replayed into the
+	 * re-issued call without a prompt; ignored when the Run did not park on a
+	 * deferred permission or the agent asks for something else.
+	 */
+	storedAnswer?: RuntimeDecision;
 	/**
 	 * Reporting-only summary of the effective personal capabilities active for
 	 * this session (name + source layer only). Surfaced in the `exec.started`

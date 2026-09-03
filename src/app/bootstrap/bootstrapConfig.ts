@@ -27,6 +27,7 @@ import {
 	resolveWorkflow,
 } from '../../core/workflows/index';
 import {ensureHandoffSkillPlugin} from '../../core/workflows/builtins/handoffSkill';
+import {DEFAULT_PERMISSION_GRACE_MS} from '../../core/workflows/types';
 import type {
 	ResolvedWorkflowPlugin,
 	WorkflowConfig,
@@ -69,6 +70,12 @@ export type RuntimeBootstrapOutput = {
 	 * personal capabilities (codex → empty).
 	 */
 	capabilityConflicts: CapabilityConflicts;
+	/**
+	 * Permission grace window for unattended Workflow Runs (#190): project
+	 * config, else global, else `DEFAULT_PERMISSION_GRACE_MS`. The
+	 * `--permission-grace-ms` flag overrides it at the command.
+	 */
+	permissionGraceMs: number;
 	warnings: string[];
 };
 
@@ -291,6 +298,10 @@ export function bootstrapRuntimeConfig({
 		personalMcpServers,
 		personalSkills,
 		capabilityConflicts: pluginResult.conflicts,
+		permissionGraceMs:
+			projectConfig.permissionGraceMs ??
+			globalConfig.permissionGraceMs ??
+			DEFAULT_PERMISSION_GRACE_MS,
 		warnings,
 	};
 }

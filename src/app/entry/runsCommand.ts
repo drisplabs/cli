@@ -43,8 +43,20 @@ function formatRun(run: AwaitingAttentionRun, nowMs: number): string {
 	if (run.stopReason) {
 		lines.push(`  reason:  ${run.stopReason}`);
 	}
+	// A Run parked on a deferred question (#190) shows what was asked and
+	// which request an answer addresses; the wake command then carries the
+	// answer, which is replayed into the re-asked call without a prompt.
+	const question =
+		run.interruption?.kind === 'question' ? run.interruption : undefined;
+	if (question?.question) {
+		lines.push(`  question: ${question.question}`);
+	}
+	if (question?.requestId) {
+		lines.push(`  request:  ${question.requestId}`);
+	}
+	const answerFlag = question?.requestId ? ' --answer=allow' : '';
 	lines.push(
-		`  wake it: drisp run --continue=${run.athenaSessionId} "<your reply>"`,
+		`  wake it: drisp run --continue=${run.athenaSessionId}${answerFlag} "<your reply>"`,
 	);
 	return lines.join('\n');
 }

@@ -6,6 +6,7 @@ import {
 import type {RuntimeBootstrapOutput} from '../bootstrap/bootstrapConfig';
 import {runExec, RUN_EXIT_CODE} from '../exec';
 import {createSteerQueue} from '../../core/workflows/steer';
+import {localAnswerDecision} from '../exec/permissionHold';
 import {
 	resolveResumeTarget,
 	type ResumeRequest,
@@ -25,6 +26,14 @@ export type ExecCliFlags = {
 	ephemeral: boolean;
 	timeoutMs?: number;
 	verbose: boolean;
+	/** `--permission-grace-ms`: overrides the configured grace window (#190). */
+	permissionGraceMs?: number;
+	/**
+	 * `--answer=allow|deny`: the answer for the deferred permission the resumed
+	 * Run parked on, replayed into the re-issued call (#190). Only with
+	 * `--continue`.
+	 */
+	answer?: string;
 };
 
 export type ExecRuntimeConfig = Pick<
@@ -37,6 +46,7 @@ export type ExecRuntimeConfig = Pick<
 	| 'personalMcpServers'
 	| 'personalSkills'
 	| 'capabilityConflicts'
+	| 'permissionGraceMs'
 >;
 
 export type RunExecCommandInput = {
@@ -90,6 +100,24 @@ export async function runExecCommand(
 
 	if (!isValidTimeout(input.flags.timeoutMs)) {
 		logError('Error: --timeout-ms must be a positive number.');
+		return RUN_EXIT_CODE.USAGE;
+	}
+
+	const graceMs = input.flags.permissionGraceMs;
+	if (graceMs !== undefined && (!Number.isFinite(graceMs) || graceMs < 0)) {
+		logError('Error: --permission-grace-ms must be a non-negative number.');
+		return RUN_EXIT_CODE.USAGE;
+	}
+
+	const answer = input.flags.answer;
+	if (answer !== undefined && answer !== 'allow' && answer !== 'deny') {
+		logError('Error: --answer must be "allow" or "deny".');
+		return RUN_EXIT_CODE.USAGE;
+	}
+	if (answer !== undefined && input.flags.continueFlag === undefined) {
+		logError(
+			'Error: --answer only applies with --continue (it answers the permission a parked run is waiting on).',
+		);
 		return RUN_EXIT_CODE.USAGE;
 	}
 
@@ -150,6 +178,10 @@ export async function runExecCommand(
 		outputLastMessagePath: input.flags.outputLastMessage,
 		ephemeral: input.flags.ephemeral,
 		timeoutMs: input.flags.timeoutMs,
+		permissionGraceMs: graceMs ?? input.runtimeConfig.permissionGraceMs,
+		...(answer !== undefined
+			? {storedAnswer: localAnswerDecision(answer)}
+			: {}),
 		// Reporting-only summary: strip to name + source layer so secret-bearing
 		// MCP env/command/args and skill paths never reach the startup notice or
 		// the exec.started event (R3).

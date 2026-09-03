@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -81,6 +81,10 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			-- transition (Nudge, Retry, human-resume, Handover) depends on it
 			-- surviving a process restart (ADR 0014).
 			adapter_session_id TEXT,
+			-- The structured Interruption a Run parked in awaiting_attention
+			-- carries (a @drisp/protocol Interruption as JSON; #190). NULL on a
+			-- running or ended Run, and cleared when a parked Run is woken.
+			interruption_json TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
 		);
 	`);
@@ -217,6 +221,30 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			db.exec('ALTER TABLE workflow_runs ADD COLUMN adapter_session_id TEXT;');
 		}
 		db.exec('UPDATE schema_version SET version = 8;');
+	}
+
+	const versionAfterV8 = (
+		db.prepare('SELECT version FROM schema_version').get() as {
+			version: number;
+		}
+	).version;
+	if (versionAfterV8 === 8) {
+		// v9 adds the nullable Interruption a parked Run carries (#190), so
+		// `drisp runs` and a wake can see the deferred question. Guarded like
+		// v8: a database that got workflow_runs from the base DDL above already
+		// has the column.
+		const hasColumn =
+			(
+				db
+					.prepare(
+						`SELECT COUNT(*) AS n FROM pragma_table_info('workflow_runs') WHERE name = 'interruption_json'`,
+					)
+					.get() as {n: number}
+			).n > 0;
+		if (!hasColumn) {
+			db.exec('ALTER TABLE workflow_runs ADD COLUMN interruption_json TEXT;');
+		}
+		db.exec('UPDATE schema_version SET version = 9;');
 	}
 };
 

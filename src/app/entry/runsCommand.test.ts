@@ -53,6 +53,35 @@ describe('runRunsCommand', () => {
 		expect(output).toContain('reason:  ask rule "mcp__github__*" fired on');
 	});
 
+	it('shows the pending question of a run parked on a deferred permission, and how to answer it (#190)', () => {
+		const lines: string[] = [];
+		runRunsCommand({
+			json: false,
+			log: message => lines.push(message),
+			listRunsFn: () => [
+				makeRun({
+					stopReason:
+						'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+					interruption: {
+						kind: 'question',
+						message:
+							'permission request (Bash) unanswered within the grace window (60s); deferred: git push origin main',
+						requestId: 'req-42',
+						question: 'Bash: git push origin main',
+					},
+				}),
+			],
+		});
+
+		const output = lines.join('\n');
+		expect(output).toContain('question: Bash: git push origin main');
+		expect(output).toContain('request:  req-42');
+		// A stored answer is replayed into the re-asked call on continue.
+		expect(output).toContain(
+			'drisp run --continue=athena-1 --answer=allow "<your reply>"',
+		);
+	});
+
 	it('says so when nothing is parked', () => {
 		const lines: string[] = [];
 		runRunsCommand({

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type {Interruption} from '@drisp/protocol';
 import type {
 	HarnessProcessOverride,
 	TurnContinuation,
@@ -82,6 +83,13 @@ export type WorkflowRunnerInput = {
 	 * `runMachine.test.ts`).
 	 */
 	resumedRunMemory?: RunMemory;
+	/**
+	 * The Interruption the Run being woken parked on (#190), read from its
+	 * record by the caller. A deferred question turns the wake prompt into a
+	 * replay instruction — re-issue that exact call — so the runner can apply
+	 * a stored answer to it without asking again.
+	 */
+	parkedInterruption?: Interruption;
 
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
@@ -115,7 +123,9 @@ export type WorkflowRunnerInput = {
 	 * question no attached human can answer, or a permission went unclaimed
 	 * under a holding preset. The reducer names the reason. Takes precedence
 	 * over the Turn's exit code: interrupting the Turn to park is not a
-	 * failure.
+	 * failure. A permission that was held for the grace window and then
+	 * deferred (#190) carries `permission`; the Runner records the resulting
+	 * Interruption in the Journal and on the run record.
 	 */
 	checkInterruption?: () => RunInterruption | null;
 	/**
@@ -155,6 +165,8 @@ export type WorkflowRunResult = {
 	status: RunStatus;
 	iterations: number;
 	stopReason?: string;
+	/** The Interruption an `awaiting_attention` Run parked on, when structured (#190). */
+	interruption?: Interruption;
 	tokens: TokenUsage;
 };
 
@@ -279,6 +291,49 @@ function recordSteersInJournal(
 		);
 	} catch {
 		// A Journal that cannot be rewritten is left as-is; the Turn still starts.
+	}
+}
+
+/**
+ * Record the Interruption a parking Run carries on the Journal (#190) — a
+ * runner-owned note in the same spirit as the Run section: the next Turn
+ * reads the pending question there, and a human reading the Journal sees why
+ * the Run stopped. Appended below whatever the agent wrote; the agent's prose
+ * is never edited (ADR 0015 §7).
+ */
+function appendInterruptionNote(
+	journalPath: string,
+	interruption: Interruption,
+): void {
+	const lines = [
+		'',
+		'',
+		'---',
+		'',
+		'## Needs human (runner note)',
+		'',
+		interruption.message,
+		'',
+	];
+	if (interruption.kind === 'question') {
+		if (interruption.question) lines.push(`- call: ${interruption.question}`);
+		if (interruption.requestId)
+			lines.push(`- request: ${interruption.requestId}`);
+		lines.push(
+			'',
+			'_Written by the runner: the request above was deferred and this run is parked until a human answers it. ' +
+				'On continue the agent re-issues the call; a stored answer is replayed into it without asking again._',
+		);
+	} else {
+		lines.push(
+			'_Written by the runner: this run is parked until a human replies._',
+		);
+	}
+	try {
+		fs.appendFileSync(journalPath, lines.join('\n') + '\n', 'utf-8');
+	} catch {
+		// A Journal that cannot be appended to still leaves the run record as
+		// the durable carrier of the Interruption.
 	}
 }
 
@@ -447,6 +502,7 @@ export function createWorkflowRunner(
 	let status: RunStatus = 'running';
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let stopReason: string | undefined;
+	let interruption: Interruption | undefined;
 	let memory: RunMemory | undefined;
 	// Steers (#191) that arrive before the interpreter loop is up are held
 	// here and seeded into the first Turn; once the loop runs, `applySteer`
@@ -475,6 +531,7 @@ export function createWorkflowRunner(
 			journalPath: journalPromptPath,
 			...(adapterSessionId ? {adapterSessionId} : {}),
 			...(memory ? {runMemoryJson: serializeRunMemory(memory)} : {}),
+			...(interruption ? {interruption} : {}),
 		};
 	}
 
@@ -577,6 +634,7 @@ export function createWorkflowRunner(
 			waking: !!(input.resumeRunId && loop?.enabled),
 			resumedMemory: input.resumedRunMemory,
 			initialSteers: preStartSteers.splice(0),
+			parkedInterruption: input.parkedInterruption,
 		});
 		let phase: RunPhase = initial.phase;
 		memory = initial.memory;
@@ -828,6 +886,14 @@ export function createWorkflowRunner(
 							})),
 						);
 						break;
+					case 'record_interruption':
+						// Ordered before the parked phase's `persist`, so the snapshot
+						// that marks the Run awaiting_attention already carries it.
+						interruption = action.interruption;
+						if (journalAbsPath) {
+							appendInterruptionNote(journalAbsPath, action.interruption);
+						}
+						break;
 				}
 			}
 			return kickoff;
@@ -884,6 +950,7 @@ export function createWorkflowRunner(
 			status,
 			iterations: memory.iteration,
 			stopReason,
+			...(interruption ? {interruption} : {}),
 			tokens: cumulativeTokens,
 		};
 	})();

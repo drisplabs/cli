@@ -47,6 +47,29 @@ export function interruptionFromSuspension(
 		return {kind: 'question', message};
 	}
 
+	// A permission held for the grace window and then deferred (#190), or an
+	// ask rule that claimed one (#189): a question for a human about a tool
+	// call. The call itself sits between the deferral clause and the wake hint.
+	const deferred =
+		/^permission request \((.+?)\) (?:unanswered within the grace window \([^)]*\); deferred|deferred immediately \([^)]*\)): (.*?)(?: — wake with .*)?$/s.exec(
+			message,
+		) ??
+		/^ask rule ".*?" fired on (\S+?)(?: unanswered within the grace window \([^)]*\); deferred| deferred immediately \([^)]*\)): (.*?)(?: — wake with .*)?$/s.exec(
+			message,
+		);
+	if (deferred) {
+		const tool = group(deferred, 1);
+		const call = group(deferred, 2)?.trim();
+		return {
+			kind: 'question',
+			message,
+			...(tool && call ? {question: `${tool}: ${call}`} : {}),
+		};
+	}
+	if (/^ask rule ".*?" fired on \S+ — needs a human$/.test(message)) {
+		return {kind: 'question', message};
+	}
+
 	const hard = /^hard failure \(([a-z_]+)\)/.exec(message);
 	if (hard) {
 		const parsed = HardFailureCodeSchema.safeParse(group(hard, 1));
