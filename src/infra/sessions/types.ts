@@ -55,7 +55,7 @@ export type StoredSession = {
 };
 
 import type {RunStatus} from '../../core/workflows/types';
-import {InterruptionSchema, type Interruption} from '@drisp/protocol';
+import type {Interruption} from '@drisp/protocol';
 
 export type WorkflowRunSnapshot = {
 	runId: string;
@@ -109,19 +109,38 @@ export type PersistedWorkflowRun = {
 	interruption?: Interruption;
 };
 
+const INTERRUPTION_KINDS: ReadonlySet<Interruption['kind']> = new Set([
+	'blocked',
+	'question',
+	'hard_failure',
+	'cap_exhausted',
+]);
+
 /**
  * Parse a persisted `interruption_json` column. Tolerant: a row written by a
  * newer runner with an Interruption kind this build does not know, or a
  * corrupt value, reads as "no Interruption" rather than failing the whole
- * run read — the `stop_reason` sentence still describes the park.
+ * run read — the `stop_reason` sentence still describes the park. The check
+ * is structural (a known `kind` and a `message`) rather than the package's
+ * zod schema, so this persistence layer keeps no runtime dependency on
+ * `@drisp/protocol`; the value was validated by the writer.
  */
 export function parsePersistedInterruption(
 	json: unknown,
 ): Interruption | undefined {
 	if (typeof json !== 'string' || json.length === 0) return undefined;
 	try {
-		const parsed = InterruptionSchema.safeParse(JSON.parse(json));
-		return parsed.success ? parsed.data : undefined;
+		const parsed: unknown = JSON.parse(json);
+		if (typeof parsed !== 'object' || parsed === null) return undefined;
+		const candidate = parsed as {kind?: unknown; message?: unknown};
+		if (
+			typeof candidate.kind !== 'string' ||
+			!INTERRUPTION_KINDS.has(candidate.kind as Interruption['kind']) ||
+			typeof candidate.message !== 'string'
+		) {
+			return undefined;
+		}
+		return candidate as Interruption;
 	} catch {
 		return undefined;
 	}
