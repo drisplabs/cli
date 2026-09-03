@@ -113,7 +113,7 @@ export type ExecRunOptions = {
 	dashboardDecisionPollIntervalMs?: number;
 	/**
 	 * Steers (#191) for this Run — from the hub's `steer` frame via the
-	 * dashboard daemon, or a local `--steer`. Each is queued on the Runner and
+	 * runner process, or a local `--steer`. Each is queued on the Runner and
 	 * delivered at the head of the next Turn's prompt, never mid-Turn; the
 	 * runner emits `run.steer.queued` on receipt and `run.steer` on delivery.
 	 */

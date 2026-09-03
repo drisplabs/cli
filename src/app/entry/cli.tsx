@@ -244,7 +244,7 @@ function inkRenderOptions() {
 
 // Set terminal tab title immediately so it appears before React renders.
 // Only when stdout is a TTY — otherwise we'd be writing escape sequences
-// into a pipe (e.g. `athena dashboard status --json | jq`) and corrupting
+// into a pipe (e.g. `drisp runner status --json | jq`) and corrupting
 // the consumer.
 if (process.stdout.isTTY) {
 	process.stdout.write('\x1b]1;Athena\x07\x1b]2;Athena\x07');

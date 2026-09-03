@@ -499,7 +499,7 @@ export async function runLiveTransportHarness(
 				pidHeld && statusCurrent
 					? pass(
 							'Pid file held and status file current',
-							`runner.pid holds pid ${process.pid}; runner.status.json reports pid ${status?.pid}, instance ${status?.instanceId}, socket connected; runner.db opened beside them.`,
+							`runner.pid holds pid ${process.pid}; runner.status.json reports pid ${status.pid}, instance ${status.instanceId}, socket connected; runner.db opened beside them.`,
 						)
 					: fail(
 							'Pid file held and status file current',

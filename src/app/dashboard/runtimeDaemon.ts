@@ -394,9 +394,7 @@ export async function runDashboardRuntimeDaemon(
 	async function connectOnce(): Promise<void> {
 		const config = readConfig();
 		if (!config) {
-			throw new Error(
-				'dashboard runtime daemon: not paired. Run "drisp dashboard pair" first.',
-			);
+			throw new Error('runner: not paired. Run "drisp runner pair" first.');
 		}
 		// If the circuit breaker has tripped, sleep until the cooldown expires
 		// rather than throwing immediately. Throwing inside reconnectLoop with a
