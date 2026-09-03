@@ -1,3 +1,4 @@
+import type {FeedAckFrame} from '@drisp/protocol';
 import type {FeedEvent} from '../../core/feed/types';
 import {
 	readDashboardClientConfig,
@@ -9,8 +10,6 @@ import {
 	type DashboardFeedOrigin,
 	type DashboardFeedOutbox,
 } from './dashboardFeedPublisher';
-
-type FeedAckFrame = {type: 'feed_ack'; deliverySeq?: number; eventId?: string};
 
 export type PairedFeedTransport = {
 	sendFeedEvent(frame: {

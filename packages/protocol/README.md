@@ -56,8 +56,11 @@ maps to exactly one new name (`FRAME_NAME_MAP`).
 The `event` frame folds two old names into one, told apart by `stream`. Every
 other mapping is a pure rename of `type`; bodies are shared.
 
-Nothing changes on the wire by this package existing: the CLI keeps emitting
-the old names until it is rewired (drisplabs/cli#184).
+The runner (the CLI's dashboard daemon) is wired to this package: it parses
+every inbound frame with `safeNormalizeFrame()`, sends a versioned `hello`
+first, and builds every outbound frame under its canonical name. Which name set
+actually reaches the wire is decided per connection by the hub's `hello` — see
+`docs/protocol/runtime-dashboard-protocol.md` §17 for the rule.
 
 ## Versioning
 

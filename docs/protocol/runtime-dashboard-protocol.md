@@ -207,7 +207,8 @@ Current remote dispatch does not yet apply secrets; that is a known implementati
 
 `FeedEvent` is the canonical paired-session publication model.
 
-`feed_event` is the paired-session transport for that model. The CLI-side
+The `event` frame with `stream: 'feed'` (`feed_event` under the legacy names,
+§17) is the paired-session transport for that model. The CLI-side
 `PairedFeedPublisher` owns durable persistence, transport framing, ACK
 consumption, and retry timing behind a `FeedEvent`-level interface.
 
@@ -230,7 +231,8 @@ Required properties:
 
 ### Compatibility channel
 
-`run_event` and the per-run stream may continue temporarily as compatibility
+The `event` frame with `stream: 'run'` (`run_event` under the legacy names,
+§17) and the per-run stream may continue temporarily as compatibility
 adapters, but:
 
 - they are not the canonical session feed;
@@ -249,7 +251,7 @@ adapters, but:
 
 ### Required behavior
 
-1. Dashboard sends `dashboard_decision` addressed by `(athenaSessionId, requestId)`.
+1. Dashboard sends `answer` (`dashboard_decision` under the legacy names, §17) addressed by `(athenaSessionId, requestId)`.
 2. CLI stores durably before sending `decision_ack`.
 3. Dashboard retries until ACK.
 4. Runtime consumption is a distinct local action and should not be conflated with delivery ACK.
@@ -334,9 +336,12 @@ Every failure should map to:
 The frame contract is owned by the `@drisp/protocol` workspace package
 (`packages/protocol`): zod schemas, inferred types, and a JSON Schema export
 under `packages/protocol/schema/`. It accepts two frame-name sets side by side
-and normalises both to one typed value (`normalizeFrame()`):
+and normalises both to one typed value (`normalizeFrame()`). The runner (the
+CLI's dashboard daemon) is wired to the package: it has no frame types of its
+own, parses every inbound frame through it, and builds every outbound frame
+under the canonical name.
 
-| Legacy name (current wire) | Canonical name                                          |
+| Legacy name (hub of today) | Canonical name                                          |
 | -------------------------- | ------------------------------------------------------- |
 | `job_assignment`           | `run.start`                                             |
 | `dashboard_decision`       | `answer`                                                |
@@ -348,9 +353,66 @@ and normalises both to one typed value (`normalizeFrame()`):
 | —                          | `steer` (new; a human turn text)                        |
 | —                          | `needs_human` (new; a Run parking with an Interruption) |
 
-Each legacy name maps to exactly one canonical name. The CLI keeps emitting the
-legacy names until it is rewired to the package; see the package README for the
-full table and the direction of each frame.
+Each legacy name maps to exactly one canonical name; see the package README for
+the full table and the direction of each frame.
+
+### 17.1 What the runner accepts
+
+Every inbound frame is parsed with `safeNormalizeFrame()` before the frame
+router sees it, so both name sets are admitted and arrive as one canonical
+value:
+
+| On the wire (either)                               | Runner sees | Handled by                                                                        |
+| -------------------------------------------------- | ----------- | --------------------------------------------------------------------------------- |
+| `run.start` / `job_assignment`                     | `run.start` | assignment intake (gated on attachment readiness)                                 |
+| `answer` / `dashboard_decision`                    | `answer`    | decision inbox, then `decision_ack`                                               |
+| `stop` / `cancel`                                  | `stop`      | aborts the active Run                                                             |
+| `steer`                                            | `steer`     | recorded on the Run (`steers[]`); carried into the next Turn is drisplabs/cli#191 |
+| `hello`                                            | `hello`     | wire-mode negotiation (§17.3)                                                     |
+| `feed_ack`, `attachments.changed`, `pong`, `error` | unchanged   | as before (`error` is logged)                                                     |
+
+A frame that is not JSON, or does not parse under the package (unknown `type`,
+missing required field), is answered with
+`{type: 'error', code: 'malformed_frame', message}` and dropped; the socket
+stays up.
+
+### 17.2 What the runner emits
+
+| Frame                                         | When                                                                                                                                                                                                            |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hello`                                       | First frame on every connection: `{protocolVersion: PROTOCOL_VERSION, role: 'runner', instanceId}`                                                                                                              |
+| `ping`                                        | Heartbeat                                                                                                                                                                                                       |
+| `assignment_accepted` / `assignment_rejected` | Admission outcome of a `run.start`                                                                                                                                                                              |
+| `event` + `stream: 'run'`                     | The compatibility per-Run stream (§11), when no per-run callback channel is open                                                                                                                                |
+| `event` + `stream: 'feed'`                    | The canonical FeedEvent channel (§11), from the durable outbox                                                                                                                                                  |
+| `needs_human`                                 | The Run parked in `awaiting_attention`: emitted from the remote-run executor when the Runner reports `run.suspended`, with the `Interruption` classified from the stop reason (`interruptionFromSuspension.ts`) |
+| `decision_ack`                                | After an `answer` is durably stored                                                                                                                                                                             |
+| `error`                                       | `malformed_frame` (§17.1) or `unsupported_protocol_version` (§17.3)                                                                                                                                             |
+
+### 17.3 Wire mode: which names actually reach the hub
+
+The hub has not migrated yet, so the runner decides **per connection** which
+name set it puts on the wire:
+
+1. Every connection starts in **legacy** mode: outbound frames are rewritten
+   through `toLegacyFrame()` at the socket boundary (`run_event`,
+   `feed_event`, …). New-only frames (`hello`, `needs_human`, `error`) have no
+   legacy twin and go out unchanged.
+2. If the hub answers with a `hello` whose `protocolVersion` equals the
+   runner's `PROTOCOL_VERSION`, the connection switches to **canonical** mode
+   and every frame from then on uses the new names.
+3. If the hub sends a `hello` with a version the runner does not speak, the
+   runner replies `{type: 'error', code: 'unsupported_protocol_version'}` and
+   closes the socket; the daemon's reconnect loop owns what happens next.
+4. A hub that never sends `hello` (the hub of today) leaves the connection in
+   legacy mode for its lifetime. **Legacy is the default**; canonical must be
+   announced.
+
+The mode is re-negotiated on every reconnect and is visible in
+`drisp dashboard status` (`wireMode`). The live-transport harness
+(`src/app/dashboard/liveTransportHarness.ts`) runs the daemon against a fake
+hub in both modes and validates every runner frame against the package under
+the name set that hub expects.
 
 ## 18. Current Compatibility Notes
 

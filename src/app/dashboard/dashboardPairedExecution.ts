@@ -1,5 +1,5 @@
+import type {AssignmentRejectedReason, SteerFrame} from '@drisp/protocol';
 import type {
-	AssignmentRejectedReason,
 	InstanceSocketClient,
 	InstanceSocketLogger,
 } from './instanceSocketClient';
@@ -12,15 +12,29 @@ import type {FeedSink} from './pairedFeedPublisher';
 import type {RuntimeDecision} from '../../core/runtime/types';
 
 /**
- * A dashboard decision in Run-domain terms, decoupled from the
- * `dashboard_decision` socket frame. The frame router translates a raw
- * `dashboard_decision` frame into this shape before it crosses the execution
- * boundary, so decision submission can be exercised without socket frames.
+ * A dashboard decision in Run-domain terms, decoupled from the `answer`
+ * socket frame. The frame router translates a canonical `answer` frame into
+ * this shape before it crosses the execution boundary, so decision submission
+ * can be exercised without socket frames.
  */
 export type DashboardDecisionSubmission = {
 	athenaSessionId: string;
 	requestId: string;
 	decision: RuntimeDecision;
+};
+
+/** A Steer (a human turn text for a Run) in Run-domain terms. */
+export type DashboardSteerSubmission = Omit<SteerFrame, 'type'>;
+
+/**
+ * A Steer recorded on a Run. Carrying it into the next Turn's prompt is
+ * drisplabs/cli#191; until then the record is the durable trace that it
+ * arrived.
+ */
+export type DashboardRunSteer = {
+	athenaSessionId?: string;
+	text: string;
+	receivedAt: number;
 };
 
 export type DashboardAssignmentRejection = {
@@ -42,10 +56,15 @@ export type DashboardPairedExecutionRunRecord = {
 	endedAt?: number;
 	status: 'running' | 'completed' | 'failed' | 'cancelled' | 'rejected';
 	error?: string;
+	/** Every Steer the hub sent for this Run, in arrival order. */
+	steers?: DashboardRunSteer[];
 };
 
 export type DashboardPairedExecutionOptions = {
-	client: Pick<InstanceSocketClient, 'sendRunEvent' | 'sendDecisionAck'>;
+	client: Pick<
+		InstanceSocketClient,
+		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
+	>;
 	executor: DashboardPairedExecutionExecutor;
 	projectDir: string;
 	decisionInbox: DashboardDecisionInbox;
@@ -63,6 +82,12 @@ export type DashboardPairedExecution = {
 	): DashboardAssignmentAdmission;
 	cancelRun(runId: string): boolean;
 	submitDashboardDecision(submission: DashboardDecisionSubmission): void;
+	/**
+	 * Record a Steer on the Run it addresses. Returns `false` when this
+	 * execution has no record of the Run (never admitted here, or evicted
+	 * from the history ring).
+	 */
+	steerRun(submission: DashboardSteerSubmission): boolean;
 	rejectAssignment(
 		runId: string,
 		rejection: DashboardAssignmentRejection,
@@ -149,6 +174,35 @@ export function createDashboardPairedExecution(
 		return true;
 	}
 
+	function steerRun(submission: DashboardSteerSubmission): boolean {
+		// A parked Run (awaiting a human) is no longer `active` — its executor
+		// has returned — so look the record up in the history, not the active
+		// map: a Steer is exactly what wakes such a Run.
+		const record = [...runHistory]
+			.reverse()
+			.find(r => r.runId === submission.runId);
+		if (!record) {
+			log(
+				'warn',
+				`steer for unknown run ${submission.runId} ignored: ${submission.text}`,
+			);
+			return false;
+		}
+		const steer: DashboardRunSteer = {
+			...(submission.athenaSessionId !== undefined
+				? {athenaSessionId: submission.athenaSessionId}
+				: {}),
+			text: submission.text,
+			receivedAt: now(),
+		};
+		record.steers = [...(record.steers ?? []), steer];
+		log(
+			'info',
+			`steer recorded for run ${submission.runId} (${record.status}): ${submission.text}`,
+		);
+		return true;
+	}
+
 	function handleAssignment(
 		assignment: ValidatedAssignment,
 		input: {projectDir?: string} = {},
@@ -223,17 +277,18 @@ export function createDashboardPairedExecution(
 	}
 
 	return {
-		// `job_assignment` is intentionally not handled here: the runtime daemon
+		// `run.start` is intentionally not handled here: the runtime daemon
 		// routes assignments through `DashboardAssignmentIntake`, which gates
 		// admission on attachment readiness and then calls `admitAssignment`
-		// directly. Run-control frames (`dashboard_decision`, `cancel`) are
-		// translated by `routeDashboardRunFrame` into `submitDashboardDecision`
-		// and `cancelRun` calls.
+		// directly. Run-control frames (`answer`, `stop`, `steer`) are
+		// translated by `routeDashboardRunFrame` into `submitDashboardDecision`,
+		// `cancelRun`, and `steerRun` calls.
 		admitAssignment(assignment, input) {
 			return handleAssignment(assignment, input);
 		},
 		cancelRun,
 		submitDashboardDecision,
+		steerRun,
 		rejectAssignment,
 		snapshot() {
 			return {

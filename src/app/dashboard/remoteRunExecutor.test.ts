@@ -14,7 +14,7 @@ import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
 
 function asValidatedAssignment(frame: {
-	type: 'job_assignment';
+	type: 'run.start';
 	runId: string;
 	runnerId?: string;
 	runSpec?: unknown;
@@ -43,7 +43,7 @@ function makeArtifactRepo(): string {
 describe('validateDashboardAssignment', () => {
 	it('produces a validated assignment with the parsed spec for a well-formed frame', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runnerId: 'runner_7',
 			runSpec: {prompt: 'say hello', sessionId: 'athena-run_42'},
@@ -62,7 +62,7 @@ describe('validateDashboardAssignment', () => {
 
 	it('defaults the runnerId to legacy when the frame omits it', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runSpec: {prompt: 'say hello'},
 		});
@@ -75,7 +75,7 @@ describe('validateDashboardAssignment', () => {
 
 	it('rejects a malformed assignment with a first-class malformed_assignment rejection', () => {
 		const result = validateDashboardAssignment({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_42',
 			runSpec: {sessionId: 'athena-run_42'},
 		});
@@ -129,7 +129,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'say hello',
@@ -242,7 +242,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'say hello',
@@ -292,7 +292,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_continue',
 				runSpec: {
 					prompt: 'continue',
@@ -365,7 +365,7 @@ describe('executeRemoteAssignment', () => {
 		try {
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env',
 					runSpec: {
 						prompt: 'env',
@@ -467,7 +467,7 @@ describe('executeRemoteAssignment', () => {
 		await Promise.all([
 			executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env_1',
 					runSpec: {prompt: 'one', env: {RUN: 'one'}},
 				}),
@@ -478,7 +478,7 @@ describe('executeRemoteAssignment', () => {
 			}),
 			executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_env_2',
 					runSpec: {prompt: 'two', env: {RUN: 'two'}},
 				}),
@@ -526,7 +526,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_decisions',
 				runSpec: {prompt: 'needs approval'},
 			}),
@@ -623,7 +623,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {
 					prompt: 'define smoke',
@@ -706,7 +706,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_custom',
 				runSpec: {
 					prompt: 'run custom',
@@ -765,7 +765,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -834,7 +834,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -890,7 +890,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_42',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -1025,7 +1025,7 @@ describe('executeRemoteAssignment', () => {
 
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_callback',
 					runSpec: {
 						prompt: 'go',
@@ -1103,7 +1103,7 @@ describe('executeRemoteAssignment', () => {
 
 			await executeRemoteAssignment({
 				assignment: asValidatedAssignment({
-					type: 'job_assignment',
+					type: 'run.start',
 					runId: 'run_fallback',
 					runSpec: {
 						prompt: 'go',
@@ -1206,7 +1206,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_artifacts',
 				runSpec: {
 					prompt: 'hello',
@@ -1332,7 +1332,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_artifacts_feed',
 				runSpec: {
 					prompt: 'hello',
@@ -1411,7 +1411,7 @@ describe('executeRemoteAssignment', () => {
 
 		await executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_bad_artifacts',
 				runSpec: {
 					prompt: 'hello',
@@ -1498,7 +1498,7 @@ describe('executeRemoteAssignment', () => {
 
 		const pending = executeRemoteAssignment({
 			assignment: asValidatedAssignment({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_cancel',
 				runSpec: {prompt: 'hello'},
 			}),
@@ -1545,5 +1545,156 @@ describe('executeRemoteAssignment', () => {
 				}),
 			}),
 		);
+	});
+});
+
+describe('executeRemoteAssignment: needs_human', () => {
+	const bootstrap = () => ({
+		globalConfig: {
+			plugins: [],
+			additionalDirectories: [],
+			workflowMarketplaceSources: [],
+			workflowSelections: {},
+		},
+		projectConfig: {
+			plugins: [],
+			additionalDirectories: [],
+			workflowMarketplaceSources: [],
+			workflowSelections: {},
+		},
+		harness: 'claude' as const,
+		isolationConfig: {preset: 'minimal' as const, additionalDirectories: []},
+		workflowRef: undefined,
+		workflow: undefined,
+		workflowPlan: undefined,
+		modelName: null,
+		warnings: [],
+	});
+
+	it('emits a needs_human frame with the classified Interruption when the Run parks in awaiting_attention', async () => {
+		const sent: unknown[] = [];
+		const needsHuman: unknown[] = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'run.suspended',
+					ts: 100,
+					data: {
+						runId: 'wf-run-9',
+						status: 'awaiting_attention',
+						stopReason:
+							'agent declared NEEDS_HUMAN: need the staging credentials',
+					},
+				}) + '\n',
+			);
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					ts: 101,
+					data: {success: true, exitCode: 0, finalMessage: null},
+				}) + '\n',
+			);
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: null,
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {
+				sendRunEvent: frame => sent.push(frame),
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([
+			{
+				runId: 'run_parked',
+				athenaSessionId: 'athena-parked',
+				interruption: {
+					kind: 'blocked',
+					reason: 'need the staging credentials',
+					message: 'agent declared NEEDS_HUMAN: need the staging credentials',
+				},
+			},
+		]);
+		// The run stream still carries the suspension as before.
+		expect(sent).toContainEqual(
+			expect.objectContaining({
+				runId: 'run_parked',
+				kind: 'run.suspended',
+				payload: expect.objectContaining({status: 'awaiting_attention'}),
+			}),
+		);
+	});
+
+	it('does not emit needs_human when the Run ends without parking', async () => {
+		const needsHuman: unknown[] = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					ts: 101,
+					data: {success: true, exitCode: 0, finalMessage: 'done'},
+				}) + '\n',
+			);
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: 'done',
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_done',
+				runSpec: {prompt: 'do the thing'},
+			}),
+			client: {
+				sendRunEvent: () => {},
+				sendNeedsHuman: frame => needsHuman.push(frame),
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		expect(needsHuman).toEqual([]);
 	});
 });

@@ -758,8 +758,7 @@ describe('runDashboardCommand: status', () => {
 	});
 });
 
-type FakeFrame =
-	import('../dashboard/instanceSocketClient').InstanceSocketFrame;
+type FakeFrame = import('@drisp/protocol').CanonicalFrame;
 type FakeRunEvent = {
 	runId: string;
 	seq: number;
@@ -947,7 +946,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 		expiresInSec: 900,
 	});
 
-	it('routes job_assignment frames to the executor and de-dups runIds in flight', async () => {
+	it('routes run.start frames to the executor and de-dups runIds in flight', async () => {
 		const fake = makeFakeSocket();
 		const executor = vi.fn(async () => {});
 
@@ -966,7 +965,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 
 		await new Promise(r => setTimeout(r, 0));
 		const frame: FakeFrame = {
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_1',
 			runSpec: {prompt: 'hi'},
 		};
@@ -1010,7 +1009,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 
 		await new Promise(r => setTimeout(r, 0));
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_drain',
 			runSpec: {prompt: 'x'},
 		});
@@ -1039,7 +1038,7 @@ describe('runDashboardCommand: connect → executeRemoteAssignment', () => {
 		);
 		await new Promise(r => setTimeout(r, 0));
 		fake.emitFrame({type: 'ping', ts: 1});
-		fake.emitFrame({type: 'cancel', runId: 'x'});
+		fake.emitFrame({type: 'stop', runId: 'x'});
 		await pending;
 		expect(executor).not.toHaveBeenCalled();
 	});

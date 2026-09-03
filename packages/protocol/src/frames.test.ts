@@ -259,6 +259,39 @@ describe('new-only frames', () => {
 		).toThrow();
 	});
 
+	it('a question Interruption may omit requestId when the Turn was interrupted rather than left waiting', () => {
+		const interrupted = normalizeFrame({
+			type: 'needs_human',
+			runId: 'run_42',
+			interruption: {
+				kind: 'question',
+				question: 'Which branch should I target?',
+				message:
+					'agent asked a question with no human attached to answer: Which branch should I target?',
+			},
+		});
+		expect(interrupted.type).toBe('needs_human');
+		if (interrupted.type !== 'needs_human') throw new Error('unreachable');
+		expect(interrupted.interruption).toEqual({
+			kind: 'question',
+			question: 'Which branch should I target?',
+			message:
+				'agent asked a question with no human attached to answer: Which branch should I target?',
+		});
+
+		const pending = normalizeFrame({
+			type: 'needs_human',
+			runId: 'run_42',
+			interruption: {
+				kind: 'question',
+				requestId: 'req-1',
+				message: 'agent asked a question',
+			},
+		});
+		if (pending.type !== 'needs_human') throw new Error('unreachable');
+		expect(pending.interruption).toMatchObject({requestId: 'req-1'});
+	});
+
 	it('new-only frames have no legacy form and are returned unchanged', () => {
 		const steer = normalizeFrame({type: 'steer', runId: 'r', text: 't'});
 		expect(toLegacyFrame(steer)).toEqual(steer);

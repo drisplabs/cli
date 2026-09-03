@@ -13,9 +13,9 @@ import {
 	resolveWorkflowInstall,
 	type ResolvedWorkflowSource,
 } from '../../infra/plugins/marketplace';
+import type {RunStartFrame} from '@drisp/protocol';
 import type {
 	InstanceSocketClient,
-	InstanceSocketFrame,
 	InstanceSocketLogger,
 } from './instanceSocketClient';
 import {
@@ -34,13 +34,9 @@ import {
 	type UploadObjectFn,
 } from './artifactCapture';
 import type {FeedSink} from './pairedFeedPublisher';
+import {interruptionFromSuspension} from './interruptionFromSuspension';
 
 const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
-
-type JobAssignmentFrame = Extract<
-	InstanceSocketFrame,
-	{type: 'job_assignment'}
->;
 
 export type RemoteRunSpec = {
 	prompt: string;
@@ -66,7 +62,7 @@ export type RemoteRunSpec = {
 
 export type ExecuteRemoteAssignmentInput = {
 	assignment: ValidatedAssignment;
-	client: Pick<InstanceSocketClient, 'sendRunEvent'>;
+	client: Pick<InstanceSocketClient, 'sendRunEvent' | 'sendNeedsHuman'>;
 	projectDir: string;
 	log?: InstanceSocketLogger;
 	runExecFn?: (options: ExecRunOptions) => Promise<ExecRunResult>;
@@ -180,7 +176,7 @@ export type ValidatedAssignment = {
 	runId: string;
 	runnerId: string;
 	spec: RemoteRunSpec;
-	frame: JobAssignmentFrame;
+	frame: RunStartFrame;
 };
 
 export type AssignmentValidation =
@@ -195,7 +191,7 @@ export type AssignmentValidation =
  * frame once into a {@link ValidatedAssignment} or a first-class rejection.
  */
 export function validateDashboardAssignment(
-	frame: JobAssignmentFrame,
+	frame: RunStartFrame,
 ): AssignmentValidation {
 	const spec = parseRemoteRunSpec(frame.runSpec);
 	if (!spec) {
@@ -361,6 +357,8 @@ export async function executeRemoteAssignment({
 	// guaranteed present and we consume it directly — no reparse. The raw frame
 	// is retained only for orthogonal concerns (artifact-upload spec parsing).
 	const {spec, runId, frame} = assignment;
+	const athenaSessionId =
+		spec.athenaSessionId ?? spec.sessionId ?? `athena-${runId}`;
 
 	const runEventPublisher: RemoteRunEventPublisher =
 		await createRemoteRunEventPublisher({
@@ -386,6 +384,26 @@ export async function executeRemoteAssignment({
 			).message;
 		}
 		runEventPublisher.publish(kind, payload, ts);
+	};
+
+	/**
+	 * The Run parked in `awaiting_attention` (the Runner's `run.suspended`
+	 * JSONL event): tell the hub with a `needs_human` frame carrying the
+	 * Interruption, over the instance socket. The run stream still relays the
+	 * event as before; this is the control-plane escalation beside it.
+	 */
+	const reportNeedsHuman = (event: JsonExecEvent): void => {
+		const data =
+			typeof event.data === 'object' && event.data !== null
+				? (event.data as {stopReason?: unknown})
+				: {};
+		const stopReason =
+			typeof data.stopReason === 'string' ? data.stopReason : null;
+		client.sendNeedsHuman({
+			runId,
+			athenaSessionId,
+			interruption: interruptionFromSuspension(stopReason),
+		});
 	};
 
 	send('progress', {message: 'assignment received'});
@@ -444,6 +462,7 @@ export async function executeRemoteAssignment({
 								continue;
 							}
 							send(eventKind(event), eventPayload(event), now());
+							if (event.type === 'run.suspended') reportNeedsHuman(event);
 						} catch (err) {
 							send('progress', {line});
 							log(
@@ -476,8 +495,7 @@ export async function executeRemoteAssignment({
 				prompt: spec.prompt,
 				projectDir,
 				harness: runtimeConfig.harness,
-				athenaSessionId:
-					spec.athenaSessionId ?? spec.sessionId ?? `athena-${runId}`,
+				athenaSessionId,
 				adapterResumeSessionId: spec.adapterResumeSessionId,
 				isolationConfig: runtimeConfig.isolationConfig,
 				pluginMcpConfig: runtimeConfig.pluginMcpConfig,

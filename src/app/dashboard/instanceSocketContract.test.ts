@@ -8,14 +8,18 @@
  *      in both directions, bodies lifted from the existing socket tests.
  *   2. A live capture: the production `createInstanceSocketClient` sends each
  *      of its frames over a real `ws` socket and we replay what hit the wire.
- *      This is what pins "no runtime code path changes what it sends".
+ *      This is what pins what a hub that has not announced a protocol version
+ *      (the hub of today) receives: a versioned `hello` first, then every
+ *      frame under its legacy name.
  */
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {WebSocketServer, type WebSocket as ServerWebSocket} from 'ws';
 import {
 	CanonicalFrameSchema,
 	FRAME_NAME_MAP,
+	HelloFrameSchema,
 	LegacyFrameSchema,
+	PROTOCOL_VERSION,
 	normalizeFrame,
 	toLegacyFrame,
 	type LegacyFrame,
@@ -104,7 +108,7 @@ describe('live capture of what createInstanceSocketClient emits', () => {
 		await new Promise<void>(resolve => server.close(() => resolve()));
 	});
 
-	it('every frame the client puts on the wire is a legacy frame that normalises and round-trips', async () => {
+	it('sends a versioned hello first, then every frame under its legacy name (normalising and round-tripping)', async () => {
 		const client = createInstanceSocketClient({
 			dashboardUrl: `http://127.0.0.1:${port}`,
 			instanceId: 'inst_1',
@@ -157,6 +161,7 @@ describe('live capture of what createInstanceSocketClient emits', () => {
 				const types = new Set(wire.map(f => (f as {type: string}).type));
 				expect(types).toEqual(
 					new Set([
+						'hello',
 						'ping',
 						'assignment_accepted',
 						'assignment_rejected',
@@ -170,7 +175,16 @@ describe('live capture of what createInstanceSocketClient emits', () => {
 		);
 		client.close('done');
 
-		for (const captured of wire) {
+		// The hello is new-only (no legacy twin) and must be the first frame.
+		const [first, ...rest] = wire;
+		expect(HelloFrameSchema.parse(first)).toMatchObject({
+			protocolVersion: PROTOCOL_VERSION,
+			role: 'runner',
+			instanceId: 'inst_1',
+		});
+		expect(rest.some(f => (f as {type: string}).type === 'hello')).toBe(false);
+
+		for (const captured of rest) {
 			const legacy = LegacyFrameSchema.parse(captured);
 			const canonical = normalizeFrame(captured);
 			expect(normalizeFrame(underNewName(legacy))).toEqual(canonical);

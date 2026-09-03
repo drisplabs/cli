@@ -345,7 +345,7 @@
 									"type": "string"
 								}
 							},
-							"required": ["message", "kind", "requestId"],
+							"required": ["message", "kind"],
 							"additionalProperties": false
 						},
 						{

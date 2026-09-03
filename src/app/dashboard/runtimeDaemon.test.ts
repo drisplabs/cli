@@ -3,10 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runDashboardRuntimeDaemon} from './runtimeDaemon';
-import type {
-	InstanceSocketClient,
-	InstanceSocketFrame,
-} from './instanceSocketClient';
+import type {CanonicalFrame} from '@drisp/protocol';
+import type {InstanceSocketClient} from './instanceSocketClient';
 import type {DashboardClientConfig} from '../../infra/config/dashboardClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
@@ -51,7 +49,7 @@ beforeEach(() => {
 });
 
 function makeFakeSocket() {
-	const frameHandlers: Array<(frame: InstanceSocketFrame) => void> = [];
+	const frameHandlers: Array<(frame: CanonicalFrame) => void> = [];
 	const closeHandlers: Array<(reason: string) => void> = [];
 	const calls = {
 		connect: 0,
@@ -76,6 +74,7 @@ function makeFakeSocket() {
 		onClose: handler => {
 			closeHandlers.push(handler);
 		},
+		wireMode: () => 'legacy',
 		sendAssignmentAccepted: runId => {
 			calls.assignmentAccepted.push(runId);
 		},
@@ -83,6 +82,7 @@ function makeFakeSocket() {
 			calls.assignmentRejected.push(input);
 		},
 		sendRunEvent: () => {},
+		sendNeedsHuman: () => {},
 		sendFeedEvent: frame => {
 			calls.feedEvents.push(frame);
 		},
@@ -93,7 +93,7 @@ function makeFakeSocket() {
 	return {
 		client,
 		calls,
-		emitFrame: (frame: InstanceSocketFrame) => {
+		emitFrame: (frame: CanonicalFrame) => {
 			for (const handler of frameHandlers) handler(frame);
 		},
 		emitClose: (reason: string) => {
@@ -199,7 +199,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'dashboard_decision',
+			type: 'answer',
 			athenaSessionId: 'athena-1',
 			requestId: 'req-1',
 			decision: {
@@ -257,8 +257,8 @@ describe('runDashboardRuntimeDaemon', () => {
 			reconnectDelaysMs: [],
 		});
 
-		const frame: InstanceSocketFrame = {
-			type: 'job_assignment',
+		const frame: CanonicalFrame = {
+			type: 'run.start',
 			runId: 'run_1',
 			runSpec: {prompt: 'hi'},
 		};
@@ -307,7 +307,7 @@ describe('runDashboardRuntimeDaemon', () => {
 			expect(fetchAttachments).toHaveBeenCalledTimes(1);
 		});
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_waiting',
 			runSpec: {prompt: 'hi'},
 		});
@@ -365,7 +365,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		);
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_degraded',
 			runSpec: {prompt: 'hi'},
 		});
@@ -421,7 +421,7 @@ describe('runDashboardRuntimeDaemon', () => {
 
 			// An assignment arrives mid-reconcile → buffered, not yet admitted.
 			first.emitFrame({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: 'run_race',
 				runSpec: {prompt: 'hi'},
 			});
@@ -536,7 +536,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
-	it('aborts an active assignment when a cancel frame arrives', async () => {
+	it('aborts an active assignment when a stop frame arrives', async () => {
 		const fake = makeFakeSocket();
 		let seenSignal: AbortSignal | undefined;
 		let resolveExecutor: () => void = () => {};
@@ -560,14 +560,14 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_cancel',
 			runSpec: {prompt: 'hi'},
 		});
 		await Promise.resolve();
 		expect(seenSignal?.aborted).toBe(false);
 
-		fake.emitFrame({type: 'cancel', runId: 'run_cancel'});
+		fake.emitFrame({type: 'stop', runId: 'run_cancel'});
 		expect(seenSignal?.aborted).toBe(true);
 		resolveExecutor();
 		await daemon.stop('test');
@@ -602,7 +602,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_disconnect',
 			runSpec: {prompt: 'legacy'},
 		});
@@ -642,14 +642,14 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_a',
 			runnerId: 'r1',
 			runSpec: {prompt: 'a'},
 		});
 		await Promise.resolve();
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_b',
 			runnerId: 'r2',
 			runSpec: {prompt: 'b'},
@@ -665,7 +665,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
-	it('cancel finds the right run regardless of which runner bucket it is in', async () => {
+	it('stop finds the right run regardless of which runner bucket it is in', async () => {
 		const fake = makeFakeSocket();
 		const seenSignals = new Map<string, AbortSignal>();
 		const resolvers = new Map<string, () => void>();
@@ -694,20 +694,20 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_a',
 			runnerId: 'r1',
 			runSpec: {prompt: 'a'},
 		});
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_b',
 			runnerId: 'r2',
 			runSpec: {prompt: 'b'},
 		});
 		await Promise.resolve();
 
-		fake.emitFrame({type: 'cancel', runId: 'run_b'});
+		fake.emitFrame({type: 'stop', runId: 'run_b'});
 		expect(seenSignals.get('run_b')?.aborted).toBe(true);
 		expect(seenSignals.get('run_a')?.aborted).toBe(false);
 
@@ -739,14 +739,14 @@ describe('runDashboardRuntimeDaemon', () => {
 
 		// Legacy frame fills the legacy bucket.
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_legacy',
 			runSpec: {prompt: 'legacy'},
 		});
 		await Promise.resolve();
 		// Runner-keyed frame goes to its own bucket — runs concurrently.
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_r1',
 			runnerId: 'r1',
 			runSpec: {prompt: 'r1'},
@@ -754,7 +754,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		await Promise.resolve();
 		// A second legacy frame hits the legacy bucket cap — rejected.
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_legacy_2',
 			runSpec: {prompt: 'legacy 2'},
 		});
@@ -798,14 +798,14 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_a1',
 			runnerId: 'r1',
 			runSpec: {prompt: 'a'},
 		});
 		await Promise.resolve();
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_a2',
 			runnerId: 'r1',
 			runSpec: {prompt: 'b'},
@@ -848,13 +848,13 @@ describe('runDashboardRuntimeDaemon', () => {
 		});
 
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_1',
 			runSpec: {prompt: 'first'},
 		});
 		await Promise.resolve();
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_2',
 			runSpec: {prompt: 'second'},
 		});
@@ -1004,14 +1004,14 @@ describe('runDashboardRuntimeDaemon', () => {
 
 		// First fills the cap.
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_1',
 			runSpec: {prompt: 'first'},
 		});
 		await Promise.resolve();
 		// Second is rejected through the assignment admission protocol.
 		fake.emitFrame({
-			type: 'job_assignment',
+			type: 'run.start',
 			runId: 'run_2',
 			runSpec: {prompt: 'second'},
 		});
@@ -1054,7 +1054,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		// Start 3 runs, complete the first.
 		for (let i = 0; i < 3; i += 1) {
 			fake.emitFrame({
-				type: 'job_assignment',
+				type: 'run.start',
 				runId: `run_${i}`,
 				runSpec: {prompt: 'x'},
 			});
