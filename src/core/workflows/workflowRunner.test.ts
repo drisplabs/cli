@@ -5,6 +5,7 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createWorkflowRunner} from './workflowRunner';
 import type {TurnExecutionResult} from '../runtime/process';
 import {JOURNAL_SKELETON_MARKER} from './journalReader';
+import {STEER_BLOCK_END, STEER_BLOCK_OPEN} from './steer';
 
 const NULL_TOKENS = {
 	input: null,
@@ -1584,5 +1585,192 @@ describe('createWorkflowRunner', () => {
 		expect(createJournal).toHaveBeenCalledTimes(1);
 		expect(createJournal.mock.calls[0][0]).toContain('.athena/s1/journal.md');
 		expect(createJournal.mock.calls[0][1]).toContain(JOURNAL_SKELETON_MARKER);
+	});
+});
+
+describe('createWorkflowRunner — steering (#191)', () => {
+	const LOOPED = {
+		name: 'wf',
+		plugins: [],
+		promptTemplate: '{input}',
+		loop: {enabled: true, maxIterations: 5},
+	};
+
+	it('holds a mid-Turn steer for the boundary and delivers it at the head of the next Turn', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+
+		const prompts: string[] = [];
+		let journalSeenByTurn2 = '';
+		let releaseFirstTurn: (() => void) | null = null;
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				if (prompts.length === 1) {
+					await new Promise<void>(resolve => {
+						releaseFirstTurn = resolve;
+					});
+					fs.writeFileSync(journalPath, 'turn 1 progress', 'utf-8');
+					return OK_RESULT;
+				}
+				journalSeenByTurn2 = fs.readFileSync(journalPath, 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+		const delivered: unknown[] = [];
+		const persistRunState = vi.fn();
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState,
+			onSteerDelivered: steers => delivered.push(...steers),
+		});
+
+		// Wait for Turn 1 to be in flight, then steer it.
+		await vi.waitFor(() => expect(releaseFirstTurn).not.toBeNull());
+		expect(
+			handle.steer({
+				text: 'use the other branch',
+				origin: 'hub',
+				receivedAt: 5,
+			}),
+		).toBe(true);
+		// Queued, not injected: Turn 1 is still the only Turn, and the queued
+		// steer is already on the persisted snapshot.
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(persistRunState).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				runMemoryJson: expect.stringContaining('use the other branch'),
+			}),
+		);
+		releaseFirstTurn!();
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).not.toContain('use the other branch');
+		expect(prompts[1]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[1]).toContain('via hub');
+		expect(prompts[1]).toContain('use the other branch');
+		expect(prompts[1]!.indexOf(STEER_BLOCK_END)).toBeLessThan(
+			prompts[1]!.indexOf('journal'),
+		);
+		expect(delivered).toEqual([
+			{
+				text: 'use the other branch',
+				origin: 'hub',
+				receivedAt: 5,
+				iteration: 2,
+			},
+		]);
+		// The Journal records the steer — origin and the Turn it went into —
+		// before that Turn starts, so Turn 2 reads it alongside Turn 1's work.
+		expect(journalSeenByTurn2).toContain('turn 1 progress');
+		expect(journalSeenByTurn2).toContain('Human steer (via hub)');
+		expect(journalSeenByTurn2).toContain('delivered into Turn 2');
+		expect(journalSeenByTurn2).toContain('> use the other branch');
+	});
+
+	it('delivers a steer queued before the Run starts at the head of the first Turn', async () => {
+		const projectDir = makeTempDir();
+		const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		handle.steer({text: 'first', origin: 'local', receivedAt: 1});
+		handle.steer({text: 'second', origin: 'hub', receivedAt: 2});
+
+		await handle.result;
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[0]).toContain('1 of 2, via local');
+		expect(prompts[0]).toContain('2 of 2, via hub');
+		expect(prompts[0]!.indexOf('first')).toBeLessThan(
+			prompts[0]!.indexOf('second'),
+		);
+		expect(prompts[0]!.endsWith('do it')).toBe(true);
+	});
+
+	it('on a wake, records the steer above the answered NEEDS_HUMAN marker so the Journal stays well-formed', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(
+			journalPath,
+			'# Journal\n\nasked which env\n\n<!-- NEEDS_HUMAN: which env? -->\n',
+			'utf-8',
+		);
+
+		let journalSeenByTurn = '';
+		const prompts: string[] = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(async (input: {prompt: string}) => {
+				prompts.push(input.prompt);
+				journalSeenByTurn = fs.readFileSync(journalPath, 'utf-8');
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'staging',
+			resumeRunId: 'run-suspended',
+			workflow: LOOPED,
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		handle.steer({text: 'and be quick', origin: 'local', receivedAt: 9});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(prompts[0]!.startsWith(STEER_BLOCK_OPEN)).toBe(true);
+		expect(prompts[0]).toContain('suspended awaiting a human');
+		expect(prompts[0]).toContain('staging');
+		// Recorded before the Turn started, above the marker, marker still last.
+		expect(journalSeenByTurn).toContain('Human steer (via local)');
+		expect(journalSeenByTurn).toContain('delivered into Turn 1');
+		expect(
+			journalSeenByTurn.trimEnd().endsWith('<!-- NEEDS_HUMAN: which env? -->'),
+		).toBe(true);
+	});
+
+	it('rejects a steer once the Run has ended', async () => {
+		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir: makeTempDir(),
+			prompt: 'do it',
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+		await handle.result;
+		expect(handle.steer({text: 'late', origin: 'hub', receivedAt: 1})).toBe(
+			false,
+		);
+		expect(startTurn).toHaveBeenCalledTimes(1);
 	});
 });

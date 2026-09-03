@@ -248,6 +248,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
 	let beforeTerminalCompletionRan = false;
+	let unsubscribeSteers: (() => void) | undefined;
 	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
 	// the agent asked a question no attached human can answer, or a permission
 	// went unclaimed under a holding preset. The reducer names the reason.
@@ -677,9 +678,44 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					status: runSnapshot.status,
 				});
 			},
+			// A delivered Steer (#191) is reported per Turn it went into; the
+			// Runner has already recorded it in the Journal by this point.
+			onSteerDelivered: steers => {
+				for (const steer of steers) {
+					output.notice(
+						`steer delivered into Turn ${steer.iteration} (via ${steer.origin}): ${steer.text}`,
+					);
+					output.emitJsonEvent('run.steer', {
+						iteration: steer.iteration,
+						origin: steer.origin,
+						receivedAt: steer.receivedAt,
+						text: steer.text,
+					});
+				}
+			},
 		});
 
 		activeRunId = handle.runId;
+
+		// Steers reach the Runner through the queue's single subscriber; ones
+		// that arrived before this point are flushed here, in order. A Steer is
+		// queued, never injected — it heads the next Turn's prompt (#191).
+		unsubscribeSteers = options.steerQueue?.subscribe(steer => {
+			if (handle.steer(steer)) {
+				output.notice(
+					`steer queued for the next Turn (via ${steer.origin}): ${steer.text}`,
+				);
+				output.emitJsonEvent('run.steer.queued', {
+					origin: steer.origin,
+					receivedAt: steer.receivedAt,
+					text: steer.text,
+				});
+				return;
+			}
+			output.warn(
+				`steer ignored — the workflow run has already ended (via ${steer.origin}): ${steer.text}`,
+			);
+		});
 
 		const runResult = await handle.result;
 
@@ -720,6 +756,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			clearTimeout(timeoutTimer);
 		}
 		dashboardDecisionDrain?.stop();
+		unsubscribeSteers?.();
 		await writeLastMessageBeforeTerminalCompletion();
 		await runBeforeTerminalCompletion();
 		await sessionController.kill();

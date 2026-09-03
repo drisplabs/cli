@@ -5,6 +5,7 @@ import {
 } from '../../infra/sessions/index';
 import type {RuntimeBootstrapOutput} from '../bootstrap/bootstrapConfig';
 import {runExec, RUN_EXIT_CODE} from '../exec';
+import {createSteerQueue} from '../../core/workflows/steer';
 import {
 	resolveResumeTarget,
 	type ResumeRequest,
@@ -13,6 +14,12 @@ import {
 
 export type ExecCliFlags = {
 	continueFlag?: string;
+	/**
+	 * `--steer <text>` (repeatable, #191): human steers queued for the head of
+	 * the first Turn's prompt, in the order given — the local twin of the
+	 * hub's `steer` frame, so a parked Run can be steered on `--continue`.
+	 */
+	steers?: string[];
 	json: boolean;
 	outputLastMessage?: string;
 	ephemeral: boolean;
@@ -42,6 +49,7 @@ export type RunExecCommandInput = {
 export type RunExecCommandDeps = {
 	logError?: (message: string) => void;
 	createSessionId?: () => string;
+	now?: () => number;
 	runExecFn?: typeof runExec;
 	getMostRecentSessionFn?: typeof getMostRecentAthenaSession;
 	getSessionMetaFn?: typeof getSessionMeta;
@@ -69,6 +77,7 @@ export async function runExecCommand(
 ): Promise<number> {
 	const logError = deps.logError ?? console.error;
 	const createSessionId = deps.createSessionId ?? crypto.randomUUID;
+	const now = deps.now ?? Date.now;
 	const runExecFn = deps.runExecFn ?? runExec;
 	const getMostRecentSessionFn =
 		deps.getMostRecentSessionFn ?? getMostRecentAthenaSession;
@@ -116,6 +125,14 @@ export async function runExecCommand(
 		return RUN_EXIT_CODE.RUNTIME;
 	}
 
+	const localSteers = (input.flags.steers ?? []).filter(
+		text => text.trim().length > 0,
+	);
+	const steerQueue = localSteers.length > 0 ? createSteerQueue() : undefined;
+	for (const text of localSteers) {
+		steerQueue!.push({text, origin: 'local', receivedAt: now()});
+	}
+
 	const result = await runExecFn({
 		prompt: input.prompt,
 		projectDir: input.projectDir,
@@ -123,6 +140,7 @@ export async function runExecCommand(
 		athenaSessionId: continueResolution.athenaSessionId,
 		adapterResumeSessionId: continueResolution.adapterResumeSessionId,
 		resumeRunId: continueResolution.resumeRunId,
+		...(steerQueue ? {steerQueue} : {}),
 		isolationConfig: input.runtimeConfig.isolationConfig,
 		pluginMcpConfig: input.runtimeConfig.pluginMcpConfig,
 		workflow: input.runtimeConfig.workflow,

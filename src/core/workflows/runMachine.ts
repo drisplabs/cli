@@ -40,6 +40,7 @@ import type {TurnOutcome} from './terminalOutcome';
 import {buildNudgePrompt, hasSkeletonMarker} from './journalReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
+import {prependSteerBlock, type QueuedSteer} from './steer';
 
 /**
  * Non-terminal phases carry `prompt`/`continuation` directly (rather than
@@ -93,6 +94,14 @@ export type RunMemory = {
 	lastJournalHash: string | null;
 	lastStopPrompt: string;
 	lastStopContinuation: TurnContinuation;
+	/**
+	 * Steers (#191) received but not yet delivered, in arrival order. A Steer
+	 * is never injected into a running Turn: it waits here until the next
+	 * `start_turn`, which drains the whole queue into the head of that Turn's
+	 * prompt. Persisted so a Steer sent to a parked or restarting Run is
+	 * delivered on its continue rather than lost.
+	 */
+	pendingSteers: QueuedSteer[];
 };
 
 /**
@@ -172,7 +181,13 @@ export type RunEvent =
 			ok: boolean;
 			cancelled: boolean;
 			handoffPath: string;
-	  };
+	  }
+	/**
+	 * A Steer arrived (#191). Unlike the other events it is not the reply to
+	 * a kickoff action: it can land in any non-terminal phase and only queues,
+	 * leaving the phase — and any Turn in flight — untouched.
+	 */
+	| {type: 'steer'; steer: QueuedSteer};
 
 /** What the interpreter must do before the next Turn/backoff/fork can start. */
 export type RunAction =
@@ -193,7 +208,13 @@ export type RunAction =
 	| {type: 'purge_handoffs'}
 	| {type: 'degrade_handover'; handle: string}
 	/** Surface a non-fatal notice (e.g. a deprecated marker spelling, #185). */
-	| {type: 'warn'; message: string};
+	| {type: 'warn'; message: string}
+	/**
+	 * The queued Steers were drained into the `start_turn` that follows this
+	 * action (#191) — the interpreter records each in the Journal, with its
+	 * origin and the Turn it was delivered into, before that Turn starts.
+	 */
+	| {type: 'steers_delivered'; steers: QueuedSteer[]; iteration: number};
 
 /** The immutable per-Run configuration the reducer needs. No callbacks. */
 export type StepConfig = {
@@ -286,18 +307,33 @@ export function createInitialRun(
 		/** `input.resumeRunId` truthy and the loop is enabled (ADR 0014 §6). */
 		waking: boolean;
 		resumedMemory?: RunMemory;
+		/**
+		 * Steers already waiting when the Run starts (#191) — a local
+		 * `--steer`, or a Steer stored against a parked Run. Delivered at the
+		 * head of the first Turn's prompt, after any the resumed memory carries.
+		 */
+		initialSteers?: QueuedSteer[];
 	},
-): {phase: RunPhase; memory: RunMemory} {
+): StepResult {
+	const initialSteers = opts.initialSteers ?? [];
 	if (opts.resumedMemory) {
-		return {
-			phase: {
-				kind: 'backing_off',
-				ms: 0,
-				prompt: opts.resumedMemory.lastStopPrompt,
-				continuation: opts.resumedMemory.lastStopContinuation,
-			},
-			memory: opts.resumedMemory,
+		const memory =
+			initialSteers.length === 0
+				? opts.resumedMemory
+				: {
+						...opts.resumedMemory,
+						pendingSteers: [
+							...opts.resumedMemory.pendingSteers,
+							...initialSteers,
+						],
+					};
+		const phase: RunPhase = {
+			kind: 'backing_off',
+			ms: 0,
+			prompt: opts.resumedMemory.lastStopPrompt,
+			continuation: opts.resumedMemory.lastStopContinuation,
 		};
+		return {phase, memory, actions: kickoffActionsFor(phase)};
 	}
 
 	const continuation = opts.initialContinuation ?? {mode: 'fresh'};
@@ -311,13 +347,14 @@ export function createInitialRun(
 		? buildWakePrompt(cfg.initialPrompt, cfg.journalPromptPath)
 		: prepared.prompt;
 
-	return {
-		phase: {
-			kind: 'turn_in_flight',
-			prompt,
-			continuation,
-			configOverride: prepared.configOverride,
-		},
+	const phase: RunPhase = {
+		kind: 'turn_in_flight',
+		prompt,
+		continuation,
+		configOverride: prepared.configOverride,
+	};
+	return deliverPendingSteers({
+		phase,
 		memory: {
 			iteration,
 			nudgeStreak: 0,
@@ -325,7 +362,81 @@ export function createInitialRun(
 			lastJournalHash: null,
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
+			pendingSteers: initialSteers,
 		},
+		actions: kickoffActionsFor(phase),
+	});
+}
+
+/** The kickoff action a freshly built phase implies — what the interpreter must start. */
+function kickoffActionsFor(phase: RunPhase): RunAction[] {
+	switch (phase.kind) {
+		case 'turn_in_flight':
+			return [
+				{
+					type: 'start_turn',
+					prompt: phase.prompt,
+					continuation: phase.continuation,
+					configOverride: phase.configOverride,
+				},
+			];
+		case 'backing_off':
+			return [{type: 'wait', ms: phase.ms}];
+		case 'handing_over':
+		case 'awaiting_attention':
+		case 'completed':
+		case 'failed':
+		case 'cancelled':
+			return [];
+	}
+}
+
+/**
+ * Turn-boundary delivery (#191): when a result starts a Turn and Steers are
+ * queued, drain the whole queue — in arrival order — into the head of that
+ * Turn's prompt and report the delivery just ahead of the `start_turn`. A
+ * result that starts no Turn (suspend, backoff, fork, terminal) leaves the
+ * queue exactly as it is, which is what keeps a Steer out of a running Turn.
+ */
+function deliverPendingSteers(result: StepResult): StepResult {
+	const steers = result.memory.pendingSteers;
+	if (steers.length === 0 || result.phase.kind !== 'turn_in_flight') {
+		return result;
+	}
+	const startIndex = result.actions.findIndex(a => a.type === 'start_turn');
+	if (startIndex === -1) return result;
+	const start = result.actions[startIndex] as Extract<
+		RunAction,
+		{type: 'start_turn'}
+	>;
+	const prompt = prependSteerBlock(start.prompt, steers);
+	const actions = [
+		...result.actions.slice(0, startIndex),
+		{
+			type: 'steers_delivered',
+			steers,
+			iteration: result.memory.iteration,
+		} satisfies RunAction,
+		{...start, prompt},
+		...result.actions.slice(startIndex + 1),
+	];
+	return {
+		phase: {...result.phase, prompt},
+		memory: {...result.memory, lastStopPrompt: prompt, pendingSteers: []},
+		actions,
+	};
+}
+
+/** A Steer only queues (#191): same phase, one more pending Steer, persisted. */
+function handleSteer(
+	phase: RunPhase,
+	memory: RunMemory,
+	steer: QueuedSteer,
+): StepResult {
+	return {
+		phase,
+		memory: {...memory, pendingSteers: [...memory.pendingSteers, steer]},
+		actions: [{type: 'persist'}],
 	};
 }
 
@@ -774,28 +885,36 @@ export function step(
 ): StepResult {
 	switch (phase.kind) {
 		case 'turn_in_flight': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'turn_finished') {
 				throw new Error(
 					`runMachine: phase 'turn_in_flight' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleTurnInFlight(phase, memory, event, cfg);
+			return deliverPendingSteers(
+				handleTurnInFlight(phase, memory, event, cfg),
+			);
 		}
 		case 'backing_off': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'backoff_elapsed') {
 				throw new Error(
 					`runMachine: phase 'backing_off' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleBackingOff(phase, memory, event, cfg);
+			return deliverPendingSteers(handleBackingOff(phase, memory, event, cfg));
 		}
 		case 'handing_over': {
+			if (event.type === 'steer')
+				return handleSteer(phase, memory, event.steer);
 			if (event.type !== 'fork_finished') {
 				throw new Error(
 					`runMachine: phase 'handing_over' received unexpected event '${event.type}'`,
 				);
 			}
-			return handleHandingOver(phase, memory, event, cfg);
+			return deliverPendingSteers(handleHandingOver(phase, memory, event, cfg));
 		}
 		case 'awaiting_attention':
 		case 'completed':
@@ -846,6 +965,9 @@ export function deserializeRunMemory(
 	const continuation = candidate.lastStopContinuation as
 		| {mode?: unknown}
 		| undefined;
+	// Snapshots persisted before #191 carry no Steer queue: an absent queue is
+	// an empty one, but a present queue must be well-formed.
+	if (!('pendingSteers' in candidate)) candidate.pendingSteers = [];
 	if (
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||
@@ -854,9 +976,21 @@ export function deserializeRunMemory(
 			typeof candidate.lastJournalHash !== 'string') ||
 		typeof candidate.lastStopPrompt !== 'string' ||
 		!continuation ||
-		typeof continuation.mode !== 'string'
+		typeof continuation.mode !== 'string' ||
+		!Array.isArray(candidate.pendingSteers) ||
+		!candidate.pendingSteers.every(isQueuedSteer)
 	) {
 		return null;
 	}
 	return candidate as unknown as RunMemory;
+}
+
+function isQueuedSteer(value: unknown): value is QueuedSteer {
+	if (!value || typeof value !== 'object') return false;
+	const steer = value as Record<string, unknown>;
+	return (
+		typeof steer.text === 'string' &&
+		(steer.origin === 'hub' || steer.origin === 'local') &&
+		typeof steer.receivedAt === 'number'
+	);
 }

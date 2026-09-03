@@ -12,6 +12,7 @@ import type {FeedSink} from '../dashboard/pairedFeedPublisher';
 import type {DashboardDecisionReader} from '../dashboard/dashboardDecisionInbox';
 import type {FeedEvent} from '../../core/feed/types';
 import type {CapabilitySourceLayer} from '../../infra/capabilities/effective';
+import type {SteerQueue} from '../../core/workflows/steer';
 
 /**
  * A reporting-only summary of an active personal capability: name + source
@@ -94,6 +95,13 @@ export type ExecRunOptions = {
 	dashboardOrigin?: DashboardFeedOrigin;
 	dashboardDecisionInbox?: DashboardDecisionReader;
 	dashboardDecisionPollIntervalMs?: number;
+	/**
+	 * Steers (#191) for this Run — from the hub's `steer` frame via the
+	 * dashboard daemon, or a local `--steer`. Each is queued on the Runner and
+	 * delivered at the head of the next Turn's prompt, never mid-Turn; the
+	 * runner emits `run.steer.queued` on receipt and `run.steer` on delivery.
+	 */
+	steerQueue?: SteerQueue;
 	beforeTerminalCompletion?: (input: {
 		result: ExecRunResult;
 		runId: string | null;

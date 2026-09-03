@@ -236,6 +236,7 @@ Config merges in order: **global &rarr; project &rarr; CLI flags**.
 | Flag                    | Description                                           |
 | ----------------------- | ----------------------------------------------------- |
 | `--continue`            | Resume most recent run session (or `--continue=<id>`) |
+| `--steer`               | Queue a human steer for the next Turn (repeatable)    |
 | `--json`                | JSONL lifecycle events on stdout                      |
 | `--output-last-message` | Write final assistant message to a file               |
 | `--ephemeral`           | Disable session persistence for this run              |

@@ -47,7 +47,10 @@ adapter harnesses in `src/harnesses/`):
    its own name) is admitted and `assignment_accepted` comes back.
 5. **Run stream and needs_human on the wire** — the Run's stream arrives under
    the hub's name set and the parked Run is reported with `needs_human`.
-6. **Steer accepted** — a `steer` for the Run is recorded on it.
+6. **Steer delivered into the next Turn** — a `steer` sent while the Run's
+   first Turn is in flight is recorded on the Run, left out of that Turn, and
+   delivered at the head of the next Turn's prompt (a real Workflow Runner over
+   a fake harness), with a Journal entry naming its origin.
 7. **Malformed frames answered with error** — a non-frame object and invalid
    JSON are each answered with `error{code: 'malformed_frame'}`; the socket
    stays up.
