@@ -237,6 +237,40 @@ export const AttachmentSchema = z.object({
 });
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
+/**
+ * Where an installed Workflow came from, as the runner's Workflow store
+ * records it: shipped with the CLI (`builtin`), installed from a remote
+ * marketplace (`marketplace-remote`, by ref), from a marketplace checkout on
+ * disk (`marketplace-local`), copied from a path (`filesystem`), or installed
+ * by a CLI that did not record a source (`unknown`).
+ */
+export const InstalledWorkflowSourceSchema = z.discriminatedUnion('kind', [
+	z.object({kind: z.literal('builtin')}),
+	z.object({kind: z.literal('marketplace-remote'), ref: z.string()}),
+	z.object({
+		kind: z.literal('marketplace-local'),
+		repoDir: z.string(),
+		workflowName: z.string(),
+	}),
+	z.object({kind: z.literal('filesystem'), path: z.string()}),
+	z.object({kind: z.literal('unknown')}),
+]);
+export type InstalledWorkflowSource = z.infer<
+	typeof InstalledWorkflowSourceSchema
+>;
+
+/**
+ * One Workflow a runner can run: reported on the runner's `hello` and
+ * replaced wholesale by `workflows.changed` (protocol §17.4). `version` is
+ * absent when the Workflow declares none.
+ */
+export const InstalledWorkflowSchema = z.object({
+	name: z.string().min(1),
+	version: z.string().optional(),
+	source: InstalledWorkflowSourceSchema,
+});
+export type InstalledWorkflow = z.infer<typeof InstalledWorkflowSchema>;
+
 /** Why a runner declined a delivered assignment (protocol §10). */
 export const AssignmentRejectedReasonSchema = z.enum([
 	'local_capacity',

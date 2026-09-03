@@ -877,6 +877,7 @@ describe('runDashboardCommand: connect (deprecation alias)', () => {
 			instanceId: 'inst_1',
 			accessToken: 'fresh-access',
 			log: expect.any(Function),
+			installedWorkflows: expect.any(Function),
 		});
 		expect(cap.err.join('\n')).toContain(
 			'connect: deprecated; use `dashboard daemon foreground`',

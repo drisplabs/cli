@@ -3,6 +3,7 @@ import {
 	FRAME_NAME_MAP,
 	FrameSchema,
 	HelloFrameSchema,
+	InstalledWorkflowSchema,
 	PROTOCOL_VERSION,
 	normalizeFrame,
 	toLegacyFrame,
@@ -171,6 +172,131 @@ describe('PROTOCOL_VERSION and hello', () => {
 
 	it('rejects a hello without a protocol version', () => {
 		expect(HelloFrameSchema.safeParse({type: 'hello'}).success).toBe(false);
+	});
+});
+
+const installedWorkflows = [
+	{name: 'default', version: '0.6.0', source: {kind: 'builtin'}},
+	{
+		name: 'review',
+		version: '1.2.0',
+		source: {kind: 'marketplace-remote', ref: 'review@acme/workflows'},
+	},
+	{
+		name: 'local-review',
+		source: {
+			kind: 'marketplace-local',
+			repoDir: '/srv/marketplaces/acme',
+			workflowName: 'review',
+		},
+	},
+	{
+		name: 'scratch',
+		version: '0.0.1',
+		source: {kind: 'filesystem', path: '/home/me/scratch/workflow.json'},
+	},
+	{name: 'legacy', source: {kind: 'unknown'}},
+];
+
+describe('installed workflows on hello', () => {
+	it('a hello without workflows parses (a hub, or a runner that does not report them)', () => {
+		const parsed = HelloFrameSchema.parse({
+			type: 'hello',
+			protocolVersion: PROTOCOL_VERSION,
+			role: 'hub',
+		});
+		expect(parsed.workflows).toBeUndefined();
+	});
+
+	it('a runner hello carries every installed workflow with its name, version, and source', () => {
+		const parsed = normalizeFrame({
+			type: 'hello',
+			protocolVersion: PROTOCOL_VERSION,
+			role: 'runner',
+			instanceId: 'inst_1',
+			workflows: installedWorkflows,
+		});
+		expect(parsed.type).toBe('hello');
+		if (parsed.type !== 'hello') throw new Error('unreachable');
+		expect(parsed.workflows).toEqual(installedWorkflows);
+	});
+
+	it.each([
+		['a missing name', {version: '1.0.0', source: {kind: 'builtin'}}],
+		['an empty name', {name: '', source: {kind: 'builtin'}}],
+		['a missing source', {name: 'review', version: '1.0.0'}],
+		['an unknown source kind', {name: 'review', source: {kind: 'npm'}}],
+		[
+			'a marketplace-remote source without its ref',
+			{name: 'review', source: {kind: 'marketplace-remote'}},
+		],
+		[
+			'a filesystem source without its path',
+			{name: 'review', source: {kind: 'filesystem'}},
+		],
+		[
+			'a non-string version',
+			{name: 'review', version: 2, source: {kind: 'builtin'}},
+		],
+	])('rejects a hello whose workflows entry has %s', (_label, entry) => {
+		expect(InstalledWorkflowSchema.safeParse(entry).success).toBe(false);
+		expect(
+			HelloFrameSchema.safeParse({
+				type: 'hello',
+				protocolVersion: PROTOCOL_VERSION,
+				role: 'runner',
+				workflows: [entry],
+			}).success,
+		).toBe(false);
+	});
+
+	it('rejects a hello whose workflows is not an array', () => {
+		expect(
+			HelloFrameSchema.safeParse({
+				type: 'hello',
+				protocolVersion: PROTOCOL_VERSION,
+				workflows: {name: 'review'},
+			}).success,
+		).toBe(false);
+	});
+});
+
+describe('workflows.changed', () => {
+	it('is a full-list replace of the runner installed workflows', () => {
+		const frame = normalizeFrame({
+			type: 'workflows.changed',
+			workflows: installedWorkflows,
+		});
+		expect(frame).toEqual({
+			type: 'workflows.changed',
+			workflows: installedWorkflows,
+		});
+	});
+
+	it('an empty list is a valid replace; a missing list is not', () => {
+		expect(
+			FrameSchema.safeParse({type: 'workflows.changed', workflows: []}).success,
+		).toBe(true);
+		expect(FrameSchema.safeParse({type: 'workflows.changed'}).success).toBe(
+			false,
+		);
+	});
+
+	it('rejects a malformed entry', () => {
+		expect(
+			FrameSchema.safeParse({
+				type: 'workflows.changed',
+				workflows: [{name: 'review', source: {kind: 'npm'}}],
+			}).success,
+		).toBe(false);
+	});
+
+	it('is new-only: it has no legacy form and goes out unchanged in legacy mode', () => {
+		const frame = normalizeFrame({
+			type: 'workflows.changed',
+			workflows: [],
+		});
+		expect(toLegacyFrame(frame)).toEqual(frame);
 	});
 });
 

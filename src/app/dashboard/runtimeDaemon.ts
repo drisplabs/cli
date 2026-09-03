@@ -39,6 +39,12 @@ import {
 import {createDashboardAssignmentIntake} from './dashboardAssignmentIntake';
 import {routeDashboardRunFrame} from './dashboardFrameRouter';
 import {resolveRemoteWorkspace} from './remoteWorkspaceResolver';
+import type {InstalledWorkflow} from '@drisp/protocol';
+import {
+	listInstalledWorkflows,
+	watchInstalledWorkflows,
+	type InstalledWorkflowInventoryOptions,
+} from '../../core/workflows/inventory';
 
 type RuntimeDaemonAssignmentExecutor = (
 	input: ExecuteRemoteAssignmentInput,
@@ -88,6 +94,8 @@ export type RunDashboardRuntimeDaemonOptions = {
 		instanceId: string;
 		accessToken: string;
 		log: InstanceSocketLogger;
+		/** The current Workflow inventory, read at connect time for the hello. */
+		installedWorkflows: () => InstalledWorkflow[];
 	}) => InstanceSocketClient;
 	executeRemoteAssignment?: RuntimeDaemonAssignmentExecutor;
 	projectDir?: string;
@@ -145,6 +153,14 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 * fast and report the startup error directly.
 	 */
 	retryInitialConnect?: boolean;
+	/**
+	 * The Workflow store the runner reports to the hub (`hello.workflows`,
+	 * `workflows.changed`). Production uses the registry dir under the user's
+	 * home; tests and the live-transport harness point it at a temp dir.
+	 */
+	workflowStoreDir?: string;
+	/** The CLI's own version, reported as the built-in Workflows' version. */
+	cliVersion?: string;
 };
 
 const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -176,6 +192,7 @@ export async function runDashboardRuntimeDaemon(
 				instanceId: opts.instanceId,
 				accessToken: opts.accessToken,
 				log: opts.log,
+				installedWorkflows: opts.installedWorkflows,
 			}));
 	const executor = options.executeRemoteAssignment ?? executeRemoteAssignment;
 	const projectDir = options.projectDir ?? process.cwd();
@@ -203,6 +220,14 @@ export async function runDashboardRuntimeDaemon(
 		});
 	const decisionInbox = options.decisionInbox ?? createDashboardDecisionInbox();
 	const retryInitialConnect = options.retryInitialConnect ?? true;
+	const inventoryOptions: InstalledWorkflowInventoryOptions = {
+		...(options.workflowStoreDir !== undefined
+			? {storeDir: options.workflowStoreDir}
+			: {}),
+		...(options.cliVersion !== undefined
+			? {cliVersion: options.cliVersion}
+			: {}),
+	};
 
 	const startedAt = now();
 	let stopped = false;
@@ -264,6 +289,20 @@ export async function runDashboardRuntimeDaemon(
 			? {fetchAttachments: options.fetchAttachments}
 			: {}),
 		now,
+	});
+	// The hub's picture of what this machine can run: `hello` carries the
+	// inventory on every connect (read at connect time), and a change to the
+	// store while connected is pushed as a full-list replace — the same
+	// semantics as the hub's `attachments.changed` push, in the other
+	// direction. While disconnected nothing is sent; the next hello is current.
+	const workflowWatcher = watchInstalledWorkflows({
+		...inventoryOptions,
+		log,
+		onChange: workflows => {
+			const current = client;
+			if (!current) return;
+			current.sendWorkflowsChanged(workflows);
+		},
 	});
 	const assignmentIntake = createDashboardAssignmentIntake({
 		client: {
@@ -387,6 +426,7 @@ export async function runDashboardRuntimeDaemon(
 			instanceId: token.instanceId,
 			accessToken: token.accessToken,
 			log,
+			installedWorkflows: () => listInstalledWorkflows(inventoryOptions),
 		});
 		next.onFrame(frame => {
 			lastFrameAt = now();
@@ -563,6 +603,7 @@ export async function runDashboardRuntimeDaemon(
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
+			workflowWatcher.close();
 			pairedFeedPublisher.close();
 			const current = client;
 			client = null;

@@ -7,7 +7,9 @@ against a local `http` + `ws` server on a loopback port, so it exercises the
 production path — real `ws` socket (access token sent as a WebSocket
 subprotocol), the `hello` handshake, frame normalisation through the package,
 and the real `fetch`-based attachment reconcile — rather than the injected
-seams the unit tests use.
+seams the unit tests use. The Workflow store is real too, pointed at a temp
+directory: the inventory on `hello` and the `workflows.changed` push after an
+install go through the real store read and the real directory watch.
 
 This is the live-transport companion to the in-process unit coverage in
 `runtimeDaemon.test.ts`; it does not re-implement that in-process
@@ -22,8 +24,8 @@ The fake hub speaks one of two frame-name sets, selected with `hubProtocol`:
 | `legacy`      | no (the hub that exists today) | `job_assignment`, `cancel` | `run_event`, `feed_event`, …        |
 | `canonical`   | yes, with `PROTOCOL_VERSION`   | `run.start`, `stop`        | `event` (`stream: 'run' \| 'feed'`) |
 
-`steer`, `needs_human`, `hello`, and `error` exist only under the new names and
-are the same in both modes. Every frame the runner puts on the wire is parsed
+`steer`, `needs_human`, `hello`, `workflows.changed`, and `error` exist only
+under the new names and are the same in both modes. Every frame the runner puts on the wire is parsed
 with `FrameSchema` and checked to be in the hub's name set; a frame under the
 wrong set is reported by the last check.
 
@@ -34,7 +36,9 @@ Each scenario is reported as a `HarnessVerificationResult` check
 adapter harnesses in `src/harnesses/`):
 
 1. **Versioned hello first** — the first frame on the wire is
-   `hello{protocolVersion, role: 'runner', instanceId}`.
+   `hello{protocolVersion, role: 'runner', instanceId, workflows}`, with
+   `workflows` listing the built-in Workflow (versioned by the CLI) and the one
+   seeded in the temp store.
 2. **Graceful degradation on 503 reconcile** — the attachment reconcile hits a
    real `503` and the daemon stays connected in push-only mode.
 3. **Wire mode negotiated** — `legacy` when the hub said nothing, `canonical`
@@ -49,9 +53,13 @@ adapter harnesses in `src/harnesses/`):
    stays up.
 8. **Stop cancels the run** — the hub's stop frame (under its own name) aborts
    the Run.
-9. **Reconnect after close** — the daemon re-establishes the socket, sends
-   `hello` first again, and re-negotiates the wire mode.
-10. **Every runner frame in the expected name set** — no schema or name-set
+9. **Workflow store change pushed** — writing a Workflow into the store (the
+   way `drisp workflow install` does) produces a `workflows.changed` with the
+   full new inventory; removing one produces another without it.
+10. **Reconnect after close** — the daemon re-establishes the socket, sends
+    `hello` first again (with the store as it is now), and re-negotiates the
+    wire mode.
+11. **Every runner frame in the expected name set** — no schema or name-set
     violations across the whole session.
 
 ## How to run
@@ -85,7 +93,7 @@ A passing run prints the standard Vitest summary, for example:
 
 Teardown runs in a `finally` block even when a scenario fails: the daemon is
 stopped, the `ws` and `http` servers are closed, and the temporary workspace
-directory (created under the OS temp dir) is removed. No ports, timers, or
+and Workflow-store directories (created under the OS temp dir) are removed. No ports, timers, or
 disk artifacts are left behind, and the working tree is never modified.
 
 ## Calling it directly

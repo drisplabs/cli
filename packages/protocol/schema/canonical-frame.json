@@ -41,6 +41,94 @@
 					"items": {
 						"type": "string"
 					}
+				},
+				"workflows": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"type": "string",
+								"minLength": 1
+							},
+							"version": {
+								"type": "string"
+							},
+							"source": {
+								"oneOf": [
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "builtin"
+											}
+										},
+										"required": ["kind"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "marketplace-remote"
+											},
+											"ref": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "ref"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "marketplace-local"
+											},
+											"repoDir": {
+												"type": "string"
+											},
+											"workflowName": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "repoDir", "workflowName"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "filesystem"
+											},
+											"path": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "path"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "unknown"
+											}
+										},
+										"required": ["kind"],
+										"additionalProperties": false
+									}
+								]
+							}
+						},
+						"required": ["name", "source"],
+						"additionalProperties": false
+					}
 				}
 			},
 			"required": ["type", "protocolVersion"],
@@ -399,6 +487,105 @@
 				}
 			},
 			"required": ["type", "runId", "interruption"],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"type": {
+					"type": "string",
+					"const": "workflows.changed"
+				},
+				"workflows": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"type": "string",
+								"minLength": 1
+							},
+							"version": {
+								"type": "string"
+							},
+							"source": {
+								"oneOf": [
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "builtin"
+											}
+										},
+										"required": ["kind"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "marketplace-remote"
+											},
+											"ref": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "ref"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "marketplace-local"
+											},
+											"repoDir": {
+												"type": "string"
+											},
+											"workflowName": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "repoDir", "workflowName"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "filesystem"
+											},
+											"path": {
+												"type": "string"
+											}
+										},
+										"required": ["kind", "path"],
+										"additionalProperties": false
+									},
+									{
+										"type": "object",
+										"properties": {
+											"kind": {
+												"type": "string",
+												"const": "unknown"
+											}
+										},
+										"required": ["kind"],
+										"additionalProperties": false
+									}
+								]
+							}
+						},
+						"required": ["name", "source"],
+						"additionalProperties": false
+					}
+				}
+			},
+			"required": ["type", "workflows"],
 			"additionalProperties": false
 		},
 		{

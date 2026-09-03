@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runDashboardRuntimeDaemon} from './runtimeDaemon';
-import type {CanonicalFrame} from '@drisp/protocol';
+import type {CanonicalFrame, InstalledWorkflow} from '@drisp/protocol';
 import type {InstanceSocketClient} from './instanceSocketClient';
 import type {DashboardClientConfig} from '../../infra/config/dashboardClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
@@ -62,6 +62,7 @@ function makeFakeSocket() {
 		}>,
 		feedEvents: [] as unknown[],
 		decisionAcks: [] as unknown[],
+		workflowsChanged: [] as InstalledWorkflow[][],
 	};
 	const client: InstanceSocketClient = {
 		connect: async () => {
@@ -88,6 +89,9 @@ function makeFakeSocket() {
 		},
 		sendDecisionAck: frame => {
 			calls.decisionAcks.push(frame);
+		},
+		sendWorkflowsChanged: workflows => {
+			calls.workflowsChanged.push(workflows);
 		},
 	};
 	return {
@@ -532,6 +536,152 @@ describe('runDashboardRuntimeDaemon', () => {
 				{runnerId: 'r2'},
 			],
 		});
+
+		await daemon.stop('test');
+	});
+
+	function installWorkflow(
+		storeDir: string,
+		name: string,
+		version: string,
+		source?: Record<string, unknown>,
+	): void {
+		const dir = path.join(storeDir, name);
+		fs.mkdirSync(dir, {recursive: true});
+		fs.writeFileSync(
+			path.join(dir, 'workflow.json'),
+			JSON.stringify({name, version, plugins: [], promptTemplate: '{input}'}),
+		);
+		if (source) {
+			fs.writeFileSync(
+				path.join(dir, 'source.json'),
+				JSON.stringify({v: 2, ...source}),
+			);
+		}
+	}
+
+	it('hands the socket client the installed-workflow inventory, read from the store at connect time', async () => {
+		const fake = makeFakeSocket();
+		const storeDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'athena-daemon-workflows-'),
+		);
+		tmpDirs.push(storeDir);
+		installWorkflow(storeDir, 'review', '1.2.0', {
+			kind: 'marketplace-remote',
+			ref: 'review@acme/workflows',
+		});
+		let installedWorkflows: (() => InstalledWorkflow[]) | undefined;
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: opts => {
+				installedWorkflows = opts.installedWorkflows;
+				return fake.client;
+			},
+			executeRemoteAssignment: vi.fn(async () => {}),
+			reconnectDelaysMs: [],
+			workflowStoreDir: storeDir,
+			cliVersion: '0.6.0',
+		});
+
+		expect(installedWorkflows?.()).toEqual([
+			{name: 'default', version: '0.6.0', source: {kind: 'builtin'}},
+			{
+				name: 'review',
+				version: '1.2.0',
+				source: {kind: 'marketplace-remote', ref: 'review@acme/workflows'},
+			},
+		]);
+
+		// Read at connect time, not captured at daemon start: a later connect
+		// sees the store as it is then.
+		fs.rmSync(path.join(storeDir, 'review'), {recursive: true, force: true});
+		expect(installedWorkflows?.().map(w => w.name)).toEqual(['default']);
+
+		await daemon.stop('test');
+	});
+
+	it('pushes workflows.changed with the full inventory when a workflow is installed or removed while connected', async () => {
+		const fake = makeFakeSocket();
+		const storeDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'athena-daemon-workflows-'),
+		);
+		tmpDirs.push(storeDir);
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: vi.fn(async () => {}),
+			reconnectDelaysMs: [],
+			workflowStoreDir: storeDir,
+			cliVersion: '0.6.0',
+		});
+
+		installWorkflow(storeDir, 'review', '1.2.0', {
+			kind: 'filesystem',
+			path: '/home/me/review/workflow.json',
+		});
+		await vi.waitFor(
+			() => expect(fake.calls.workflowsChanged.length).toBeGreaterThan(0),
+			{timeout: 3_000},
+		);
+		expect(fake.calls.workflowsChanged.at(-1)).toEqual([
+			{name: 'default', version: '0.6.0', source: {kind: 'builtin'}},
+			{
+				name: 'review',
+				version: '1.2.0',
+				source: {kind: 'filesystem', path: '/home/me/review/workflow.json'},
+			},
+		]);
+
+		fs.rmSync(path.join(storeDir, 'review'), {recursive: true, force: true});
+		await vi.waitFor(
+			() =>
+				expect(fake.calls.workflowsChanged.at(-1)?.map(w => w.name)).toEqual([
+					'default',
+				]),
+			{timeout: 3_000},
+		);
+
+		await daemon.stop('test');
+	});
+
+	it('does not push workflows.changed while disconnected; the next hello carries the inventory', async () => {
+		const fake = makeFakeSocket();
+		const storeDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'athena-daemon-workflows-'),
+		);
+		tmpDirs.push(storeDir);
+
+		const daemon = await runDashboardRuntimeDaemon({
+			readConfig: () => stored,
+			refreshAccessToken: async () => ({
+				instanceId: 'inst_1',
+				accessToken: 'a',
+				expiresInSec: 900,
+			}),
+			makeInstanceSocketClient: () => fake.client,
+			executeRemoteAssignment: vi.fn(async () => {}),
+			// No reconnect: the daemon stays disconnected after the close.
+			reconnectDelaysMs: [60_000],
+			workflowStoreDir: storeDir,
+		});
+		fake.emitClose('hub went away');
+		expect(daemon.snapshot().socketConnected).toBe(false);
+
+		installWorkflow(storeDir, 'review', '1.2.0');
+		await new Promise(resolve => setTimeout(resolve, 600));
+		expect(fake.calls.workflowsChanged).toEqual([]);
 
 		await daemon.stop('test');
 	});
