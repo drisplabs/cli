@@ -88,6 +88,7 @@ export type RunPhase =
 						configOverride?: HarnessProcessOverride;
 						/** Carried through the backoff into the re-issued fork. */
 						journalUnchanged: boolean;
+						journalTokens: number;
 				  };
 	  }
 	| {
@@ -103,6 +104,13 @@ export type RunPhase =
 			 * successful-fork row judges the Handover unproductive on it.
 			 */
 			journalUnchanged: boolean;
+			/**
+			 * The Journal's estimated size in tokens at the boundary (ADR 0015
+			 * §3's estimate), so the seed prompt built once the fork succeeds can
+			 * carry the size nudge — the Handover path used to be the one
+			 * continuation that never did (ADR 0018 §7).
+			 */
+			journalTokens: number;
 	  }
 	| {
 			kind: 'awaiting_attention';
@@ -453,9 +461,28 @@ function buildHandoverCapReason(input: {
 }
 
 /**
+ * The fold-in rule every prompt that names a Handoff file states (ADR 0015
+ * §8's obligation, executed as ADR 0018 §7 requires): fold in only what the
+ * Journal lacks, never as an appended note. The seed prompt and the wake
+ * prompt share it so the Turn Protocol has one rule to match.
+ */
+function buildFoldInRule(journalPath: string | undefined): string {
+	return (
+		`Before any domain work: fold into the journal` +
+		(journalPath ? ` at ${journalPath}` : '') +
+		` (or the open unit's record, if it has been shed) only what the Handoff records and the journal lacks — if it lacks nothing, write nothing. ` +
+		`Never append a note that the Handoff was processed: the journal is an index, not a log of Handovers, and every line you add is a line every later fresh Turn must read. ` +
+		`If the journal is over the ~8,000-token shed bound, shedding is your first action, before any other read — cut, paste, pointer (ADR 0015 §3). `
+	);
+}
+
+/**
  * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
  * in-flight context the Journal never checkpointed; the Journal remains the
- * durable ledger.
+ * durable ledger. The fold-in is bounded (ADR 0018 §7): the old wording
+ * called it "the journal's next edit" and agents executed it as one appended
+ * note per Handover, growing the mandatory opening read until it alone
+ * exceeded a fresh Turn's working room.
  */
 export function buildHandoverSeedPrompt(
 	handoffPath: string,
@@ -465,10 +492,9 @@ export function buildHandoverSeedPrompt(
 		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
 		`Read the Handoff file at ${handoffPath}` +
 		(journalPath ? ` and the journal at ${journalPath}` : '') +
-		`. Before any domain work: fold whatever durable content the Handoff file records into the journal` +
-		(journalPath ? ` at ${journalPath}` : '') +
-		` and the open unit's record (ADR 0015 §8) — that fold-in is itself the journal's next edit. ` +
-		`Only once it is written should you continue the work from exactly where it stands. ` +
+		`. ` +
+		buildFoldInRule(journalPath) +
+		`Then continue the work from exactly where it stands. ` +
 		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
 	);
 }
@@ -488,7 +514,7 @@ export function buildWakePrompt(
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
 		buildReplayGuidance(parkedInterruption) +
-		buildHandoffGuidance(handoffPath) +
+		buildHandoffGuidance(handoffPath, journalPath) +
 		(journalPath
 			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
@@ -521,13 +547,16 @@ function buildReplayGuidance(parked: Interruption | undefined): string {
  * names that file as mandatory reading beside the Journal, exactly as the
  * Handover seed prompt does. Empty when the park followed any other row.
  */
-function buildHandoffGuidance(handoffPath: string | undefined): string {
+function buildHandoffGuidance(
+	handoffPath: string | undefined,
+	journalPath: string | undefined,
+): string {
 	if (!handoffPath) return '';
 	return (
 		`This run parked right after a Handover, so this Turn is a fresh Agent Session with no memory of the previous one. ` +
 		`Read the newest Handoff file at ${handoffPath} — mandatory reading alongside the journal: it carries the in-flight context the journal never checkpointed. ` +
-		`Before any domain work, fold whatever durable content it records into the journal, then apply the reply. ` +
-		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.\n\n`
+		buildFoldInRule(journalPath) +
+		`Then apply the reply. Do not redo completed work, and do not re-litigate decisions the Handoff file records.\n\n`
 	);
 }
 
@@ -772,6 +801,7 @@ function handleTurnInFlight(
 				// fork with the same override.
 				configOverride: phase.configOverride,
 				journalUnchanged,
+				journalTokens: estimateTokenCount(event.journalContent),
 			},
 			memory: {
 				...memory,
@@ -1108,6 +1138,7 @@ function handleBackingOff(
 				configOverride: phase.resume.configOverride,
 				retried: true,
 				journalUnchanged: phase.resume.journalUnchanged,
+				journalTokens: phase.resume.journalTokens,
 			},
 			memory,
 			actions: [
@@ -1240,10 +1271,18 @@ function handleHandingOver(
 		// Agent Session — the only context-resetting transition — and ticks
 		// the Iteration counter like any Turn.
 		const continuation: TurnContinuation = {mode: 'fresh'};
-		const seedPrompt = buildHandoverSeedPrompt(
-			event.handoffPath,
-			cfg.journalAbsPath ?? undefined,
-		);
+		// Size nudge (ADR 0015 §3) on the Handover path too (ADR 0018 §7): the
+		// seed prompt was the one continuation that never carried it, though a
+		// fresh Turn is exactly where an over-bound Journal costs the most.
+		const sizeNudgeSuffix =
+			phase.journalTokens > DEFAULT_JOURNAL_TOKEN_BOUND
+				? buildJournalSizeNudgeSuffix(cfg.journalPromptPath)
+				: '';
+		const seedPrompt =
+			buildHandoverSeedPrompt(
+				event.handoffPath,
+				cfg.journalAbsPath ?? undefined,
+			) + sizeNudgeSuffix;
 		const prepared = prepareWorkflowTurn(cfg.workflowState, {
 			prompt: cfg.initialPrompt,
 			iteration: nextIteration,
@@ -1292,6 +1331,7 @@ function handleHandingOver(
 					handle: phase.handle,
 					configOverride: phase.configOverride,
 					journalUnchanged: phase.journalUnchanged,
+					journalTokens: phase.journalTokens,
 				},
 			},
 			memory,

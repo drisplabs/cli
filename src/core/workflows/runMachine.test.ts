@@ -114,6 +114,7 @@ function handingOver(
 		kind: 'handing_over',
 		handle: 'sess-1',
 		journalUnchanged: false,
+		journalTokens: 0,
 		...overrides,
 	};
 }
@@ -209,6 +210,7 @@ describe('runMachine.step — turn_in_flight', () => {
 			handle: 'vendor-handle-1',
 			configOverride: {marker: 'reused'},
 			journalUnchanged: false,
+			journalTokens: 0,
 		});
 		expect(result.actions).toEqual([
 			{
@@ -258,6 +260,19 @@ describe('runMachine.step — turn_in_flight', () => {
 			});
 			expect(result.memory.lastJournalHash).toBe(hash('same'));
 			expect(result.memory.nudgeStreak).toBe(2);
+		});
+
+		it('records the Journal size at the boundary so the seed prompt can carry the size nudge (#212)', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory(),
+				turnFinished({
+					handoverRequestHandle: 'h',
+					journalContent: 'x'.repeat(40_000),
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({journalTokens: 10_000});
 		});
 
 		it('the first boundary of a Run has no prior hash: never unchanged', () => {
@@ -1013,6 +1028,7 @@ describe('runMachine.step — backing_off', () => {
 					handle: 'sess-fork',
 					configOverride: {marker: 'fork-cfg'},
 					journalUnchanged: true,
+					journalTokens: 9_000,
 				},
 			}),
 			makeMemory(),
@@ -1027,6 +1043,7 @@ describe('runMachine.step — backing_off', () => {
 			configOverride: {marker: 'fork-cfg'},
 			retried: true,
 			journalUnchanged: true,
+			journalTokens: 9_000,
 		});
 		expect(result.actions).toEqual([
 			{
@@ -1435,12 +1452,98 @@ describe('runMachine.step — handing_over', () => {
 		expect(result.memory.lastHandoffSizeBytes).toBe(2048);
 	});
 
-	it('the Handover seed prompt instructs folding the Handoff in before domain work', () => {
-		const prompt = buildHandoverSeedPrompt(
-			'/proj/.athena/s1/handoff/002.md',
-			'/proj/.athena/s1/journal.md',
-		);
-		expect(prompt.toLowerCase()).toContain('before any domain work');
+	describe('the Handover seed prompt stops mandating Journal growth (ADR 0018 §7, #212)', () => {
+		it('folds in only what the journal lacks, writes nothing otherwise, never appends a processed note, and sheds first when over the bound', () => {
+			const prompt = buildHandoverSeedPrompt(
+				'/proj/.athena/s1/handoff/002.md',
+				'/proj/.athena/s1/journal.md',
+			);
+			const lower = prompt.toLowerCase();
+			expect(lower).toContain('before any domain work');
+			expect(lower).toContain(
+				'only what the handoff records and the journal lacks',
+			);
+			expect(lower).toContain('if it lacks nothing, write nothing');
+			expect(lower).toContain(
+				'never append a note that the handoff was processed',
+			);
+			expect(lower).toContain(
+				'shedding is your first action, before any other read',
+			);
+			// The mandate that grew the Journal one note per Handover is gone.
+			expect(lower).not.toContain("the journal's next edit");
+			expect(prompt).toContain('/proj/.athena/s1/handoff/002.md');
+			expect(prompt).toContain('/proj/.athena/s1/journal.md');
+		});
+
+		it('the successful-fork row seeds the fresh Turn with that prompt and no size nudge while the Journal is under the bound', () => {
+			const result = step(
+				handingOver({journalTokens: 7_999}),
+				makeMemory({iteration: 2}),
+				forkFinished({
+					ok: true,
+					handoffPath: '/proj/.athena/s1/handoff/002.md',
+				}),
+				makeCfg(),
+			);
+			const nextPhase = result.phase as Extract<
+				RunPhase,
+				{kind: 'turn_in_flight'}
+			>;
+			expect(nextPhase.prompt).toBe(
+				buildHandoverSeedPrompt(
+					'/proj/.athena/s1/handoff/002.md',
+					'/proj/.athena/s1/journal.md',
+				),
+			);
+			expect(nextPhase.prompt).not.toContain('shedding backstop');
+		});
+
+		it('attaches the ADR 0015 §3 size nudge to the seed prompt once the Journal is over the bound', () => {
+			const result = step(
+				handingOver({journalTokens: 8_001}),
+				makeMemory({iteration: 2}),
+				forkFinished({
+					ok: true,
+					handoffPath: '/proj/.athena/s1/handoff/002.md',
+				}),
+				makeCfg(),
+			);
+			const nextPhase = result.phase as Extract<
+				RunPhase,
+				{kind: 'turn_in_flight'}
+			>;
+			expect(nextPhase.prompt).toBe(
+				buildHandoverSeedPrompt(
+					'/proj/.athena/s1/handoff/002.md',
+					'/proj/.athena/s1/journal.md',
+				) + buildJournalSizeNudgeSuffix('.athena/s1/journal.md'),
+			);
+			expect(result.memory.lastStopPrompt).toBe(nextPhase.prompt);
+			// A nudge, never a different action set.
+			expect(result.actions.map(a => a.type)).toEqual([
+				'purge_handoffs',
+				'persist',
+				'notify_iteration_complete',
+				'start_turn',
+			]);
+		});
+
+		it('the wake after a park that followed a Handover uses the same fold-in rule', () => {
+			const prompt = buildWakePrompt(
+				'go on',
+				'.athena/s1/journal.md',
+				undefined,
+				'/proj/.athena/s1/handoff/003.md',
+			);
+			const lower = prompt.toLowerCase();
+			expect(lower).toContain(
+				'only what the handoff records and the journal lacks',
+			);
+			expect(lower).toContain(
+				'never append a note that the handoff was processed',
+			);
+		});
 	});
 
 	it('a transient failed fork retries once with backoff instead of degrading (ADR 0016 §8)', () => {
@@ -1458,6 +1561,7 @@ describe('runMachine.step — handing_over', () => {
 				handle: 'sess-orig',
 				configOverride: {marker: 'fork-cfg'},
 				journalUnchanged: false,
+				journalTokens: 0,
 			},
 		});
 		expect(result.memory.iteration).toBe(2); // unchanged — not consumed by a retry
