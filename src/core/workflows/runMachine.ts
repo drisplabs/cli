@@ -33,6 +33,7 @@ import type {
 } from '../runtime/process';
 import type {LoopConfig} from './types';
 import {
+	DEFAULT_HANDOVER_CAP,
 	DEFAULT_NUDGE_CAP,
 	DEFAULT_RETRY_CAP,
 	DEFAULT_RETRY_BACKOFF_MS,
@@ -84,6 +85,8 @@ export type RunPhase =
 						kind: 'fork';
 						handle: string;
 						configOverride?: HarnessProcessOverride;
+						/** Carried through the backoff into the re-issued fork. */
+						journalUnchanged: boolean;
 				  };
 	  }
 	| {
@@ -92,6 +95,13 @@ export type RunPhase =
 			configOverride?: HarnessProcessOverride;
 			/** Set once this fork has already been retried once (ADR 0016 §8). */
 			retried?: boolean;
+			/**
+			 * Whether the interrupted Turn left the Journal hash unchanged since
+			 * the previous Turn boundary (ADR 0018 §1) — observed when the
+			 * Handover was requested, consumed once the fork succeeds: the
+			 * successful-fork row judges the Handover unproductive on it.
+			 */
+			journalUnchanged: boolean;
 	  }
 	| {
 			kind: 'awaiting_attention';
@@ -164,6 +174,14 @@ export type RunMemory = {
 	 * defaults it to `false`.
 	 */
 	parkedAfterHandover: boolean;
+	/**
+	 * Consecutive **unproductive** Handovers — the Handover streak (ADR 0018
+	 * §2). Grows on a Handover whose Turn left the Journal unchanged, resets
+	 * on a productive Handover and on a wake; reaching `handoverCap` parks the
+	 * Run. Absent on snapshots persisted before this field existed;
+	 * `deserializeRunMemory` defaults it to `0`.
+	 */
+	handoverStreak: number;
 };
 
 /**
@@ -399,6 +417,25 @@ function hashJournalContent(content: string): string {
 }
 
 /**
+ * The park sentence for the Handover cap (ADR 0018 §2): names the bound, the
+ * signal that judged the streak unproductive, and what to change. Read back
+ * by `interruptionFromSuspension` (the first integer is the limit), so the
+ * opening clause is a contract.
+ */
+function buildHandoverCapReason(input: {
+	cap: number;
+	journalUnchanged: boolean;
+}): string {
+	return (
+		`handover cap reached: ${input.cap} consecutive Handover${
+			input.cap === 1 ? '' : 's'
+		} (handoverCap) without progress — ` +
+		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}. ` +
+		`Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.`
+	);
+}
+
+/**
  * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
  * in-flight context the Journal never checkpointed; the Journal remains the
  * durable ledger.
@@ -610,6 +647,7 @@ export function createInitialRun(
 			pendingSteers: initialSteers,
 			lastHandoffSizeBytes: null,
 			parkedAfterHandover: false,
+			handoverStreak: 0,
 		},
 		actions: kickoffActionsFor(phase),
 	});
@@ -698,6 +736,13 @@ function handleTurnInFlight(
 	}
 
 	if (event.handoverRequestHandle !== null) {
+		// The Handover boundary observes the Journal like a clean stop does
+		// (ADR 0018 §1, §5): `lastJournalHash` becomes "the hash at the last
+		// Turn boundary of any kind". The Nudge comparison still asks whether
+		// the Journal advanced since the last boundary, so progress observed
+		// here resets its streak exactly as progress at a stop would.
+		const journalHash = hashJournalContent(event.journalContent);
+		const journalUnchanged = journalHash === memory.lastJournalHash;
 		return {
 			phase: {
 				kind: 'handing_over',
@@ -709,8 +754,13 @@ function handleTurnInFlight(
 				// (not just the action) so a transient-retry (§8) can re-issue the
 				// fork with the same override.
 				configOverride: phase.configOverride,
+				journalUnchanged,
 			},
-			memory,
+			memory: {
+				...memory,
+				lastJournalHash: journalHash,
+				nudgeStreak: journalUnchanged ? memory.nudgeStreak : 0,
+			},
 			actions: [
 				{
 					type: 'start_fork_turn',
@@ -1040,6 +1090,7 @@ function handleBackingOff(
 				handle: phase.resume.handle,
 				configOverride: phase.resume.configOverride,
 				retried: true,
+				journalUnchanged: phase.resume.journalUnchanged,
 			},
 			memory,
 			actions: [
@@ -1137,6 +1188,30 @@ function handleHandingOver(
 			};
 		}
 
+		// The Handover cap (ADR 0018 §1-§3): a Handover whose Turn left the
+		// Journal unchanged is unproductive — the session it distilled added
+		// nothing durable. A streak of them parks the Run: a suspend, not a
+		// degrade to vendor compaction, because the cause is structural (the
+		// bound, the baseline context, or the Journal's size) and only a person
+		// can change it. A productive Handover resets the streak, so a long Run
+		// that keeps working never trips this.
+		const unproductive = phase.journalUnchanged;
+		const handoverStreak = unproductive ? memory.handoverStreak + 1 : 0;
+		const handoverCap = cfg.loop?.handoverCap ?? DEFAULT_HANDOVER_CAP;
+		if (handoverStreak >= handoverCap) {
+			return {
+				phase: {
+					kind: 'awaiting_attention',
+					stopReason: buildHandoverCapReason({
+						cap: handoverCap,
+						journalUnchanged: phase.journalUnchanged,
+					}),
+				},
+				memory: {...memoryAfterFork, handoverStreak, parkedAfterHandover: true},
+				actions: [{type: 'purge_handoffs'}, {type: 'persist'}],
+			};
+		}
+
 		// The fork is discarded (nothing resumes it); the next Turn is a fresh
 		// Agent Session — the only context-resetting transition — and ticks
 		// the Iteration counter like any Turn.
@@ -1162,6 +1237,7 @@ function handleHandingOver(
 				iteration: nextIteration,
 				lastStopPrompt: seedPrompt,
 				lastStopContinuation: continuation,
+				handoverStreak,
 			},
 			actions: [
 				{type: 'purge_handoffs'},
@@ -1191,6 +1267,7 @@ function handleHandingOver(
 					kind: 'fork',
 					handle: phase.handle,
 					configOverride: phase.configOverride,
+					journalUnchanged: phase.journalUnchanged,
 				},
 			},
 			memory,
@@ -1281,6 +1358,8 @@ function handleAwaitingAttention(
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
 			parkedAfterHandover: false,
+			// A human reply is new information: the Handover streak starts over.
+			handoverStreak: 0,
 		},
 		actions: [
 			{type: 'persist'},
@@ -1413,6 +1492,9 @@ export function deserializeRunMemory(
 	// in-flight Run rehydrates as "resume the session", exactly as before.
 	if (typeof candidate.parkedAfterHandover !== 'boolean') {
 		candidate.parkedAfterHandover = false;
+	}
+	if (typeof candidate.handoverStreak !== 'number') {
+		candidate.handoverStreak = 0;
 	}
 	if (
 		typeof candidate.iteration !== 'number' ||

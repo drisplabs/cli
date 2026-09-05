@@ -7,8 +7,8 @@ calls it **Parked**. Every route in funnels here: a declared
 an **ask rule** that fired on a permission prompt (#189), a permission left
 unclaimed under `guarded` / `standard`, a hard failure (`auth` / `billing` /
 `invalid_request` / `model_not_found` / unclassifiable), or an exhausted
-bound (Nudge cap, Retry cap, `maxIterations`) — the reason always names
-which. Under `--isolation autonomous` only the first two park a Run: the
+bound (Nudge cap, Retry cap, Handover cap, `maxIterations`) — the reason
+always names which. Under `--isolation autonomous` only the first two park a Run: the
 preset's policy answers every permission an ask rule does not claim, so the
 workflow completes with nobody watching. A parked Run is waiting on you; this
 guide is how you find it and wake it.
@@ -57,8 +57,9 @@ What happens, in ADR 0014 terms:
   falls back to a fresh Turn seeded from the Journal, with your reply still
   the prompt. The Run is never stranded on a dead session.
 - **After a Handover:** a Run that parked right after a Handover — the
-  iteration ceiling reached on the Handover row (ADR 0018 §4) — captured an
-  Agent Session at its context bound: the killed session, or the fork.
+  Handover cap (`handover cap reached: …`, ADR 0018 §2) or the iteration
+  ceiling reached on the Handover row (§4) — captured an Agent Session at its
+  context bound: the killed session, or the fork.
   Resuming either would re-trip compaction before your reply is read, so the
   wake starts a **fresh** Agent Session instead (ADR 0018 §9), and the wake
   prompt names the newest `handoff/NNN.md` as mandatory reading beside the

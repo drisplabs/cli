@@ -1,4 +1,8 @@
-import {HardFailureCodeSchema, type Interruption} from '@drisp/protocol';
+import {
+	HardFailureCodeSchema,
+	type ExhaustedCap,
+	type Interruption,
+} from '@drisp/protocol';
 
 /**
  * Classify the Runner's `run.suspended` stop reason into the Interruption a
@@ -14,6 +18,13 @@ import {HardFailureCodeSchema, type Interruption} from '@drisp/protocol';
  * Anything unrecognised is reported as `blocked` with the raw sentence as its
  * reason: the Run did park for a human, and the message says why.
  */
+const CAP_BY_BOUND: Record<string, ExhaustedCap> = {
+	'retry cap': 'retry',
+	'nudge cap': 'nudge',
+	'iteration ceiling': 'iterations',
+	'handover cap': 'handover',
+};
+
 /** A capture group that may not have participated in the match. */
 function group(match: RegExpExecArray, index: number): string | undefined {
 	return match[index];
@@ -80,19 +91,19 @@ export function interruptionFromSuspension(
 		};
 	}
 
+	// Every exhausted bound opens with its name and its limit as the first
+	// integer (`terminalOutcome.ts`, `runMachine.ts`); the Handover cap joined
+	// the family in ADR 0018.
 	const cap =
-		/^(retry cap|nudge cap|iteration ceiling) reached:\s*(\d+)\b/.exec(message);
+		/^(retry cap|nudge cap|iteration ceiling|handover cap) reached:\s*(\d+)\b/.exec(
+			message,
+		);
 	if (cap) {
 		const limit = Number.parseInt(group(cap, 2) ?? '', 10);
 		return {
 			kind: 'cap_exhausted',
 			message,
-			cap:
-				group(cap, 1) === 'retry cap'
-					? 'retry'
-					: group(cap, 1) === 'nudge cap'
-						? 'nudge'
-						: 'iterations',
+			cap: CAP_BY_BOUND[group(cap, 1) ?? ''] ?? 'iterations',
 			...(Number.isFinite(limit) && limit > 0 ? {limit} : {}),
 		};
 	}

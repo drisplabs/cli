@@ -1286,6 +1286,118 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt.toLowerCase()).toContain('before any domain work');
 	});
 
+	describe('the Handover cap (ADR 0018 §2)', () => {
+		/**
+		 * A scripted Run: Turn 1 stops cleanly without a marker (the boundary
+		 * that records the first Journal hash), then every Turn hands over and
+		 * every fork writes the next Handoff file. `journalOnTurn` may rewrite
+		 * the Journal before a Turn hands over, making that Handover productive.
+		 */
+		function scriptedHandoverRun(input: {
+			journalOnTurn?: Record<number, string>;
+			handoverCap?: number;
+		}) {
+			const projectDir = makeTempDir();
+			const journalDir = path.join(projectDir, '.athena', 's1');
+			fs.mkdirSync(journalDir, {recursive: true});
+			const journalPath = path.join(journalDir, 'journal.md');
+			let pendingHandover: {handle: string} | null = null;
+			let turn = 0;
+			const startTurn = vi
+				.fn()
+				.mockImplementation(async (call: {prompt: string}) => {
+					if (call.prompt.includes('handoff skill')) {
+						const handoffPath = /to (\S+\.md)\./.exec(call.prompt)![1]!;
+						fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+						fs.writeFileSync(handoffPath, '# Handoff\nsame substance', 'utf-8');
+						return OK_RESULT;
+					}
+					turn += 1;
+					const rewrite = input.journalOnTurn?.[turn];
+					if (rewrite !== undefined)
+						fs.writeFileSync(journalPath, rewrite, 'utf-8');
+					if (turn === 1) {
+						fs.writeFileSync(journalPath, 'plan written', 'utf-8');
+						return OK_RESULT;
+					}
+					if (turn >= 8) {
+						fs.writeFileSync(
+							journalPath,
+							'<!-- WORKFLOW_COMPLETE -->',
+							'utf-8',
+						);
+						return OK_RESULT;
+					}
+					pendingHandover = {handle: `sess-${turn}`};
+					return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+				});
+			const snapshots: WorkflowRunSnapshot[] = [];
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {
+						enabled: true,
+						maxIterations: 50,
+						...(input.handoverCap !== undefined
+							? {handoverCap: input.handoverCap}
+							: {}),
+					},
+				},
+				startTurn,
+				persistRunState: snapshot => snapshots.push(snapshot),
+				handover: {
+					takeRequest: () => {
+						const request = pendingHandover;
+						pendingHandover = null;
+						return request;
+					},
+				},
+			});
+			return {handle, startTurn, snapshots, turns: () => turn};
+		}
+
+		it('parks after three consecutive Handovers that left the Journal unchanged, naming the bound and marking the wake fresh', async () => {
+			const {handle, snapshots, turns} = scriptedHandoverRun({});
+			const result = await handle.result;
+			expect(result.status).toBe('awaiting_attention');
+			expect(result.stopReason).toBe(
+				'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. ' +
+					"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+			);
+			// Turn 1 (clean stop) + Turns 2, 3, 4, each handing over: the third
+			// unproductive Handover parks before a fifth Turn is seeded.
+			expect(turns()).toBe(4);
+			const last = deserializeRunMemory(snapshots.at(-1)!.runMemoryJson);
+			expect(last?.handoverStreak).toBe(3);
+			expect(last?.parkedAfterHandover).toBe(true);
+		});
+
+		it('a Handover after which the Journal changed resets the streak, so a Run that keeps working never trips the cap', async () => {
+			const {handle, turns} = scriptedHandoverRun({
+				// Turn 4 advances the Journal before its Handover: streak 2 → 0.
+				journalOnTurn: {4: 'real progress made', 7: 'and more progress'},
+			});
+			const result = await handle.result;
+			expect(result.status).toBe('completed');
+			expect(turns()).toBe(8);
+		});
+
+		it('loop.handoverCap overrides the default', async () => {
+			const {handle, turns} = scriptedHandoverRun({handoverCap: 1});
+			const result = await handle.result;
+			expect(result.status).toBe('awaiting_attention');
+			expect(result.stopReason).toMatch(
+				/^handover cap reached: 1 consecutive Handover \(handoverCap\)/,
+			);
+			expect(turns()).toBe(2);
+		});
+	});
+
 	it('records the Handoff file size on the run snapshot once the fork writes it', async () => {
 		const projectDir = makeTempDir();
 		const journalDir = path.join(projectDir, '.athena', 's1');

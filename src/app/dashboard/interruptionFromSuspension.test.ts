@@ -77,6 +77,11 @@ describe('interruptionFromSuspension', () => {
 				'iteration ceiling reached: 20 iterations (maxIterations) used without a terminal marker',
 			expected: {kind: 'cap_exhausted', cap: 'iterations', limit: 20},
 		},
+		{
+			stopReason:
+				"handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+			expected: {kind: 'cap_exhausted', cap: 'handover', limit: 3},
+		},
 	])('classifies "$stopReason"', ({stopReason, expected}) => {
 		const interruption = interruptionFromSuspension(stopReason);
 		expect(interruption).toMatchObject({...expected, message: stopReason});
