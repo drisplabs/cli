@@ -84,39 +84,19 @@ export type RunPhase =
 						prompt: string;
 						continuation: TurnContinuation;
 				  }
-				| {
+				| ({
 						kind: 'fork';
 						handle: string;
 						configOverride?: HarnessProcessOverride;
-						/** Carried through the backoff into the re-issued fork. */
-						journalUnchanged: boolean;
-						journalTokens: number;
-						shedIntegrity: ShedIntegrityGaps | null;
-				  };
+				  } & HandoverBoundary);
 	  }
-	| {
+	| ({
 			kind: 'handing_over';
 			handle: string;
 			configOverride?: HarnessProcessOverride;
 			/** Set once this fork has already been retried once (ADR 0016 §8). */
 			retried?: boolean;
-			/**
-			 * Whether the interrupted Turn left the Journal hash unchanged since
-			 * the previous Turn boundary (ADR 0018 §1) — observed when the
-			 * Handover was requested, consumed once the fork succeeds: the
-			 * successful-fork row judges the Handover unproductive on it.
-			 */
-			journalUnchanged: boolean;
-			/**
-			 * The Journal's estimated size in tokens at the boundary (ADR 0015
-			 * §3's estimate), so the seed prompt built once the fork succeeds can
-			 * carry the size nudge — the Handover path used to be the one
-			 * continuation that never did (ADR 0018 §7).
-			 */
-			journalTokens: number;
-			/** A half-executed shed observed at the boundary, for the seed prompt (ADR 0018 §7). */
-			shedIntegrity: ShedIntegrityGaps | null;
-	  }
+	  } & HandoverBoundary)
 	| {
 			kind: 'awaiting_attention';
 			stopReason: string;
@@ -132,6 +112,38 @@ export type RunPhase =
 	| {kind: 'completed'}
 	| {kind: 'failed'; stopReason?: string}
 	| {kind: 'cancelled'};
+
+/**
+ * What the in-flight row observes at a Handover boundary and the
+ * successful-fork row consumes once the fork succeeds (ADR 0016 §4: phases
+ * carry what the next row needs) — carried unchanged through a transient fork
+ * retry's backoff.
+ */
+export type HandoverBoundary = {
+	/**
+	 * Whether the interrupted Turn left the Journal hash unchanged since the
+	 * previous Turn boundary (ADR 0018 §1): the hash half of the unproductive
+	 * predicate.
+	 */
+	journalUnchanged: boolean;
+	/**
+	 * The Journal's estimated size in tokens at the boundary (ADR 0015 §3's
+	 * estimate), so the seed prompt can carry the size nudge — the Handover
+	 * path used to be the one continuation that never did (ADR 0018 §7).
+	 */
+	journalTokens: number;
+	/** A half-executed shed observed at the boundary, for the seed prompt (ADR 0018 §7). */
+	shedIntegrity: ShedIntegrityGaps | null;
+};
+
+/** The boundary fields alone, for carrying between phases. */
+function boundaryOf(boundary: HandoverBoundary): HandoverBoundary {
+	return {
+		journalUnchanged: boundary.journalUnchanged,
+		journalTokens: boundary.journalTokens,
+		shedIntegrity: boundary.shedIntegrity,
+	};
+}
 
 export type TerminalRunPhase = Extract<
 	RunPhase,
@@ -178,22 +190,26 @@ export type RunMemory = {
 	 */
 	lastHandoffSizeBytes: number | null;
 	/**
-	 * Set when the Run parked on a row that follows a Handover (ADR 0018 §9):
-	 * the iteration ceiling on the Handover row (§4). The persisted
-	 * `adapterSessionId` is then a session at its context bound — the killed
-	 * one, or the fork — and resuming it would re-trip compaction at once, so
-	 * the wake starts a **fresh** Agent Session seeded with the newest Handoff
-	 * file, the Journal and the reply. The `woken` row clears it. Absent on
-	 * snapshots persisted before this field existed; `deserializeRunMemory`
-	 * defaults it to `false`.
+	 * Set when the Run parked on the successful-fork row — the iteration
+	 * ceiling (ADR 0018 §4), the Handover cap (§2) or the token budget (§10)
+	 * reached right after a Handover. The persisted `adapterSessionId` is then
+	 * a session at its context bound — the killed one, or the fork — and
+	 * resuming it would re-trip compaction at once, so the wake starts a
+	 * **fresh** Agent Session seeded with the newest Handoff file, the Journal
+	 * and the reply (§9). The Interruption kind alone cannot say this: the
+	 * ceiling parks as `cap: iterations` on a clean stop too. The `woken` row
+	 * clears it. Absent on snapshots persisted before this field existed;
+	 * `deserializeRunMemory` defaults it to `false`.
 	 */
 	parkedAfterHandover: boolean;
 	/**
 	 * Consecutive **unproductive** Handovers — the Handover streak (ADR 0018
-	 * §2). Grows on a Handover whose Turn left the Journal unchanged, resets
-	 * on a productive Handover and on a wake; reaching `handoverCap` parks the
-	 * Run. Absent on snapshots persisted before this field existed;
-	 * `deserializeRunMemory` defaults it to `0`.
+	 * §2). Grows on a Handover whose Handoff is at least
+	 * `HANDOFF_NO_PROGRESS_SIMILARITY` similar to its predecessor or whose Turn
+	 * left the Journal unchanged (§1); resets on a productive Handover and on
+	 * a wake; reaching `handoverCap` parks the Run. Absent on snapshots
+	 * persisted before this field existed; `deserializeRunMemory` defaults it
+	 * to `0`.
 	 */
 	handoverStreak: number;
 	/**
@@ -413,6 +429,12 @@ export type RunEvent =
 			ok: boolean;
 			cancelled: boolean;
 			handoffPath: string;
+			/**
+			 * The Handoff's position in the Dossier's chain (`handoff/012.md` →
+			 * 12), as the interpreter allocated it — the Handover number the seed
+			 * prompt names — or `null` when unknown.
+			 */
+			handoffSeq: number | null;
 			/** Size in bytes of the written Handoff file, or `null` if unknown (ADR 0015 §8). */
 			handoffSizeBytes: number | null;
 			/**
@@ -519,14 +541,17 @@ function buildTokenBudgetReason(limit: number, used: number): string {
 	return `token budget reached: ${limit} tokens (maxRunTokens); used ${used}`;
 }
 
-/** Whether a configured `maxRunTokens` has been reached by a reported total. */
+/**
+ * The budget a reported total has reached — `{limit, used}` — or `null` when
+ * no `maxRunTokens` is configured, the total is unknown, or it is still under.
+ */
 function tokenBudgetReached(
 	loop: LoopConfig | undefined,
 	cumulativeTokens: number | null,
-): number | null {
+): {limit: number; used: number} | null {
 	const limit = loop?.maxRunTokens;
 	if (limit === undefined || cumulativeTokens === null) return null;
-	return cumulativeTokens >= limit ? limit : null;
+	return cumulativeTokens >= limit ? {limit, used: cumulativeTokens} : null;
 }
 
 /** The memory with a boundary's reported cumulative total recorded (ADR 0018 §10). */
@@ -666,12 +691,6 @@ export type HandoverMeasurement = {
 	lastContextTokens?: number | null;
 	journalTokens?: number;
 };
-
-/** The chain position a Handoff path encodes (`handoff/012.md` → 12), if any. */
-function handoverNumberFromPath(handoffPath: string): number | undefined {
-	const match = /(\d+)\.md$/.exec(handoffPath);
-	return match ? Number(match[1]) : undefined;
-}
 
 /**
  * First prompt of a woken (previously suspended) Run: the human's reply plus
@@ -1196,7 +1215,7 @@ function handleTurnInFlight(
 		return {
 			phase: {
 				kind: 'awaiting_attention',
-				stopReason: buildTokenBudgetReason(budget, memory.cumulativeTokens!),
+				stopReason: buildTokenBudgetReason(budget.limit, budget.used),
 			},
 			memory: memoryAfterSuccess,
 			actions: [{type: 'persist'}],
@@ -1346,9 +1365,7 @@ function handleBackingOff(
 				handle: phase.resume.handle,
 				configOverride: phase.resume.configOverride,
 				retried: true,
-				journalUnchanged: phase.resume.journalUnchanged,
-				journalTokens: phase.resume.journalTokens,
-				shedIntegrity: phase.resume.shedIntegrity,
+				...boundaryOf(phase.resume),
 			},
 			memory,
 			actions: [
@@ -1431,17 +1448,22 @@ function handleHandingOver(
 			lastHandoffSizeBytes: event.handoffSizeBytes,
 		};
 
-		// The iteration ceiling applies on the Handover row (ADR 0018 §4): a
-		// Turn that ended in a Handover never reaches `resolveTurnOutcome`, the
-		// only other place `maxIterations` is evaluated, so without this check a
-		// Run whose Turns keep handing over has no ceiling at all. Fork first,
-		// then check — the Handoff is the distillation a wake needs, and one fork
-		// at the ceiling is cheaper than losing the session's in-flight state.
-		// The park is marked (§9): the persisted vendor session sits at its
-		// bound, so the wake must start fresh rather than resume it.
+		// Judge the Handover first (ADR 0018 §1): it is unproductive when its
+		// Handoff restates the previous one (the session's own distillation
+		// converged — fold-in-proof, since a "processed" note changes the
+		// Journal hash but not the next Handoff) or when its Turn left the
+		// Journal unchanged (the seed-too-big case, where the fresh Turn dies
+		// before writing anything). The judged streak is what every outcome
+		// below records and reports (§8), park or seed.
+		const unproductive =
+			(event.handoffSimilarity !== null &&
+				event.handoffSimilarity >= HANDOFF_NO_PROGRESS_SIMILARITY) ||
+			phase.journalUnchanged;
+		const handoverStreak = unproductive ? memory.handoverStreak + 1 : 0;
+
 		// Reported on every successful fork (ADR 0018 §8), whatever this row
 		// decides next: the exec stream's `run.handover.completed`.
-		const completion = (handoverStreak: number): RunAction => ({
+		const completion: RunAction = {
 			type: 'notify_handover_completed',
 			completion: {
 				iteration: memory.iteration,
@@ -1454,78 +1476,52 @@ function handleHandingOver(
 				lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
 				toolCalls: memory.lastBoundedTurn?.toolCalls ?? null,
 			},
+		};
+
+		// Every park on this row is marked (§9): the persisted vendor session
+		// sits at its bound, so the wake must start fresh rather than resume
+		// it. Fork first, then check — the Handoff is the distillation a wake
+		// needs, and one fork at a bound is cheaper than losing the session's
+		// in-flight state.
+		const parkAfterFork = (stopReason: string): StepResult => ({
+			phase: {kind: 'awaiting_attention', stopReason},
+			memory: {...memoryAfterFork, handoverStreak, parkedAfterHandover: true},
+			actions: [{type: 'purge_handoffs'}, {type: 'persist'}, completion],
 		});
 
 		// The cumulative token budget (ADR 0018 §10) is the outermost bound:
-		// checked before the ceiling and the cap. Fork first, then check — the
-		// Handoff is on disk for the wake, which starts fresh (§9).
+		// checked before the ceiling and the cap.
 		const budget = tokenBudgetReached(cfg.loop, memory.cumulativeTokens);
 		if (budget !== null) {
-			return {
-				phase: {
-					kind: 'awaiting_attention',
-					stopReason: buildTokenBudgetReason(budget, memory.cumulativeTokens!),
-				},
-				memory: {...memoryAfterFork, parkedAfterHandover: true},
-				actions: [
-					{type: 'purge_handoffs'},
-					{type: 'persist'},
-					completion(memory.handoverStreak),
-				],
-			};
+			return parkAfterFork(buildTokenBudgetReason(budget.limit, budget.used));
 		}
 
+		// The iteration ceiling applies on the Handover row (ADR 0018 §4): a
+		// Turn that ended in a Handover never reaches `resolveTurnOutcome`, the
+		// only other place `maxIterations` is evaluated, so without this check a
+		// Run whose Turns keep handing over has no ceiling at all.
 		const maxIterations = cfg.loop?.maxIterations;
 		if (maxIterations !== undefined && memory.iteration >= maxIterations) {
-			return {
-				phase: {
-					kind: 'awaiting_attention',
-					stopReason: buildIterationCeilingReason(maxIterations),
-				},
-				memory: {...memoryAfterFork, parkedAfterHandover: true},
-				actions: [
-					{type: 'purge_handoffs'},
-					{type: 'persist'},
-					completion(memory.handoverStreak),
-				],
-			};
+			return parkAfterFork(buildIterationCeilingReason(maxIterations));
 		}
 
-		// The Handover cap (ADR 0018 §1-§3): a Handover is unproductive when its
-		// Handoff restates the previous one (the session's own distillation
-		// converged — fold-in-proof, since a "processed" note changes the
-		// Journal hash but not the next Handoff) or when its Turn left the
-		// Journal unchanged (the seed-too-big case, where the fresh Turn dies
-		// before writing anything). A streak of them parks the Run: a suspend,
-		// not a degrade to vendor compaction, because the cause is structural
-		// (the bound, the baseline context, or the Journal's size) and only a
-		// person can change it. A productive Handover resets the streak, so a
-		// long Run that keeps working never trips this.
-		const unproductive =
-			(event.handoffSimilarity !== null &&
-				event.handoffSimilarity >= HANDOFF_NO_PROGRESS_SIMILARITY) ||
-			phase.journalUnchanged;
-		const handoverStreak = unproductive ? memory.handoverStreak + 1 : 0;
+		// The Handover cap (ADR 0018 §2-§3): a streak of unproductive Handovers
+		// parks the Run — a suspend, not a degrade to vendor compaction, because
+		// the cause is structural (the bound, the baseline context, or the
+		// Journal's size) and only a person can change it. A productive
+		// Handover resets the streak, so a long Run that keeps working never
+		// trips this.
 		const handoverCap = cfg.loop?.handoverCap ?? DEFAULT_HANDOVER_CAP;
 		if (handoverStreak >= handoverCap) {
-			return {
-				phase: {
-					kind: 'awaiting_attention',
-					stopReason: buildHandoverCapReason({
-						cap: handoverCap,
-						handoffSimilarity: event.handoffSimilarity,
-						journalUnchanged: phase.journalUnchanged,
-						journalTokens: phase.journalTokens,
-						boundedTurn: memory.lastBoundedTurn,
-					}),
-				},
-				memory: {...memoryAfterFork, handoverStreak, parkedAfterHandover: true},
-				actions: [
-					{type: 'purge_handoffs'},
-					{type: 'persist'},
-					completion(handoverStreak),
-				],
-			};
+			return parkAfterFork(
+				buildHandoverCapReason({
+					cap: handoverCap,
+					handoffSimilarity: event.handoffSimilarity,
+					journalUnchanged: phase.journalUnchanged,
+					journalTokens: phase.journalTokens,
+					boundedTurn: memory.lastBoundedTurn,
+				}),
+			);
 		}
 
 		// The fork is discarded (nothing resumes it); the next Turn is a fresh
@@ -1547,7 +1543,7 @@ function handleHandingOver(
 				event.handoffPath,
 				cfg.journalAbsPath ?? undefined,
 				{
-					handoverNumber: handoverNumberFromPath(event.handoffPath),
+					handoverNumber: event.handoffSeq ?? undefined,
 					openingContextTokens:
 						memory.lastBoundedTurn?.openingContextTokens ?? null,
 					lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
@@ -1576,7 +1572,7 @@ function handleHandingOver(
 			actions: [
 				{type: 'purge_handoffs'},
 				{type: 'persist'},
-				completion(handoverStreak),
+				completion,
 				// Reported like the Nudge rows report it (ADR 0018 §8): the exec
 				// stream shows `iteration.complete` for a Handover too.
 				{type: 'notify_iteration_complete'},
@@ -1602,9 +1598,7 @@ function handleHandingOver(
 					kind: 'fork',
 					handle: phase.handle,
 					configOverride: phase.configOverride,
-					journalUnchanged: phase.journalUnchanged,
-					journalTokens: phase.journalTokens,
-					shedIntegrity: phase.shedIntegrity,
+					...boundaryOf(phase),
 				},
 			},
 			memory,

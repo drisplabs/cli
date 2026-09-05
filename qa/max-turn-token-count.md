@@ -42,9 +42,9 @@ only source of headroom.
    below ~95k tokens**, and `maxTurnTokenCount` values under 100k behave as
    100k there. Codex takes the configured value directly.
 
-2. **PreCompact fires at the configured point.** With the knob at 100000, a
-   live run crossed the threshold while reading large files and `PreCompact`
-   (trigger `auto`) fired at ≈95k context — and re-fired at (roughly) every
+2. **PreCompact fires at that build's measured point.** With the knob at 100000, a
+   live run on `2.1.217` crossed the threshold while reading large files and
+   `PreCompact` (trigger `auto`) fired at ≈95k context — and re-fired at (roughly) every
    subsequent loop step while context stayed above the threshold (13 events
    in the blocked-compaction run). See Case A in
    `qa/precompact-block-verification.md`.
@@ -61,8 +61,11 @@ only source of headroom.
 **130 000 tokens** (`DEFAULT_MAX_TURN_TOKEN_COUNT`, ~65% of a 200k window):
 
 - comfortably above Claude's 100k floor, so the configured point is honored;
-- ≈70k tokens of window above the ~123k (95%) trigger — measured as more than
-  enough to hold the conversation and emit a Handoff file in the fork;
+- ≈70k tokens of window above the trigger measured on `2.1.217` (≈123k) — and
+  still ≈100k above the ≈100k point measured on `2.1.247` — more than enough to
+  hold the conversation and emit a Handoff file in the fork; the number that is
+  _not_ generous is the fresh Turn's working room below the trigger, which the
+  round-3 correction above describes;
 - high enough to keep Handover (and its per-boundary fidelity loss) rare on
   ordinary Turns.
 

@@ -49,7 +49,9 @@ import {
  * A completed Handover as the Runner reports it (ADR 0018 §8): the reducer's
  * measurement plus the Run's cumulative tokens once the fork's are merged in.
  */
-export type HandoverCompleted = HandoverCompletion & {tokens: TokenUsage};
+export type HandoverCompletionReport = HandoverCompletion & {
+	tokens: TokenUsage;
+};
 
 export type TurnInput = {
 	prompt: string;
@@ -136,11 +138,11 @@ export type WorkflowRunnerInput = {
 	 * the Handover streak, the bounded Turn's opening and last context, its
 	 * tool calls, and the Run's cumulative tokens. Optional.
 	 */
-	onHandoverCompleted?: (completion: HandoverCompleted) => void;
+	onHandoverCompleted?: (completion: HandoverCompletionReport) => void;
 	/**
 	 * The tool-call count of the Turn in flight, as the caller observes it
-	 * (the exec runner counts `tool.pre` events per adapter session). Read
-	 * once the Turn ends; `null`/`undefined` when unknown. Optional.
+	 * (the exec runner counts `tool.pre` events per Turn). Read once the Turn
+	 * ends; `null`/`undefined` when unknown. Optional.
 	 */
 	currentTurnToolCalls?: () => number | null | undefined;
 	abortCurrentTurn?: () => void;
@@ -491,9 +493,9 @@ function newestHandoffPath(dir: string): string | null {
  */
 function similarityToPreviousHandoff(
 	dir: string,
+	seq: number,
 	handoffAbsPath: string,
 ): number | null {
-	const seq = Number(path.basename(handoffAbsPath, '.md'));
 	const previousSeq = listHandoffSeqs(dir)
 		.filter(s => s < seq)
 		.at(-1);
@@ -509,7 +511,7 @@ function similarityToPreviousHandoff(
 }
 
 /**
- * Allocate the path for the next Handoff file.
+ * Allocate the next Handoff file: its position in the chain and its path.
  *
  * A fresh sequence number per Handover is what lets `existsSync` prove that
  * *this* fork wrote the file — the job the pre-Handover `rmSync` used to do,
@@ -517,10 +519,10 @@ function similarityToPreviousHandoff(
  * Handover that left the Journal as the sole carrier again, which is the
  * condition ADR 0014 §5 exists to relieve.
  */
-function nextHandoffPath(dir: string): string {
-	const next = (listHandoffSeqs(dir).at(-1) ?? 0) + 1;
+function allocateHandoff(dir: string): {seq: number; path: string} {
+	const seq = (listHandoffSeqs(dir).at(-1) ?? 0) + 1;
 	fs.mkdirSync(dir, {recursive: true});
-	return handoffPathFor(dir, next);
+	return {seq, path: handoffPathFor(dir, seq)};
 }
 
 /** Drop all but the `keep` most recent Handoff files. Best-effort. */
@@ -952,7 +954,8 @@ export function createWorkflowRunner(
 			configOverride: HarnessProcessOverride | undefined,
 		): Promise<RunEvent> {
 			const handoffDir = handoffDirFor();
-			const handoffAbsPath = nextHandoffPath(handoffDir);
+			const {seq: handoffSeq, path: handoffAbsPath} =
+				allocateHandoff(handoffDir);
 
 			input.handover?.onForkStateChange?.(true);
 			let forkOk = false;
@@ -1001,7 +1004,11 @@ export function createWorkflowRunner(
 				} catch {
 					handoffSizeBytes = null;
 				}
-				similarity = similarityToPreviousHandoff(handoffDir, handoffAbsPath);
+				similarity = similarityToPreviousHandoff(
+					handoffDir,
+					handoffSeq,
+					handoffAbsPath,
+				);
 			}
 
 			return {
@@ -1009,6 +1016,7 @@ export function createWorkflowRunner(
 				ok: forkOk,
 				cancelled,
 				handoffPath: handoffAbsPath,
+				handoffSeq,
 				handoffSizeBytes,
 				handoffSimilarity: similarity,
 				transient,

@@ -189,14 +189,14 @@ function formatKiloTokens(n: number): string {
 }
 
 /**
- * The Turn-1 baseline headroom warning (ADR 0018 §6), or null when Turn 1
+ * The Turn-1 opening-context warning (ADR 0018 §6), or null when Turn 1
  * opened at or below half of `maxTurnTokenCount` (or was not measured). The
  * knob is not the agent's budget: the effective compaction point may sit
  * well below it, and a fresh Turn's working room is that point minus its
  * opening context — so a baseline over half the bound leaves Handover little
  * or nothing to work with.
  */
-function buildBaselineHeadroomWarning(input: {
+function buildOpeningContextWarning(input: {
 	openingContextTokens: number | null;
 	maxTurnTokenCount: number;
 }): string | null {
@@ -297,12 +297,13 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	// `startTurn` — what `run.handover` reports as the iteration it
 	// interrupted (ADR 0018 §8); the exec runner holds no `RunMemory` itself.
 	let currentIteration = 0;
-	// `tool.pre` events per adapter session (ADR 0018 §6): the Turn's tool-call
-	// count the Runner records for a bounded Turn and reports on
-	// `run.handover.completed`.
-	const toolCallsBySession = new Map<string, number>();
-	// The Turn-1 baseline headroom warning (ADR 0018 §6) fires at most once.
-	let baselineWarned = false;
+	// `tool.pre` events of the Turn in flight (ADR 0018 §6): reset when a Turn
+	// starts, so a Nudge- or Retry-resumed Turn counts its own calls rather
+	// than its Agent Session's. The count the Runner records for a bounded
+	// Turn and reports on `run.handover.completed`; null until a Turn starts.
+	let toolCallsThisTurn: number | null = null;
+	// The Turn-1 opening-context warning (ADR 0018 §6) fires at most once.
+	let openingContextWarned = false;
 	let beforeTerminalCompletionRan = false;
 	let unsubscribeSteers: (() => void) | undefined;
 	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
@@ -679,11 +680,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		},
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
-			if (runtimeEvent.kind === 'tool.pre' && runtimeEvent.sessionId) {
-				toolCallsBySession.set(
-					runtimeEvent.sessionId,
-					(toolCallsBySession.get(runtimeEvent.sessionId) ?? 0) + 1,
-				);
+			if (runtimeEvent.kind === 'tool.pre' && toolCallsThisTurn !== null) {
+				toolCallsThisTurn += 1;
 			}
 
 			// Needs a person (ADR 0014, #189): with no hub attached, nobody can
@@ -902,6 +900,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			resumedStopReason,
 			startTurn: async turnInput => {
 				currentIteration = turnInput.iteration;
+				toolCallsThisTurn = 0;
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
 					continuation: turnInput.continuation,
@@ -922,18 +921,18 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				// unproductive Handover. In the CORE-377 incident this would have
 				// fired at minute one: 71.5k of 130k.
 				if (
-					!baselineWarned &&
+					!openingContextWarned &&
 					turnInput.iteration === 1 &&
 					turnInput.configOverride?.['forkSession'] !== true
 				) {
-					const warning = buildBaselineHeadroomWarning({
+					const warning = buildOpeningContextWarning({
 						openingContextTokens: turnResult.tokens.openingContextSize ?? null,
 						maxTurnTokenCount:
 							options.workflow?.loop?.maxTurnTokenCount ??
 							DEFAULT_MAX_TURN_TOKEN_COUNT,
 					});
 					if (warning) {
-						baselineWarned = true;
+						openingContextWarned = true;
 						output.warn(warning);
 						output.emitJsonEvent('exec.warning', {message: warning});
 					}
@@ -961,10 +960,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			},
 			checkInterruption: () => interruption,
 			currentAdapterSessionId,
-			currentTurnToolCalls: () =>
-				adapterSessionId === null
-					? null
-					: (toolCallsBySession.get(adapterSessionId) ?? 0),
+			currentTurnToolCalls: () => toolCallsThisTurn,
 			// A completed Handover, measured (ADR 0018 §8): the cheapest health
 			// signal of a loop — many short sessions, output tokens tiny next to
 			// cache reads — becomes readable from the stream.

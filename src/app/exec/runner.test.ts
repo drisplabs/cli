@@ -1530,7 +1530,7 @@ describe('runExec', () => {
 		});
 	});
 
-	describe('the Turn-1 baseline headroom warning (ADR 0018 §6, #216)', () => {
+	describe('the Turn-1 opening-context warning (ADR 0018 §6, #216)', () => {
 		/** A single completing Turn whose stream opens at `openingContext` tokens. */
 		function completingTurn(journalPath: string, openingContext: number) {
 			return (opts: SpawnArgs): ChildProcess => {
