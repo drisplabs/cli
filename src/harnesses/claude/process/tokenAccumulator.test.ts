@@ -230,6 +230,60 @@ describe('createTokenAccumulator', () => {
 		expect(usage.contextSize).toBe(200 + 1000 + 0);
 	});
 
+	describe('opening context (ADR 0018 §6)', () => {
+		it('records the opening context from the first root usage and the latest context from the last', () => {
+			const acc = createTokenAccumulator();
+			acc.feed(assistantLine(USAGE_A));
+			acc.feed(assistantLine(USAGE_B));
+			const usage = acc.getUsage();
+			expect(usage.openingContextSize).toBe(100 + 10 + 5);
+			expect(usage.contextSize).toBe(200 + 1000 + 0);
+		});
+
+		it('takes the opening context from message_start when it arrives first', () => {
+			const acc = createTokenAccumulator();
+			acc.feed(
+				streamEventLine({
+					type: 'message_start',
+					message: {
+						usage: {
+							input_tokens: 2048,
+							cache_read_input_tokens: 8192,
+							cache_creation_input_tokens: 256,
+						},
+					},
+				}),
+			);
+			acc.feed(assistantLine(USAGE_B));
+			const usage = acc.getUsage();
+			expect(usage.openingContextSize).toBe(2048 + 8192 + 256);
+			expect(usage.contextSize).toBe(1200);
+		});
+
+		it('never takes the opening context from a subagent', () => {
+			const acc = createTokenAccumulator();
+			acc.feed(assistantLine(USAGE_A, {parent_tool_use_id: 'task-1'}));
+			acc.feed(assistantLine(USAGE_B));
+			expect(acc.getUsage().openingContextSize).toBe(1200);
+		});
+
+		it('falls back to the result usage when no per-turn usage arrived', () => {
+			const acc = createTokenAccumulator();
+			acc.feed(resultLine({input_tokens: 50, cache_read_input_tokens: 500}));
+			const usage = acc.getUsage();
+			expect(usage.openingContextSize).toBe(550);
+			expect(usage.contextSize).toBe(550);
+		});
+
+		it('is null before any usage and after a reset', () => {
+			const acc = createTokenAccumulator();
+			expect(acc.getUsage().openingContextSize).toBeNull();
+			acc.feed(assistantLine(USAGE_A));
+			acc.reset();
+			expect(acc.getUsage().openingContextSize).toBeNull();
+		});
+	});
+
 	describe('contextWindowSize extraction', () => {
 		it('extracts contextWindowSize from message_start model', () => {
 			const acc = createTokenAccumulator();

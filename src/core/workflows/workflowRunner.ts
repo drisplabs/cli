@@ -34,6 +34,7 @@ import {
 	step,
 	createInitialRun,
 	serializeRunMemory,
+	type HandoverCompletion,
 	type RunPhase,
 	type RunMemory,
 	type RunEvent,
@@ -41,6 +42,12 @@ import {
 	type RunInterruption,
 	type StepConfig,
 } from './runMachine';
+
+/**
+ * A completed Handover as the Runner reports it (ADR 0018 §8): the reducer's
+ * measurement plus the Run's cumulative tokens once the fork's are merged in.
+ */
+export type HandoverCompleted = HandoverCompletion & {tokens: TokenUsage};
 
 export type TurnInput = {
 	prompt: string;
@@ -113,6 +120,19 @@ export type WorkflowRunnerInput = {
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
 	onIterationComplete?: (snapshot: WorkflowRunSnapshot) => void;
+	/**
+	 * Receives each completed Handover (ADR 0018 §8) once its fork has written
+	 * the Handoff file: the file, its size and similarity to its predecessor,
+	 * the Handover streak, the bounded Turn's opening and last context, its
+	 * tool calls, and the Run's cumulative tokens. Optional.
+	 */
+	onHandoverCompleted?: (completion: HandoverCompleted) => void;
+	/**
+	 * The tool-call count of the Turn in flight, as the caller observes it
+	 * (the exec runner counts `tool.pre` events per adapter session). Read
+	 * once the Turn ends; `null`/`undefined` when unknown. Optional.
+	 */
+	currentTurnToolCalls?: () => number | null | undefined;
 	abortCurrentTurn?: () => void;
 	createJournal?: (journalPath: string, content: string) => void;
 	/**
@@ -726,6 +746,13 @@ export function createWorkflowRunner(
 				iteration: memory!.iteration,
 			});
 
+			// The Turn's measurement (ADR 0018 §6), on every event shape below.
+			const measured = {
+				openingContextTokens: turnResult.tokens.openingContextSize ?? null,
+				lastContextTokens: turnResult.tokens.contextSize,
+				toolCalls: input.currentTurnToolCalls?.() ?? null,
+			};
+
 			if (cancelled) {
 				return {
 					type: 'turn_finished',
@@ -739,6 +766,7 @@ export function createWorkflowRunner(
 					adapterSessionId: null,
 					outcome: null,
 					journalContent: '',
+					...measured,
 				};
 			}
 
@@ -764,6 +792,7 @@ export function createWorkflowRunner(
 					outcome: null,
 					journalContent:
 						loop?.enabled && journalAbsPath ? readJournal(journalAbsPath) : '',
+					...measured,
 				};
 			}
 
@@ -784,6 +813,7 @@ export function createWorkflowRunner(
 					adapterSessionId: null,
 					outcome: null,
 					journalContent: '',
+					...measured,
 				};
 			}
 
@@ -807,6 +837,7 @@ export function createWorkflowRunner(
 					adapterSessionId,
 					outcome: null,
 					journalContent: '',
+					...measured,
 				};
 			}
 
@@ -844,6 +875,7 @@ export function createWorkflowRunner(
 				adapterSessionId,
 				outcome,
 				journalContent,
+				...measured,
 			};
 		}
 
@@ -967,6 +999,12 @@ export function createWorkflowRunner(
 						break;
 					case 'notify_iteration_complete':
 						input.onIterationComplete?.(snapshot());
+						break;
+					case 'notify_handover_completed':
+						input.onHandoverCompleted?.({
+							...action.completion,
+							tokens: cumulativeTokens,
+						});
 						break;
 					case 'purge_handoffs':
 						purgeHandoffs(handoffDirFor(), HANDOFF_RETAIN);

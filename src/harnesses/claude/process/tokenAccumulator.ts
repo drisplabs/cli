@@ -60,17 +60,32 @@ export function createTokenAccumulator() {
 	let cacheRead = 0;
 	let cacheWrite = 0;
 	let contextSize = 0; // Latest turn's prompt size
+	// The first root prompt size seen — the opening context (ADR 0018 §6):
+	// what the Turn costs before it does anything, and the number that, with
+	// the context at the bound, gives the agent's real per-Turn working room.
+	let openingContextSize = 0;
 	let contextWindowSize: number | null = null;
+
+	function promptSize(usage: StreamUsage): number {
+		return (
+			(usage.input_tokens ?? 0) +
+			(usage.cache_read_input_tokens ?? 0) +
+			(usage.cache_creation_input_tokens ?? 0)
+		);
+	}
+
+	/** A root-agent prompt size: the latest context, and the opening one if unset. */
+	function observeRootContext(size: number): void {
+		contextSize = size;
+		if (openingContextSize === 0) openingContextSize = size;
+	}
 
 	function applyContextUsage(
 		usage: StreamUsage | undefined,
 		isSubagent: boolean,
 	): void {
 		if (!usage || isSubagent) return;
-		contextSize =
-			(usage.input_tokens ?? 0) +
-			(usage.cache_read_input_tokens ?? 0) +
-			(usage.cache_creation_input_tokens ?? 0);
+		observeRootContext(promptSize(usage));
 	}
 
 	function processLine(line: string): void {
@@ -138,10 +153,7 @@ export function createTokenAccumulator() {
 				cacheWrite = usage.cache_creation_input_tokens ?? cacheWrite;
 				// Use result to derive contextSize only if no per-turn data set it
 				if (contextSize === 0) {
-					contextSize =
-						(usage.input_tokens ?? 0) +
-						(usage.cache_read_input_tokens ?? 0) +
-						(usage.cache_creation_input_tokens ?? 0);
+					observeRootContext(promptSize(usage));
 				}
 			} else {
 				// Per-turn: accumulate across turns
@@ -151,10 +163,7 @@ export function createTokenAccumulator() {
 				cacheWrite += usage.cache_creation_input_tokens ?? 0;
 				// Track latest turn's prompt size — only from root agent
 				if (!isSubagent) {
-					contextSize =
-						(usage.input_tokens ?? 0) +
-						(usage.cache_read_input_tokens ?? 0) +
-						(usage.cache_creation_input_tokens ?? 0);
+					observeRootContext(promptSize(usage));
 				}
 			}
 		}
@@ -192,6 +201,7 @@ export function createTokenAccumulator() {
 					total: null,
 					contextSize: null,
 					contextWindowSize,
+					openingContextSize: null,
 				};
 			}
 			return {
@@ -202,6 +212,7 @@ export function createTokenAccumulator() {
 				total: total > 0 ? total : null,
 				contextSize: contextSize > 0 ? contextSize : null,
 				contextWindowSize,
+				openingContextSize: openingContextSize > 0 ? openingContextSize : null,
 			};
 		},
 
@@ -213,6 +224,7 @@ export function createTokenAccumulator() {
 			cacheRead = 0;
 			cacheWrite = 0;
 			contextSize = 0;
+			openingContextSize = 0;
 		},
 	};
 }

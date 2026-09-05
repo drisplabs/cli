@@ -10,6 +10,12 @@ export type TokenUsage = {
 	total: number | null;
 	contextSize: number | null;
 	contextWindowSize: number | null;
+	/**
+	 * Prompt size of the Turn's first root API call — the **opening context**:
+	 * system prompt, tools, skills and the seed (ADR 0018 §6). Optional: only
+	 * the Claude accumulator reports it; absent reads as unknown.
+	 */
+	openingContextSize?: number | null;
 };
 
 export type SubagentMetrics = {

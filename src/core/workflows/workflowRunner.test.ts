@@ -1292,6 +1292,110 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).not.toContain('shedding backstop');
 	});
 
+	it('reports the completed Handover with its measurement and seeds the fresh Turn with the working room (#213)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffPath = path.join(journalDir, 'handoff', '001.md');
+		const handoffBody = '# Handoff\nwhere things stand';
+
+		let pendingHandover: {handle: string} | null = null;
+		const calls: Array<{prompt: string}> = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {
+					...OK_RESULT,
+					exitCode: 143,
+					error: new Error('killed'),
+					tokens: {
+						...NULL_TOKENS,
+						input: 500,
+						output: 100,
+						cacheRead: 200_000,
+						cacheWrite: 1_000,
+						total: 201_600,
+						openingContextSize: 71_400,
+						contextSize: 100_000,
+					},
+				};
+			})
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+				fs.writeFileSync(handoffPath, handoffBody, 'utf-8');
+				return {
+					...OK_RESULT,
+					tokens: {
+						...NULL_TOKENS,
+						input: 100,
+						output: 50,
+						cacheRead: 50_000,
+						cacheWrite: 0,
+						total: 50_150,
+					},
+				};
+			})
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const completions: unknown[] = [];
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			currentTurnToolCalls: () => 7,
+			onHandoverCompleted: completion => completions.push(completion),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(completions).toEqual([
+			{
+				iteration: 1,
+				handoffPath,
+				handoffSizeBytes: Buffer.byteLength(handoffBody, 'utf-8'),
+				handoffSimilarity: null,
+				handoverStreak: 0,
+				openingContextTokens: 71_400,
+				lastContextTokens: 100_000,
+				toolCalls: 7,
+				// The Run's cumulative tokens once the fork's are merged in.
+				tokens: expect.objectContaining({
+					input: 600,
+					output: 150,
+					cacheRead: 250_000,
+					total: 251_750,
+				}),
+			},
+		]);
+		// The fresh Turn is told its working room.
+		expect(calls[2]!.prompt).toContain('This is Handover 1');
+		expect(calls[2]!.prompt).toContain('~29k tokens of working room');
+	});
+
 	it('attaches the size nudge to the Handover seed prompt when the Journal is over the shed bound (#212)', async () => {
 		const projectDir = makeTempDir();
 		const journalDir = path.join(projectDir, '.athena', 's1');
@@ -1441,10 +1545,8 @@ describe('createWorkflowRunner', () => {
 			const {handle, snapshots, turns} = scriptedHandoverRun({});
 			const result = await handle.result;
 			expect(result.status).toBe('awaiting_attention');
-			expect(result.stopReason).toBe(
-				'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — ' +
-					'last Handoff 0% similar to the previous; journal unchanged. ' +
-					"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+			expect(result.stopReason).toMatch(
+				/^handover cap reached: 3 consecutive Handovers \(handoverCap\) without progress — last Handoff 0% similar to the previous; journal unchanged \(~\d+ tokens\)\. Raise loop\.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal\.$/,
 			);
 			// Turn 1 (clean stop) + Turns 2, 3, 4, each handing over: the third
 			// unproductive Handover parks before a fifth Turn is seeded.
@@ -1489,7 +1591,7 @@ describe('createWorkflowRunner', () => {
 			const result = await handle.result;
 			expect(result.status).toBe('awaiting_attention');
 			expect(result.stopReason).toMatch(
-				/^handover cap reached: 3 consecutive Handovers \(handoverCap\) without progress — last Handoff \d+% similar to the previous; journal changed\./,
+				/^handover cap reached: 3 consecutive Handovers \(handoverCap\) without progress — last Handoff \d+% similar to the previous; journal changed \(~\d+ tokens\)\./,
 			);
 			// Handover 1 has no predecessor (judged on the hash: changed, so
 			// productive); Handovers 2, 3 and 4 are near-duplicates: park after
