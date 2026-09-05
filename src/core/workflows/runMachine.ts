@@ -44,9 +44,11 @@ import {
 	buildContinuePrompt,
 	buildJournalSizeNudgeSuffix,
 	buildNudgePrompt,
+	buildShedIntegrityNudgeSuffix,
 	DEFAULT_JOURNAL_TOKEN_BOUND,
 	estimateTokenCount,
 	hasSkeletonMarker,
+	type ShedIntegrityGaps,
 } from './journalReader';
 import {prepareWorkflowTurn, type WorkflowRunState} from './sessionPlan';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
@@ -89,6 +91,7 @@ export type RunPhase =
 						/** Carried through the backoff into the re-issued fork. */
 						journalUnchanged: boolean;
 						journalTokens: number;
+						shedIntegrity: ShedIntegrityGaps | null;
 				  };
 	  }
 	| {
@@ -111,6 +114,8 @@ export type RunPhase =
 			 * continuation that never did (ADR 0018 §7).
 			 */
 			journalTokens: number;
+			/** A half-executed shed observed at the boundary, for the seed prompt (ADR 0018 §7). */
+			shedIntegrity: ShedIntegrityGaps | null;
 	  }
 	| {
 			kind: 'awaiting_attention';
@@ -375,6 +380,14 @@ export type RunEvent =
 			openingContextTokens: number | null;
 			lastContextTokens: number | null;
 			toolCalls: number | null;
+			/**
+			 * A half-executed shed the interpreter found in the Dossier after the
+			 * Turn (ADR 0018 §7) — a unit record with no `## Units` row, or a
+			 * heading in both the Journal and a record — or `null` when the
+			 * Dossier is clean or could not be judged. Becomes a prompt suffix on
+			 * whichever prompt starts the next Turn; never an edit.
+			 */
+			shedIntegrity: ShedIntegrityGaps | null;
 	  }
 	| {
 			type: 'backoff_elapsed';
@@ -921,6 +934,7 @@ function handleTurnInFlight(
 				configOverride: phase.configOverride,
 				journalUnchanged,
 				journalTokens: estimateTokenCount(event.journalContent),
+				shedIntegrity: event.shedIntegrity,
 			},
 			memory: {
 				...memory,
@@ -1143,9 +1157,14 @@ function handleTurnInFlight(
 	// suffix appended to whichever prompt starts the next Turn, computed from
 	// the content already on the event (no new I/O).
 	const sizeNudgeSuffix =
-		estimateTokenCount(event.journalContent) > DEFAULT_JOURNAL_TOKEN_BOUND
+		(estimateTokenCount(event.journalContent) > DEFAULT_JOURNAL_TOKEN_BOUND
 			? buildJournalSizeNudgeSuffix(cfg.journalPromptPath)
-			: '';
+			: '') +
+		// Shed-integrity nudge (ADR 0018 §7): a half-executed shed is named
+		// the Turn after it happens, on the same terms as the size nudge.
+		(event.shedIntegrity
+			? buildShedIntegrityNudgeSuffix(event.shedIntegrity)
+			: '');
 
 	if (event.adapterSessionId) {
 		const nextNudgeStreak = nudgeStreak + 1;
@@ -1264,6 +1283,7 @@ function handleBackingOff(
 				retried: true,
 				journalUnchanged: phase.resume.journalUnchanged,
 				journalTokens: phase.resume.journalTokens,
+				shedIntegrity: phase.resume.shedIntegrity,
 			},
 			memory,
 			actions: [
@@ -1427,9 +1447,12 @@ function handleHandingOver(
 		// seed prompt was the one continuation that never carried it, though a
 		// fresh Turn is exactly where an over-bound Journal costs the most.
 		const sizeNudgeSuffix =
-			phase.journalTokens > DEFAULT_JOURNAL_TOKEN_BOUND
+			(phase.journalTokens > DEFAULT_JOURNAL_TOKEN_BOUND
 				? buildJournalSizeNudgeSuffix(cfg.journalPromptPath)
-				: '';
+				: '') +
+			(phase.shedIntegrity
+				? buildShedIntegrityNudgeSuffix(phase.shedIntegrity)
+				: '');
 		const seedPrompt =
 			buildHandoverSeedPrompt(
 				event.handoffPath,
@@ -1492,6 +1515,7 @@ function handleHandingOver(
 					configOverride: phase.configOverride,
 					journalUnchanged: phase.journalUnchanged,
 					journalTokens: phase.journalTokens,
+					shedIntegrity: phase.shedIntegrity,
 				},
 			},
 			memory,

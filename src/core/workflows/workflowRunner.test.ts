@@ -1396,6 +1396,179 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('~29k tokens of working room');
 	});
 
+	describe('the shed-integrity nudge (ADR 0018 §7, #214)', () => {
+		const JOURNAL_WITH_TABLE = [
+			'# Workflow Journal',
+			'',
+			'## Units',
+			'',
+			'| Unit | Record |',
+			'| --- | --- |',
+			'| The nudge | units/nudge.md |',
+			'',
+			'## Design',
+			'still here',
+		].join('\n');
+
+		function dossier(): {
+			projectDir: string;
+			journalPath: string;
+			unitsDir: string;
+		} {
+			const projectDir = makeTempDir();
+			const journalDir = path.join(projectDir, '.athena', 's1');
+			const unitsDir = path.join(journalDir, 'units');
+			fs.mkdirSync(unitsDir, {recursive: true});
+			return {
+				projectDir,
+				journalPath: path.join(journalDir, 'journal.md'),
+				unitsDir,
+			};
+		}
+
+		it('reads the units directory after a Turn and nudges the next prompt about an orphan record', async () => {
+			const {projectDir, journalPath, unitsDir} = dossier();
+			fs.writeFileSync(
+				path.join(unitsDir, 'nudge.md'),
+				'---\nstatus: open\n---\n## Build\n',
+				'utf-8',
+			);
+			fs.writeFileSync(
+				path.join(unitsDir, 'orphan.md'),
+				'---\nstatus: closed\n---\n## Contract\n',
+				'utf-8',
+			);
+			const prompts: string[] = [];
+			const startTurn = vi
+				.fn()
+				.mockImplementation(async (input: {prompt: string}) => {
+					prompts.push(input.prompt);
+					fs.writeFileSync(
+						journalPath,
+						prompts.length === 1
+							? JOURNAL_WITH_TABLE
+							: '<!-- WORKFLOW_COMPLETE -->',
+						'utf-8',
+					);
+					return OK_RESULT;
+				});
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 5},
+				},
+				startTurn,
+				persistRunState: vi.fn(),
+			});
+			expect((await handle.result).status).toBe('completed');
+			expect(prompts).toHaveLength(2);
+			expect(prompts[1]).toContain('half-executed shed');
+			expect(prompts[1]).toContain('units/orphan.md');
+			expect(prompts[1]).not.toContain('units/nudge.md has no row');
+		});
+
+		it('an unreadable record yields no nudge and no error', async () => {
+			const {projectDir, journalPath, unitsDir} = dossier();
+			fs.writeFileSync(path.join(unitsDir, 'nudge.md'), '## Build\n', 'utf-8');
+			// A directory where a record should be: the read throws, the check skips it.
+			fs.mkdirSync(path.join(unitsDir, 'broken.md'));
+			const prompts: string[] = [];
+			const startTurn = vi
+				.fn()
+				.mockImplementation(async (input: {prompt: string}) => {
+					prompts.push(input.prompt);
+					fs.writeFileSync(
+						journalPath,
+						prompts.length === 1
+							? JOURNAL_WITH_TABLE
+							: '<!-- WORKFLOW_COMPLETE -->',
+						'utf-8',
+					);
+					return OK_RESULT;
+				});
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 5},
+				},
+				startTurn,
+				persistRunState: vi.fn(),
+			});
+			expect((await handle.result).status).toBe('completed');
+			expect(prompts[1]).not.toContain('half-executed shed');
+		});
+
+		it('reaches the Handover seed prompt too', async () => {
+			const {projectDir, journalPath, unitsDir} = dossier();
+			fs.writeFileSync(
+				path.join(unitsDir, 'nudge.md'),
+				'## Design\nshared\n',
+				'utf-8',
+			);
+			const handoffPath = path.join(
+				path.dirname(journalPath),
+				'handoff',
+				'001.md',
+			);
+			let pendingHandover: {handle: string} | null = null;
+			const prompts: string[] = [];
+			const startTurn = vi
+				.fn()
+				.mockImplementationOnce(async (input: {prompt: string}) => {
+					prompts.push(input.prompt);
+					fs.writeFileSync(journalPath, JOURNAL_WITH_TABLE, 'utf-8');
+					pendingHandover = {handle: 'claude-sess-primary'};
+					return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+				})
+				.mockImplementationOnce(async (input: {prompt: string}) => {
+					prompts.push(input.prompt);
+					fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+					fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
+					return OK_RESULT;
+				})
+				.mockImplementationOnce(async (input: {prompt: string}) => {
+					prompts.push(input.prompt);
+					fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					return OK_RESULT;
+				});
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 5},
+				},
+				startTurn,
+				persistRunState: vi.fn(),
+				handover: {
+					takeRequest: () => {
+						const request = pendingHandover;
+						pendingHandover = null;
+						return request;
+					},
+				},
+			});
+			expect((await handle.result).status).toBe('completed');
+			expect(prompts[2]).toContain('Handover occurred');
+			expect(prompts[2]).toContain('half-executed shed');
+			expect(prompts[2]).toContain('"## Design"');
+			expect(prompts[2]).toContain('units/nudge.md');
+		});
+	});
+
 	it('attaches the size nudge to the Handover seed prompt when the Journal is over the shed bound (#212)', async () => {
 		const projectDir = makeTempDir();
 		const journalDir = path.join(projectDir, '.athena', 's1');
