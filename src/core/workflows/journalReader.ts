@@ -438,6 +438,101 @@ export function parseUnitTable(content: string): UnitTableRow[] | null {
 	return rows;
 }
 
+/** One unit record as the interpreter read it: its path relative to the Journal's directory, and its text. */
+export type UnitRecordSnapshot = {
+	recordPath: string;
+	content: string;
+};
+
+/**
+ * What a half-executed shed looks like from outside (ADR 0018 §7): a unit
+ * record nothing in the `## Units` table points at (the pointer step never
+ * happened), and a `##` heading present in both the Journal and a record
+ * (the cut step never happened — the incident's Journal shared three).
+ */
+export type ShedIntegrityGaps = {
+	orphanRecords: string[];
+	sharedHeadings: Array<{heading: string; recordPath: string}>;
+};
+
+function normaliseRecordPath(recordPath: string): string {
+	return recordPath.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+const LEVEL_TWO_HEADING_RE = /^##\s+(.+?)\s*$/;
+
+function levelTwoHeadings(content: string): Map<string, string> {
+	const headings = new Map<string, string>();
+	for (const line of content.split('\n')) {
+		const match = LEVEL_TWO_HEADING_RE.exec(line.trim());
+		if (match) {
+			const heading = `## ${match[1]!}`;
+			const key = heading.toLowerCase();
+			if (!headings.has(key)) headings.set(key, heading);
+		}
+	}
+	return headings;
+}
+
+/**
+ * The shed-integrity check (ADR 0018 §7): read-only, pure, and — like every
+ * other reading of the Dossier — a nudge, never a gate. Returns `null` for a
+ * clean Dossier, and `null` whenever the `## Units` table is missing or
+ * malformed (ADR 0015 §7: a parse miss degrades to no nudge — a Dossier with
+ * no table has shed nothing the runner can reason about). The interpreter
+ * hands over only the records it could read; an unreadable one is simply not
+ * here.
+ */
+export function checkShedIntegrity(
+	journalContent: string,
+	records: readonly UnitRecordSnapshot[],
+): ShedIntegrityGaps | null {
+	const rows = parseUnitTable(journalContent);
+	if (!rows) return null;
+	const pointed = new Set(rows.map(row => normaliseRecordPath(row.recordPath)));
+	const journalHeadings = levelTwoHeadings(journalContent);
+
+	const orphanRecords: string[] = [];
+	const sharedHeadings: ShedIntegrityGaps['sharedHeadings'] = [];
+	for (const record of records) {
+		const recordPath = normaliseRecordPath(record.recordPath);
+		if (!pointed.has(recordPath)) orphanRecords.push(recordPath);
+		for (const [key, heading] of levelTwoHeadings(record.content)) {
+			if (journalHeadings.has(key)) {
+				sharedHeadings.push({
+					heading: journalHeadings.get(key) ?? heading,
+					recordPath,
+				});
+			}
+		}
+	}
+	if (orphanRecords.length === 0 && sharedHeadings.length === 0) return null;
+	return {orphanRecords, sharedHeadings};
+}
+
+/**
+ * Suffix appended to the next Turn's prompt when a shed was half executed
+ * (ADR 0018 §7) — the Nudge and continue rows and the Handover seed prompt.
+ * Names the record or the heading and asks for the three acts of a shed;
+ * never blocks, and the Runner never edits the Dossier itself (ADR 0015 §7).
+ */
+export function buildShedIntegrityNudgeSuffix(gaps: ShedIntegrityGaps): string {
+	const findings = [
+		...gaps.orphanRecords.map(
+			recordPath =>
+				`unit record ${recordPath} has no row in the journal's ## Units table`,
+		),
+		...gaps.sharedHeadings.map(
+			shared =>
+				`heading "${shared.heading}" appears in both the journal and ${shared.recordPath}`,
+		),
+	];
+	return (
+		` Separately: the Dossier shows a half-executed shed — ${findings.join('; ')}. ` +
+		`Finish the shed: cut the section out of the journal, paste it verbatim into the record, and leave a pointer row in the ## Units table — this is a nudge, not a requirement, so continue the work either way.`
+	);
+}
+
 /** The subset of a unit record's frontmatter this parser recognizes. */
 export type UnitRecordFrontmatter = {
 	status: 'open' | 'closed';

@@ -16,6 +16,7 @@ import {
 	buildContinuePrompt,
 	buildNudgePrompt,
 	buildJournalSizeNudgeSuffix,
+	buildShedIntegrityNudgeSuffix,
 	JOURNAL_SKELETON_MARKER,
 } from './journalReader';
 import type {WorkflowRunState} from './sessionPlan';
@@ -116,6 +117,7 @@ function handingOver(
 		handle: 'sess-1',
 		journalUnchanged: false,
 		journalTokens: 0,
+		shedIntegrity: null,
 		...overrides,
 	};
 }
@@ -148,6 +150,7 @@ function turnFinished(
 		openingContextTokens: null,
 		lastContextTokens: null,
 		toolCalls: null,
+		shedIntegrity: null,
 		...overrides,
 	};
 }
@@ -215,6 +218,7 @@ describe('runMachine.step — turn_in_flight', () => {
 			configOverride: {marker: 'reused'},
 			journalUnchanged: false,
 			journalTokens: 0,
+			shedIntegrity: null,
 		});
 		expect(result.actions).toEqual([
 			{
@@ -966,6 +970,92 @@ describe('runMachine.step — turn_in_flight', () => {
 	});
 });
 
+describe('the shed-integrity nudge rides the next prompt (ADR 0018 §7, #214)', () => {
+	const GAPS = {
+		orphanRecords: ['units/orphan.md'],
+		sharedHeadings: [{heading: '## Design', recordPath: 'units/design.md'}],
+	};
+	const SUFFIX = buildShedIntegrityNudgeSuffix(GAPS);
+
+	it('is appended to the Nudge prompt', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({
+				adapterSessionId: 'sess-1',
+				journalContent: 'work',
+				shedIntegrity: GAPS,
+			}),
+			makeCfg(),
+		);
+		const phase = result.phase as Extract<RunPhase, {kind: 'turn_in_flight'}>;
+		expect(phase.prompt).toBe(
+			buildNudgePrompt(
+				{...LOOP, journalPath: '.athena/s1/journal.md'},
+				{skeletonNotReplaced: false},
+			) + SUFFIX,
+		);
+		expect(result.actions.map(a => a.type)).toEqual([
+			'persist',
+			'notify_iteration_complete',
+			'start_turn',
+		]);
+	});
+
+	it('is appended after the size nudge on the fresh Continue Prompt', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({
+				adapterSessionId: null,
+				journalContent: 'x'.repeat(40_000),
+				shedIntegrity: GAPS,
+			}),
+			makeCfg(),
+		);
+		const phase = result.phase as Extract<RunPhase, {kind: 'turn_in_flight'}>;
+		expect(phase.prompt.endsWith(SUFFIX)).toBe(true);
+		expect(phase.prompt).toContain('shedding backstop');
+		expect(phase.prompt.indexOf('shedding backstop')).toBeLessThan(
+			phase.prompt.indexOf('half-executed shed'),
+		);
+	});
+
+	it('is carried on the handing_over phase and appended to the seed prompt', () => {
+		const boundary = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({handoverRequestHandle: 'h', shedIntegrity: GAPS}),
+			makeCfg(),
+		);
+		expect(boundary.phase).toMatchObject({
+			kind: 'handing_over',
+			shedIntegrity: GAPS,
+		});
+
+		const seeded = step(
+			handingOver({shedIntegrity: GAPS}),
+			makeMemory({iteration: 2}),
+			forkFinished({ok: true}),
+			makeCfg(),
+		);
+		const phase = seeded.phase as Extract<RunPhase, {kind: 'turn_in_flight'}>;
+		expect(phase.prompt.endsWith(SUFFIX)).toBe(true);
+		expect(phase.prompt).toContain('Handover occurred');
+	});
+
+	it('is absent when the Dossier is clean', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory(),
+			turnFinished({adapterSessionId: 'sess-1', journalContent: 'work'}),
+			makeCfg(),
+		);
+		const phase = result.phase as Extract<RunPhase, {kind: 'turn_in_flight'}>;
+		expect(phase.prompt).not.toContain('half-executed shed');
+	});
+});
+
 describe('runMachine.step — backing_off', () => {
 	it('cancelled during backoff transitions to cancelled and persists', () => {
 		const result = step(
@@ -1063,6 +1153,7 @@ describe('runMachine.step — backing_off', () => {
 					configOverride: {marker: 'fork-cfg'},
 					journalUnchanged: true,
 					journalTokens: 9_000,
+					shedIntegrity: {orphanRecords: ['units/x.md'], sharedHeadings: []},
 				},
 			}),
 			makeMemory(),
@@ -1078,6 +1169,7 @@ describe('runMachine.step — backing_off', () => {
 			retried: true,
 			journalUnchanged: true,
 			journalTokens: 9_000,
+			shedIntegrity: {orphanRecords: ['units/x.md'], sharedHeadings: []},
 		});
 		expect(result.actions).toEqual([
 			{
@@ -1761,6 +1853,7 @@ describe('runMachine.step — handing_over', () => {
 				configOverride: {marker: 'fork-cfg'},
 				journalUnchanged: false,
 				journalTokens: 0,
+				shedIntegrity: null,
 			},
 		});
 		expect(result.memory.iteration).toBe(2); // unchanged — not consumed by a retry

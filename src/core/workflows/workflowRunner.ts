@@ -17,9 +17,11 @@ import {resolveTurnOutcome} from './terminalOutcome';
 import {
 	readJournal,
 	JOURNAL_SKELETON_MARKER,
+	checkShedIntegrity,
 	demoteTerminalMarkers,
 	insertAboveTerminalMarker,
 	projectJournalTasks,
+	type UnitRecordSnapshot,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
 import {handoffSimilarity} from './handoffSimilarity';
@@ -525,6 +527,34 @@ function purgeHandoffs(dir: string, keep: number): void {
 	}
 }
 
+/**
+ * The unit records beside the Journal (`units/*.md`), read for the
+ * shed-integrity check (ADR 0018 §7). Read-only and best-effort: a missing
+ * directory is no records, an unreadable file is skipped — never a failure,
+ * never an edit (ADR 0015 §7).
+ */
+function readUnitRecords(journalAbsPath: string): UnitRecordSnapshot[] {
+	const unitsDir = path.join(path.dirname(journalAbsPath), 'units');
+	let names: string[];
+	try {
+		names = fs.readdirSync(unitsDir).filter(name => name.endsWith('.md'));
+	} catch {
+		return [];
+	}
+	const records: UnitRecordSnapshot[] = [];
+	for (const name of names.sort()) {
+		try {
+			records.push({
+				recordPath: `units/${name}`,
+				content: fs.readFileSync(path.join(unitsDir, name), 'utf-8'),
+			});
+		} catch {
+			// Unreadable record: not judged, not fatal.
+		}
+	}
+	return records;
+}
+
 function defaultCreateJournal(journalPath: string, content: string): void {
 	fs.mkdirSync(path.dirname(journalPath), {recursive: true});
 	try {
@@ -767,6 +797,7 @@ export function createWorkflowRunner(
 					outcome: null,
 					journalContent: '',
 					...measured,
+					shedIntegrity: null,
 				};
 			}
 
@@ -776,9 +807,11 @@ export function createWorkflowRunner(
 			// classification — the interruption is neither. The Journal is read
 			// here as it is on the success path (ADR 0018 §5): the reducer hashes
 			// it to judge the Handover productive or not, and the seed prompt can
-			// carry the size nudge.
+			// carry the size and shed-integrity nudges.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
+				const journalContent =
+					loop?.enabled && journalAbsPath ? readJournal(journalAbsPath) : '';
 				return {
 					type: 'turn_finished',
 					cancelled: false,
@@ -790,9 +823,9 @@ export function createWorkflowRunner(
 					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
-					journalContent:
-						loop?.enabled && journalAbsPath ? readJournal(journalAbsPath) : '',
+					journalContent,
 					...measured,
+					shedIntegrity: observeShedIntegrity(journalContent),
 				};
 			}
 
@@ -814,6 +847,7 @@ export function createWorkflowRunner(
 					outcome: null,
 					journalContent: '',
 					...measured,
+					shedIntegrity: null,
 				};
 			}
 
@@ -838,6 +872,7 @@ export function createWorkflowRunner(
 					outcome: null,
 					journalContent: '',
 					...measured,
+					shedIntegrity: null,
 				};
 			}
 
@@ -876,7 +911,26 @@ export function createWorkflowRunner(
 				outcome,
 				journalContent,
 				...measured,
+				shedIntegrity:
+					journalContent === '' ? null : observeShedIntegrity(journalContent),
 			};
+		}
+
+		/**
+		 * The shed-integrity observation (ADR 0018 §7): the Dossier's unit
+		 * records against the Journal's `## Units` table and headings. An
+		 * observation, not a decision — the reducer turns it into a nudge.
+		 */
+		function observeShedIntegrity(journalContent: string) {
+			if (!journalAbsPath || !loop?.enabled) return null;
+			try {
+				return checkShedIntegrity(
+					journalContent,
+					readUnitRecords(journalAbsPath),
+				);
+			} catch {
+				return null;
+			}
 		}
 
 		async function performForkTurn(

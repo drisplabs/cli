@@ -130,7 +130,7 @@ This frontmatter is the only structured part of a unit record; everything after 
 
 The unit table and unit-record frontmatter exist so the runner can mirror your plan into the harness's own task list (see [Task UI projection](#task-ui-projection)) and, separately, so it can nudge you when the journal grows past its size backstop. Both are conveniences layered on top of the Dossier, not requirements on it:
 
-- A missing table, an extra column, a typo'd status, a unit record that fails to parse — none of it fails your Turn, and none of it is worth stopping to fix for the runner's sake. The runner silently skips whatever it can't parse and, at most, folds a size nudge into your next prompt.
+- A missing table, an extra column, a typo'd status, a unit record that fails to parse — none of it fails your Turn, and none of it is worth stopping to fix for the runner's sake. The runner silently skips whatever it can't parse and, at most, folds a nudge into your next prompt: a size nudge when the journal is over its backstop, or a shed-integrity nudge when a shed was left half done — a `units/*.md` record with no row in the `## Units` table, or a `##` heading present in both the journal and a record. Finish the shed (cut, paste, pointer) and carry on.
 - Never restructure the journal or a unit record just to make automated parsing happy at the expense of the content itself. If the table and the prose disagree, the prose (what you actually did) is the truth.
 
 ### orientation.md

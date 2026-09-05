@@ -16,6 +16,8 @@ import {
 	buildJournalSizeNudgeSuffix,
 	DEFAULT_JOURNAL_TOKEN_BOUND,
 	parseUnitTable,
+	checkShedIntegrity,
+	buildShedIntegrityNudgeSuffix,
 	parseUnitRecordFrontmatter,
 	projectJournalTasks,
 } from '../journalReader';
@@ -486,6 +488,130 @@ describe('parseUnitTable', () => {
 		expect(parseUnitTable(content)).toEqual([
 			{label: 'Shed unit', recordPath: 'units/shed.md'},
 		]);
+	});
+});
+
+describe('checkShedIntegrity (ADR 0018 §7, #214)', () => {
+	const JOURNAL = [
+		'# Workflow Journal',
+		'',
+		'## Status',
+		'Working on the size nudge.',
+		'',
+		'## Units',
+		'',
+		'| Unit | Record |',
+		'| --- | --- |',
+		'| Add the size nudge | units/size-nudge.md |',
+		'',
+		'## Design',
+		'The journal still carries the design section.',
+	].join('\n');
+
+	it('names a unit record with no row in the ## Units table', () => {
+		const gaps = checkShedIntegrity(JOURNAL, [
+			{
+				recordPath: 'units/size-nudge.md',
+				content: '---\nstatus: open\n---\n## Build\n',
+			},
+			{
+				recordPath: 'units/orphan.md',
+				content: '---\nstatus: closed\n---\n## Contract\n',
+			},
+		]);
+		expect(gaps).toEqual({
+			orphanRecords: ['units/orphan.md'],
+			sharedHeadings: [],
+		});
+		const suffix = buildShedIntegrityNudgeSuffix(gaps!);
+		expect(suffix).toContain('units/orphan.md');
+		expect(suffix).toContain('no row');
+		expect(suffix).toContain('cut');
+		expect(suffix).toContain('paste');
+		expect(suffix).toContain('pointer');
+	});
+
+	it('names a ## heading present in both the journal and a unit record', () => {
+		const gaps = checkShedIntegrity(JOURNAL, [
+			{
+				recordPath: 'units/size-nudge.md',
+				content:
+					'---\nstatus: open\n---\n## Design\nThe design, again.\n## Build\n',
+			},
+		]);
+		expect(gaps).toEqual({
+			orphanRecords: [],
+			sharedHeadings: [
+				{heading: '## Design', recordPath: 'units/size-nudge.md'},
+			],
+		});
+		const suffix = buildShedIntegrityNudgeSuffix(gaps!);
+		expect(suffix).toContain('"## Design"');
+		expect(suffix).toContain('units/size-nudge.md');
+	});
+
+	it('reports both kinds at once, each record once', () => {
+		const gaps = checkShedIntegrity(JOURNAL, [
+			{recordPath: 'units/orphan.md', content: '## Status\n## Design\n'},
+		]);
+		expect(gaps).toEqual({
+			orphanRecords: ['units/orphan.md'],
+			sharedHeadings: [
+				{heading: '## Status', recordPath: 'units/orphan.md'},
+				{heading: '## Design', recordPath: 'units/orphan.md'},
+			],
+		});
+	});
+
+	it('a clean Dossier yields no nudge', () => {
+		expect(
+			checkShedIntegrity(JOURNAL, [
+				{
+					recordPath: 'units/size-nudge.md',
+					content: '---\nstatus: open\n---\n## Build\n',
+				},
+			]),
+		).toBeNull();
+		expect(checkShedIntegrity(JOURNAL, [])).toBeNull();
+	});
+
+	it('matches table rows written with a leading ./ or backslashes', () => {
+		const journal = JOURNAL.replace(
+			'units/size-nudge.md',
+			'./units\\size-nudge.md',
+		);
+		expect(
+			checkShedIntegrity(journal, [
+				{recordPath: 'units/size-nudge.md', content: '## Build\n'},
+			]),
+		).toBeNull();
+	});
+
+	it('only level-two headings count', () => {
+		expect(
+			checkShedIntegrity(JOURNAL, [
+				{recordPath: 'units/size-nudge.md', content: '### Design\n# Status\n'},
+			]),
+		).toBeNull();
+	});
+
+	it('a missing ## Units table yields no nudge, whatever the units directory holds', () => {
+		expect(
+			checkShedIntegrity('# Workflow Journal\n\n## Design\n', [
+				{recordPath: 'units/orphan.md', content: '## Design\n'},
+			]),
+		).toBeNull();
+	});
+
+	it('a malformed table yields no nudge', () => {
+		const journal = ['## Units', '', '| Unit | Record |', '', '## Design'].join(
+			'\n',
+		);
+		expect(
+			checkShedIntegrity(journal, [
+				{recordPath: 'units/orphan.md', content: '## Design\n'},
+			]),
+		).toBeNull();
 	});
 });
 
