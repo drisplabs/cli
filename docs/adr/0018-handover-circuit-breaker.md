@@ -92,7 +92,7 @@ first Handover of a Run has no predecessor and is judged on the hash alone.
 **2. `handoverStreak` counts consecutive unproductive Handovers; `handoverCap` (default 3) parks
 the Run.** `RunMemory` gains `handoverStreak: number` (rehydrated as 0 when absent); `LoopConfig`
 gains `handoverCap?: number`. A productive Handover resets the streak; a wake (`woken`) resets it
-too, because a human reply is new information. On `handoverStreak > handoverCap` the Run enters
+too, because a human reply is new information. Once `handoverStreak` reaches `handoverCap` the Run enters
 `awaiting_attention` with a sentence that names the bound and the measurement:
 
 > handover cap reached: 3 consecutive Handovers (handoverCap) without progress — last Handoff

@@ -884,7 +884,7 @@
 								},
 								"cap": {
 									"type": "string",
-									"enum": ["retry", "nudge", "iterations"]
+									"enum": ["retry", "nudge", "iterations", "handover"]
 								},
 								"limit": {
 									"type": "integer",

@@ -82,6 +82,26 @@ describe('runRunsCommand', () => {
 		);
 	});
 
+	it('shows the handover-cap sentence of a Run parked on it (ADR 0018)', () => {
+		const lines: string[] = [];
+		runRunsCommand({
+			json: false,
+			log: message => lines.push(message),
+			listRunsFn: () => [
+				makeRun({
+					stopReason:
+						"handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+				}),
+			],
+		});
+		const output = lines.join('\n');
+		expect(output).toContain(
+			'reason:  handover cap reached: 3 consecutive Handovers (handoverCap) without progress',
+		);
+		expect(output).toContain('shed the journal');
+		expect(output).toContain('drisp run --continue=athena-1 "<your reply>"');
+	});
+
 	it('says so when nothing is parked', () => {
 		const lines: string[] = [];
 		runRunsCommand({

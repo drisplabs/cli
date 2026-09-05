@@ -719,7 +719,10 @@ export function createWorkflowRunner(
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 
 			// Handover (ADR 0014 §5): checked before interruption and failure
-			// classification — the interruption is neither.
+			// classification — the interruption is neither. The Journal is read
+			// here as it is on the success path (ADR 0018 §5): the reducer hashes
+			// it to judge the Handover productive or not, and the seed prompt can
+			// carry the size nudge.
 			const handoverRequest = input.handover?.takeRequest() ?? null;
 			if (handoverRequest) {
 				return {
@@ -733,7 +736,8 @@ export function createWorkflowRunner(
 					interruption: null,
 					adapterSessionId: null,
 					outcome: null,
-					journalContent: '',
+					journalContent:
+						loop?.enabled && journalAbsPath ? readJournal(journalAbsPath) : '',
 				};
 			}
 

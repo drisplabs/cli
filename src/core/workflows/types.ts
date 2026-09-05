@@ -33,6 +33,17 @@ export const DEFAULT_NUDGE_CAP = 3;
 export const DEFAULT_RETRY_CAP = 3;
 
 /**
+ * Default {@link LoopConfig.handoverCap}: consecutive **unproductive**
+ * Handovers tolerated before the Run suspends in `awaiting_attention` (ADR
+ * 0018 §2). A Handover is unproductive when the Turn it ended left the
+ * Journal hash unchanged since the previous Turn boundary — the session it
+ * distilled added nothing durable. A productive Handover resets the streak;
+ * so does a wake, because a human reply is new information. Legitimately long
+ * Runs are chains of productive Handovers and never trip it.
+ */
+export const DEFAULT_HANDOVER_CAP = 3;
+
+/**
  * Default base for {@link LoopConfig.retryBackoffMs}. Retry N waits
  * `retryBackoffMs * 2^(N-1)` before resuming the same Agent Session.
  */
@@ -69,6 +80,14 @@ export type LoopConfig = {
 	 * Defaults to {@link DEFAULT_RETRY_CAP} when omitted.
 	 */
 	retryCap?: number;
+	/**
+	 * Consecutive unproductive Handovers tolerated before the Run suspends
+	 * (ADR 0018 §2) — a Handover whose Turn left the Journal unchanged. Resets
+	 * on a productive Handover and on a wake. Defaults to
+	 * {@link DEFAULT_HANDOVER_CAP} when omitted. A workflow that expects long
+	 * orientation phases can raise it knowingly.
+	 */
+	handoverCap?: number;
 	/**
 	 * Base backoff before retrying a transient failure; retry N waits
 	 * `retryBackoffMs * 2^(N-1)`. Defaults to

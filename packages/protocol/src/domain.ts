@@ -110,8 +110,17 @@ export const HardFailureCodeSchema = z.enum([
 ]);
 export type HardFailureCode = z.infer<typeof HardFailureCodeSchema>;
 
-/** A Run budget that can be exhausted (ADR 0014 §3-§4, §7). */
-export const ExhaustedCapSchema = z.enum(['retry', 'nudge', 'iterations']);
+/**
+ * A Run budget that can be exhausted (ADR 0014 §3-§4, §7; ADR 0018 §2):
+ * the Retry cap, the Nudge cap, `maxIterations`, and the Handover cap — a
+ * streak of unproductive Handovers.
+ */
+export const ExhaustedCapSchema = z.enum([
+	'retry',
+	'nudge',
+	'iterations',
+	'handover',
+]);
 export type ExhaustedCap = z.infer<typeof ExhaustedCapSchema>;
 
 const interruptionBase = {

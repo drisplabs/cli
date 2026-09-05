@@ -76,6 +76,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		pendingSteers: [],
 		lastHandoffSizeBytes: null,
 		parkedAfterHandover: false,
+		handoverStreak: 0,
 		...overrides,
 	};
 }
@@ -109,7 +110,12 @@ function backingOff(
 function handingOver(
 	overrides?: Partial<Extract<RunPhase, {kind: 'handing_over'}>>,
 ): Extract<RunPhase, {kind: 'handing_over'}> {
-	return {kind: 'handing_over', handle: 'sess-1', ...overrides};
+	return {
+		kind: 'handing_over',
+		handle: 'sess-1',
+		journalUnchanged: false,
+		...overrides,
+	};
 }
 
 function awaitingAttention(
@@ -201,6 +207,7 @@ describe('runMachine.step — turn_in_flight', () => {
 			kind: 'handing_over',
 			handle: 'vendor-handle-1',
 			configOverride: {marker: 'reused'},
+			journalUnchanged: false,
 		});
 		expect(result.actions).toEqual([
 			{
@@ -209,6 +216,58 @@ describe('runMachine.step — turn_in_flight', () => {
 				configOverride: {marker: 'reused'},
 			},
 		]);
+	});
+
+	describe('the Handover branch hashes the Journal at the boundary (ADR 0018 §1, §5)', () => {
+		it('records that the Journal changed since the last boundary, updates the hash, and resets the nudge streak', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory({lastJournalHash: hash('old'), nudgeStreak: 2}),
+				turnFinished({
+					handoverRequestHandle: 'vendor-handle-1',
+					journalContent: 'new content',
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({
+				kind: 'handing_over',
+				handle: 'vendor-handle-1',
+				journalUnchanged: false,
+			});
+			// The hash now means "at the last Turn boundary of any kind" — the
+			// Nudge comparison still asks whether the Journal advanced since the
+			// last boundary, so progress observed here resets its streak too.
+			expect(result.memory.lastJournalHash).toBe(hash('new content'));
+			expect(result.memory.nudgeStreak).toBe(0);
+		});
+
+		it('records that the Journal is unchanged since the last boundary and keeps the nudge streak', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory({lastJournalHash: hash('same'), nudgeStreak: 2}),
+				turnFinished({
+					handoverRequestHandle: 'vendor-handle-1',
+					journalContent: 'same',
+				}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({
+				kind: 'handing_over',
+				journalUnchanged: true,
+			});
+			expect(result.memory.lastJournalHash).toBe(hash('same'));
+			expect(result.memory.nudgeStreak).toBe(2);
+		});
+
+		it('the first boundary of a Run has no prior hash: never unchanged', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory({lastJournalHash: null}),
+				turnFinished({handoverRequestHandle: 'h', journalContent: ''}),
+				makeCfg(),
+			);
+			expect(result.phase).toMatchObject({journalUnchanged: false});
+		});
 	});
 
 	describe('unattended interruptions park the Run as needs-human (#189)', () => {
@@ -952,17 +1011,21 @@ describe('runMachine.step — backing_off', () => {
 					kind: 'fork',
 					handle: 'sess-fork',
 					configOverride: {marker: 'fork-cfg'},
+					journalUnchanged: true,
 				},
 			}),
 			makeMemory(),
 			backoffElapsed({adapterSessionId: null}),
 			makeCfg(),
 		);
+		// The retried fork still knows what the boundary observed (ADR 0016 §4:
+		// phases carry what the next row needs).
 		expect(result.phase).toEqual({
 			kind: 'handing_over',
 			handle: 'sess-fork',
 			configOverride: {marker: 'fork-cfg'},
 			retried: true,
+			journalUnchanged: true,
 		});
 		expect(result.actions).toEqual([
 			{
@@ -1015,6 +1078,136 @@ describe('runMachine.step — handing_over', () => {
 			'start_turn',
 		]);
 		expect(result.memory.parkedAfterHandover).toBe(false);
+	});
+
+	describe('the Handover cap on the Journal-hash signal (ADR 0018 §1-§3)', () => {
+		const CAP_REASON =
+			'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. ' +
+			"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.";
+
+		it('a Handover whose Turn left the Journal unchanged is unproductive: the streak grows and the fresh Turn is still seeded below the cap', () => {
+			const result = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 2, handoverStreak: 1}),
+				forkFinished({ok: true}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('turn_in_flight');
+			expect(result.memory.handoverStreak).toBe(2);
+			expect(result.memory.iteration).toBe(3);
+			expect(result.actions.map(a => a.type)).toEqual([
+				'purge_handoffs',
+				'persist',
+				'notify_iteration_complete',
+				'start_turn',
+			]);
+		});
+
+		it('a Handover after which the Journal changed is productive: the streak resets', () => {
+			const result = step(
+				handingOver({journalUnchanged: false}),
+				makeMemory({iteration: 2, handoverStreak: 2}),
+				forkFinished({ok: true}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('turn_in_flight');
+			expect(result.memory.handoverStreak).toBe(0);
+		});
+
+		it('the third consecutive unproductive Handover parks the Run with the handover-cap sentence, marked to wake fresh', () => {
+			const result = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 5, handoverStreak: 2}),
+				forkFinished({ok: true, handoffSizeBytes: 900}),
+				makeCfg(),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason: CAP_REASON,
+			});
+			expect(result.memory.handoverStreak).toBe(3);
+			expect(result.memory.lastHandoffSizeBytes).toBe(900);
+			expect(result.memory.iteration).toBe(5);
+			expect(result.memory.parkedAfterHandover).toBe(true);
+			expect(result.actions).toEqual([
+				{type: 'purge_handoffs'},
+				{type: 'persist'},
+			]);
+		});
+
+		it('loop.handoverCap overrides the default of 3', () => {
+			const cfg = makeCfg({loop: {...LOOP, handoverCap: 5}});
+			const seeded = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 5, handoverStreak: 2}),
+				forkFinished({ok: true}),
+				cfg,
+			);
+			expect(seeded.phase.kind).toBe('turn_in_flight');
+			expect(seeded.memory.handoverStreak).toBe(3);
+
+			const parked = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 7, handoverStreak: 4}),
+				forkFinished({ok: true}),
+				cfg,
+			);
+			expect(parked.phase.kind).toBe('awaiting_attention');
+			expect(
+				(parked.phase as Extract<RunPhase, {kind: 'awaiting_attention'}>)
+					.stopReason,
+			).toMatch(
+				/^handover cap reached: 5 consecutive Handovers \(handoverCap\) without progress/,
+			);
+		});
+
+		it('the iteration ceiling is checked before the cap', () => {
+			const result = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 3, handoverStreak: 2}),
+				forkFinished({ok: true}),
+				makeCfg({loop: {...LOOP, maxIterations: 3}}),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason:
+					'iteration ceiling reached: 3 iterations (maxIterations) used without a terminal marker',
+			});
+			expect(result.memory.parkedAfterHandover).toBe(true);
+		});
+
+		it('a wake resets the streak: a human reply is new information', () => {
+			const result = step(
+				awaitingAttention({stopReason: CAP_REASON}),
+				makeMemory({
+					iteration: 5,
+					handoverStreak: 3,
+					parkedAfterHandover: true,
+				}),
+				woken({handoffPath: '/proj/.athena/s1/handoff/005.md'}),
+				makeCfg(),
+			);
+			expect(result.phase.kind).toBe('turn_in_flight');
+			expect(result.memory.handoverStreak).toBe(0);
+			expect(result.memory.parkedAfterHandover).toBe(false);
+		});
+
+		it('failed and retried forks leave the streak alone', () => {
+			const degraded = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 2, handoverStreak: 2}),
+				forkFinished({ok: false, transient: false}),
+				makeCfg(),
+			);
+			expect(degraded.memory.handoverStreak).toBe(2);
+			const retried = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 2, handoverStreak: 2}),
+				forkFinished({ok: false, transient: true}),
+				makeCfg(),
+			);
+			expect(retried.memory.handoverStreak).toBe(2);
+		});
 	});
 
 	describe('the iteration ceiling applies on the Handover row (ADR 0018 §4)', () => {
@@ -1181,6 +1374,7 @@ describe('runMachine.step — handing_over', () => {
 				kind: 'fork',
 				handle: 'sess-orig',
 				configOverride: {marker: 'fork-cfg'},
+				journalUnchanged: false,
 			},
 		});
 		expect(result.memory.iteration).toBe(2); // unchanged — not consumed by a retry
@@ -1465,9 +1659,11 @@ describe('RunMemory serialization', () => {
 	it('rehydrates a snapshot persisted before ADR 0018 with the Handover-park marking cleared', () => {
 		const legacy = makeMemory({iteration: 4}) as Partial<RunMemory>;
 		delete legacy.parkedAfterHandover;
+		delete legacy.handoverStreak;
 		const parsed = deserializeRunMemory(JSON.stringify(legacy));
 		expect(parsed).not.toBeNull();
 		expect(parsed!.parkedAfterHandover).toBe(false);
+		expect(parsed!.handoverStreak).toBe(0);
 		expect(wakesFreshAfterHandover(JSON.stringify(legacy))).toBe(false);
 		expect(
 			wakesFreshAfterHandover(
