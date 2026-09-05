@@ -105,6 +105,16 @@ export type LoopConfig = {
 	 */
 	handoverCap?: number;
 	/**
+	 * Opt-in cumulative token budget for the whole Run (ADR 0018 §10; the
+	 * backstop ADR 0014 §7 anticipated): once the Run's total — input, output,
+	 * cache reads and cache writes across every Turn and fork — reaches it at
+	 * a Turn or fork boundary, the Run suspends with `token budget reached`.
+	 * No default: cache reads dominate a legitimate long Run's total, and a
+	 * default would fight run-until-done. The total is reported on
+	 * `iteration.complete` and in `drisp runs` whether or not this is set.
+	 */
+	maxRunTokens?: number;
+	/**
 	 * Base backoff before retrying a transient failure; retry N waits
 	 * `retryBackoffMs * 2^(N-1)`. Defaults to
 	 * {@link DEFAULT_RETRY_BACKOFF_MS} when omitted.

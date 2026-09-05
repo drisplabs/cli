@@ -13,6 +13,7 @@ import {
 	listAwaitingAttentionRuns,
 	type AwaitingAttentionRun,
 } from '../../infra/sessions/index';
+import {deserializeRunMemory} from '../../core/workflows/runMachine';
 
 export type RunsCommandInput = {
 	/** Restrict to Runs whose session belongs to this project directory. */
@@ -30,6 +31,12 @@ function formatAge(nowMs: number, thenMs: number): string {
 	return `${Math.round(hours / 24)}d ago`;
 }
 
+/** The Run's cumulative token total, when its persisted memory carries one (ADR 0018 §10). */
+function cumulativeTokensOf(run: AwaitingAttentionRun): number | undefined {
+	const total = deserializeRunMemory(run.runMemoryJson)?.cumulativeTokens;
+	return typeof total === 'number' ? total : undefined;
+}
+
 function formatRun(run: AwaitingAttentionRun, nowMs: number): string {
 	const lines: string[] = [];
 	lines.push(
@@ -42,6 +49,11 @@ function formatRun(run: AwaitingAttentionRun, nowMs: number): string {
 	lines.push(`  project: ${run.projectDir}`);
 	if (run.stopReason) {
 		lines.push(`  reason:  ${run.stopReason}`);
+	}
+	// Burn so far, budget or no budget (ADR 0018 §10).
+	const tokens = cumulativeTokensOf(run);
+	if (tokens !== undefined) {
+		lines.push(`  tokens:  ${tokens.toLocaleString('en-US')}`);
 	}
 	// A Run parked on a deferred question (#190) shows what was asked and
 	// which request an answer addresses; the wake command then carries the
@@ -67,7 +79,11 @@ export function runRunsCommand(input: RunsCommandInput): number {
 	const runs = listRunsFn(input.projectDir);
 
 	if (input.json) {
-		log(JSON.stringify({awaitingAttention: runs}, null, 2));
+		const awaitingAttention = runs.map(run => {
+			const cumulativeTokens = cumulativeTokensOf(run);
+			return cumulativeTokens === undefined ? run : {...run, cumulativeTokens};
+		});
+		log(JSON.stringify({awaitingAttention}, null, 2));
 		return 0;
 	}
 

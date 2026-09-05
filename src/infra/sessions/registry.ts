@@ -148,6 +148,11 @@ export type AwaitingAttentionRun = {
 	 * (#190): for a deferred permission, the request id and the call asked.
 	 */
 	interruption?: Interruption;
+	/**
+	 * The Run's persisted reducer memory, opaque here (ADR 0016): the runs
+	 * command reads the cumulative token total out of it (ADR 0018 §10).
+	 */
+	runMemoryJson?: string;
 	startedAt: number;
 	sessionUpdatedAt: number;
 };
@@ -183,6 +188,7 @@ export function listAwaitingAttentionRuns(
 			stopReason: run.stopReason,
 			adapterSessionId: run.adapterSessionId,
 			...(run.interruption ? {interruption: run.interruption} : {}),
+			...(run.runMemoryJson ? {runMemoryJson: run.runMemoryJson} : {}),
 			startedAt: run.startedAt,
 			sessionUpdatedAt: session.updatedAt,
 		});

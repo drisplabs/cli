@@ -936,10 +936,12 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				},
 			},
 			abortCurrentTurn: () => void sessionController.kill(),
-			onIterationComplete: runSnapshot => {
+			onIterationComplete: (runSnapshot, tokens) => {
 				output.emitJsonEvent('iteration.complete', {
 					iteration: runSnapshot.iteration,
 					status: runSnapshot.status,
+					// The Run's burn so far (ADR 0018 §10), budget or no budget.
+					tokens,
 				});
 			},
 			// A delivered Steer (#191) is reported per Turn it went into; the

@@ -79,6 +79,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		parkedAfterHandover: false,
 		handoverStreak: 0,
 		lastBoundedTurn: null,
+		cumulativeTokens: null,
 		...overrides,
 	};
 }
@@ -151,6 +152,7 @@ function turnFinished(
 		lastContextTokens: null,
 		toolCalls: null,
 		shedIntegrity: null,
+		cumulativeTokens: null,
 		...overrides,
 	};
 }
@@ -177,6 +179,7 @@ function forkFinished(
 		handoffSizeBytes: null,
 		handoffSimilarity: null,
 		transient: false,
+		cumulativeTokens: null,
 		...overrides,
 	};
 }
@@ -967,6 +970,126 @@ describe('runMachine.step — turn_in_flight', () => {
 			'notify_iteration_complete',
 			'start_turn',
 		]);
+	});
+});
+
+describe('the opt-in cumulative token budget (ADR 0018 §10, #215)', () => {
+	const BUDGET = makeCfg({loop: {...LOOP, maxRunTokens: 1_000_000}});
+
+	it('every Turn boundary records the cumulative total on the memory', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory({cumulativeTokens: null}),
+			turnFinished({adapterSessionId: 'sess-1', cumulativeTokens: 250_000}),
+			makeCfg(),
+		);
+		expect(result.phase.kind).toBe('turn_in_flight');
+		expect(result.memory.cumulativeTokens).toBe(250_000);
+	});
+
+	it('parks on a Turn boundary once the total crosses the budget, naming the limit first', () => {
+		const result = step(
+			turnInFlight(),
+			makeMemory({iteration: 4, cumulativeTokens: 900_000}),
+			turnFinished({adapterSessionId: 'sess-1', cumulativeTokens: 1_234_567}),
+			BUDGET,
+		);
+		expect(result.phase).toEqual({
+			kind: 'awaiting_attention',
+			stopReason:
+				'token budget reached: 1000000 tokens (maxRunTokens); used 1234567',
+		});
+		expect(result.memory.cumulativeTokens).toBe(1_234_567);
+		expect(result.memory.parkedAfterHandover).toBe(false);
+		expect(result.actions).toEqual([{type: 'persist'}]);
+	});
+
+	it('parks on a fork boundary too, marked to wake fresh', () => {
+		const result = step(
+			handingOver(),
+			makeMemory({iteration: 4, cumulativeTokens: 900_000}),
+			forkFinished({ok: true, cumulativeTokens: 1_000_000}),
+			BUDGET,
+		);
+		expect(result.phase).toEqual({
+			kind: 'awaiting_attention',
+			stopReason:
+				'token budget reached: 1000000 tokens (maxRunTokens); used 1000000',
+		});
+		expect(result.memory.parkedAfterHandover).toBe(true);
+		expect(result.memory.cumulativeTokens).toBe(1_000_000);
+		expect(result.actions).toEqual([
+			{type: 'purge_handoffs'},
+			{type: 'persist'},
+			expect.objectContaining({type: 'notify_handover_completed'}),
+		]);
+	});
+
+	it('below the budget nothing changes; without a budget nothing changes at any total', () => {
+		const below = step(
+			turnInFlight(),
+			makeMemory({iteration: 4}),
+			turnFinished({adapterSessionId: 'sess-1', cumulativeTokens: 999_999}),
+			BUDGET,
+		);
+		expect(below.phase.kind).toBe('turn_in_flight');
+		const unbudgeted = step(
+			turnInFlight(),
+			makeMemory({iteration: 4}),
+			turnFinished({adapterSessionId: 'sess-1', cumulativeTokens: 50_000_000}),
+			makeCfg(),
+		);
+		expect(unbudgeted.phase.kind).toBe('turn_in_flight');
+		const unknown = step(
+			turnInFlight(),
+			makeMemory({iteration: 4}),
+			turnFinished({adapterSessionId: 'sess-1', cumulativeTokens: null}),
+			BUDGET,
+		);
+		expect(unknown.phase.kind).toBe('turn_in_flight');
+	});
+
+	it('a declared completion still completes, and a declared NEEDS_HUMAN keeps its own reason', () => {
+		const completed = step(
+			turnInFlight(),
+			makeMemory({iteration: 4}),
+			turnFinished({
+				outcome: {kind: 'stop', status: 'completed'},
+				cumulativeTokens: 5_000_000,
+			}),
+			BUDGET,
+		);
+		expect(completed.phase).toEqual({kind: 'completed'});
+		const declared = step(
+			turnInFlight(),
+			makeMemory({iteration: 4}),
+			turnFinished({
+				outcome: {
+					kind: 'suspend',
+					status: 'awaiting_attention',
+					stopReason: 'agent declared NEEDS_HUMAN: which env?',
+				},
+				cumulativeTokens: 5_000_000,
+			}),
+			BUDGET,
+		);
+		expect(declared.phase).toEqual({
+			kind: 'awaiting_attention',
+			stopReason: 'agent declared NEEDS_HUMAN: which env?',
+		});
+	});
+
+	it('a wake keeps the total: the budget is cumulative across wakes', () => {
+		const result = step(
+			awaitingAttention({
+				stopReason:
+					'token budget reached: 1000000 tokens (maxRunTokens); used 1000000',
+			}),
+			makeMemory({iteration: 4, cumulativeTokens: 1_000_000}),
+			woken(),
+			makeCfg(),
+		);
+		expect(result.memory.cumulativeTokens).toBe(1_000_000);
 	});
 });
 
@@ -2140,11 +2263,13 @@ describe('RunMemory serialization', () => {
 		delete legacy.parkedAfterHandover;
 		delete legacy.handoverStreak;
 		delete legacy.lastBoundedTurn;
+		delete legacy.cumulativeTokens;
 		const parsed = deserializeRunMemory(JSON.stringify(legacy));
 		expect(parsed).not.toBeNull();
 		expect(parsed!.parkedAfterHandover).toBe(false);
 		expect(parsed!.handoverStreak).toBe(0);
 		expect(parsed!.lastBoundedTurn).toBeNull();
+		expect(parsed!.cumulativeTokens).toBeNull();
 		expect(wakesFreshAfterHandover(JSON.stringify(legacy))).toBe(false);
 		expect(
 			wakesFreshAfterHandover(

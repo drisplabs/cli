@@ -23,6 +23,7 @@ const CAP_BY_BOUND: Record<string, ExhaustedCap> = {
 	'nudge cap': 'nudge',
 	'iteration ceiling': 'iterations',
 	'handover cap': 'handover',
+	'token budget': 'tokens',
 };
 
 /** A capture group that may not have participated in the match. */
@@ -95,7 +96,7 @@ export function interruptionFromSuspension(
 	// integer (`terminalOutcome.ts`, `runMachine.ts`); the Handover cap joined
 	// the family in ADR 0018.
 	const cap =
-		/^(retry cap|nudge cap|iteration ceiling|handover cap) reached:\s*(\d+)\b/.exec(
+		/^(retry cap|nudge cap|iteration ceiling|handover cap|token budget) reached:\s*(\d+)\b/.exec(
 			message,
 		);
 	if (cap) {

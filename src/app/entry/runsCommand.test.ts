@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from 'vitest';
 import {runRunsCommand} from './runsCommand';
 import type {AwaitingAttentionRun} from '../../infra/sessions/index';
+import {serializeRunMemory} from '../../core/workflows/runMachine';
 
 function makeRun(
 	overrides: Partial<AwaitingAttentionRun> = {},
@@ -100,6 +101,61 @@ describe('runRunsCommand', () => {
 		);
 		expect(output).toContain('shed the journal');
 		expect(output).toContain('drisp run --continue=athena-1 "<your reply>"');
+	});
+
+	it('shows the cumulative token total of a parked Run whether or not a budget was set (#215)', () => {
+		const lines: string[] = [];
+		const runMemoryJson = serializeRunMemory({
+			iteration: 4,
+			nudgeStreak: 0,
+			retryStreak: 0,
+			lastJournalHash: null,
+			lastStopPrompt: 'x',
+			lastStopContinuation: {mode: 'fresh'},
+			pendingSteers: [],
+			lastHandoffSizeBytes: null,
+			parkedAfterHandover: false,
+			handoverStreak: 0,
+			lastBoundedTurn: null,
+			cumulativeTokens: 1_234_567,
+		});
+		runRunsCommand({
+			json: false,
+			log: message => lines.push(message),
+			listRunsFn: () => [
+				makeRun({
+					stopReason:
+						'token budget reached: 1000000 tokens (maxRunTokens); used 1234567',
+					runMemoryJson,
+				}),
+			],
+		});
+		const output = lines.join('\n');
+		expect(output).toContain(
+			'reason:  token budget reached: 1000000 tokens (maxRunTokens)',
+		);
+		expect(output).toContain('tokens:  1,234,567');
+
+		const json: string[] = [];
+		runRunsCommand({
+			json: true,
+			log: message => json.push(message),
+			listRunsFn: () => [makeRun({runMemoryJson})],
+		});
+		const parsed = JSON.parse(json.join('')) as {
+			awaitingAttention: Array<{cumulativeTokens?: number}>;
+		};
+		expect(parsed.awaitingAttention[0]?.cumulativeTokens).toBe(1_234_567);
+	});
+
+	it('shows no tokens line for a Run persisted before the total existed', () => {
+		const lines: string[] = [];
+		runRunsCommand({
+			json: false,
+			log: message => lines.push(message),
+			listRunsFn: () => [makeRun()],
+		});
+		expect(lines.join('\n')).not.toContain('tokens:');
 	});
 
 	it('says so when nothing is parked', () => {

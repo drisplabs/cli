@@ -121,7 +121,15 @@ export type WorkflowRunnerInput = {
 
 	startTurn: (input: TurnInput) => Promise<TurnExecutionResult>;
 	persistRunState: (snapshot: WorkflowRunSnapshot) => void;
-	onIterationComplete?: (snapshot: WorkflowRunSnapshot) => void;
+	/**
+	 * An iteration boundary: the snapshot of the Run, and its cumulative
+	 * tokens so far (ADR 0018 §10) — shown on `iteration.complete` whether or
+	 * not a `maxRunTokens` budget is configured.
+	 */
+	onIterationComplete?: (
+		snapshot: WorkflowRunSnapshot,
+		cumulativeTokens: TokenUsage,
+	) => void;
 	/**
 	 * Receives each completed Handover (ADR 0018 §8) once its fork has written
 	 * the Handoff file: the file, its size and similarity to its predecessor,
@@ -798,10 +806,12 @@ export function createWorkflowRunner(
 					journalContent: '',
 					...measured,
 					shedIntegrity: null,
+					cumulativeTokens: null,
 				};
 			}
 
 			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
+			const runTotal = cumulativeTokens.total;
 
 			// Handover (ADR 0014 §5): checked before interruption and failure
 			// classification — the interruption is neither. The Journal is read
@@ -826,6 +836,7 @@ export function createWorkflowRunner(
 					journalContent,
 					...measured,
 					shedIntegrity: observeShedIntegrity(journalContent),
+					cumulativeTokens: runTotal,
 				};
 			}
 
@@ -848,6 +859,7 @@ export function createWorkflowRunner(
 					journalContent: '',
 					...measured,
 					shedIntegrity: null,
+					cumulativeTokens: runTotal,
 				};
 			}
 
@@ -873,6 +885,7 @@ export function createWorkflowRunner(
 					journalContent: '',
 					...measured,
 					shedIntegrity: null,
+					cumulativeTokens: runTotal,
 				};
 			}
 
@@ -913,6 +926,7 @@ export function createWorkflowRunner(
 				...measured,
 				shedIntegrity:
 					journalContent === '' ? null : observeShedIntegrity(journalContent),
+				cumulativeTokens: runTotal,
 			};
 		}
 
@@ -998,6 +1012,7 @@ export function createWorkflowRunner(
 				handoffSizeBytes,
 				handoffSimilarity: similarity,
 				transient,
+				cumulativeTokens: cumulativeTokens.total,
 			};
 		}
 
@@ -1052,7 +1067,7 @@ export function createWorkflowRunner(
 						input.onWarning?.(action.message);
 						break;
 					case 'notify_iteration_complete':
-						input.onIterationComplete?.(snapshot());
+						input.onIterationComplete?.(snapshot(), cumulativeTokens);
 						break;
 					case 'notify_handover_completed':
 						input.onHandoverCompleted?.({

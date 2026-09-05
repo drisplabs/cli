@@ -2,7 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {ExhaustedCapSchema, InterruptionSchema} from './domain';
 
 describe('ExhaustedCapSchema', () => {
-	it.each(['retry', 'nudge', 'iterations', 'handover'])(
+	it.each(['retry', 'nudge', 'iterations', 'handover', 'tokens'])(
 		'accepts the %s cap',
 		cap => {
 			expect(ExhaustedCapSchema.safeParse(cap).success).toBe(true);
