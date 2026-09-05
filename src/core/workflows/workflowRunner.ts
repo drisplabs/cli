@@ -45,6 +45,13 @@ export type TurnInput = {
 	prompt: string;
 	continuation: TurnContinuation;
 	configOverride?: HarnessProcessOverride;
+	/**
+	 * The Iteration this Turn belongs to (ADR 0018 §8). A Handover fork runs
+	 * inside the interrupted Turn's iteration — it is not a Turn of its own —
+	 * so the `run.handover` event the caller emits at kill time can name the
+	 * iteration it interrupted.
+	 */
+	iteration: number;
 };
 
 /**
@@ -439,6 +446,12 @@ function handoffPathFor(dir: string, seq: number): string {
 	return path.join(dir, `${String(seq).padStart(3, '0')}.md`);
 }
 
+/** The newest Handoff file in the chain — the mandatory read — or null when there is none. */
+function newestHandoffPath(dir: string): string | null {
+	const seq = listHandoffSeqs(dir).at(-1);
+	return seq === undefined ? null : handoffPathFor(dir, seq);
+}
+
 /**
  * Allocate the path for the next Handoff file.
  *
@@ -684,6 +697,7 @@ export function createWorkflowRunner(
 				prompt,
 				continuation,
 				configOverride,
+				iteration: memory!.iteration,
 			});
 
 			if (cancelled) {
@@ -820,6 +834,8 @@ export function createWorkflowRunner(
 					prompt: buildHandoffInvocationPrompt(handoffAbsPath),
 					continuation: {mode: 'resume', handle},
 					configOverride: {...configOverride, forkSession: true},
+					// The fork is not a Turn: it runs inside the interrupted one.
+					iteration: memory!.iteration,
 				});
 				cumulativeTokens = mergeTokens(cumulativeTokens, forkResult.tokens);
 				forkOk =
@@ -998,6 +1014,9 @@ export function createWorkflowRunner(
 			const wokenEvent: RunEvent = {
 				type: 'woken',
 				continuation: input.initialContinuation ?? {mode: 'fresh'},
+				// The newest Handoff on disk, for a park that followed a Handover
+				// (ADR 0018 §9); the row decides whether the wake names it.
+				handoffPath: newestHandoffPath(handoffDirFor()),
 			};
 			const stepResult = step(phase, memory, wokenEvent, cfg);
 			phase = stepResult.phase;

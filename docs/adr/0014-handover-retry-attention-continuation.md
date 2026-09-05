@@ -93,6 +93,10 @@ exec runner's `exhausted` failure-latch (`runner.ts:586`) follows. Both remain v
 `workflow_runs` rows. A cumulative token/cost budget can slot into the same suspend outcome later; the
 message names which bound tripped.
 
+> Amended by ADR 0018: the bounds that funnel into `awaiting_attention` gain the **Handover cap**
+> (a streak of unproductive Handovers) and the opt-in cumulative token budget anticipated above,
+> and the message discipline extends to carrying the measurement behind the bound.
+
 **8. `resolveTurnOutcome` is extended, and the split is stated.** `TurnOutcome` gains a `suspend` kind
 alongside `continue` / `stop`, and the resolver additionally takes the Turn's **end-reason** (Handover /
 failure-class / declared marker / undeclared stop), which its current signature

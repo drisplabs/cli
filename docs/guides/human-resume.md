@@ -56,6 +56,14 @@ What happens, in ADR 0014 terms:
 - **Degrade:** if the vendor session is gone or invalid, the failed resume
   falls back to a fresh Turn seeded from the Journal, with your reply still
   the prompt. The Run is never stranded on a dead session.
+- **After a Handover:** a Run that parked right after a Handover — the
+  iteration ceiling reached on the Handover row (ADR 0018 §4) — captured an
+  Agent Session at its context bound: the killed session, or the fork.
+  Resuming either would re-trip compaction before your reply is read, so the
+  wake starts a **fresh** Agent Session instead (ADR 0018 §9), and the wake
+  prompt names the newest `handoff/NNN.md` as mandatory reading beside the
+  Journal. The resolver honours the same marking, so `--continue` never hands
+  the runner that session; the Run id is still reused.
 
 A live interactive session answers its own questions in the terminal, and a
 paired dashboard can deliver decisions into a running session; suspension is

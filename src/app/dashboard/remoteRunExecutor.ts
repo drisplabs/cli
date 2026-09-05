@@ -15,6 +15,7 @@ import {
 } from '../../infra/plugins/marketplace';
 import {InterruptionSchema, type RunStartFrame} from '@drisp/protocol';
 import {getLatestRunForSession} from '../../infra/sessions/index';
+import {wakesFreshAfterHandover} from '../../core/workflows/runMachine';
 import type {
 	InstanceSocketClient,
 	InstanceSocketLogger,
@@ -112,11 +113,13 @@ export type WakeTarget = {
 function resolveWakeTarget(athenaSessionId: string): WakeTarget | null {
 	const run = getLatestRunForSession(athenaSessionId);
 	if (!run || run.status !== 'awaiting_attention') return null;
+	// A park that followed a Handover wakes fresh (ADR 0018 §9): the captured
+	// session sits at its context bound — same rule as `resolveResumeTarget`.
+	const resumable =
+		run.adapterSessionId && !wakesFreshAfterHandover(run.runMemoryJson);
 	return {
 		resumeRunId: run.id,
-		...(run.adapterSessionId
-			? {adapterResumeSessionId: run.adapterSessionId}
-			: {}),
+		...(resumable ? {adapterResumeSessionId: run.adapterSessionId} : {}),
 	};
 }
 

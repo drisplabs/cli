@@ -5,6 +5,7 @@ import {
 	getSessionMeta,
 } from '../../infra/sessions/index';
 import type {AthenaSession} from '../../infra/sessions/index';
+import {wakesFreshAfterHandover} from '../../core/workflows/runMachine';
 
 /**
  * Shared resume-target resolution for the interactive and headless entry
@@ -76,10 +77,18 @@ export function resolveResumeTarget(
 	function toTarget(meta: AthenaSession): ResumeTarget {
 		const latestRun = getLatestRunFn(meta.id);
 		if (latestRun?.status === 'awaiting_attention') {
+			// A Run parked right after a Handover (ADR 0018 §9) captured a session
+			// at its context bound — the killed one, or the fork. Resuming either
+			// re-trips compaction before the reply is read, so the wake starts a
+			// fresh Agent Session (the Runner seeds it with the newest Handoff).
+			const adapterResumeSessionId = wakesFreshAfterHandover(
+				latestRun.runMemoryJson,
+			)
+				? undefined
+				: (latestRun.adapterSessionId ?? meta.adapterSessionIds.at(-1));
 			return {
 				athenaSessionId: meta.id,
-				adapterResumeSessionId:
-					latestRun.adapterSessionId ?? meta.adapterSessionIds.at(-1),
+				adapterResumeSessionId,
 				resumeRunId: latestRun.id,
 			};
 		}

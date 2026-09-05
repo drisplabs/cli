@@ -1206,6 +1206,7 @@ describe('createWorkflowRunner', () => {
 			prompt: string;
 			continuation: unknown;
 			configOverride?: Record<string, unknown>;
+			iteration: number;
 		}> = [];
 
 		const startTurn = vi
@@ -1259,6 +1260,10 @@ describe('createWorkflowRunner', () => {
 		// Turn 1 (interrupted) + post-Handover Turn tick; the fork does not.
 		expect(result.iterations).toBe(2);
 		expect(startTurn).toHaveBeenCalledTimes(3);
+
+		// Every startTurn names the Turn it belongs to (ADR 0018 §8): the fork
+		// runs inside the interrupted Turn's iteration; the fresh Turn ticks it.
+		expect(calls.map(call => call.iteration)).toEqual([1, 1, 2]);
 
 		// The fork resumed the primary conversation with --fork-session.
 		expect(calls[1]!.continuation).toEqual({
@@ -1708,6 +1713,7 @@ describe('createWorkflowRunner', () => {
 			lastStopContinuation: {mode: 'fresh'},
 			pendingSteers: [],
 			lastHandoffSizeBytes: null,
+			parkedAfterHandover: false,
 		};
 
 		const handle = createWorkflowRunner({
@@ -1740,6 +1746,66 @@ describe('createWorkflowRunner', () => {
 		// Not the stale pre-wake prompt the suspended Run last attempted — the
 		// replay invariant (ADR 0016 §3) never replays it on a wake.
 		expect(prompts[0]).not.toContain('the stale pre-wake prompt');
+	});
+
+	it('wakes a Run parked after a Handover fresh, naming the newest Handoff file (ADR 0018 §9)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		const handoffDir = path.join(journalDir, 'handoff');
+		fs.mkdirSync(handoffDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		fs.writeFileSync(journalPath, 'parked at the bound\n', 'utf-8');
+		fs.writeFileSync(path.join(handoffDir, '002.md'), 'older', 'utf-8');
+		fs.writeFileSync(path.join(handoffDir, '003.md'), 'newest', 'utf-8');
+
+		const calls: Array<{prompt: string; continuation: unknown}> = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementation(
+				async (input: {prompt: string; continuation: unknown}) => {
+					calls.push(input);
+					fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+					return OK_RESULT;
+				},
+			);
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'the human reply',
+			resumeRunId: 'run-suspended',
+			// The caller resolved the persisted session — the one at its bound.
+			initialContinuation: {mode: 'resume', handle: 'claude-sess-at-bound'},
+			resumedRunMemory: {
+				iteration: 3,
+				nudgeStreak: 0,
+				retryStreak: 0,
+				lastJournalHash: null,
+				lastStopPrompt: 'the stale pre-wake prompt',
+				lastStopContinuation: {mode: 'fresh'},
+				pendingSteers: [],
+				lastHandoffSizeBytes: 6,
+				parkedAfterHandover: true,
+			},
+			resumedStopReason:
+				'iteration ceiling reached: 3 iterations (maxIterations) used without a terminal marker',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 20},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(startTurn).toHaveBeenCalledTimes(1);
+		expect(calls[0]!.continuation).toEqual({mode: 'fresh'});
+		expect(calls[0]!.prompt).toContain('the human reply');
+		expect(calls[0]!.prompt).toContain(path.join(handoffDir, '003.md'));
+		expect(calls[0]!.prompt).not.toContain(path.join(handoffDir, '002.md'));
 	});
 
 	it('reuses a resumed run id so the suspended run returns to running', async () => {

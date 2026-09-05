@@ -42,6 +42,19 @@ export type TurnOutcome =
 			deprecation?: string;
 	  };
 
+/**
+ * The sentence an `awaiting_attention` Run carries when `maxIterations`
+ * tripped (ADR 0014 §7). One author for the two rows that reach the ceiling:
+ * the clean-stop path below, and the successful-fork row of the run-loop
+ * reducer (ADR 0018 §4) — `interruptionFromSuspension` reads it back into a
+ * `cap_exhausted` / `iterations` Interruption, so the wording is a contract.
+ */
+export function buildIterationCeilingReason(maxIterations: number): string {
+	return `iteration ceiling reached: ${maxIterations} iteration${
+		maxIterations === 1 ? '' : 's'
+	} (maxIterations) used without a terminal marker`;
+}
+
 const MISSING_JOURNAL_MESSAGE =
 	'the journal file went missing during the run — the workflow can no longer verify progress';
 const MISPLACED_TERMINAL_MARKER_MESSAGE =
@@ -116,9 +129,7 @@ export function resolveTurnOutcome(input: {
 		return {
 			kind: 'suspend',
 			status: 'awaiting_attention',
-			stopReason: `iteration ceiling reached: ${loop.maxIterations} iteration${
-				loop.maxIterations === 1 ? '' : 's'
-			} (maxIterations) used without a terminal marker`,
+			stopReason: buildIterationCeilingReason(loop.maxIterations),
 		};
 	}
 	return {kind: 'continue'};
