@@ -82,6 +82,11 @@ describe('interruptionFromSuspension', () => {
 				"handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
 			expected: {kind: 'cap_exhausted', cap: 'handover', limit: 3},
 		},
+		{
+			stopReason:
+				'token budget reached: 1000000 tokens (maxRunTokens); used 1234567',
+			expected: {kind: 'cap_exhausted', cap: 'tokens', limit: 1_000_000},
+		},
 	])('classifies "$stopReason"', ({stopReason, expected}) => {
 		const interruption = interruptionFromSuspension(stopReason);
 		expect(interruption).toMatchObject({...expected, message: stopReason});

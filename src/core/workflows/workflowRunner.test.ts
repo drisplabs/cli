@@ -1396,6 +1396,87 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('~29k tokens of working room');
 	});
 
+	describe('the opt-in cumulative token budget (ADR 0018 §10, #215)', () => {
+		function tokens(total: number): TurnExecutionResult['tokens'] {
+			return {
+				...NULL_TOKENS,
+				input: total,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total,
+			};
+		}
+
+		it('parks with the budget sentence once the Run total crosses maxRunTokens, and reports the total on iteration.complete', async () => {
+			const projectDir = makeTempDir();
+			const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+			let turn = 0;
+			const startTurn = vi.fn().mockImplementation(async () => {
+				turn += 1;
+				fs.writeFileSync(journalPath, `turn ${turn} done, more to do`, 'utf-8');
+				return {...OK_RESULT, tokens: tokens(400_000)};
+			});
+			const iterationTokens: Array<number | null> = [];
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 20, maxRunTokens: 1_000_000},
+				},
+				startTurn,
+				persistRunState: vi.fn(),
+				onIterationComplete: (_snapshot, cumulative) =>
+					iterationTokens.push(cumulative.total),
+			});
+			const result = await handle.result;
+			expect(result.status).toBe('awaiting_attention');
+			expect(result.stopReason).toBe(
+				'token budget reached: 1000000 tokens (maxRunTokens); used 1200000',
+			);
+			// Turns 1 and 2 (800k) continue; Turn 3 crosses the budget.
+			expect(turn).toBe(3);
+			expect(iterationTokens).toEqual([400_000, 800_000]);
+		});
+
+		it('without a budget the total is still reported and nothing parks', async () => {
+			const projectDir = makeTempDir();
+			const journalPath = path.join(projectDir, '.athena', 's1', 'journal.md');
+			let turn = 0;
+			const startTurn = vi.fn().mockImplementation(async () => {
+				turn += 1;
+				fs.writeFileSync(
+					journalPath,
+					turn < 3 ? `turn ${turn}` : '<!-- WORKFLOW_COMPLETE -->',
+					'utf-8',
+				);
+				return {...OK_RESULT, tokens: tokens(400_000)};
+			});
+			const iterationTokens: Array<number | null> = [];
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir,
+				prompt: 'do it',
+				workflow: {
+					name: 'wf',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 20},
+				},
+				startTurn,
+				persistRunState: vi.fn(),
+				onIterationComplete: (_snapshot, cumulative) =>
+					iterationTokens.push(cumulative.total),
+			});
+			expect((await handle.result).status).toBe('completed');
+			expect(iterationTokens).toEqual([400_000, 800_000]);
+		});
+	});
+
 	describe('the shed-integrity nudge (ADR 0018 §7, #214)', () => {
 		const JOURNAL_WITH_TABLE = [
 			'# Workflow Journal',

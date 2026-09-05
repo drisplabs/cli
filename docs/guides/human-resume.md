@@ -7,8 +7,9 @@ calls it **Parked**. Every route in funnels here: a declared
 an **ask rule** that fired on a permission prompt (#189), a permission left
 unclaimed under `guarded` / `standard`, a hard failure (`auth` / `billing` /
 `invalid_request` / `model_not_found` / unclassifiable), or an exhausted
-bound (Nudge cap, Retry cap, Handover cap, `maxIterations`) — the reason
-always names which. Under `--isolation autonomous` only the first two park a Run: the
+bound (Nudge cap, Retry cap, Handover cap, `maxIterations`, or the opt-in
+`loop.maxRunTokens` budget) — the reason always names which. `drisp runs`
+also shows a parked Run's cumulative token total. Under `--isolation autonomous` only the first two park a Run: the
 preset's policy answers every permission an ask rule does not claim, so the
 workflow completes with nobody watching. A parked Run is waiting on you; this
 guide is how you find it and wake it.

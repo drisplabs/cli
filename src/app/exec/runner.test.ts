@@ -1293,10 +1293,12 @@ describe('runExec', () => {
 				});
 				// The Handover row reports the iteration boundary like a Nudge does:
 				// Turn 1 was interrupted, Turn 2 is the fresh post-Handover Turn.
-				const completes = events
-					.filter(e => e.type === 'iteration.complete')
-					.map(e => e.data.iteration);
-				expect(completes).toEqual([2]);
+				const completes = events.filter(e => e.type === 'iteration.complete');
+				expect(completes.map(e => e.data.iteration)).toEqual([2]);
+				// Cumulative tokens ride every iteration boundary (#215).
+				expect(completes[0]!.data.tokens).toEqual(
+					expect.objectContaining({input: 71_000, output: 20}),
+				);
 				// The completed Handover, measured (ADR 0018 §8, #213).
 				expect(
 					events.find(e => e.type === 'run.handover.completed')?.data,

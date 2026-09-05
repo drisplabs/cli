@@ -205,6 +205,15 @@ export type RunMemory = {
 	 * this field existed; `deserializeRunMemory` defaults it to `null`.
 	 */
 	lastBoundedTurn: BoundedTurn | null;
+	/**
+	 * The Run's cumulative token total — input, output, cache reads and cache
+	 * writes across every Turn and fork — as of the last Turn or fork boundary
+	 * (ADR 0018 §10), or `null` before any boundary reported one. Persisted so
+	 * `drisp runs` can show a parked Run's burn, and what `loop.maxRunTokens`
+	 * is checked against. Absent on snapshots persisted before this field
+	 * existed; `deserializeRunMemory` defaults it to `null`.
+	 */
+	cumulativeTokens: number | null;
 };
 
 /** A Turn's measurement at its context bound (ADR 0018 §6). */
@@ -388,6 +397,11 @@ export type RunEvent =
 			 * whichever prompt starts the next Turn; never an edit.
 			 */
 			shedIntegrity: ShedIntegrityGaps | null;
+			/**
+			 * The Run's cumulative token total once this Turn's tokens are merged
+			 * in (ADR 0018 §10), or `null` when unknown.
+			 */
+			cumulativeTokens: number | null;
 	  }
 	| {
 			type: 'backoff_elapsed';
@@ -414,6 +428,8 @@ export type RunEvent =
 			 * `ok` is true. Ignored by the reducer when `ok` is true.
 			 */
 			transient: boolean;
+			/** The Run's cumulative token total once the fork's tokens are merged in, or `null`. */
+			cumulativeTokens: number | null;
 	  }
 	| {
 			/**
@@ -492,6 +508,33 @@ export type StepResult = {
 
 function hashJournalContent(content: string): string {
 	return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * The park sentence for the cumulative token budget (ADR 0018 §10). The
+ * limit is the first integer — `interruptionFromSuspension` reads it back as
+ * `cap_exhausted` / `tokens` — so both numbers are written plainly.
+ */
+function buildTokenBudgetReason(limit: number, used: number): string {
+	return `token budget reached: ${limit} tokens (maxRunTokens); used ${used}`;
+}
+
+/** Whether a configured `maxRunTokens` has been reached by a reported total. */
+function tokenBudgetReached(
+	loop: LoopConfig | undefined,
+	cumulativeTokens: number | null,
+): number | null {
+	const limit = loop?.maxRunTokens;
+	if (limit === undefined || cumulativeTokens === null) return null;
+	return cumulativeTokens >= limit ? limit : null;
+}
+
+/** The memory with a boundary's reported cumulative total recorded (ADR 0018 §10). */
+function withCumulativeTokens(
+	memory: RunMemory,
+	cumulativeTokens: number | null,
+): RunMemory {
+	return cumulativeTokens === null ? memory : {...memory, cumulativeTokens};
 }
 
 /** `~71k` for 71,400; `~700` stays `700` — the sentence supplies the `~`. */
@@ -826,6 +869,7 @@ export function createInitialRun(
 			parkedAfterHandover: false,
 			handoverStreak: 0,
 			lastBoundedTurn: null,
+			cumulativeTokens: null,
 		},
 		actions: kickoffActionsFor(phase),
 	});
@@ -905,13 +949,19 @@ function handleSteer(
 
 function handleTurnInFlight(
 	phase: Extract<RunPhase, {kind: 'turn_in_flight'}>,
-	memory: RunMemory,
+	incoming: RunMemory,
 	event: Extract<RunEvent, {type: 'turn_finished'}>,
 	cfg: StepConfig,
 ): StepResult {
 	if (event.cancelled) {
-		return {phase: {kind: 'cancelled'}, memory, actions: [{type: 'persist'}]};
+		return {
+			phase: {kind: 'cancelled'},
+			memory: incoming,
+			actions: [{type: 'persist'}],
+		};
 	}
+	// Every boundary records the Run's burn (ADR 0018 §10), whatever it decides.
+	const memory = withCumulativeTokens(incoming, event.cumulativeTokens);
 
 	if (event.handoverRequestHandle !== null) {
 		// The Handover boundary observes the Journal like a clean stop does
@@ -1138,6 +1188,21 @@ function handleTurnInFlight(
 		};
 	}
 
+	// The cumulative token budget (ADR 0018 §10): the universal backstop,
+	// checked only where the Run would otherwise keep going — a declared
+	// completion still completes and a declared NEEDS_HUMAN keeps its reason.
+	const budget = tokenBudgetReached(loop, memory.cumulativeTokens);
+	if (budget !== null) {
+		return {
+			phase: {
+				kind: 'awaiting_attention',
+				stopReason: buildTokenBudgetReason(budget, memory.cumulativeTokens!),
+			},
+			memory: memoryAfterSuccess,
+			actions: [{type: 'persist'}],
+		};
+	}
+
 	// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same Agent
 	// Session with a corrective prompt. Bounded by the Nudge cap, which
 	// resets whenever the Journal advances between stops (a hash comparison,
@@ -1345,13 +1410,18 @@ function handleBackingOff(
 
 function handleHandingOver(
 	phase: Extract<RunPhase, {kind: 'handing_over'}>,
-	memory: RunMemory,
+	incoming: RunMemory,
 	event: Extract<RunEvent, {type: 'fork_finished'}>,
 	cfg: StepConfig,
 ): StepResult {
 	if (event.cancelled) {
-		return {phase: {kind: 'cancelled'}, memory, actions: [{type: 'persist'}]};
+		return {
+			phase: {kind: 'cancelled'},
+			memory: incoming,
+			actions: [{type: 'persist'}],
+		};
 	}
+	const memory = withCumulativeTokens(incoming, event.cumulativeTokens);
 
 	const nextIteration = memory.iteration + 1;
 
@@ -1385,6 +1455,25 @@ function handleHandingOver(
 				toolCalls: memory.lastBoundedTurn?.toolCalls ?? null,
 			},
 		});
+
+		// The cumulative token budget (ADR 0018 §10) is the outermost bound:
+		// checked before the ceiling and the cap. Fork first, then check — the
+		// Handoff is on disk for the wake, which starts fresh (§9).
+		const budget = tokenBudgetReached(cfg.loop, memory.cumulativeTokens);
+		if (budget !== null) {
+			return {
+				phase: {
+					kind: 'awaiting_attention',
+					stopReason: buildTokenBudgetReason(budget, memory.cumulativeTokens!),
+				},
+				memory: {...memoryAfterFork, parkedAfterHandover: true},
+				actions: [
+					{type: 'purge_handoffs'},
+					{type: 'persist'},
+					completion(memory.handoverStreak),
+				],
+			};
+		}
 
 		const maxIterations = cfg.loop?.maxIterations;
 		if (maxIterations !== undefined && memory.iteration >= maxIterations) {
@@ -1746,6 +1835,9 @@ export function deserializeRunMemory(
 	}
 	if (!isBoundedTurn(candidate.lastBoundedTurn)) {
 		candidate.lastBoundedTurn = null;
+	}
+	if (typeof candidate.cumulativeTokens !== 'number') {
+		candidate.cumulativeTokens = null;
 	}
 	if (
 		typeof candidate.iteration !== 'number' ||
