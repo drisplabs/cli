@@ -1,6 +1,23 @@
 import {describe, expect, it, vi} from 'vitest';
 import {resolveResumeTarget} from './resumeResolution';
 import type {AthenaSession} from '../../infra/sessions/types';
+import {serializeRunMemory} from '../../core/workflows/runMachine';
+import type {RunMemory} from '../../core/workflows/runMachine';
+
+function memoryJson(overrides: Partial<RunMemory> = {}): string {
+	return serializeRunMemory({
+		iteration: 3,
+		nudgeStreak: 0,
+		retryStreak: 0,
+		lastJournalHash: null,
+		lastStopPrompt: 'x',
+		lastStopContinuation: {mode: 'fresh'},
+		pendingSteers: [],
+		lastHandoffSizeBytes: null,
+		parkedAfterHandover: false,
+		...overrides,
+	});
+}
 
 function makeSession(overrides: Partial<AthenaSession> = {}): AthenaSession {
 	return {
@@ -115,6 +132,68 @@ describe('resolveResumeTarget', () => {
 			athenaSessionId: 'athena-x',
 			adapterResumeSessionId: 'a-1',
 			resumeRunId: 'run-suspended',
+		});
+	});
+
+	it('wakes a run parked right after a Handover into a fresh Agent Session, keeping its run id (ADR 0018 §9)', () => {
+		const result = resolveResumeTarget({
+			projectDir: '/tmp',
+			request: {kind: 'explicit', sessionId: 'athena-x'},
+			missingRecentPolicy: 'error',
+			messages: MESSAGES,
+			logError: vi.fn(),
+			getSessionMetaFn: () =>
+				makeSession({id: 'athena-x', adapterSessionIds: ['a-1', 'a-2']}),
+			getLatestRunFn: () => ({
+				id: 'run-parked-after-handover',
+				sessionId: 'athena-x',
+				startedAt: 0,
+				iteration: 3,
+				maxIterations: 3,
+				status: 'awaiting_attention',
+				stopReason:
+					'iteration ceiling reached: 3 iterations (maxIterations) used without a terminal marker',
+				// The captured session is the killed one (or the fork): at its
+				// context bound, so resuming it would re-trip compaction at once.
+				adapterSessionId: 'a-2',
+				runMemoryJson: memoryJson({parkedAfterHandover: true}),
+			}),
+		});
+
+		expect(result).toEqual({
+			athenaSessionId: 'athena-x',
+			adapterResumeSessionId: undefined,
+			resumeRunId: 'run-parked-after-handover',
+		});
+	});
+
+	it('keeps resuming the captured session for a run parked on any other row', () => {
+		const result = resolveResumeTarget({
+			projectDir: '/tmp',
+			request: {kind: 'explicit', sessionId: 'athena-x'},
+			missingRecentPolicy: 'error',
+			messages: MESSAGES,
+			logError: vi.fn(),
+			getSessionMetaFn: () =>
+				makeSession({id: 'athena-x', adapterSessionIds: ['a-1', 'a-2']}),
+			getLatestRunFn: () => ({
+				id: 'run-parked',
+				sessionId: 'athena-x',
+				startedAt: 0,
+				iteration: 3,
+				maxIterations: 20,
+				status: 'awaiting_attention',
+				stopReason:
+					'nudge cap reached: 3 nudges (nudgeCap) without journal progress or a terminal marker',
+				adapterSessionId: 'a-1',
+				runMemoryJson: memoryJson({parkedAfterHandover: false}),
+			}),
+		});
+
+		expect(result).toEqual({
+			athenaSessionId: 'athena-x',
+			adapterResumeSessionId: 'a-1',
+			resumeRunId: 'run-parked',
 		});
 	});
 

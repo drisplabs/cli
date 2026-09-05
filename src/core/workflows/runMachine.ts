@@ -37,7 +37,7 @@ import {
 	DEFAULT_RETRY_CAP,
 	DEFAULT_RETRY_BACKOFF_MS,
 } from './types';
-import type {TurnOutcome} from './terminalOutcome';
+import {buildIterationCeilingReason, type TurnOutcome} from './terminalOutcome';
 import {
 	buildContinuePrompt,
 	buildJournalSizeNudgeSuffix,
@@ -153,6 +153,17 @@ export type RunMemory = {
 	 * presence.
 	 */
 	lastHandoffSizeBytes: number | null;
+	/**
+	 * Set when the Run parked on a row that follows a Handover (ADR 0018 §9):
+	 * the iteration ceiling on the Handover row (§4). The persisted
+	 * `adapterSessionId` is then a session at its context bound — the killed
+	 * one, or the fork — and resuming it would re-trip compaction at once, so
+	 * the wake starts a **fresh** Agent Session seeded with the newest Handoff
+	 * file, the Journal and the reply. The `woken` row clears it. Absent on
+	 * snapshots persisted before this field existed; `deserializeRunMemory`
+	 * defaults it to `false`.
+	 */
+	parkedAfterHandover: boolean;
 };
 
 /**
@@ -319,6 +330,13 @@ export type RunEvent =
 			 */
 			type: 'woken';
 			continuation: TurnContinuation;
+			/**
+			 * The newest Handoff file in the Dossier's chain, or null when there
+			 * is none — read by the interpreter, used by the row only when the
+			 * park followed a Handover (`memory.parkedAfterHandover`), so the
+			 * fresh wake is seeded with it (ADR 0018 §9).
+			 */
+			handoffPath: string | null;
 	  }
 	/**
 	 * A Steer arrived (#191). Unlike the other events it is not the reply to
@@ -411,10 +429,12 @@ export function buildWakePrompt(
 	reply: string,
 	journalPath: string | undefined,
 	parkedInterruption?: Interruption,
+	handoffPath?: string,
 ): string {
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
 		buildReplayGuidance(parkedInterruption) +
+		buildHandoffGuidance(handoffPath) +
 		(journalPath
 			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
@@ -437,6 +457,23 @@ function buildReplayGuidance(parked: Interruption | undefined): string {
 		`Before your previous Turn ended, your request \`${call}\` (request ${parked.requestId}) was deferred because nobody answered it in time. ` +
 		`Re-issue that exact call now, with the same input: if an answer was stored while this run was parked it is applied automatically, otherwise the request is held again for a human. ` +
 		`Do not work around the deferred call or substitute a different one.\n\n`
+	);
+}
+
+/**
+ * A wake after a park that followed a Handover (ADR 0018 §9) is a fresh Agent
+ * Session: the session that parked sits at its context bound, so nothing of
+ * the previous conversation survives except its Handoff file. The wake prompt
+ * names that file as mandatory reading beside the Journal, exactly as the
+ * Handover seed prompt does. Empty when the park followed any other row.
+ */
+function buildHandoffGuidance(handoffPath: string | undefined): string {
+	if (!handoffPath) return '';
+	return (
+		`This run parked right after a Handover, so this Turn is a fresh Agent Session with no memory of the previous one. ` +
+		`Read the newest Handoff file at ${handoffPath} — mandatory reading alongside the journal: it carries the in-flight context the journal never checkpointed. ` +
+		`Before any domain work, fold whatever durable content it records into the journal, then apply the reply. ` +
+		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.\n\n`
 	);
 }
 
@@ -572,6 +609,7 @@ export function createInitialRun(
 			lastStopContinuation: continuation,
 			pendingSteers: initialSteers,
 			lastHandoffSizeBytes: null,
+			parkedAfterHandover: false,
 		},
 		actions: kickoffActionsFor(phase),
 	});
@@ -1074,6 +1112,31 @@ function handleHandingOver(
 	const nextIteration = memory.iteration + 1;
 
 	if (event.ok) {
+		const memoryAfterFork = {
+			...memory,
+			lastHandoffSizeBytes: event.handoffSizeBytes,
+		};
+
+		// The iteration ceiling applies on the Handover row (ADR 0018 §4): a
+		// Turn that ended in a Handover never reaches `resolveTurnOutcome`, the
+		// only other place `maxIterations` is evaluated, so without this check a
+		// Run whose Turns keep handing over has no ceiling at all. Fork first,
+		// then check — the Handoff is the distillation a wake needs, and one fork
+		// at the ceiling is cheaper than losing the session's in-flight state.
+		// The park is marked (§9): the persisted vendor session sits at its
+		// bound, so the wake must start fresh rather than resume it.
+		const maxIterations = cfg.loop?.maxIterations;
+		if (maxIterations !== undefined && memory.iteration >= maxIterations) {
+			return {
+				phase: {
+					kind: 'awaiting_attention',
+					stopReason: buildIterationCeilingReason(maxIterations),
+				},
+				memory: {...memoryAfterFork, parkedAfterHandover: true},
+				actions: [{type: 'purge_handoffs'}, {type: 'persist'}],
+			};
+		}
+
 		// The fork is discarded (nothing resumes it); the next Turn is a fresh
 		// Agent Session — the only context-resetting transition — and ticks
 		// the Iteration counter like any Turn.
@@ -1095,15 +1158,17 @@ function handleHandingOver(
 				configOverride: prepared.configOverride,
 			},
 			memory: {
-				...memory,
+				...memoryAfterFork,
 				iteration: nextIteration,
 				lastStopPrompt: seedPrompt,
 				lastStopContinuation: continuation,
-				lastHandoffSizeBytes: event.handoffSizeBytes,
 			},
 			actions: [
 				{type: 'purge_handoffs'},
 				{type: 'persist'},
+				// Reported like the Nudge rows report it (ADR 0018 §8): the exec
+				// stream shows `iteration.complete` for a Handover too.
+				{type: 'notify_iteration_complete'},
 				{
 					type: 'start_turn',
 					prompt: seedPrompt,
@@ -1183,10 +1248,20 @@ function handleAwaitingAttention(
 	cfg: StepConfig,
 ): StepResult {
 	const nextIteration = memory.iteration + 1;
+	// A park that followed a Handover wakes fresh (ADR 0018 §9), whatever
+	// session the caller reported: the persisted one sits at its context
+	// bound, and resuming it would re-trip compaction before the reply is
+	// read. The newest Handoff file becomes mandatory reading beside the
+	// Journal. Every other park resumes the intact session as before.
+	const wakesFresh = memory.parkedAfterHandover;
+	const continuation: TurnContinuation = wakesFresh
+		? {mode: 'fresh'}
+		: event.continuation;
 	const prompt = buildWakePrompt(
 		cfg.initialPrompt,
 		cfg.journalPromptPath,
 		phase.interruption,
+		wakesFresh && event.handoffPath ? event.handoffPath : undefined,
 	);
 	const prepared = prepareWorkflowTurn(cfg.workflowState, {
 		prompt: cfg.initialPrompt,
@@ -1197,21 +1272,22 @@ function handleAwaitingAttention(
 		phase: {
 			kind: 'turn_in_flight',
 			prompt,
-			continuation: event.continuation,
+			continuation,
 			configOverride: prepared.configOverride,
 		},
 		memory: {
 			...memory,
 			iteration: nextIteration,
 			lastStopPrompt: prompt,
-			lastStopContinuation: event.continuation,
+			lastStopContinuation: continuation,
+			parkedAfterHandover: false,
 		},
 		actions: [
 			{type: 'persist'},
 			{
 				type: 'start_turn',
 				prompt,
-				continuation: event.continuation,
+				continuation,
 				configOverride: prepared.configOverride,
 			},
 		],
@@ -1333,6 +1409,11 @@ export function deserializeRunMemory(
 	// Snapshots persisted before #191 carry no Steer queue: an absent queue is
 	// an empty one, but a present queue must be well-formed.
 	if (!('pendingSteers' in candidate)) candidate.pendingSteers = [];
+	// Snapshots persisted before ADR 0018 carry no Handover-park marking: an
+	// in-flight Run rehydrates as "resume the session", exactly as before.
+	if (typeof candidate.parkedAfterHandover !== 'boolean') {
+		candidate.parkedAfterHandover = false;
+	}
 	if (
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||
@@ -1348,6 +1429,20 @@ export function deserializeRunMemory(
 		return null;
 	}
 	return candidate as unknown as RunMemory;
+}
+
+/**
+ * Whether a persisted Run must be woken into a fresh Agent Session (ADR 0018
+ * §9): true iff its `RunMemory` snapshot carries the Handover-park marking.
+ * For the callers that choose a wake's continuation before the reducer runs
+ * — resume resolution for `drisp run --continue`, the hub's wake — so neither
+ * hands the runner a vendor session that sits at its context bound. Missing
+ * or malformed JSON reads as `false`: resume as before.
+ */
+export function wakesFreshAfterHandover(
+	runMemoryJson: string | undefined | null,
+): boolean {
+	return deserializeRunMemory(runMemoryJson)?.parkedAfterHandover === true;
 }
 
 function isQueuedSteer(value: unknown): value is QueuedSteer {

@@ -18,9 +18,15 @@ import {createSteerQueue, STEER_BLOCK_OPEN} from '../../core/workflows/steer';
 import type {DashboardDecisionInboxRow} from '../dashboard/dashboardDecisionInbox';
 import {
 	createSessionStore,
+	getLatestRunForSession,
 	listAwaitingAttentionRuns,
 } from '../../infra/sessions';
 import {runRunsCommand} from '../entry/runsCommand';
+import {
+	serializeRunMemory,
+	wakesFreshAfterHandover,
+	type RunMemory,
+} from '../../core/workflows/runMachine';
 
 class MockRuntime implements Runtime {
 	private eventHandlers = new Set<RuntimeEventHandler>();
@@ -1099,6 +1105,363 @@ describe('runExec', () => {
 		} finally {
 			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
+	});
+
+	describe('the Handover is budgeted and observable (ADR 0018 §4, §8, §9)', () => {
+		type HandoverJsonlEvent = {
+			type: string;
+			data: {iteration?: number} & Record<string, unknown>;
+		};
+
+		function parseJsonl(text: string): HandoverJsonlEvent[] {
+			return text
+				.split('\n')
+				.filter(line => line.trim().length > 0)
+				.map(line => JSON.parse(line) as HandoverJsonlEvent);
+		}
+
+		function makeSessionsRoot(): string {
+			return fs.mkdtempSync(path.join(os.tmpdir(), 'runner-ho-sessions-'));
+		}
+
+		function storeFactoryAt(sessionsRoot: string) {
+			return (opts: {sessionId: string; projectDir: string}) =>
+				createSessionStore({
+					...opts,
+					dbPath: path.join(sessionsRoot, opts.sessionId, 'session.db'),
+				});
+		}
+
+		function memoryOf(overrides: Partial<RunMemory>): RunMemory {
+			return {
+				iteration: 1,
+				nudgeStreak: 0,
+				retryStreak: 0,
+				lastJournalHash: null,
+				lastStopPrompt: 'big task',
+				lastStopContinuation: {mode: 'fresh'},
+				pendingSteers: [],
+				lastHandoffSizeBytes: null,
+				parkedAfterHandover: false,
+				...overrides,
+			};
+		}
+
+		/**
+		 * Spawn choreography for a Run whose first Turn hands over: spawn 1 is
+		 * the primary Turn (crosses the bound, is killed), spawn 2 the fork
+		 * (writes the Handoff file), spawn 3 — when the Run gets that far — the
+		 * fresh post-Handover Turn, which completes the workflow.
+		 */
+		function handoverSpawns(
+			runtime: MockRuntime,
+			journalPath: string,
+			handoffPath: string,
+		) {
+			const spawns: SpawnArgs[] = [];
+			const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
+				spawns.push(opts);
+				const spawnIndex = spawns.length;
+				const child = makeChildProcess(() => {
+					opts.onExit?.(143);
+				});
+				setImmediate(() => {
+					if (spawnIndex === 1) {
+						fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
+						runtime.emit(
+							makeRuntimeEvent({
+								id: 'evt-precompact',
+								kind: 'compact.pre',
+								hookName: 'PreCompact',
+								sessionId: 'claude-sess-primary',
+								interaction: {
+									expectsDecision: true,
+									defaultTimeoutMs: 4000,
+									canBlock: true,
+								},
+							}),
+						);
+					} else if (spawnIndex === 2) {
+						fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+						fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
+						opts.onExit?.(0);
+					} else {
+						fs.writeFileSync(journalPath, '<!-- DONE -->', 'utf-8');
+						opts.onStdout?.(
+							JSON.stringify({
+								type: 'message',
+								role: 'assistant',
+								content: [{type: 'text', text: 'done after handover'}],
+							}) + '\n',
+						);
+						opts.onExit?.(0);
+					}
+				});
+				return child;
+			});
+			return {spawns, spawnProcess};
+		}
+
+		it('run.handover carries the iteration it interrupted, and iteration.complete follows the reseed', async () => {
+			const runtime = new MockRuntime();
+			const stdout = createWriteCapture();
+			const stderr = createWriteCapture();
+			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
+			const dossier = path.join(projectDir, '.athena', 'session-ho');
+			fs.mkdirSync(dossier, {recursive: true});
+			const journalPath = path.join(dossier, 'journal.md');
+			const handoffPath = path.join(dossier, 'handoff', '001.md');
+			const {spawns, spawnProcess} = handoverSpawns(
+				runtime,
+				journalPath,
+				handoffPath,
+			);
+
+			try {
+				const result = await runExec({
+					prompt: 'big task',
+					projectDir,
+					harness: 'claude-code',
+					athenaSessionId: 'session-ho',
+					isolationConfig: {},
+					ephemeral: true,
+					json: true,
+					stdout: stdout.writer,
+					stderr: stderr.writer,
+					runtimeFactory: () => runtime,
+					spawnProcess,
+					workflow: {
+						name: 'test-loop',
+						plugins: [],
+						promptTemplate: '{input}',
+						loop: {
+							enabled: true,
+							completionMarker: '<!-- DONE -->',
+							maxIterations: 5,
+							journalPath: '.athena/{sessionId}/journal.md',
+						},
+					},
+				});
+
+				expect(result.success).toBe(true);
+				expect(spawns).toHaveLength(3);
+				const events = parseJsonl(stdout.read());
+				expect(events.find(e => e.type === 'run.handover')?.data).toEqual({
+					adapterSessionId: 'claude-sess-primary',
+					iteration: 1,
+				});
+				// The Handover row reports the iteration boundary like a Nudge does:
+				// Turn 1 was interrupted, Turn 2 is the fresh post-Handover Turn.
+				const completes = events
+					.filter(e => e.type === 'iteration.complete')
+					.map(e => e.data.iteration);
+				expect(completes).toEqual([2]);
+			} finally {
+				fs.rmSync(projectDir, {recursive: true, force: true});
+			}
+		});
+
+		it('parks at the iteration ceiling after a Handover with the Handoff written, marked to wake fresh', async () => {
+			const runtime = new MockRuntime();
+			const stdout = createWriteCapture();
+			const stderr = createWriteCapture();
+			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
+			const sessionsRoot = makeSessionsRoot();
+			const dossier = path.join(projectDir, '.athena', 'session-ho');
+			fs.mkdirSync(dossier, {recursive: true});
+			const journalPath = path.join(dossier, 'journal.md');
+			const handoffPath = path.join(dossier, 'handoff', '001.md');
+			const {spawns, spawnProcess} = handoverSpawns(
+				runtime,
+				journalPath,
+				handoffPath,
+			);
+
+			try {
+				const result = await runExec({
+					prompt: 'big task',
+					projectDir,
+					harness: 'claude-code',
+					athenaSessionId: 'session-ho',
+					isolationConfig: {},
+					ephemeral: true,
+					json: true,
+					stdout: stdout.writer,
+					stderr: stderr.writer,
+					runtimeFactory: () => runtime,
+					spawnProcess,
+					sessionStoreFactory: storeFactoryAt(sessionsRoot),
+					workflow: {
+						name: 'test-loop',
+						plugins: [],
+						promptTemplate: '{input}',
+						loop: {
+							enabled: true,
+							completionMarker: '<!-- DONE -->',
+							// Turn 1 is the ceiling: the Handover row must apply it.
+							maxIterations: 1,
+							journalPath: '.athena/{sessionId}/journal.md',
+						},
+					},
+				});
+
+				// A suspend, not a failure: exit 0, the Run is parked for a person.
+				expect(result.success).toBe(true);
+				expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
+				// Primary Turn + fork only — no fresh Turn was seeded past the ceiling.
+				expect(spawns).toHaveLength(2);
+				// Fork first, then park: the Handoff is on disk for the wake.
+				expect(fs.existsSync(handoffPath)).toBe(true);
+				const events = parseJsonl(stdout.read());
+				expect(
+					events.find(e => e.type === 'run.suspended')?.data,
+				).toMatchObject({
+					status: 'awaiting_attention',
+					stopReason:
+						'iteration ceiling reached: 1 iteration (maxIterations) used without a terminal marker',
+				});
+				expect(events.some(e => e.type === 'iteration.complete')).toBe(false);
+
+				const parked = getLatestRunForSession('session-ho', sessionsRoot);
+				expect(parked?.status).toBe('awaiting_attention');
+				expect(parked?.stopReason).toContain('iteration ceiling reached: 1');
+				// The marking the wake honours (ADR 0018 §9).
+				expect(wakesFreshAfterHandover(parked?.runMemoryJson)).toBe(true);
+			} finally {
+				fs.rmSync(projectDir, {recursive: true, force: true});
+				fs.rmSync(sessionsRoot, {recursive: true, force: true});
+			}
+		});
+
+		function seedParkedRun(
+			sessionsRoot: string,
+			projectDir: string,
+			memory: RunMemory,
+			stopReason: string,
+		): void {
+			const seed = createSessionStore({
+				sessionId: 'session-ho',
+				projectDir,
+				dbPath: path.join(sessionsRoot, 'session-ho', 'session.db'),
+			});
+			seed.persistRun({
+				runId: 'run-parked',
+				sessionId: 'session-ho',
+				workflowName: 'test-loop',
+				iteration: memory.iteration,
+				maxIterations: 5,
+				status: 'awaiting_attention',
+				stopReason,
+				adapterSessionId: 'claude-sess-bound',
+				runMemoryJson: serializeRunMemory(memory),
+			});
+			seed.close();
+		}
+
+		function completingSpawn(journalPath: string) {
+			const spawns: SpawnArgs[] = [];
+			const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
+				spawns.push(opts);
+				const child = makeChildProcess();
+				setImmediate(() => {
+					fs.writeFileSync(journalPath, 'resumed\n<!-- DONE -->', 'utf-8');
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'message',
+							role: 'assistant',
+							content: [{type: 'text', text: 'finished'}],
+						}) + '\n',
+					);
+					opts.onExit?.(0);
+				});
+				return child;
+			});
+			return {spawns, spawnProcess};
+		}
+
+		async function wakeParkedRun(input: {
+			memory: RunMemory;
+			stopReason: string;
+		}): Promise<{spawns: SpawnArgs[]; journalPath: string; dossier: string}> {
+			const runtime = new MockRuntime();
+			const stdout = createWriteCapture();
+			const stderr = createWriteCapture();
+			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
+			const sessionsRoot = makeSessionsRoot();
+			const dossier = path.join(projectDir, '.athena', 'session-ho');
+			fs.mkdirSync(path.join(dossier, 'handoff'), {recursive: true});
+			const journalPath = path.join(dossier, 'journal.md');
+			fs.writeFileSync(journalPath, 'parked at the bound', 'utf-8');
+			// The chain retains two; the newest is the one a fresh wake must read.
+			fs.writeFileSync(path.join(dossier, 'handoff', '001.md'), 'old', 'utf-8');
+			fs.writeFileSync(path.join(dossier, 'handoff', '002.md'), 'new', 'utf-8');
+			seedParkedRun(sessionsRoot, projectDir, input.memory, input.stopReason);
+			const {spawns, spawnProcess} = completingSpawn(journalPath);
+
+			try {
+				const result = await runExec({
+					prompt: 'carry on',
+					projectDir,
+					harness: 'claude-code',
+					athenaSessionId: 'session-ho',
+					resumeRunId: 'run-parked',
+					// A caller that did not honour the marking still hands over the
+					// bound session; the Runner must not resume it.
+					adapterResumeSessionId: 'claude-sess-bound',
+					isolationConfig: {},
+					ephemeral: true,
+					json: true,
+					stdout: stdout.writer,
+					stderr: stderr.writer,
+					runtimeFactory: () => runtime,
+					spawnProcess,
+					sessionStoreFactory: storeFactoryAt(sessionsRoot),
+					workflow: {
+						name: 'test-loop',
+						plugins: [],
+						promptTemplate: '{input}',
+						loop: {
+							enabled: true,
+							completionMarker: '<!-- DONE -->',
+							maxIterations: 5,
+							journalPath: '.athena/{sessionId}/journal.md',
+						},
+					},
+				});
+				expect(result.success).toBe(true);
+				expect(spawns).toHaveLength(1);
+				return {spawns, journalPath, dossier};
+			} finally {
+				fs.rmSync(projectDir, {recursive: true, force: true});
+				fs.rmSync(sessionsRoot, {recursive: true, force: true});
+			}
+		}
+
+		it('wakes a Run parked after a Handover into a fresh Agent Session that reads the newest Handoff and the journal', async () => {
+			const {spawns, dossier} = await wakeParkedRun({
+				memory: memoryOf({iteration: 1, parkedAfterHandover: true}),
+				stopReason:
+					'iteration ceiling reached: 1 iteration (maxIterations) used without a terminal marker',
+			});
+			const wake = spawns[0]!;
+			expect(wake.sessionId).toBeUndefined();
+			expect(wake.prompt).toContain('carry on');
+			expect(wake.prompt).toContain(path.join(dossier, 'handoff', '002.md'));
+			expect(wake.prompt).not.toContain(path.join('handoff', '001.md'));
+			expect(wake.prompt).toContain('.athena/session-ho/journal.md');
+		});
+
+		it('wakes a Run parked on any other row by resuming its Agent Session, naming no Handoff', async () => {
+			const {spawns} = await wakeParkedRun({
+				memory: memoryOf({iteration: 2, parkedAfterHandover: false}),
+				stopReason:
+					'nudge cap reached: 3 nudges (nudgeCap) without journal progress or a terminal marker',
+			});
+			const wake = spawns[0]!;
+			expect(wake.sessionId).toBe('claude-sess-bound');
+			expect(wake.prompt).toContain('carry on');
+			expect(wake.prompt).not.toContain('handoff/');
+		});
 	});
 
 	it('suspends after running all iterations without completion (awaiting_attention)', async () => {

@@ -263,6 +263,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	let mappedFinalMessage: string | null = null;
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
+	// The Iteration of the Turn in flight, as the Runner names it on each
+	// `startTurn` — what `run.handover` reports as the iteration it
+	// interrupted (ADR 0018 §8); the exec runner holds no `RunMemory` itself.
+	let currentIteration = 0;
 	let beforeTerminalCompletionRan = false;
 	let unsubscribeSteers: (() => void) | undefined;
 	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
@@ -437,7 +441,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			output.notice(
 				`handover: context bound reached — forking session ${handle} to write a Handoff file`,
 			);
-			output.emitJsonEvent('run.handover', {adapterSessionId: handle});
+			output.emitJsonEvent('run.handover', {
+				adapterSessionId: handle,
+				iteration: currentIteration,
+			});
 			void sessionController.kill();
 		}
 		return 'Handover in progress — Athena forks the conversation instead of compacting.';
@@ -852,6 +859,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			resumedRunMemory,
 			resumedStopReason,
 			startTurn: async turnInput => {
+				currentIteration = turnInput.iteration;
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
 					continuation: turnInput.continuation,

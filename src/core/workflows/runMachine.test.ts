@@ -6,6 +6,7 @@ import {
 	deserializeRunMemory,
 	buildHandoverSeedPrompt,
 	buildWakePrompt,
+	wakesFreshAfterHandover,
 	type RunPhase,
 	type RunMemory,
 	type RunEvent,
@@ -74,6 +75,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		lastStopContinuation: {mode: 'fresh'},
 		pendingSteers: [],
 		lastHandoffSizeBytes: null,
+		parkedAfterHandover: false,
 		...overrides,
 	};
 }
@@ -167,7 +169,12 @@ function forkFinished(
 function woken(
 	overrides?: Partial<Extract<RunEvent, {type: 'woken'}>>,
 ): Extract<RunEvent, {type: 'woken'}> {
-	return {type: 'woken', continuation: {mode: 'fresh'}, ...overrides};
+	return {
+		type: 'woken',
+		continuation: {mode: 'fresh'},
+		handoffPath: null,
+		...overrides,
+	};
 }
 
 describe('runMachine.step — turn_in_flight', () => {
@@ -999,11 +1006,103 @@ describe('runMachine.step — handing_over', () => {
 			),
 		);
 		expect(result.memory.iteration).toBe(3);
+		// The Handover row reports `iteration.complete` like the Nudge rows do
+		// (ADR 0018 §8), so the exec stream never loses an iteration to a Handover.
 		expect(result.actions.map(a => a.type)).toEqual([
 			'purge_handoffs',
 			'persist',
+			'notify_iteration_complete',
 			'start_turn',
 		]);
+		expect(result.memory.parkedAfterHandover).toBe(false);
+	});
+
+	describe('the iteration ceiling applies on the Handover row (ADR 0018 §4)', () => {
+		const ceilingCfg = () => makeCfg({loop: {...LOOP, maxIterations: 3}});
+
+		it('a successful fork whose interrupted Turn reached maxIterations parks with the ceiling sentence, Handoff written first', () => {
+			const result = step(
+				handingOver({handle: 'sess-1'}),
+				makeMemory({iteration: 3, lastHandoffSizeBytes: null}),
+				forkFinished({
+					ok: true,
+					handoffPath: '/proj/.athena/s1/handoff/003.md',
+					handoffSizeBytes: 2048,
+				}),
+				ceilingCfg(),
+			);
+			expect(result.phase).toEqual({
+				kind: 'awaiting_attention',
+				stopReason:
+					'iteration ceiling reached: 3 iterations (maxIterations) used without a terminal marker',
+			});
+			// Fork first, then check: the Handoff is on disk for the wake, and its
+			// size is recorded like any other successful fork.
+			expect(result.memory.lastHandoffSizeBytes).toBe(2048);
+			// The park does not consume an iteration — the wake ticks it, exactly
+			// as a wake after the clean-stop ceiling does.
+			expect(result.memory.iteration).toBe(3);
+			// Marked so the wake starts a fresh Agent Session (ADR 0018 §9): the
+			// persisted vendor session sits at its context bound.
+			expect(result.memory.parkedAfterHandover).toBe(true);
+			expect(result.actions).toEqual([
+				{type: 'purge_handoffs'},
+				{type: 'persist'},
+			]);
+		});
+
+		it('a successful fork below the ceiling seeds the fresh Turn as before', () => {
+			const result = step(
+				handingOver({handle: 'sess-1'}),
+				makeMemory({iteration: 2}),
+				forkFinished({ok: true}),
+				ceilingCfg(),
+			);
+			expect(result.phase.kind).toBe('turn_in_flight');
+			expect(result.memory.iteration).toBe(3);
+			expect(result.memory.parkedAfterHandover).toBe(false);
+			expect(result.actions.map(a => a.type)).toEqual([
+				'purge_handoffs',
+				'persist',
+				'notify_iteration_complete',
+				'start_turn',
+			]);
+		});
+
+		it('a failed fork at the ceiling still degrades in place — failed, retried and cancelled forks are unchanged', () => {
+			const degraded = step(
+				handingOver({handle: 'sess-orig'}),
+				makeMemory({iteration: 3}),
+				forkFinished({ok: false, transient: false}),
+				ceilingCfg(),
+			);
+			expect(degraded.phase.kind).toBe('turn_in_flight');
+			expect(degraded.memory.parkedAfterHandover).toBe(false);
+			expect(degraded.actions).toEqual([
+				{type: 'degrade_handover', handle: 'sess-orig'},
+				{type: 'persist'},
+				expect.objectContaining({type: 'start_turn'}),
+			]);
+
+			const retried = step(
+				handingOver({handle: 'sess-orig'}),
+				makeMemory({iteration: 3}),
+				forkFinished({ok: false, transient: true}),
+				ceilingCfg(),
+			);
+			expect(retried.phase.kind).toBe('backing_off');
+			expect(retried.actions).toEqual([
+				{type: 'wait', ms: DEFAULT_RETRY_BACKOFF_MS},
+			]);
+
+			const cancelled = step(
+				handingOver({handle: 'sess-orig'}),
+				makeMemory({iteration: 3}),
+				forkFinished({cancelled: true}),
+				ceilingCfg(),
+			);
+			expect(cancelled.phase).toEqual({kind: 'cancelled'});
+		});
 	});
 
 	it('a non-transient failed fork degrades immediately to resuming the original conversation in place', () => {
@@ -1144,6 +1243,73 @@ describe('runMachine.step — awaiting_attention', () => {
 		expect(nextPhase.continuation).toEqual({
 			mode: 'resume',
 			handle: 'sess-woken',
+		});
+	});
+
+	describe('a park that followed a Handover wakes fresh (ADR 0018 §9)', () => {
+		it('starts a fresh Agent Session even when a bound session was reported, names the newest Handoff, and clears the marking', () => {
+			const result = step(
+				awaitingAttention({
+					stopReason:
+						'iteration ceiling reached: 3 iterations (maxIterations) used without a terminal marker',
+				}),
+				makeMemory({iteration: 3, parkedAfterHandover: true}),
+				woken({
+					continuation: {mode: 'resume', handle: 'sess-at-bound'},
+					handoffPath: '/proj/.athena/s1/handoff/003.md',
+				}),
+				makeCfg(),
+			);
+			const nextPhase = result.phase as Extract<
+				RunPhase,
+				{kind: 'turn_in_flight'}
+			>;
+			expect(nextPhase.continuation).toEqual({mode: 'fresh'});
+			expect(nextPhase.prompt).toBe(
+				buildWakePrompt(
+					'do the task',
+					'.athena/s1/journal.md',
+					undefined,
+					'/proj/.athena/s1/handoff/003.md',
+				),
+			);
+			expect(nextPhase.prompt).toContain('/proj/.athena/s1/handoff/003.md');
+			expect(nextPhase.prompt).toContain('.athena/s1/journal.md');
+			expect(result.memory.iteration).toBe(4);
+			expect(result.memory.lastStopContinuation).toEqual({mode: 'fresh'});
+			// The wake consumed the marking: a later park on another row resumes.
+			expect(result.memory.parkedAfterHandover).toBe(false);
+			expect(result.actions).toEqual([
+				{type: 'persist'},
+				expect.objectContaining({
+					type: 'start_turn',
+					continuation: {mode: 'fresh'},
+				}),
+			]);
+		});
+
+		it('a wake of a Run parked on any other row keeps the reported session and never names a Handoff that happens to be on disk', () => {
+			const result = step(
+				awaitingAttention({stopReason: 'nudge cap reached'}),
+				makeMemory({iteration: 5, parkedAfterHandover: false}),
+				woken({
+					continuation: {mode: 'resume', handle: 'sess-woken'},
+					handoffPath: '/proj/.athena/s1/handoff/001.md',
+				}),
+				makeCfg(),
+			);
+			const nextPhase = result.phase as Extract<
+				RunPhase,
+				{kind: 'turn_in_flight'}
+			>;
+			expect(nextPhase.continuation).toEqual({
+				mode: 'resume',
+				handle: 'sess-woken',
+			});
+			expect(nextPhase.prompt).toBe(
+				buildWakePrompt('do the task', '.athena/s1/journal.md'),
+			);
+			expect(nextPhase.prompt).not.toContain('handoff/001.md');
 		});
 	});
 });
@@ -1294,6 +1460,22 @@ describe('RunMemory serialization', () => {
 		});
 		const parsed = deserializeRunMemory(serializeRunMemory(original));
 		expect(parsed).toEqual(original);
+	});
+
+	it('rehydrates a snapshot persisted before ADR 0018 with the Handover-park marking cleared', () => {
+		const legacy = makeMemory({iteration: 4}) as Partial<RunMemory>;
+		delete legacy.parkedAfterHandover;
+		const parsed = deserializeRunMemory(JSON.stringify(legacy));
+		expect(parsed).not.toBeNull();
+		expect(parsed!.parkedAfterHandover).toBe(false);
+		expect(wakesFreshAfterHandover(JSON.stringify(legacy))).toBe(false);
+		expect(
+			wakesFreshAfterHandover(
+				serializeRunMemory(makeMemory({parkedAfterHandover: true})),
+			),
+		).toBe(true);
+		expect(wakesFreshAfterHandover(undefined)).toBe(false);
+		expect(wakesFreshAfterHandover('not json')).toBe(false);
 	});
 
 	it('returns null for missing, malformed, or foreign JSON', () => {

@@ -130,6 +130,10 @@ what the Dossier captured; a persistently large Handoff means the Dossier is und
 Runner already has the bytes to say so. **The chain and its retention landed in #170**; the fold-in
 obligation and the metric are protocol and Runner work this ADR still owes.
 
+> Extended by ADR 0018: the Handoff's similarity to its predecessor is a _progress_ metric — two
+> near-identical consecutive Handoffs mean the session between them added nothing. The fold-in
+> obligation stands; its execution as an appended "Handoff N processed" note is forbidden.
+
 **9. `orientation.md` earns its place on revisability, not deduplication.** Measured cross-unit
 overlap is clustered and modest (`#126`-`#129` share `mapper.ts`/`runSessionProjection.ts`; nothing
 across clusters), so deduplication is a minor gain. The real justification is that it is the only

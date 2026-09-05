@@ -96,10 +96,18 @@ covers `tracker.md` alone.** Under ADR 0015 a shed rewrites the Tracker _and_ a 
 hash spanned the Dossier, a shed would read as "the Tracker advanced" and silently reset the nudge
 streak, converting a stuck agent into an unbounded one.
 
+> Amended by ADR 0018 §5: the reducer's contact stays the Journal hash and the missing-Journal
+> outcome, but the _interpreter's_ contact widens from the Journal alone to the Handoff chain, for
+> one number — the similarity of the newest Handoff to its predecessor.
+
 **10. This refactor changes no behaviour except the defects it names.** §2 (budget across wakes),
 §3 (replay rule), §4-§6 (fallthrough, purity, rehydration), §7 (preserved rows), and §8 (fork retry).
 Every other row of the transition table must be defensible against the current Runner's observed
 behaviour; a row that is not is either a fix named here or a regression that was missed.
+
+> Amended by ADR 0018: two more named defects — the iteration ceiling was unreachable on the
+> Handover row (the successful-fork row seeded the next Turn without consulting `maxIterations`),
+> and the Handover itself was unbounded.
 
 ## Consequences
 
