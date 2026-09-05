@@ -35,13 +35,27 @@ export const DEFAULT_RETRY_CAP = 3;
 /**
  * Default {@link LoopConfig.handoverCap}: consecutive **unproductive**
  * Handovers tolerated before the Run suspends in `awaiting_attention` (ADR
- * 0018 §2). A Handover is unproductive when the Turn it ended left the
- * Journal hash unchanged since the previous Turn boundary — the session it
- * distilled added nothing durable. A productive Handover resets the streak;
+ * 0018 §2). A Handover is unproductive when its Handoff file is at least
+ * {@link HANDOFF_NO_PROGRESS_SIMILARITY} similar to the previous one in the
+ * chain, or when the Turn it ended left the Journal hash unchanged since the
+ * previous Turn boundary — either way the session it distilled added nothing
+ * durable. A productive Handover resets the streak;
  * so does a wake, because a human reply is new information. Legitimately long
  * Runs are chains of productive Handovers and never trip it.
  */
 export const DEFAULT_HANDOVER_CAP = 3;
+
+/**
+ * Word-3-gram Jaccard similarity at or above which a new Handoff file counts
+ * as a restatement of its predecessor, making the Handover unproductive (ADR
+ * 0018 §1). Measured on the CORE-377 incident's 26 consecutive Handoffs:
+ * pairs written while the Run was still orienting (001→008) scored
+ * 0.13–0.47; pairs written once it was stuck (009→014, 021→026) scored
+ * 0.63–0.93. 0.7 sits between the two bands. A first Handover has no
+ * predecessor and is judged on the Journal hash alone. Tuning this is a
+ * deliberate change: record the new measurement beside it.
+ */
+export const HANDOFF_NO_PROGRESS_SIMILARITY = 0.7;
 
 /**
  * Default base for {@link LoopConfig.retryBackoffMs}. Retry N waits
@@ -82,7 +96,9 @@ export type LoopConfig = {
 	retryCap?: number;
 	/**
 	 * Consecutive unproductive Handovers tolerated before the Run suspends
-	 * (ADR 0018 §2) — a Handover whose Turn left the Journal unchanged. Resets
+	 * (ADR 0018 §2) — a Handover whose Handoff restates its predecessor
+	 * ({@link HANDOFF_NO_PROGRESS_SIMILARITY}) or whose Turn left the Journal
+	 * unchanged. Resets
 	 * on a productive Handover and on a wake. Defaults to
 	 * {@link DEFAULT_HANDOVER_CAP} when omitted. A workflow that expects long
 	 * orientation phases can raise it knowingly.

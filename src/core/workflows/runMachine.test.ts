@@ -167,6 +167,7 @@ function forkFinished(
 		cancelled: false,
 		handoffPath: '/proj/.athena/s1/handoff/001.md',
 		handoffSizeBytes: null,
+		handoffSimilarity: null,
 		transient: false,
 		...overrides,
 	};
@@ -1190,6 +1191,88 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.phase.kind).toBe('turn_in_flight');
 			expect(result.memory.handoverStreak).toBe(0);
 			expect(result.memory.parkedAfterHandover).toBe(false);
+		});
+
+		describe('Handoff similarity makes a Handover unproductive even when the Journal changed (ADR 0018 §1, #211)', () => {
+			it('a Handoff at least 0.7 similar to its predecessor is unproductive though the Journal changed, and the park sentence carries the percentage', () => {
+				const grown = step(
+					handingOver({journalUnchanged: false}),
+					makeMemory({iteration: 4, handoverStreak: 1}),
+					forkFinished({ok: true, handoffSimilarity: 0.8}),
+					makeCfg(),
+				);
+				expect(grown.phase.kind).toBe('turn_in_flight');
+				expect(grown.memory.handoverStreak).toBe(2);
+
+				const parked = step(
+					handingOver({journalUnchanged: false}),
+					makeMemory({iteration: 5, handoverStreak: 2}),
+					forkFinished({ok: true, handoffSimilarity: 0.89}),
+					makeCfg(),
+				);
+				expect(parked.phase).toEqual({
+					kind: 'awaiting_attention',
+					stopReason:
+						'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — ' +
+						'last Handoff 89% similar to the previous; journal changed. ' +
+						"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+				});
+				expect(parked.memory.parkedAfterHandover).toBe(true);
+			});
+
+			it('exactly the threshold counts as unproductive', () => {
+				const result = step(
+					handingOver({journalUnchanged: false}),
+					makeMemory({iteration: 4, handoverStreak: 0}),
+					forkFinished({ok: true, handoffSimilarity: 0.7}),
+					makeCfg(),
+				);
+				expect(result.memory.handoverStreak).toBe(1);
+			});
+
+			it('below the threshold with a changed Journal is productive: the streak resets', () => {
+				const result = step(
+					handingOver({journalUnchanged: false}),
+					makeMemory({iteration: 4, handoverStreak: 2}),
+					forkFinished({ok: true, handoffSimilarity: 0.3}),
+					makeCfg(),
+				);
+				expect(result.phase.kind).toBe('turn_in_flight');
+				expect(result.memory.handoverStreak).toBe(0);
+			});
+
+			it('below the threshold with an unchanged Journal is still unproductive, and the sentence says both', () => {
+				const result = step(
+					handingOver({journalUnchanged: true}),
+					makeMemory({iteration: 4, handoverStreak: 2}),
+					forkFinished({ok: true, handoffSimilarity: 0.31}),
+					makeCfg(),
+				);
+				expect(result.phase.kind).toBe('awaiting_attention');
+				expect(
+					(result.phase as Extract<RunPhase, {kind: 'awaiting_attention'}>)
+						.stopReason,
+				).toContain(
+					'without progress — last Handoff 31% similar to the previous; journal unchanged.',
+				);
+			});
+
+			it('a first Handover with no predecessor carries null similarity and is judged on the hash alone', () => {
+				const productive = step(
+					handingOver({journalUnchanged: false}),
+					makeMemory({iteration: 2, handoverStreak: 2}),
+					forkFinished({ok: true, handoffSimilarity: null}),
+					makeCfg(),
+				);
+				expect(productive.memory.handoverStreak).toBe(0);
+				const unproductive = step(
+					handingOver({journalUnchanged: true}),
+					makeMemory({iteration: 2, handoverStreak: 0}),
+					forkFinished({ok: true, handoffSimilarity: null}),
+					makeCfg(),
+				);
+				expect(unproductive.memory.handoverStreak).toBe(1);
+			});
 		});
 
 		it('failed and retried forks leave the streak alone', () => {

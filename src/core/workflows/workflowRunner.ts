@@ -22,6 +22,7 @@ import {
 	projectJournalTasks,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
+import {handoffSimilarity} from './handoffSimilarity';
 import {classifyTurnFailure} from '../runtime/failureTaxonomy';
 import {createPhaseTracker} from './turnProtocolBlock';
 import {
@@ -453,6 +454,31 @@ function newestHandoffPath(dir: string): string | null {
 }
 
 /**
+ * Similarity of the Handoff just written to the one before it in the chain
+ * (ADR 0018 §1, §5) — the chain retains two, so the predecessor is on disk.
+ * `null` for the first Handover of a Run or when either read fails; a
+ * read-only observation, never a write.
+ */
+function similarityToPreviousHandoff(
+	dir: string,
+	handoffAbsPath: string,
+): number | null {
+	const seq = Number(path.basename(handoffAbsPath, '.md'));
+	const previousSeq = listHandoffSeqs(dir)
+		.filter(s => s < seq)
+		.at(-1);
+	if (previousSeq === undefined) return null;
+	try {
+		return handoffSimilarity(
+			fs.readFileSync(handoffPathFor(dir, previousSeq), 'utf-8'),
+			fs.readFileSync(handoffAbsPath, 'utf-8'),
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Allocate the path for the next Handoff file.
  *
  * A fresh sequence number per Handover is what lets `existsSync` prove that
@@ -864,15 +890,18 @@ export function createWorkflowRunner(
 				input.handover?.onForkStateChange?.(false);
 			}
 
-			// Fidelity metric only (ADR 0015 §8) — a read-only stat, never a write,
-			// so this never touches the one-owner property (ADR 0004).
+			// Fidelity metric (ADR 0015 §8) and progress metric (ADR 0018 §1) —
+			// a read-only stat and a read-only compare, never a write, so this
+			// never touches the one-owner property (ADR 0004).
 			let handoffSizeBytes: number | null = null;
+			let similarity: number | null = null;
 			if (forkOk) {
 				try {
 					handoffSizeBytes = fs.statSync(handoffAbsPath).size;
 				} catch {
 					handoffSizeBytes = null;
 				}
+				similarity = similarityToPreviousHandoff(handoffDir, handoffAbsPath);
 			}
 
 			return {
@@ -881,6 +910,7 @@ export function createWorkflowRunner(
 				cancelled,
 				handoffPath: handoffAbsPath,
 				handoffSizeBytes,
+				handoffSimilarity: similarity,
 				transient,
 			};
 		}
