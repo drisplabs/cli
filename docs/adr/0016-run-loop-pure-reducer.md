@@ -97,8 +97,9 @@ hash spanned the Dossier, a shed would read as "the Tracker advanced" and silent
 streak, converting a stuck agent into an unbounded one.
 
 > Amended by ADR 0018 §5: the reducer's contact stays the Journal hash and the missing-Journal
-> outcome, but the _interpreter's_ contact widens from the Journal alone to the Handoff chain, for
-> one number — the similarity of the newest Handoff to its predecessor.
+> outcome, but the _interpreter's_ contact widens from the Journal alone to the Handoff chain (one
+> number: the similarity of the newest Handoff to its predecessor) and to the unit records (the
+> shed-integrity check of ADR 0018 §7 — a read-only observation the reducer turns into a nudge).
 
 **10. This refactor changes no behaviour except the defects it names.** §2 (budget across wakes),
 §3 (replay rule), §4-§6 (fallthrough, purity, rehydration), §7 (preserved rows), and §8 (fork retry).

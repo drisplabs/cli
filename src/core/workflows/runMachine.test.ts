@@ -176,6 +176,7 @@ function forkFinished(
 		ok: true,
 		cancelled: false,
 		handoffPath: '/proj/.athena/s1/handoff/001.md',
+		handoffSeq: 1,
 		handoffSizeBytes: null,
 		handoffSimilarity: null,
 		transient: false,
@@ -1320,7 +1321,11 @@ describe('runMachine.step — handing_over', () => {
 		const result = step(
 			handingOver({handle: 'sess-1'}),
 			makeMemory({iteration: 2}),
-			forkFinished({ok: true, handoffPath: '/proj/.athena/s1/handoff/002.md'}),
+			forkFinished({
+				ok: true,
+				handoffPath: '/proj/.athena/s1/handoff/002.md',
+				handoffSeq: 2,
+			}),
 			makeCfg(),
 		);
 		expect(result.phase.kind).toBe('turn_in_flight');
@@ -1607,6 +1612,7 @@ describe('runMachine.step — handing_over', () => {
 					forkFinished({
 						ok: true,
 						handoffPath: '/proj/.athena/s1/handoff/012.md',
+						handoffSeq: 12,
 					}),
 					makeCfg(),
 				);
@@ -1754,6 +1760,23 @@ describe('runMachine.step — handing_over', () => {
 			]);
 		});
 
+		it('a ceiling park after an unproductive Handover records and reports the judged streak', () => {
+			const result = step(
+				handingOver({journalUnchanged: true}),
+				makeMemory({iteration: 3, handoverStreak: 1}),
+				forkFinished({ok: true}),
+				ceilingCfg(),
+			);
+			expect(result.phase.kind).toBe('awaiting_attention');
+			expect(result.memory.handoverStreak).toBe(2);
+			expect(result.actions).toContainEqual(
+				expect.objectContaining({
+					type: 'notify_handover_completed',
+					completion: expect.objectContaining({handoverStreak: 2}),
+				}),
+			);
+		});
+
 		it('a successful fork below the ceiling seeds the fresh Turn as before', () => {
 			const result = step(
 				handingOver({handle: 'sess-1'}),
@@ -1894,6 +1917,7 @@ describe('runMachine.step — handing_over', () => {
 				forkFinished({
 					ok: true,
 					handoffPath: '/proj/.athena/s1/handoff/002.md',
+					handoffSeq: 2,
 				}),
 				makeCfg(),
 			);
@@ -1918,6 +1942,7 @@ describe('runMachine.step — handing_over', () => {
 				forkFinished({
 					ok: true,
 					handoffPath: '/proj/.athena/s1/handoff/002.md',
+					handoffSeq: 2,
 				}),
 				makeCfg(),
 			);

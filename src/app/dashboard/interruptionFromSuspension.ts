@@ -4,6 +4,15 @@ import {
 	type Interruption,
 } from '@drisp/protocol';
 
+/** The exhausted-bound names the park sentences open with, and the wire's cap for each. */
+const CAP_BY_BOUND: Record<string, ExhaustedCap> = {
+	'retry cap': 'retry',
+	'nudge cap': 'nudge',
+	'iteration ceiling': 'iterations',
+	'handover cap': 'handover',
+	'token budget': 'tokens',
+};
+
 /**
  * Classify the Runner's `run.suspended` stop reason into the Interruption a
  * `needs_human` frame carries.
@@ -18,14 +27,6 @@ import {
  * Anything unrecognised is reported as `blocked` with the raw sentence as its
  * reason: the Run did park for a human, and the message says why.
  */
-const CAP_BY_BOUND: Record<string, ExhaustedCap> = {
-	'retry cap': 'retry',
-	'nudge cap': 'nudge',
-	'iteration ceiling': 'iterations',
-	'handover cap': 'handover',
-	'token budget': 'tokens',
-};
-
 /** A capture group that may not have participated in the match. */
 function group(match: RegExpExecArray, index: number): string | undefined {
 	return match[index];

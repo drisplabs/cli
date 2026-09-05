@@ -118,6 +118,15 @@ function createWriteCapture() {
 	};
 }
 
+type ExecJsonlEvent = {type: string; data: Record<string, unknown>};
+
+function parseJsonl(text: string): ExecJsonlEvent[] {
+	return text
+		.split('\n')
+		.filter(line => line.trim().length > 0)
+		.map(line => JSON.parse(line) as ExecJsonlEvent);
+}
+
 describe('runExec', () => {
 	it('returns success and prints final message in human mode', async () => {
 		const runtime = new MockRuntime();
@@ -1518,6 +1527,154 @@ describe('runExec', () => {
 			expect(wake.sessionId).toBe('claude-sess-bound');
 			expect(wake.prompt).toContain('carry on');
 			expect(wake.prompt).not.toContain('handoff/');
+		});
+	});
+
+	describe('the Turn-1 opening-context warning (ADR 0018 §6, #216)', () => {
+		/** A single completing Turn whose stream opens at `openingContext` tokens. */
+		function completingTurn(journalPath: string, openingContext: number) {
+			return (opts: SpawnArgs): ChildProcess => {
+				const child = makeChildProcess();
+				setImmediate(() => {
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'assistant',
+							message: {
+								type: 'message',
+								usage: {
+									input_tokens: openingContext - 1_000,
+									output_tokens: 10,
+									cache_read_input_tokens: 1_000,
+								},
+							},
+						}) + '\n',
+					);
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'assistant',
+							message: {
+								type: 'message',
+								usage: {
+									input_tokens: 500,
+									output_tokens: 10,
+									cache_read_input_tokens: openingContext + 4_500,
+								},
+							},
+						}) + '\n',
+					);
+					fs.writeFileSync(journalPath, 'done\n<!-- DONE -->', 'utf-8');
+					opts.onStdout?.(
+						JSON.stringify({
+							type: 'message',
+							role: 'assistant',
+							content: [{type: 'text', text: 'finished'}],
+						}) + '\n',
+					);
+					opts.onExit?.(0);
+				});
+				return child;
+			};
+		}
+
+		async function runTurnOne(input: {
+			openingContext: number;
+			json: boolean;
+			maxTurnTokenCount?: number;
+		}) {
+			const runtime = new MockRuntime();
+			const stdout = createWriteCapture();
+			const stderr = createWriteCapture();
+			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-hr-'));
+			const dossier = path.join(projectDir, '.athena', 'session-hr');
+			fs.mkdirSync(dossier, {recursive: true});
+			const journalPath = path.join(dossier, 'journal.md');
+			try {
+				const result = await runExec({
+					prompt: 'small task',
+					projectDir,
+					harness: 'claude-code',
+					athenaSessionId: 'session-hr',
+					isolationConfig: {},
+					ephemeral: true,
+					json: input.json,
+					stdout: stdout.writer,
+					stderr: stderr.writer,
+					runtimeFactory: () => runtime,
+					spawnProcess: completingTurn(journalPath, input.openingContext),
+					workflow: {
+						name: 'test-loop',
+						plugins: [],
+						promptTemplate: '{input}',
+						loop: {
+							enabled: true,
+							completionMarker: '<!-- DONE -->',
+							maxIterations: 5,
+							journalPath: '.athena/{sessionId}/journal.md',
+							...(input.maxTurnTokenCount !== undefined
+								? {maxTurnTokenCount: input.maxTurnTokenCount}
+								: {}),
+						},
+					},
+				});
+				expect(result.success).toBe(true);
+				return {stdout: stdout.read(), stderr: stderr.read()};
+			} finally {
+				fs.rmSync(projectDir, {recursive: true, force: true});
+			}
+		}
+
+		it('warns on exec.warning when Turn 1 opens above half the bound, naming the opening context, the bound and the likely working room', async () => {
+			const {stdout} = await runTurnOne({openingContext: 71_400, json: true});
+			const warning = parseJsonl(stdout).find(
+				e =>
+					e.type === 'exec.warning' &&
+					String(e.data.message).includes('baseline context'),
+			);
+			expect(warning).toBeDefined();
+			const message = String(warning!.data.message);
+			expect(message).toContain('~71k');
+			expect(message).toContain('~130k');
+			expect(message).toContain('loop.maxTurnTokenCount');
+			expect(message).toContain('working room');
+			expect(message).toContain('below the bound');
+			expect(message).toContain('MCP servers and skills');
+		});
+
+		it('measures against the configured bound', async () => {
+			const {stdout} = await runTurnOne({
+				openingContext: 60_000,
+				json: true,
+				maxTurnTokenCount: 105_000,
+			});
+			const message = String(
+				parseJsonl(stdout).find(
+					e =>
+						e.type === 'exec.warning' &&
+						String(e.data.message).includes('baseline context'),
+				)?.data.message,
+			);
+			expect(message).toContain('~60k');
+			expect(message).toContain('~105k');
+		});
+
+		it('stays silent when Turn 1 opens below half the bound', async () => {
+			const {stdout, stderr} = await runTurnOne({
+				openingContext: 20_000,
+				json: true,
+			});
+			expect(
+				parseJsonl(stdout).some(
+					e =>
+						e.type === 'exec.warning' &&
+						String(e.data.message).includes('baseline context'),
+				),
+			).toBe(false);
+			expect(stderr).not.toContain('baseline context');
+		});
+
+		it('prints a notice in human mode', async () => {
+			const {stderr} = await runTurnOne({openingContext: 71_400, json: false});
+			expect(stderr).toContain('baseline context is ~71k');
 		});
 	});
 

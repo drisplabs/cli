@@ -168,12 +168,17 @@ sessions — becomes readable from the stream.
 `interruptionFromSuspension` learns `handover cap reached: N`. A wake after a Handover-cap park
 must start a **fresh** Agent Session seeded with the newest Handoff, the Journal, and the reply:
 the persisted vendor session is the killed one (or the fork), both at the bound, and resuming
-either re-trips compaction immediately. The exec runner's continuation choice keys off the
-parked Interruption (`cap_exhausted`, `cap: 'handover'`), and `buildWakePrompt` names the Handoff.
+either re-trips compaction immediately. The Run's persisted memory carries the marking
+(`parkedAfterHandover`, set by every park on the successful-fork row — the cap, the ceiling and the
+token budget — because the Interruption kind alone cannot tell a ceiling reached on the Handover row
+from one reached on a clean stop); resume resolution and the `woken` row key off it, and
+`buildWakePrompt` names the Handoff.
 
 **10. A cumulative Run token budget, opt-in.** ADR 0014 §7 anticipated it. `loop.maxRunTokens`
-(no default) parks the Run with `token budget reached: N of M tokens (maxRunTokens)` using the
-`cumulativeTokens` the interpreter already keeps, passed on each event. No default because
+(no default) parks the Run with `token budget reached: <limit> tokens (maxRunTokens); used <total>` — the limit
+first, as every cap sentence is read back — using the `cumulativeTokens` the interpreter already
+keeps, passed on each event. A budget park on a fork boundary reuses §9's marking; one on a clean
+Turn boundary resumes the intact session. No default because
 cache reads dominate a legitimate long Run's total and a default would fight run-until-done; the
 total is surfaced on `iteration.complete` and `drisp runs` regardless.
 

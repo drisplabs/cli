@@ -14,6 +14,14 @@
  * only come from triggering early — forking creates no room. Claude Code
  * additionally clamps its knob to a 100k floor (measured on 2.1.217; see
  * qa/max-turn-token-count.md), so values below 100k are silently raised there.
+ *
+ * The compaction point is **measured, not derived from the knob** (ADR 0018
+ * §6): on Claude Code 2.1.247 with this default, compaction fired at ≈97k–104k
+ * tokens — roughly 30k below the knob, not at the ≈95% earlier builds showed.
+ * The runner now measures each fresh Turn's opening context and the context
+ * at its bound (`run.handover.completed`, the Handover-cap sentence); the
+ * default stays where it is until qa/max-turn-token-count.md is re-measured
+ * against that method.
  */
 export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
 
@@ -127,6 +135,12 @@ export type LoopConfig = {
 	 * Handover can intercept it — at a configured point well under the model
 	 * window. Defaults to {@link DEFAULT_MAX_TURN_TOKEN_COUNT} when omitted.
 	 * The dial trading context freshness against Handover frequency.
+	 *
+	 * Not the agent's budget (ADR 0018 §6): the effective compaction point may
+	 * sit well below this value (≈30k below on Claude Code 2.1.247), and a
+	 * fresh Turn's working room is that point minus its opening context —
+	 * system prompt, tools, skills and seed. The exec runner warns on Turn 1
+	 * when the opening context exceeds half of this bound.
 	 */
 	maxTurnTokenCount?: number;
 	/**
