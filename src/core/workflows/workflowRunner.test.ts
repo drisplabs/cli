@@ -1282,8 +1282,73 @@ describe('createWorkflowRunner', () => {
 		expect(calls[2]!.prompt).toContain('Handover occurred');
 		expect(calls[2]!.prompt).toContain(handoffPath);
 		expect(calls[2]!.prompt).toContain(journalPath);
-		// The post-Handover Turn must fold the Handoff in before domain work (ADR 0015 §8).
+		// The post-Handover Turn must fold the Handoff in before domain work (ADR
+		// 0015 §8) — only what the Journal lacks, never as an appended note (ADR
+		// 0018 §7) — and a Journal under the bound draws no size nudge.
 		expect(calls[2]!.prompt.toLowerCase()).toContain('before any domain work');
+		expect(calls[2]!.prompt.toLowerCase()).toContain(
+			'if it lacks nothing, write nothing',
+		);
+		expect(calls[2]!.prompt).not.toContain('shedding backstop');
+	});
+
+	it('attaches the size nudge to the Handover seed prompt when the Journal is over the shed bound (#212)', async () => {
+		const projectDir = makeTempDir();
+		const journalDir = path.join(projectDir, '.athena', 's1');
+		fs.mkdirSync(journalDir, {recursive: true});
+		const journalPath = path.join(journalDir, 'journal.md');
+		const handoffPath = path.join(journalDir, 'handoff', '001.md');
+
+		let pendingHandover: {handle: string} | null = null;
+		const calls: Array<{prompt: string}> = [];
+		const startTurn = vi
+			.fn()
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				// ~10k tokens at the ~4 chars/token estimate: over the 8k bound.
+				fs.writeFileSync(journalPath, 'deep in work '.repeat(3_200), 'utf-8');
+				pendingHandover = {handle: 'claude-sess-primary'};
+				return {...OK_RESULT, exitCode: 143, error: new Error('killed')};
+			})
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
+				fs.writeFileSync(handoffPath, '# Handoff\nwhere things stand', 'utf-8');
+				return OK_RESULT;
+			})
+			.mockImplementationOnce(async (input: {prompt: string}) => {
+				calls.push(input);
+				fs.writeFileSync(journalPath, '<!-- WORKFLOW_COMPLETE -->', 'utf-8');
+				return OK_RESULT;
+			});
+
+		const handle = createWorkflowRunner({
+			sessionId: 's1',
+			projectDir,
+			prompt: 'do it',
+			workflow: {
+				name: 'wf',
+				plugins: [],
+				promptTemplate: '{input}',
+				loop: {enabled: true, maxIterations: 5},
+			},
+			startTurn,
+			persistRunState: vi.fn(),
+			handover: {
+				takeRequest: () => {
+					const request = pendingHandover;
+					pendingHandover = null;
+					return request;
+				},
+			},
+		});
+
+		const result = await handle.result;
+		expect(result.status).toBe('completed');
+		expect(calls).toHaveLength(3);
+		expect(calls[2]!.prompt).toContain('Handover occurred');
+		expect(calls[2]!.prompt).toContain('shedding backstop');
+		expect(calls[2]!.prompt).toContain('.athena/s1/journal.md');
 	});
 
 	describe('the Handover cap (ADR 0018 §2)', () => {
