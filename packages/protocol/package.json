@@ -1,6 +1,6 @@
 {
 	"name": "@drisp/protocol",
-	"version": "0.1.0",
+	"version": "0.6.0",
 	"description": "Wire contract between a drisp runner and the hub: zod schemas, inferred types, and JSON Schema for the instance-socket frames, Run, Turn, Interruption, and the event stream",
 	"repository": {
 		"type": "git",
