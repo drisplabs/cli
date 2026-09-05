@@ -1296,6 +1296,8 @@ describe('createWorkflowRunner', () => {
 		function scriptedHandoverRun(input: {
 			journalOnTurn?: Record<number, string>;
 			handoverCap?: number;
+			/** The Handoff text each fork writes, by fork index (1-based). */
+			handoffOnFork?: (fork: number) => string;
 		}) {
 			const projectDir = makeTempDir();
 			const journalDir = path.join(projectDir, '.athena', 's1');
@@ -1303,13 +1305,22 @@ describe('createWorkflowRunner', () => {
 			const journalPath = path.join(journalDir, 'journal.md');
 			let pendingHandover: {handle: string} | null = null;
 			let turn = 0;
+			let fork = 0;
 			const startTurn = vi
 				.fn()
 				.mockImplementation(async (call: {prompt: string}) => {
 					if (call.prompt.includes('handoff skill')) {
+						fork += 1;
 						const handoffPath = /to (\S+\.md)\./.exec(call.prompt)![1]!;
 						fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
-						fs.writeFileSync(handoffPath, '# Handoff\nsame substance', 'utf-8');
+						// By default every fork distills something new (no shared
+						// 3-gram), so the Journal hash alone carries the verdict.
+						fs.writeFileSync(
+							handoffPath,
+							input.handoffOnFork?.(fork) ??
+								`# Handoff ${fork}\n${Array.from({length: 12}, (_, i) => `w${fork}_${i}`).join(' ')}`,
+							'utf-8',
+						);
 						return OK_RESULT;
 					}
 					turn += 1;
@@ -1366,7 +1377,8 @@ describe('createWorkflowRunner', () => {
 			const result = await handle.result;
 			expect(result.status).toBe('awaiting_attention');
 			expect(result.stopReason).toBe(
-				'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. ' +
+				'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — ' +
+					'last Handoff 0% similar to the previous; journal unchanged. ' +
 					"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
 			);
 			// Turn 1 (clean stop) + Turns 2, 3, 4, each handing over: the third
@@ -1385,6 +1397,39 @@ describe('createWorkflowRunner', () => {
 			const result = await handle.result;
 			expect(result.status).toBe('completed');
 			expect(turns()).toBe(8);
+		});
+
+		it('near-duplicate Handoffs park the Run even though the Journal changed every Turn, naming the similarity (#211)', async () => {
+			const distillation = [
+				'# Handoff',
+				'## Task and status',
+				'Migrate the billing service to the new ledger API; the adapter compiles',
+				'and the contract tests still fail on refunds because the ledger rejects',
+				'a negative amount, so refunds are modelled as reversal entries.',
+				'## Files touched',
+				'src/billing/adapter.ts, src/billing/adapter.test.ts, docs/ledger.md',
+			].join('\n');
+			const {handle, turns} = scriptedHandoverRun({
+				// The fold-in mandate rewrites the Journal on every fresh Turn…
+				journalOnTurn: {
+					2: 'plan written\nHandoff 1 processed',
+					3: 'plan written\nHandoff 1 processed\nHandoff 2 processed',
+					4: 'plan written\nHandoff 1 processed\nHandoff 2 processed\nHandoff 3 processed',
+					5: 'plan written\nHandoff 1 processed\nHandoff 2 processed\nHandoff 3 processed\nHandoff 4 processed',
+				},
+				// …while every session distills to the same substance.
+				handoffOnFork: fork =>
+					`${distillation}\nHandover ${fork} of the same substance.`,
+			});
+			const result = await handle.result;
+			expect(result.status).toBe('awaiting_attention');
+			expect(result.stopReason).toMatch(
+				/^handover cap reached: 3 consecutive Handovers \(handoverCap\) without progress — last Handoff \d+% similar to the previous; journal changed\./,
+			);
+			// Handover 1 has no predecessor (judged on the hash: changed, so
+			// productive); Handovers 2, 3 and 4 are near-duplicates: park after
+			// the fourth, before a sixth Turn is seeded.
+			expect(turns()).toBe(5);
 		});
 
 		it('loop.handoverCap overrides the default', async () => {

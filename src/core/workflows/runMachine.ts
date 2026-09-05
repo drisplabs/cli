@@ -37,6 +37,7 @@ import {
 	DEFAULT_NUDGE_CAP,
 	DEFAULT_RETRY_CAP,
 	DEFAULT_RETRY_BACKOFF_MS,
+	HANDOFF_NO_PROGRESS_SIMILARITY,
 } from './types';
 import {buildIterationCeilingReason, type TurnOutcome} from './terminalOutcome';
 import {
@@ -334,6 +335,14 @@ export type RunEvent =
 			/** Size in bytes of the written Handoff file, or `null` if unknown (ADR 0015 §8). */
 			handoffSizeBytes: number | null;
 			/**
+			 * Similarity of the written Handoff to the previous one in the chain
+			 * (word-3-gram Jaccard, ADR 0018 §1), or `null` when there is no
+			 * predecessor — the first Handover of a Run — or the read failed.
+			 * Computed by the interpreter; the reducer only compares it to
+			 * `HANDOFF_NO_PROGRESS_SIMILARITY`.
+			 */
+			handoffSimilarity: number | null;
+			/**
 			 * Whether a failed fork looks retryable (ADR 0016 §8) — unused when
 			 * `ok` is true. Ignored by the reducer when `ok` is true.
 			 */
@@ -424,13 +433,21 @@ function hashJournalContent(content: string): string {
  */
 function buildHandoverCapReason(input: {
 	cap: number;
+	handoffSimilarity: number | null;
 	journalUnchanged: boolean;
 }): string {
+	const signals = [
+		...(input.handoffSimilarity === null
+			? []
+			: [
+					`last Handoff ${Math.round(input.handoffSimilarity * 100)}% similar to the previous`,
+				]),
+		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}`,
+	];
 	return (
 		`handover cap reached: ${input.cap} consecutive Handover${
 			input.cap === 1 ? '' : 's'
-		} (handoverCap) without progress — ` +
-		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}. ` +
+		} (handoverCap) without progress — ${signals.join('; ')}. ` +
 		`Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.`
 	);
 }
@@ -1188,14 +1205,20 @@ function handleHandingOver(
 			};
 		}
 
-		// The Handover cap (ADR 0018 §1-§3): a Handover whose Turn left the
-		// Journal unchanged is unproductive — the session it distilled added
-		// nothing durable. A streak of them parks the Run: a suspend, not a
-		// degrade to vendor compaction, because the cause is structural (the
-		// bound, the baseline context, or the Journal's size) and only a person
-		// can change it. A productive Handover resets the streak, so a long Run
-		// that keeps working never trips this.
-		const unproductive = phase.journalUnchanged;
+		// The Handover cap (ADR 0018 §1-§3): a Handover is unproductive when its
+		// Handoff restates the previous one (the session's own distillation
+		// converged — fold-in-proof, since a "processed" note changes the
+		// Journal hash but not the next Handoff) or when its Turn left the
+		// Journal unchanged (the seed-too-big case, where the fresh Turn dies
+		// before writing anything). A streak of them parks the Run: a suspend,
+		// not a degrade to vendor compaction, because the cause is structural
+		// (the bound, the baseline context, or the Journal's size) and only a
+		// person can change it. A productive Handover resets the streak, so a
+		// long Run that keeps working never trips this.
+		const unproductive =
+			(event.handoffSimilarity !== null &&
+				event.handoffSimilarity >= HANDOFF_NO_PROGRESS_SIMILARITY) ||
+			phase.journalUnchanged;
 		const handoverStreak = unproductive ? memory.handoverStreak + 1 : 0;
 		const handoverCap = cfg.loop?.handoverCap ?? DEFAULT_HANDOVER_CAP;
 		if (handoverStreak >= handoverCap) {
@@ -1204,6 +1227,7 @@ function handleHandingOver(
 					kind: 'awaiting_attention',
 					stopReason: buildHandoverCapReason({
 						cap: handoverCap,
+						handoffSimilarity: event.handoffSimilarity,
 						journalUnchanged: phase.journalUnchanged,
 					}),
 				},
