@@ -191,6 +191,43 @@ export type RunMemory = {
 	 * `deserializeRunMemory` defaults it to `0`.
 	 */
 	handoverStreak: number;
+	/**
+	 * The most recent Turn that ended at its context bound (ADR 0018 §6): its
+	 * opening context, the context at its last call, and its tool-call count
+	 * — `null` for each when the harness did not report it, and `null` as a
+	 * whole before any Handover. What the cap sentence and the seed prompt
+	 * turn into a measured working room. Absent on snapshots persisted before
+	 * this field existed; `deserializeRunMemory` defaults it to `null`.
+	 */
+	lastBoundedTurn: BoundedTurn | null;
+};
+
+/** A Turn's measurement at its context bound (ADR 0018 §6). */
+export type BoundedTurn = {
+	/** Prompt size of the Turn's first root API call: system prompt, tools, skills, seed. */
+	openingContextTokens: number | null;
+	/** Prompt size of the Turn's last root API call — where the bound bit. */
+	lastContextTokens: number | null;
+	/** Tool calls the Turn made, when the caller counted them. */
+	toolCalls: number | null;
+};
+
+/**
+ * What the interpreter reports once a Handover's fork has written the
+ * Handoff file (ADR 0018 §8): the file, its fidelity and progress metrics,
+ * the streak, and the bounded Turn's measurement. The exec runner turns it
+ * into `run.handover.completed`, adding the Run's cumulative tokens.
+ */
+export type HandoverCompletion = {
+	/** The iteration the Handover interrupted. */
+	iteration: number;
+	handoffPath: string;
+	handoffSizeBytes: number | null;
+	handoffSimilarity: number | null;
+	handoverStreak: number;
+	openingContextTokens: number | null;
+	lastContextTokens: number | null;
+	toolCalls: number | null;
 };
 
 /**
@@ -329,6 +366,15 @@ export type RunEvent =
 			/** Only computed on the success path once loop/journal apply. */
 			outcome: TurnOutcome | null;
 			journalContent: string;
+			/**
+			 * The Turn's measurement (ADR 0018 §6): the prompt size of its first
+			 * and last root API calls, and its tool-call count — each `null`
+			 * when the harness or the caller did not report it. Remembered as
+			 * `lastBoundedTurn` when the Turn ended in a Handover.
+			 */
+			openingContextTokens: number | null;
+			lastContextTokens: number | null;
+			toolCalls: number | null;
 	  }
 	| {
 			type: 'backoff_elapsed';
@@ -396,6 +442,8 @@ export type RunAction =
 	  }
 	| {type: 'wait'; ms: number}
 	| {type: 'notify_iteration_complete'}
+	/** A Handover's fork wrote the Handoff file (ADR 0018 §8) — report it, measured. */
+	| {type: 'notify_handover_completed'; completion: HandoverCompletion}
 	| {type: 'purge_handoffs'}
 	| {type: 'degrade_handover'; handle: string}
 	/** Surface a non-fatal notice (e.g. a deprecated marker spelling, #185). */
@@ -433,24 +481,59 @@ function hashJournalContent(content: string): string {
 	return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+/** `~71k` for 71,400; `~700` stays `700` — the sentence supplies the `~`. */
+function formatTokens(n: number): string {
+	return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+/** The working room a bounded Turn had, when both ends were measured. */
+function workingRoom(
+	turn: Pick<BoundedTurn, 'openingContextTokens' | 'lastContextTokens'> | null,
+): {opening: number; last: number; room: number} | null {
+	if (
+		!turn ||
+		turn.openingContextTokens === null ||
+		turn.lastContextTokens === null
+	) {
+		return null;
+	}
+	return {
+		opening: turn.openingContextTokens,
+		last: turn.lastContextTokens,
+		room: Math.max(0, turn.lastContextTokens - turn.openingContextTokens),
+	};
+}
+
 /**
  * The park sentence for the Handover cap (ADR 0018 §2): names the bound, the
- * signal that judged the streak unproductive, and what to change. Read back
- * by `interruptionFromSuspension` (the first integer is the limit), so the
- * opening clause is a contract.
+ * signals that judged the streak unproductive, the measurement that explains
+ * the loop (§6), and what to change. Read back by
+ * `interruptionFromSuspension` (the first integer is the limit), so the
+ * opening clause is a contract. Every number is omitted cleanly when unknown.
  */
 function buildHandoverCapReason(input: {
 	cap: number;
 	handoffSimilarity: number | null;
 	journalUnchanged: boolean;
+	journalTokens: number;
+	boundedTurn: BoundedTurn | null;
 }): string {
+	const room = workingRoom(input.boundedTurn);
 	const signals = [
 		...(input.handoffSimilarity === null
 			? []
 			: [
 					`last Handoff ${Math.round(input.handoffSimilarity * 100)}% similar to the previous`,
 				]),
-		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}`,
+		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}` +
+			(input.journalTokens > 0
+				? ` (~${formatTokens(input.journalTokens)} tokens)`
+				: ''),
+		...(room
+			? [
+					`fresh Turns opened at ~${formatTokens(room.opening)} tokens and were bounded at ~${formatTokens(room.last)} (~${formatTokens(room.room)} working room)`,
+				]
+			: []),
 	];
 	return (
 		`handover cap reached: ${input.cap} consecutive Handover${
@@ -487,16 +570,51 @@ function buildFoldInRule(journalPath: string | undefined): string {
 export function buildHandoverSeedPrompt(
 	handoffPath: string,
 	journalPath: string | undefined,
+	measurement: HandoverMeasurement = {},
 ): string {
+	const room = workingRoom({
+		openingContextTokens: measurement.openingContextTokens ?? null,
+		lastContextTokens: measurement.lastContextTokens ?? null,
+	});
+	const journalTokens = measurement.journalTokens ?? 0;
 	return (
 		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
+		(measurement.handoverNumber !== undefined
+			? `This is Handover ${measurement.handoverNumber} of the run. `
+			: '') +
 		`Read the Handoff file at ${handoffPath}` +
 		(journalPath ? ` and the journal at ${journalPath}` : '') +
 		`. ` +
+		(room
+			? `The previous session opened at ~${formatTokens(room.opening)} tokens (system prompt, tools, skills and seed) and was bounded at ~${formatTokens(room.last)}, ` +
+				`so you have roughly ~${formatTokens(room.room)} tokens of working room before your own bound: read selectively, and do not re-read what the Handoff already summarises. `
+			: '') +
+		(journalTokens > 0
+			? `The journal is ~${formatTokens(journalTokens)} tokens. `
+			: '') +
 		buildFoldInRule(journalPath) +
 		`Then continue the work from exactly where it stands. ` +
 		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
 	);
+}
+
+/**
+ * What the seed prompt tells the fresh Turn about its situation (ADR 0018
+ * §6): which Handover this is, the previous session's opening context and
+ * bound (hence its working room), and the Journal's size. Every field is
+ * optional and omitted from the prompt when unknown.
+ */
+export type HandoverMeasurement = {
+	handoverNumber?: number;
+	openingContextTokens?: number | null;
+	lastContextTokens?: number | null;
+	journalTokens?: number;
+};
+
+/** The chain position a Handoff path encodes (`handoff/012.md` → 12), if any. */
+function handoverNumberFromPath(handoffPath: string): number | undefined {
+	const match = /(\d+)\.md$/.exec(handoffPath);
+	return match ? Number(match[1]) : undefined;
 }
 
 /**
@@ -694,6 +812,7 @@ export function createInitialRun(
 			lastHandoffSizeBytes: null,
 			parkedAfterHandover: false,
 			handoverStreak: 0,
+			lastBoundedTurn: null,
 		},
 		actions: kickoffActionsFor(phase),
 	});
@@ -807,6 +926,12 @@ function handleTurnInFlight(
 				...memory,
 				lastJournalHash: journalHash,
 				nudgeStreak: journalUnchanged ? memory.nudgeStreak : 0,
+				// The Turn that just hit its bound, measured (ADR 0018 §6).
+				lastBoundedTurn: {
+					openingContextTokens: event.openingContextTokens,
+					lastContextTokens: event.lastContextTokens,
+					toolCalls: event.toolCalls,
+				},
 			},
 			actions: [
 				{
@@ -1224,6 +1349,23 @@ function handleHandingOver(
 		// at the ceiling is cheaper than losing the session's in-flight state.
 		// The park is marked (§9): the persisted vendor session sits at its
 		// bound, so the wake must start fresh rather than resume it.
+		// Reported on every successful fork (ADR 0018 §8), whatever this row
+		// decides next: the exec stream's `run.handover.completed`.
+		const completion = (handoverStreak: number): RunAction => ({
+			type: 'notify_handover_completed',
+			completion: {
+				iteration: memory.iteration,
+				handoffPath: event.handoffPath,
+				handoffSizeBytes: event.handoffSizeBytes,
+				handoffSimilarity: event.handoffSimilarity,
+				handoverStreak,
+				openingContextTokens:
+					memory.lastBoundedTurn?.openingContextTokens ?? null,
+				lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
+				toolCalls: memory.lastBoundedTurn?.toolCalls ?? null,
+			},
+		});
+
 		const maxIterations = cfg.loop?.maxIterations;
 		if (maxIterations !== undefined && memory.iteration >= maxIterations) {
 			return {
@@ -1232,7 +1374,11 @@ function handleHandingOver(
 					stopReason: buildIterationCeilingReason(maxIterations),
 				},
 				memory: {...memoryAfterFork, parkedAfterHandover: true},
-				actions: [{type: 'purge_handoffs'}, {type: 'persist'}],
+				actions: [
+					{type: 'purge_handoffs'},
+					{type: 'persist'},
+					completion(memory.handoverStreak),
+				],
 			};
 		}
 
@@ -1260,10 +1406,16 @@ function handleHandingOver(
 						cap: handoverCap,
 						handoffSimilarity: event.handoffSimilarity,
 						journalUnchanged: phase.journalUnchanged,
+						journalTokens: phase.journalTokens,
+						boundedTurn: memory.lastBoundedTurn,
 					}),
 				},
 				memory: {...memoryAfterFork, handoverStreak, parkedAfterHandover: true},
-				actions: [{type: 'purge_handoffs'}, {type: 'persist'}],
+				actions: [
+					{type: 'purge_handoffs'},
+					{type: 'persist'},
+					completion(handoverStreak),
+				],
 			};
 		}
 
@@ -1282,6 +1434,13 @@ function handleHandingOver(
 			buildHandoverSeedPrompt(
 				event.handoffPath,
 				cfg.journalAbsPath ?? undefined,
+				{
+					handoverNumber: handoverNumberFromPath(event.handoffPath),
+					openingContextTokens:
+						memory.lastBoundedTurn?.openingContextTokens ?? null,
+					lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
+					journalTokens: phase.journalTokens,
+				},
 			) + sizeNudgeSuffix;
 		const prepared = prepareWorkflowTurn(cfg.workflowState, {
 			prompt: cfg.initialPrompt,
@@ -1305,6 +1464,7 @@ function handleHandingOver(
 			actions: [
 				{type: 'purge_handoffs'},
 				{type: 'persist'},
+				completion(handoverStreak),
 				// Reported like the Nudge rows report it (ADR 0018 §8): the exec
 				// stream shows `iteration.complete` for a Handover too.
 				{type: 'notify_iteration_complete'},
@@ -1560,6 +1720,9 @@ export function deserializeRunMemory(
 	if (typeof candidate.handoverStreak !== 'number') {
 		candidate.handoverStreak = 0;
 	}
+	if (!isBoundedTurn(candidate.lastBoundedTurn)) {
+		candidate.lastBoundedTurn = null;
+	}
 	if (
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||
@@ -1589,6 +1752,14 @@ export function wakesFreshAfterHandover(
 	runMemoryJson: string | undefined | null,
 ): boolean {
 	return deserializeRunMemory(runMemoryJson)?.parkedAfterHandover === true;
+}
+
+function isBoundedTurn(value: unknown): value is BoundedTurn {
+	if (!value || typeof value !== 'object') return false;
+	const turn = value as Record<string, unknown>;
+	return ['openingContextTokens', 'lastContextTokens', 'toolCalls'].every(
+		key => turn[key] === null || typeof turn[key] === 'number',
+	);
 }
 
 function isQueuedSteer(value: unknown): value is QueuedSteer {

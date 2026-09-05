@@ -77,6 +77,7 @@ function makeMemory(overrides?: Partial<RunMemory>): RunMemory {
 		lastHandoffSizeBytes: null,
 		parkedAfterHandover: false,
 		handoverStreak: 0,
+		lastBoundedTurn: null,
 		...overrides,
 	};
 }
@@ -144,6 +145,9 @@ function turnFinished(
 		adapterSessionId: null,
 		outcome: null,
 		journalContent: '',
+		openingContextTokens: null,
+		lastContextTokens: null,
+		toolCalls: null,
 		...overrides,
 	};
 }
@@ -273,6 +277,36 @@ describe('runMachine.step — turn_in_flight', () => {
 				makeCfg(),
 			);
 			expect(result.phase).toMatchObject({journalTokens: 10_000});
+		});
+
+		it('remembers the bounded Turn: its opening context, its last context, and its tool calls (ADR 0018 §6, #213)', () => {
+			const result = step(
+				turnInFlight(),
+				makeMemory({lastBoundedTurn: null}),
+				turnFinished({
+					handoverRequestHandle: 'h',
+					openingContextTokens: 71_400,
+					lastContextTokens: 100_000,
+					toolCalls: 4,
+				}),
+				makeCfg(),
+			);
+			expect(result.memory.lastBoundedTurn).toEqual({
+				openingContextTokens: 71_400,
+				lastContextTokens: 100_000,
+				toolCalls: 4,
+			});
+			const unknown = step(
+				turnInFlight(),
+				makeMemory({lastBoundedTurn: null}),
+				turnFinished({handoverRequestHandle: 'h'}),
+				makeCfg(),
+			);
+			expect(unknown.memory.lastBoundedTurn).toEqual({
+				openingContextTokens: null,
+				lastContextTokens: null,
+				toolCalls: null,
+			});
 		});
 
 		it('the first boundary of a Run has no prior hash: never unchanged', () => {
@@ -1084,6 +1118,7 @@ describe('runMachine.step — handing_over', () => {
 			buildHandoverSeedPrompt(
 				'/proj/.athena/s1/handoff/002.md',
 				'/proj/.athena/s1/journal.md',
+				{handoverNumber: 2, journalTokens: 0},
 			),
 		);
 		expect(result.memory.iteration).toBe(3);
@@ -1092,6 +1127,7 @@ describe('runMachine.step — handing_over', () => {
 		expect(result.actions.map(a => a.type)).toEqual([
 			'purge_handoffs',
 			'persist',
+			'notify_handover_completed',
 			'notify_iteration_complete',
 			'start_turn',
 		]);
@@ -1116,6 +1152,7 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.actions.map(a => a.type)).toEqual([
 				'purge_handoffs',
 				'persist',
+				'notify_handover_completed',
 				'notify_iteration_complete',
 				'start_turn',
 			]);
@@ -1150,6 +1187,7 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.actions).toEqual([
 				{type: 'purge_handoffs'},
 				{type: 'persist'},
+				expect.objectContaining({type: 'notify_handover_completed'}),
 			]);
 		});
 
@@ -1292,6 +1330,162 @@ describe('runMachine.step — handing_over', () => {
 			});
 		});
 
+		describe('the measured working room (ADR 0018 §6, #213)', () => {
+			const bounded = {
+				openingContextTokens: 71_400,
+				lastContextTokens: 100_000,
+				toolCalls: 4,
+			};
+
+			it('the cap sentence carries the opening context, the bound, the working room and the journal size when known', () => {
+				const result = step(
+					handingOver({journalUnchanged: true, journalTokens: 11_000}),
+					makeMemory({
+						iteration: 5,
+						handoverStreak: 2,
+						lastBoundedTurn: bounded,
+					}),
+					forkFinished({ok: true, handoffSimilarity: 0.89}),
+					makeCfg(),
+				);
+				expect(result.phase).toEqual({
+					kind: 'awaiting_attention',
+					stopReason:
+						'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — ' +
+						'last Handoff 89% similar to the previous; journal unchanged (~11k tokens); ' +
+						'fresh Turns opened at ~71k tokens and were bounded at ~100k (~29k working room). ' +
+						"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+				});
+			});
+
+			it('the cap sentence reads cleanly without the measurement', () => {
+				const result = step(
+					handingOver({journalUnchanged: true, journalTokens: 700}),
+					makeMemory({
+						iteration: 5,
+						handoverStreak: 2,
+						lastBoundedTurn: {
+							openingContextTokens: null,
+							lastContextTokens: null,
+							toolCalls: null,
+						},
+					}),
+					forkFinished({ok: true, handoffSimilarity: null}),
+					makeCfg(),
+				);
+				const reason = (
+					result.phase as Extract<RunPhase, {kind: 'awaiting_attention'}>
+				).stopReason;
+				expect(reason).toBe(
+					'handover cap reached: 3 consecutive Handovers (handoverCap) without progress — ' +
+						'journal unchanged (~700 tokens). ' +
+						"Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+				);
+				expect(reason).not.toContain('null');
+				expect(reason).not.toContain('undefined');
+			});
+
+			it('the seed prompt tells the fresh Turn which Handover this is, its working room and the journal size when known', () => {
+				const result = step(
+					handingOver({journalTokens: 11_000}),
+					makeMemory({iteration: 11, lastBoundedTurn: bounded}),
+					forkFinished({
+						ok: true,
+						handoffPath: '/proj/.athena/s1/handoff/012.md',
+					}),
+					makeCfg(),
+				);
+				const prompt = (
+					result.phase as Extract<RunPhase, {kind: 'turn_in_flight'}>
+				).prompt;
+				expect(prompt).toBe(
+					buildHandoverSeedPrompt(
+						'/proj/.athena/s1/handoff/012.md',
+						'/proj/.athena/s1/journal.md',
+						{
+							handoverNumber: 12,
+							openingContextTokens: 71_400,
+							lastContextTokens: 100_000,
+							journalTokens: 11_000,
+						},
+					) + buildJournalSizeNudgeSuffix('.athena/s1/journal.md'),
+				);
+				expect(prompt).toContain('This is Handover 12');
+				expect(prompt).toContain('~71k');
+				expect(prompt).toContain('~100k');
+				expect(prompt).toContain('~29k tokens of working room');
+				expect(prompt).toContain('journal is ~11k tokens');
+			});
+
+			it('the seed prompt omits the numbers cleanly when they are unknown', () => {
+				const prompt = buildHandoverSeedPrompt(
+					'/proj/.athena/s1/handoff/not-a-number.md',
+					'/proj/.athena/s1/journal.md',
+					{
+						openingContextTokens: null,
+						lastContextTokens: null,
+						journalTokens: 0,
+					},
+				);
+				expect(prompt).not.toContain('This is Handover');
+				expect(prompt).not.toContain('working room');
+				expect(prompt).not.toContain('journal is ~');
+				expect(prompt).not.toContain('null');
+				expect(prompt).not.toContain('undefined');
+			});
+
+			it('every successful fork asks the interpreter to report the completed Handover with its measurement', () => {
+				const seeded = step(
+					handingOver({journalUnchanged: false, journalTokens: 11_000}),
+					makeMemory({
+						iteration: 11,
+						handoverStreak: 1,
+						lastBoundedTurn: bounded,
+					}),
+					forkFinished({
+						ok: true,
+						handoffPath: '/proj/.athena/s1/handoff/012.md',
+						handoffSizeBytes: 14_000,
+						handoffSimilarity: 0.42,
+					}),
+					makeCfg(),
+				);
+				expect(seeded.actions).toContainEqual({
+					type: 'notify_handover_completed',
+					completion: {
+						iteration: 11,
+						handoffPath: '/proj/.athena/s1/handoff/012.md',
+						handoffSizeBytes: 14_000,
+						handoffSimilarity: 0.42,
+						handoverStreak: 0,
+						openingContextTokens: 71_400,
+						lastContextTokens: 100_000,
+						toolCalls: 4,
+					},
+				});
+				const parked = step(
+					handingOver({journalUnchanged: true, journalTokens: 11_000}),
+					makeMemory({
+						iteration: 12,
+						handoverStreak: 2,
+						lastBoundedTurn: bounded,
+					}),
+					forkFinished({ok: true, handoffSimilarity: 0.9}),
+					makeCfg(),
+				);
+				expect(parked.phase.kind).toBe('awaiting_attention');
+				expect(parked.actions).toContainEqual(
+					expect.objectContaining({
+						type: 'notify_handover_completed',
+						completion: expect.objectContaining({
+							iteration: 12,
+							handoverStreak: 3,
+						}),
+					}),
+				);
+			});
+		});
+
 		it('failed and retried forks leave the streak alone', () => {
 			const degraded = step(
 				handingOver({journalUnchanged: true}),
@@ -1341,6 +1535,7 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.actions).toEqual([
 				{type: 'purge_handoffs'},
 				{type: 'persist'},
+				expect.objectContaining({type: 'notify_handover_completed'}),
 			]);
 		});
 
@@ -1357,6 +1552,7 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.actions.map(a => a.type)).toEqual([
 				'purge_handoffs',
 				'persist',
+				'notify_handover_completed',
 				'notify_iteration_complete',
 				'start_turn',
 			]);
@@ -1494,6 +1690,7 @@ describe('runMachine.step — handing_over', () => {
 				buildHandoverSeedPrompt(
 					'/proj/.athena/s1/handoff/002.md',
 					'/proj/.athena/s1/journal.md',
+					{handoverNumber: 2, journalTokens: 7_999},
 				),
 			);
 			expect(nextPhase.prompt).not.toContain('shedding backstop');
@@ -1517,6 +1714,7 @@ describe('runMachine.step — handing_over', () => {
 				buildHandoverSeedPrompt(
 					'/proj/.athena/s1/handoff/002.md',
 					'/proj/.athena/s1/journal.md',
+					{handoverNumber: 2, journalTokens: 8_001},
 				) + buildJournalSizeNudgeSuffix('.athena/s1/journal.md'),
 			);
 			expect(result.memory.lastStopPrompt).toBe(nextPhase.prompt);
@@ -1524,6 +1722,7 @@ describe('runMachine.step — handing_over', () => {
 			expect(result.actions.map(a => a.type)).toEqual([
 				'purge_handoffs',
 				'persist',
+				'notify_handover_completed',
 				'notify_iteration_complete',
 				'start_turn',
 			]);
@@ -1847,10 +2046,12 @@ describe('RunMemory serialization', () => {
 		const legacy = makeMemory({iteration: 4}) as Partial<RunMemory>;
 		delete legacy.parkedAfterHandover;
 		delete legacy.handoverStreak;
+		delete legacy.lastBoundedTurn;
 		const parsed = deserializeRunMemory(JSON.stringify(legacy));
 		expect(parsed).not.toBeNull();
 		expect(parsed!.parkedAfterHandover).toBe(false);
 		expect(parsed!.handoverStreak).toBe(0);
+		expect(parsed!.lastBoundedTurn).toBeNull();
 		expect(wakesFreshAfterHandover(JSON.stringify(legacy))).toBe(false);
 		expect(
 			wakesFreshAfterHandover(

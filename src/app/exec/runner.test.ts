@@ -1168,6 +1168,47 @@ describe('runExec', () => {
 				setImmediate(() => {
 					if (spawnIndex === 1) {
 						fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
+						// The primary Turn's stream: opening context, then the context
+						// at the last call before the bound.
+						opts.onStdout?.(
+							JSON.stringify({
+								type: 'assistant',
+								message: {
+									type: 'message',
+									usage: {
+										input_tokens: 70_000,
+										output_tokens: 10,
+										cache_read_input_tokens: 1_400,
+									},
+								},
+							}) + '\n',
+						);
+						opts.onStdout?.(
+							JSON.stringify({
+								type: 'assistant',
+								message: {
+									type: 'message',
+									usage: {
+										input_tokens: 1_000,
+										output_tokens: 10,
+										cache_read_input_tokens: 99_000,
+									},
+								},
+							}) + '\n',
+						);
+						// Two tool calls on this Agent Session before the bound.
+						for (const id of ['evt-read-1', 'evt-read-2']) {
+							runtime.emit(
+								makeRuntimeEvent({
+									id,
+									kind: 'tool.pre',
+									hookName: 'PreToolUse',
+									toolName: 'Read',
+									sessionId: 'claude-sess-primary',
+									data: {tool_name: 'Read', tool_input: {file_path: 'x'}},
+								}),
+							);
+						}
 						runtime.emit(
 							makeRuntimeEvent({
 								id: 'evt-precompact',
@@ -1256,6 +1297,20 @@ describe('runExec', () => {
 					.filter(e => e.type === 'iteration.complete')
 					.map(e => e.data.iteration);
 				expect(completes).toEqual([2]);
+				// The completed Handover, measured (ADR 0018 §8, #213).
+				expect(
+					events.find(e => e.type === 'run.handover.completed')?.data,
+				).toEqual({
+					iteration: 1,
+					handoffPath,
+					handoffSizeBytes: Buffer.byteLength('# Handoff\nstate', 'utf-8'),
+					handoffSimilarity: null,
+					handoverStreak: 0,
+					openingContextTokens: 71_400,
+					lastContextTokens: 100_000,
+					toolCalls: 2,
+					tokens: expect.objectContaining({input: 71_000, output: 20}),
+				});
 			} finally {
 				fs.rmSync(projectDir, {recursive: true, force: true});
 			}

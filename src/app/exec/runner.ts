@@ -267,6 +267,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	// `startTurn` — what `run.handover` reports as the iteration it
 	// interrupted (ADR 0018 §8); the exec runner holds no `RunMemory` itself.
 	let currentIteration = 0;
+	// `tool.pre` events per adapter session (ADR 0018 §6): the Turn's tool-call
+	// count the Runner records for a bounded Turn and reports on
+	// `run.handover.completed`.
+	const toolCallsBySession = new Map<string, number>();
 	let beforeTerminalCompletionRan = false;
 	let unsubscribeSteers: (() => void) | undefined;
 	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
@@ -643,6 +647,12 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		},
 		onEventReceived: (runtimeEvent: RuntimeEvent) => {
 			adapterSessionId = runtimeEvent.sessionId;
+			if (runtimeEvent.kind === 'tool.pre' && runtimeEvent.sessionId) {
+				toolCallsBySession.set(
+					runtimeEvent.sessionId,
+					(toolCallsBySession.get(runtimeEvent.sessionId) ?? 0) + 1,
+				);
+			}
 
 			// Needs a person (ADR 0014, #189): with no hub attached, nobody can
 			// answer — waiting on the null-timeout decision would hang the Run
@@ -896,6 +906,16 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			},
 			checkInterruption: () => interruption,
 			currentAdapterSessionId,
+			currentTurnToolCalls: () =>
+				adapterSessionId === null
+					? null
+					: (toolCallsBySession.get(adapterSessionId) ?? 0),
+			// A completed Handover, measured (ADR 0018 §8): the cheapest health
+			// signal of a loop — many short sessions, output tokens tiny next to
+			// cache reads — becomes readable from the stream.
+			onHandoverCompleted: completion => {
+				output.emitJsonEvent('run.handover.completed', completion);
+			},
 			handover: {
 				takeRequest: () => {
 					const request = handoverRequest;
