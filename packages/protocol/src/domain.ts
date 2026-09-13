@@ -167,6 +167,17 @@ export const InterruptionSchema = z.discriminatedUnion('kind', [
 		kind: z.literal('cap_exhausted'),
 		cap: ExhaustedCapSchema,
 		limit: z.int().positive().optional(),
+		/** Structured policy decision. Older senders may supply only cap/message. */
+		resource: z
+			.object({
+				cause: z.enum(['tokens', 'iterations', 'context', 'restart']),
+				limit: z.number().nonnegative(),
+				used: z.number().nonnegative(),
+				detail: z.string().optional(),
+				checkpointPath: z.string().optional(),
+				fresh: z.boolean(),
+			})
+			.optional(),
 	}),
 ]);
 export type Interruption = z.infer<typeof InterruptionSchema>;

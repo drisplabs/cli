@@ -21,6 +21,7 @@ export function createCodexSessionController(
 			prompt,
 			continuation,
 			configOverride,
+			onUsage,
 		}): Promise<SessionControllerTurnResult> {
 			if (!runtime || typeof runtime.sendPrompt !== 'function') {
 				return {
@@ -31,14 +32,19 @@ export function createCodexSessionController(
 				};
 			}
 
-			const turnPromise = runCodexTurn(runtime, prompt, {
-				processConfig,
-				continuation,
-				configOverride,
-				workflowPlan: input.workflowPlan,
-				pluginMcpConfig: input.pluginMcpConfig,
-				ephemeral: input.ephemeral,
-			});
+			const turnPromise = runCodexTurn(
+				runtime,
+				prompt,
+				{
+					processConfig,
+					continuation,
+					configOverride,
+					workflowPlan: input.workflowPlan,
+					pluginMcpConfig: input.pluginMcpConfig,
+					ephemeral: input.ephemeral,
+				},
+				{onUsage},
+			);
 			activeTurnPromise = turnPromise;
 
 			try {

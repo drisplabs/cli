@@ -7,6 +7,8 @@ ADR 0015 (Tracker sheds into a Dossier)
 
 > **Terminology note (2026-09-03, #185):** the **Tracker** below is now the **Journal**: `RunMemory.lastTrackerHash` is `lastJournalHash` (a persisted snapshot spelled the old way still rehydrates), `trackerContent` / `tracker_missing` are `journalContent` / the missing-journal outcome, and the declared marker is `NEEDS_HUMAN`. The reducer gained one action, `warn`, so a deprecated marker spelling reaches the same phase and the interpreter logs the notice — the purity rule in §1 and §5 is untouched. The text below is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
 
+> **2026-09-13 amendment:** [ADR 0019](0019-continuation-admission-and-recovery.md) replaces the fork and Handoff chain with a bounded Journal checkpoint. Every continuation passes resource admission; missing or already-consumed checkpoints pause the Run. The original design below is historical.
+
 ## Context
 
 ADR 0014 gave the Workflow Run five continuation mechanisms — Nudge, Retry, Handover, wake-from-

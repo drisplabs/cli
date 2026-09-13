@@ -86,6 +86,7 @@ export function useWorkflowSessionController(
 						turnInput.prompt,
 						turnInput.continuation,
 						turnInput.configOverride,
+						turnInput.onUsage,
 					),
 				persistRunState: input.persistRunState ?? (() => {}),
 				onPhaseChange: input.onPhaseChange,

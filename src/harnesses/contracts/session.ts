@@ -18,6 +18,7 @@ export type SessionControllerTurnInput<
 	continuation?: TurnContinuation;
 	configOverride?: ConfigOverride;
 	onStderrLine?: (message: string) => void;
+	onUsage?: (usage: TokenUsage) => void;
 };
 
 export type SessionControllerTurnResult = TurnExecutionResult;
@@ -49,6 +50,7 @@ export type UseSessionControllerResult<
 		prompt: string,
 		continuation?: TurnContinuation,
 		configOverride?: ConfigOverride,
+		onUsage?: (usage: TokenUsage) => void,
 	) => Promise<SessionControllerTurnResult>;
 	isRunning: boolean;
 	interrupt: () => void;

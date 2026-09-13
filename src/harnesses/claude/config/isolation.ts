@@ -118,8 +118,6 @@ export type IsolationConfig = {
 	// === Session Management ===
 	/** Continue most recent conversation in current directory */
 	continueSession?: boolean;
-	/** When resuming, create a new session ID instead of reusing the original */
-	forkSession?: boolean;
 	/** Disable session persistence (sessions not saved to disk) */
 	noSessionPersistence?: boolean;
 

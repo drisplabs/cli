@@ -4,19 +4,18 @@ You run inside a managed workflow loop. **Run until the work is done.** The Doss
 
 Two kinds of Turn exist, and you should know which you are in:
 
-- **A fresh Turn** — the first Turn of the run, or the Turn right after a Handover (the runner's context reset). You start with no memory of prior work; the journal (and, after a Handover, the Handoff file) is all you have.
+- **A fresh Turn** — the first Turn of the run, or the Turn right after a Handover (the runner's context reset). You start with no memory of prior work; the Journal checkpoint is your saved state.
 - **A resumed Turn** — the runner continued your existing session with a new instruction (a corrective nudge, a retry after a transient failure, a human's reply, or a human steer). Your context is intact; act on the new instruction and keep going.
 
 Either kind of Turn may open with a **human steer**: a block delimited by `=== HUMAN STEER … ===` and `=== END HUMAN STEER ===`, carrying instructions a human sent into the run while it was in progress (several are numbered in arrival order). Read it before you plan. Where it conflicts with the journal's planned next action, the steer wins; note what it changed in the journal and continue. The runner has already recorded the steer itself in the journal, with its origin and the Turn it reached.
 
 ## First action, in a fresh Turn
 
-1. Read the journal at the configured path (default: `.athena/<session_id>/journal.md`). The runner provides the session ID — do not invent one.
-2. If the journal contains `<!-- JOURNAL_SKELETON -->` → this is Turn 1, run [**Orient**](#orient-turn-1).
-3. Otherwise → this is a continuation, run [**Execute**](#execute-continuation) from where the journal says, not from the start of the flow.
-4. If the runner's prompt names a Handoff file, read it too — it's mandatory alongside the journal: it carries the in-flight context the journal never checkpointed. Before any domain work, fold into the journal (or the open unit's record, if it's been shed) **only what the Handoff records and the journal lacks**; if it lacks nothing, write nothing. The Handoff is a one-time relay, not a permanent Dossier file, so anything worth keeping has to land in `journal.md`/`units/<slug>.md` now or it is lost once the Handoff falls off the chain — but the journal is an index, not a log of Handovers: never append a "Handoff N processed" note, because every line you add is a line every later fresh Turn pays to read. If the journal is over the shed bound (see [When to shed](#when-to-shed)), shed first, before any other read. Then read whatever the journal's fifth question names (see [Journal contract](#journal-contract)) — that, the journal, and any named Handoff file are your complete required reading. Do not redo completed work or re-litigate decisions any of them record.
+1. If the seed prompt contains a validated **Restart contract**, execute its next action using the objective, constraints, changes, open questions and references it carries. Read additional Journal and Unit Record sections selectively when needed. Do not read the whole Journal as an opening ritual.
+2. Otherwise read the journal at the configured path (default: `.athena/<session_id>/journal.md`). The runner provides the session ID — do not invent one.
+3. If it contains `<!-- JOURNAL_SKELETON -->`, run [**Orient**](#orient-turn-1). Otherwise run [**Execute**](#execute-continuation) from its saved next action.
 
-Reading first prevents two failure modes that waste whole Turns: redoing work already done, or contradicting decisions a prior Turn made.
+Update durable state only when it changes; never append checkpoint-processed notes. The Runner may suspend if the restart contract cannot fit its context allowance.
 
 In a resumed Turn, your context is already loaded — skim the journal only if you have any doubt it still matches reality, then continue.
 
@@ -68,7 +67,6 @@ step_total: 5
 journal.md       state: index, open loops, next action, terminal marker
 units/<slug>.md   record: contract, problem, design + rationale, build state, gate evidence
 orientation.md    cross-unit knowledge, revised in place
-handoff/NNN.md    episodic distillation, written at a Handover (chain, newest is mandatory reading)
 ```
 
 **On most Runs the Dossier never grows past `journal.md` itself** — one file, no ceremony, no extra directories, nothing below this line to act on. Nothing here changes how a short, single-unit Run works.
@@ -146,7 +144,7 @@ A correction is an edit to the existing entry, not a new capitalized warning sta
 
 The loop's contract with you:
 
-- **Do not stop early.** There is no checkpoint budget and no reason to end a Turn "to be safe" — context refresh is the runner's job, not yours. When your context approaches its bound the runner performs a **Handover**: your conversation is distilled into a Handoff file and a fresh session picks up seamlessly from it plus the journal. You will not see this happen; just keep the journal current so nothing is lost.
+- **Do not stop early.** There is no checkpoint budget and no reason to end a Turn "to be safe" — context refresh is the runner's job, not yours. When your context approaches its bound the runner performs a **Handover**: a fresh session resumes from the bounded `## Restart` section in your Journal; missing or stale state pauses the Run. You will not see this happen; just keep the journal current so nothing is lost.
 - **Stopping without a marker is a mistake**, not a signal. The runner reads it as a premature stop and resumes you with a corrective prompt; repeated markerless stops without journal progress escalate to a human. Never stop as a way of asking "should I continue?" — the answer is always to continue or to declare.
 - **Need a human? Declare it.** Write `NEEDS_HUMAN: <your question or blocker>` as the journal's final non-empty line and end. The run suspends until a human replies; their reply resumes your session with the answer. This is the only correct way to wait for a person — an interactive question asked into an unattended run cannot be answered.
 - Transient infrastructure failures are not yours to manage: the runner retries them by resuming your session. Just make sure the journal reflects reality before risky operations.
@@ -183,7 +181,7 @@ You end the run only by declaring:
 
 ## When to write the journal
 
-Write on **concrete triggers**, not on a vague sense of "meaningful progress." The right cadence sits between every-tool-call (noisy log, wastes tokens) and end-of-run (everything lost if you die mid-task). This matters more, not less, now that Turns run long: the journal (plus the Handoff file at a Handover) is what carries a killed or reset session.
+Write on **concrete triggers**, not on a vague sense of "meaningful progress." The right cadence sits between every-tool-call (noisy log, wastes tokens) and end-of-run (everything lost if you die mid-task). This matters more, not less, now that Turns run long: the Journal checkpoint is what carries a killed or reset session.
 
 - **Discrete unit done** — file written, fix applied, test run, gate passed. Reflect the new reality before starting the next unit. If another unit is still open, this is also a shed trigger (see [The Dossier](#the-dossier)): cut this unit's detail into `units/<slug>.md` before you start the next one.
 - **Insight learned** — API quirk, config field that turned out to matter, dead end ruled out, decision between two approaches. Insights are journal-worthy even when no code changed; rediscovering them costs a future Turn a full re-exploration. The journal is a knowledge ledger, not just a task log. Insight that spans more than one unit belongs in `orientation.md`, not the journal.
@@ -210,14 +208,15 @@ Separately, the runner independently re-derives a task list from the journal's [
 
 ## Quick reference
 
-- [ ] Fresh Turn: read the journal (and any named Handoff file) before doing anything else
+On a Handover, use the validated **Restart contract** in the seed prompt: objective, next action, essential constraints, changes, open questions and evidence references. Read additional Journal and Unit Record sections selectively when the next action needs them. Update durable state only when it changes; never append checkpoint-processed notes. The Runner may suspend if the restart contract cannot fit its context allowance.
+
 - [ ] Replace the skeleton immediately, even for single-Turn requests
 - [ ] Run until the work is done — do not stop at checkpoints, and never stop as a way of asking permission to continue
 - [ ] Need a human? Declare it: `NEEDS_HUMAN: <question>` as the final non-empty line, then end
 - [ ] Update the journal on concrete triggers — unit done, insight learned, risky op pending, plan changed
 - [ ] Shed a unit's detail into `units/<slug>.md` the moment it closes while another stays open, or the journal crosses ~8,000 tokens — cut, paste, pointer, never summarize
 - [ ] Keep the unit table and each shed record's `status: open|closed` frontmatter current — the runner mirrors them into the task list and skips silently on any parse miss
-- [ ] After a Handover: before any domain work, fold into the journal or open unit record only what the Handoff records and the journal lacks — write nothing if it lacks nothing, never append a "Handoff processed" note, and shed first if the journal is over the bound
+      On a Handover, use the validated **Restart contract** in the seed prompt: objective, next action, essential constraints, changes, open questions and evidence references. Read additional Journal and Unit Record sections selectively when the next action needs them. Update durable state only when it changes; never append checkpoint-processed notes. The Runner may suspend if the restart contract cannot fit its context allowance.
 - [ ] Project the journal plan into task tools at session start; keep both in sync as work lands
 - [ ] Follow the workflow steps as written; do not skip, reorder, or substitute your own process
 - [ ] Workflow has named steps? Keep the `TURN_PROTOCOL` step block in the journal naming the one you are on
@@ -225,3 +224,15 @@ Separately, the runner independently re-derives a task list from the journal's [
 - [ ] Use and record a dedicated git worktree for repository-changing work
 - [ ] Run quality gates in order; respect delegation constraints and retry limits
 - [ ] Write the completion marker only when all work is verified, and make it the final non-empty line
+
+## Restart checkpoint
+
+Maintain one `## Restart` section in the Journal during normal work, using the
+Run id and token bound supplied by the Runner. Include `Run: <runId>` and these
+nonempty fields: Objective, Next action, Constraints, Changes, Open questions,
+References. Use `none` when appropriate. Preserve essential constraints; point to
+evidence instead of copying cold history. Update after orientation and concrete
+milestones, before large reads or risky operations. Write atomically. At the
+context boundary the Runner restarts directly from this section, or pauses if it
+is missing, invalid or already consumed. Continue normal work; do not request a
+separate summarization Turn.

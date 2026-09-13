@@ -141,18 +141,11 @@ describe('resolveTurnOutcome', () => {
 		});
 	});
 
-	it('suspends as awaiting_attention at the iteration ceiling, naming the bound', () => {
-		const journalPath = writeJournal('## Plan\n- [ ] still working');
-
-		const outcome = resolveTurnOutcome({journalPath, loop: LOOP, iteration: 5});
-		expect(outcome.kind).toBe('suspend');
-		if (outcome.kind !== 'suspend') return;
-		expect(outcome.status).toBe('awaiting_attention');
-		// Three bounds funnel into one suspended state; the message must name
-		// which one tripped.
-		expect(outcome.stopReason).toContain('iteration ceiling');
-		expect(outcome.stopReason).toContain('maxIterations');
-		expect(outcome.stopReason).toContain('5');
+	it('leaves continuation admission to the reducer even at the iteration ceiling', () => {
+		const journalPath = writeJournal('work in progress');
+		expect(resolveTurnOutcome({journalPath, loop: LOOP, iteration: 5})).toEqual(
+			{kind: 'continue'},
+		);
 	});
 
 	it('a declared need for a human wins over the iteration ceiling', () => {

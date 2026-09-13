@@ -8,18 +8,11 @@
 /**
  * Default {@link LoopConfig.maxTurnTokenCount}: ~65% of a 200k model window.
  *
- * The bound must sit well under the window (ADR 0014 §5): a Handover fork
- * inherits the full conversation and summarizing N tokens requires ingesting
- * ~N, so headroom to hold the conversation *and* emit the Handoff file can
- * only come from triggering early — forking creates no room. Claude Code
- * additionally clamps its knob to a 100k floor (measured on 2.1.217; see
- * qa/max-turn-token-count.md), so values below 100k are silently raised there.
- *
  * The compaction point is **measured, not derived from the knob** (ADR 0018
  * §6): on Claude Code 2.1.247 with this default, compaction fired at ≈97k–104k
  * tokens — roughly 30k below the knob, not at the ≈95% earlier builds showed.
- * The runner now measures each fresh Turn's opening context and the context
- * at its bound (`run.handover.completed`, the Handover-cap sentence); the
+ * The Runner reports opening and last API prompt occupancy; the latter
+ * is not the compaction trigger (ADR 0019). The
  * default stays where it is until qa/max-turn-token-count.md is re-measured
  * against that method.
  */
@@ -39,31 +32,6 @@ export const DEFAULT_NUDGE_CAP = 3;
  * Resets whenever a Turn completes without failing.
  */
 export const DEFAULT_RETRY_CAP = 3;
-
-/**
- * Default {@link LoopConfig.handoverCap}: consecutive **unproductive**
- * Handovers tolerated before the Run suspends in `awaiting_attention` (ADR
- * 0018 §2). A Handover is unproductive when its Handoff file is at least
- * {@link HANDOFF_NO_PROGRESS_SIMILARITY} similar to the previous one in the
- * chain, or when the Turn it ended left the Journal hash unchanged since the
- * previous Turn boundary — either way the session it distilled added nothing
- * durable. A productive Handover resets the streak;
- * so does a wake, because a human reply is new information. Legitimately long
- * Runs are chains of productive Handovers and never trip it.
- */
-export const DEFAULT_HANDOVER_CAP = 3;
-
-/**
- * Word-3-gram Jaccard similarity at or above which a new Handoff file counts
- * as a restatement of its predecessor, making the Handover unproductive (ADR
- * 0018 §1). Measured on the CORE-377 incident's 26 consecutive Handoffs:
- * pairs written while the Run was still orienting (001→008) scored
- * 0.13–0.47; pairs written once it was stuck (009→014, 021→026) scored
- * 0.63–0.93. 0.7 sits between the two bands. A first Handover has no
- * predecessor and is judged on the Journal hash alone. Tuning this is a
- * deliberate change: record the new measurement beside it.
- */
-export const HANDOFF_NO_PROGRESS_SIMILARITY = 0.7;
 
 /**
  * Default base for {@link LoopConfig.retryBackoffMs}. Retry N waits
@@ -102,26 +70,12 @@ export type LoopConfig = {
 	 * Defaults to {@link DEFAULT_RETRY_CAP} when omitted.
 	 */
 	retryCap?: number;
-	/**
-	 * Consecutive unproductive Handovers tolerated before the Run suspends
-	 * (ADR 0018 §2) — a Handover whose Handoff restates its predecessor
-	 * ({@link HANDOFF_NO_PROGRESS_SIMILARITY}) or whose Turn left the Journal
-	 * unchanged. Resets
-	 * on a productive Handover and on a wake. Defaults to
-	 * {@link DEFAULT_HANDOVER_CAP} when omitted. A workflow that expects long
-	 * orientation phases can raise it knowingly.
-	 */
+	/** @deprecated Accepted for compatibility; similarity no longer stops Runs. */
 	handoverCap?: number;
-	/**
-	 * Opt-in cumulative token budget for the whole Run (ADR 0018 §10; the
-	 * backstop ADR 0014 §7 anticipated): once the Run's total — input, output,
-	 * cache reads and cache writes across every Turn and fork — reaches it at
-	 * a Turn or fork boundary, the Run suspends with `token budget reached`.
-	 * No default: cache reads dominate a legitimate long Run's total, and a
-	 * default would fight run-until-done. The total is reported on
-	 * `iteration.complete` and in `drisp runs` whether or not this is set.
-	 */
+	/** Lifetime input/output/cache tokens, enforced on usage updates and admission. */
 	maxRunTokens?: number;
+	/** Estimated token allowance for the Journal's Restart checkpoint. Default 2,000. */
+	maxRestartTokens?: number;
 	/**
 	 * Base backoff before retrying a transient failure; retry N waits
 	 * `retryBackoffMs * 2^(N-1)`. Defaults to
@@ -139,8 +93,8 @@ export type LoopConfig = {
 	 * Not the agent's budget (ADR 0018 §6): the effective compaction point may
 	 * sit well below this value (≈30k below on Claude Code 2.1.247), and a
 	 * fresh Turn's working room is that point minus its opening context —
-	 * system prompt, tools, skills and seed. The exec runner warns on Turn 1
-	 * when the opening context exceeds half of this bound.
+	 * system prompt, tools, skills and seed. Continuation admission checks
+	 * that a fresh session leaves an estimated working allowance.
 	 */
 	maxTurnTokenCount?: number;
 	/**

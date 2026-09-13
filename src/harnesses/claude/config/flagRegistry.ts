@@ -83,7 +83,6 @@ export const FLAG_REGISTRY: FlagDef[] = [
 	},
 
 	// === Session Management ===
-	{field: 'forkSession', flag: '--fork-session', kind: 'boolean'},
 	{
 		field: 'noSessionPersistence',
 		flag: '--no-session-persistence',

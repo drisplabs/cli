@@ -57,6 +57,7 @@ export type UseClaudeProcessResult = {
 		prompt: string,
 		continuation?: TurnContinuation,
 		isolation?: Partial<IsolationConfig>,
+		onUsage?: (usage: TokenUsage) => void,
 	) => Promise<TurnExecutionResult>;
 	isRunning: boolean;
 	output: string[];

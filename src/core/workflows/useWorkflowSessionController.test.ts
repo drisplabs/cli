@@ -112,7 +112,7 @@ describe('useWorkflowSessionController', () => {
 		const composedPath = path.join(projectDir, '.composed-system-prompt.md');
 		expect(spawn).toHaveBeenNthCalledWith(
 			1,
-			'Execute: ship it',
+			expect.stringContaining('Execute: ship it'),
 			{mode: 'resume', handle: 'session-1'},
 			{
 				appendSystemPromptFile: composedPath,
@@ -120,10 +120,11 @@ describe('useWorkflowSessionController', () => {
 					'Use the `update_plan` tool',
 				),
 			},
+			expect.any(Function),
 		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			2,
-			'Continue with .athena/session-1.md',
+			expect.stringContaining('Continue with .athena/session-1.md'),
 			{mode: 'fresh'},
 			{
 				appendSystemPromptFile: composedPath,
@@ -131,6 +132,7 @@ describe('useWorkflowSessionController', () => {
 					'Do not carry forward prior session task IDs',
 				),
 			},
+			expect.any(Function),
 		);
 		expect(result.current.isRunning).toBe(false);
 		expect(fs.existsSync(journalPath)).toBe(true);
@@ -196,12 +198,14 @@ describe('useWorkflowSessionController', () => {
 			'first',
 			{mode: 'fresh'},
 			undefined,
+			expect.any(Function),
 		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			2,
 			'second',
 			{mode: 'fresh'},
 			undefined,
+			expect.any(Function),
 		);
 	});
 

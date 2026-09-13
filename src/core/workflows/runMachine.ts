@@ -1,45 +1,27 @@
-/**
- * Run-loop reducer (ADR 0016) — the pure decision core of a Workflow Run.
- *
- * `workflowRunner.ts` used to be one `while` loop that mixed every I/O call
- * (spawning Turns, reading/writing the Journal, sleeping for a retry backoff,
- * persisting a snapshot) with every *decision* about what should happen next
- * (Nudge, Retry, Handover, suspend, stop). That made the decision logic
- * impossible to unit-test without mocking the whole harness, and — per ADR
- * 0016 §2 — meant nothing about a Run's progress (Iteration, Nudge streak,
- * Retry streak) survived a process restart, so a resumed Run silently reset
- * its budgets instead of continuing them.
- *
- * This module is the fix: `step(phase, memory, event, cfg)` is the single
- * owner of "what happens next" (§1). It performs no I/O, no timers, and no
- * randomness — everything it needs arrives via `event`/`cfg`, and it returns
- * a new `phase`/`memory` plus the `actions` the caller must perform before
- * the next Turn (or backoff, or fork) can start. `workflowRunner.ts` becomes
- * the interpreter: it executes `actions`, gathers exactly one `RunEvent`, and
- * calls `step` again — see `perform()` there.
- *
- * `RunMemory` is the part of a Run's state ADR 0016 §2 wants persisted
- * (Iteration, Nudge streak, Retry streak, the Journal hash a Nudge resets
- * against, and the prompt/continuation last attempted) so a rehydrated Run
- * continues its budgets instead of restarting them (§6) — see
- * `createInitialRun`'s `resumedMemory` path.
- */
-
 import crypto from 'node:crypto';
 import type {Interruption} from '@drisp/protocol';
+import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {
 	HarnessProcessOverride,
 	TurnContinuation,
 } from '../runtime/process';
 import type {LoopConfig} from './types';
 import {
-	DEFAULT_HANDOVER_CAP,
 	DEFAULT_NUDGE_CAP,
 	DEFAULT_RETRY_CAP,
 	DEFAULT_RETRY_BACKOFF_MS,
-	HANDOFF_NO_PROGRESS_SIMILARITY,
 } from './types';
-import {buildIterationCeilingReason, type TurnOutcome} from './terminalOutcome';
+import type {TurnOutcome} from './terminalOutcome';
+import {
+	admitContinuation,
+	resourceInterruption,
+	type ResourceStop,
+} from './continuationPolicy';
+import {
+	readRestartContract,
+	seedFromRestart,
+	type RestartContract,
+} from './restartContract';
 import {
 	buildContinuePrompt,
 	buildJournalSizeNudgeSuffix,
@@ -71,32 +53,8 @@ export type RunPhase =
 	| {
 			kind: 'backing_off';
 			ms: number;
-			/**
-			 * What to re-issue once the backoff elapses — a discriminated union
-			 * rather than the flat `prompt`/`continuation` this phase used to
-			 * carry, because a fork retry (ADR 0016 §8) backs off the same way a
-			 * Turn retry does but must re-issue `start_fork_turn`, not
-			 * `start_turn`, once it elapses.
-			 */
-			resume:
-				| {
-						kind: 'turn';
-						prompt: string;
-						continuation: TurnContinuation;
-				  }
-				| ({
-						kind: 'fork';
-						handle: string;
-						configOverride?: HarnessProcessOverride;
-				  } & HandoverBoundary);
+			resume: {kind: 'turn'; prompt: string; continuation: TurnContinuation};
 	  }
-	| ({
-			kind: 'handing_over';
-			handle: string;
-			configOverride?: HarnessProcessOverride;
-			/** Set once this fork has already been retried once (ADR 0016 §8). */
-			retried?: boolean;
-	  } & HandoverBoundary)
 	| {
 			kind: 'awaiting_attention';
 			stopReason: string;
@@ -113,38 +71,6 @@ export type RunPhase =
 	| {kind: 'failed'; stopReason?: string}
 	| {kind: 'cancelled'};
 
-/**
- * What the in-flight row observes at a Handover boundary and the
- * successful-fork row consumes once the fork succeeds (ADR 0016 §4: phases
- * carry what the next row needs) — carried unchanged through a transient fork
- * retry's backoff.
- */
-export type HandoverBoundary = {
-	/**
-	 * Whether the interrupted Turn left the Journal hash unchanged since the
-	 * previous Turn boundary (ADR 0018 §1): the hash half of the unproductive
-	 * predicate.
-	 */
-	journalUnchanged: boolean;
-	/**
-	 * The Journal's estimated size in tokens at the boundary (ADR 0015 §3's
-	 * estimate), so the seed prompt can carry the size nudge — the Handover
-	 * path used to be the one continuation that never did (ADR 0018 §7).
-	 */
-	journalTokens: number;
-	/** A half-executed shed observed at the boundary, for the seed prompt (ADR 0018 §7). */
-	shedIntegrity: ShedIntegrityGaps | null;
-};
-
-/** The boundary fields alone, for carrying between phases. */
-function boundaryOf(boundary: HandoverBoundary): HandoverBoundary {
-	return {
-		journalUnchanged: boundary.journalUnchanged,
-		journalTokens: boundary.journalTokens,
-		shedIntegrity: boundary.shedIntegrity,
-	};
-}
-
 export type TerminalRunPhase = Extract<
 	RunPhase,
 	{kind: 'awaiting_attention' | 'completed' | 'failed' | 'cancelled'}
@@ -159,6 +85,15 @@ export type TerminalRunPhase = Extract<
  * `backing_off{ms: 0, ...}` phase on rehydrate and re-issues the same action.
  */
 export type RunMemory = {
+	/** Last checkpoint consumed by a fresh restart. */
+	lastRestartHash?: string;
+	activeRestartTokens?: number;
+	usage?: TokenUsage;
+	/** Last validated checkpoint, retained when a later checkpoint is invalid. */
+	checkpoint?: {path: string; contract: RestartContract};
+	/** Fingerprint of the configuration that produced the context observations. */
+	contextKey?: string;
+
 	iteration: number;
 	nudgeStreak: number;
 	retryStreak: number;
@@ -179,85 +114,35 @@ export type RunMemory = {
 	 * delivered on its continue rather than lost.
 	 */
 	pendingSteers: QueuedSteer[];
-	/**
-	 * Size in bytes of the most recent Handoff file written at a Handover
-	 * (ADR 0015 §8: Handoff size is a fidelity metric the Runner records), or
-	 * `null` before any Handover has occurred or when the stat failed.
-	 * Absent (`undefined` at runtime) on `RunMemory` persisted before this
-	 * field existed — `deserializeRunMemory` does not require it, so read it
-	 * defensively (`memory.lastHandoffSizeBytes ?? null`) rather than assuming
-	 * presence.
-	 */
-	lastHandoffSizeBytes: number | null;
-	/**
-	 * Set when the Run parked on the successful-fork row — the iteration
-	 * ceiling (ADR 0018 §4), the Handover cap (§2) or the token budget (§10)
-	 * reached right after a Handover. The persisted `adapterSessionId` is then
-	 * a session at its context bound — the killed one, or the fork — and
-	 * resuming it would re-trip compaction at once, so the wake starts a
-	 * **fresh** Agent Session seeded with the newest Handoff file, the Journal
-	 * and the reply (§9). The Interruption kind alone cannot say this: the
-	 * ceiling parks as `cap: iterations` on a clean stop too. The `woken` row
-	 * clears it. Absent on snapshots persisted before this field existed;
-	 * `deserializeRunMemory` defaults it to `false`.
-	 */
+
 	parkedAfterHandover: boolean;
-	/**
-	 * Consecutive **unproductive** Handovers — the Handover streak (ADR 0018
-	 * §2). Grows on a Handover whose Handoff is at least
-	 * `HANDOFF_NO_PROGRESS_SIMILARITY` similar to its predecessor or whose Turn
-	 * left the Journal unchanged (§1); resets on a productive Handover and on
-	 * a wake; reaching `handoverCap` parks the Run. Absent on snapshots
-	 * persisted before this field existed; `deserializeRunMemory` defaults it
-	 * to `0`.
-	 */
-	handoverStreak: number;
 	/**
 	 * The most recent Turn that ended at its context bound (ADR 0018 §6): its
 	 * opening context, the context at its last call, and its tool-call count
 	 * — `null` for each when the harness did not report it, and `null` as a
-	 * whole before any Handover. What the cap sentence and the seed prompt
-	 * turn into a measured working room. Absent on snapshots persisted before
+	 * whole before any Handover. Historical context observations used conservatively within the same execution. Absent on snapshots persisted before
 	 * this field existed; `deserializeRunMemory` defaults it to `null`.
 	 */
 	lastBoundedTurn: BoundedTurn | null;
-	/**
-	 * The Run's cumulative token total — input, output, cache reads and cache
-	 * writes across every Turn and fork — as of the last Turn or fork boundary
-	 * (ADR 0018 §10), or `null` before any boundary reported one. Persisted so
-	 * `drisp runs` can show a parked Run's burn, and what `loop.maxRunTokens`
-	 * is checked against. Absent on snapshots persisted before this field
-	 * existed; `deserializeRunMemory` defaults it to `null`.
-	 */
+
 	cumulativeTokens: number | null;
 };
 
 /** A Turn's measurement at its context bound (ADR 0018 §6). */
 export type BoundedTurn = {
+	openingRestartTokens?: number;
 	/** Prompt size of the Turn's first root API call: system prompt, tools, skills, seed. */
 	openingContextTokens: number | null;
-	/** Prompt size of the Turn's last root API call — where the bound bit. */
+	/** Last root API prompt occupancy, not the actual compaction trigger. */
 	lastContextTokens: number | null;
 	/** Tool calls the Turn made, when the caller counted them. */
 	toolCalls: number | null;
 };
 
-/**
- * What the interpreter reports once a Handover's fork has written the
- * Handoff file (ADR 0018 §8): the file, its fidelity and progress metrics,
- * the streak, and the bounded Turn's measurement. The exec runner turns it
- * into `run.handover.completed`, adding the Run's cumulative tokens.
- */
 export type HandoverCompletion = {
-	/** The iteration the Handover interrupted. */
 	iteration: number;
-	handoffPath: string;
-	handoffSizeBytes: number | null;
-	handoffSimilarity: number | null;
-	handoverStreak: number;
-	openingContextTokens: number | null;
-	lastContextTokens: number | null;
-	toolCalls: number | null;
+	checkpointPath: string;
+	checkpointTokens: number;
 };
 
 /**
@@ -379,7 +264,13 @@ function describeInterruption(interruption: RunInterruption): string {
  */
 export type RunEvent =
 	| {
+			type: 'resource_exhausted';
+			stop: ResourceStop;
+			cumulativeTokens: number;
+	  }
+	| {
 			type: 'turn_finished';
+			checkpoint?: {path: string; contract: RestartContract} | null;
 			cancelled: boolean;
 			hasError: boolean;
 			errorMessage?: string;
@@ -425,35 +316,6 @@ export type RunEvent =
 			adapterSessionId: string | null;
 	  }
 	| {
-			type: 'fork_finished';
-			ok: boolean;
-			cancelled: boolean;
-			handoffPath: string;
-			/**
-			 * The Handoff's position in the Dossier's chain (`handoff/012.md` →
-			 * 12), as the interpreter allocated it — the Handover number the seed
-			 * prompt names — or `null` when unknown.
-			 */
-			handoffSeq: number | null;
-			/** Size in bytes of the written Handoff file, or `null` if unknown (ADR 0015 §8). */
-			handoffSizeBytes: number | null;
-			/**
-			 * Similarity of the written Handoff to the previous one in the chain
-			 * (word-3-gram Jaccard, ADR 0018 §1), or `null` when there is no
-			 * predecessor — the first Handover of a Run — or the read failed.
-			 * Computed by the interpreter; the reducer only compares it to
-			 * `HANDOFF_NO_PROGRESS_SIMILARITY`.
-			 */
-			handoffSimilarity: number | null;
-			/**
-			 * Whether a failed fork looks retryable (ADR 0016 §8) — unused when
-			 * `ok` is true. Ignored by the reducer when `ok` is true.
-			 */
-			transient: boolean;
-			/** The Run's cumulative token total once the fork's tokens are merged in, or `null`. */
-			cumulativeTokens: number | null;
-	  }
-	| {
 			/**
 			 * Fed once, synthetically, when an `awaiting_attention` Run is woken
 			 * (ADR 0016 §6/§7): the interpreter's bootstrap for a resumed Run
@@ -461,14 +323,8 @@ export type RunEvent =
 			 * instead of replaying whatever ended the prior process.
 			 */
 			type: 'woken';
+			checkpoint?: {path: string; contract: RestartContract} | null;
 			continuation: TurnContinuation;
-			/**
-			 * The newest Handoff file in the Dossier's chain, or null when there
-			 * is none — read by the interpreter, used by the row only when the
-			 * park followed a Handover (`memory.parkedAfterHandover`), so the
-			 * fresh wake is seeded with it (ADR 0018 §9).
-			 */
-			handoffPath: string | null;
 	  }
 	/**
 	 * A Steer arrived (#191). Unlike the other events it is not the reply to
@@ -477,26 +333,18 @@ export type RunEvent =
 	 */
 	| {type: 'steer'; steer: QueuedSteer};
 
-/** What the interpreter must do before the next Turn/backoff/fork can start. */
 export type RunAction =
 	| {type: 'persist'}
 	| {
 			type: 'start_turn';
+			restartTokens?: number;
 			prompt: string;
 			continuation: TurnContinuation;
 			configOverride?: HarnessProcessOverride;
 	  }
-	| {
-			type: 'start_fork_turn';
-			handle: string;
-			configOverride?: HarnessProcessOverride;
-	  }
 	| {type: 'wait'; ms: number}
 	| {type: 'notify_iteration_complete'}
-	/** A Handover's fork wrote the Handoff file (ADR 0018 §8) — report it, measured. */
 	| {type: 'notify_handover_completed'; completion: HandoverCompletion}
-	| {type: 'purge_handoffs'}
-	| {type: 'degrade_handover'; handle: string}
 	/** Surface a non-fatal notice (e.g. a deprecated marker spelling, #185). */
 	| {type: 'warn'; message: string}
 	/**
@@ -514,6 +362,8 @@ export type RunAction =
 
 /** The immutable per-Run configuration the reducer needs. No callbacks. */
 export type StepConfig = {
+	runId?: string;
+	contextKey?: string;
 	workflowState: WorkflowRunState;
 	/** The Run's top-level prompt — `WorkflowRunnerInput.prompt`, unchanging across Turns. */
 	initialPrompt: string;
@@ -532,28 +382,6 @@ function hashJournalContent(content: string): string {
 	return crypto.createHash('sha256').update(content).digest('hex');
 }
 
-/**
- * The park sentence for the cumulative token budget (ADR 0018 §10). The
- * limit is the first integer — `interruptionFromSuspension` reads it back as
- * `cap_exhausted` / `tokens` — so both numbers are written plainly.
- */
-function buildTokenBudgetReason(limit: number, used: number): string {
-	return `token budget reached: ${limit} tokens (maxRunTokens); used ${used}`;
-}
-
-/**
- * The budget a reported total has reached — `{limit, used}` — or `null` when
- * no `maxRunTokens` is configured, the total is unknown, or it is still under.
- */
-function tokenBudgetReached(
-	loop: LoopConfig | undefined,
-	cumulativeTokens: number | null,
-): {limit: number; used: number} | null {
-	const limit = loop?.maxRunTokens;
-	if (limit === undefined || cumulativeTokens === null) return null;
-	return cumulativeTokens >= limit ? {limit, used: cumulativeTokens} : null;
-}
-
 /** The memory with a boundary's reported cumulative total recorded (ADR 0018 §10). */
 function withCumulativeTokens(
 	memory: RunMemory,
@@ -563,135 +391,6 @@ function withCumulativeTokens(
 }
 
 /** `~71k` for 71,400; `~700` stays `700` — the sentence supplies the `~`. */
-function formatTokens(n: number): string {
-	return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
-}
-
-/** The working room a bounded Turn had, when both ends were measured. */
-function workingRoom(
-	turn: Pick<BoundedTurn, 'openingContextTokens' | 'lastContextTokens'> | null,
-): {opening: number; last: number; room: number} | null {
-	if (
-		!turn ||
-		turn.openingContextTokens === null ||
-		turn.lastContextTokens === null
-	) {
-		return null;
-	}
-	return {
-		opening: turn.openingContextTokens,
-		last: turn.lastContextTokens,
-		room: Math.max(0, turn.lastContextTokens - turn.openingContextTokens),
-	};
-}
-
-/**
- * The park sentence for the Handover cap (ADR 0018 §2): names the bound, the
- * signals that judged the streak unproductive, the measurement that explains
- * the loop (§6), and what to change. Read back by
- * `interruptionFromSuspension` (the first integer is the limit), so the
- * opening clause is a contract. Every number is omitted cleanly when unknown.
- */
-function buildHandoverCapReason(input: {
-	cap: number;
-	handoffSimilarity: number | null;
-	journalUnchanged: boolean;
-	journalTokens: number;
-	boundedTurn: BoundedTurn | null;
-}): string {
-	const room = workingRoom(input.boundedTurn);
-	const signals = [
-		...(input.handoffSimilarity === null
-			? []
-			: [
-					`last Handoff ${Math.round(input.handoffSimilarity * 100)}% similar to the previous`,
-				]),
-		`journal ${input.journalUnchanged ? 'unchanged' : 'changed'}` +
-			(input.journalTokens > 0
-				? ` (~${formatTokens(input.journalTokens)} tokens)`
-				: ''),
-		...(room
-			? [
-					`fresh Turns opened at ~${formatTokens(room.opening)} tokens and were bounded at ~${formatTokens(room.last)} (~${formatTokens(room.room)} working room)`,
-				]
-			: []),
-	];
-	return (
-		`handover cap reached: ${input.cap} consecutive Handover${
-			input.cap === 1 ? '' : 's'
-		} (handoverCap) without progress — ${signals.join('; ')}. ` +
-		`Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.`
-	);
-}
-
-/**
- * The fold-in rule every prompt that names a Handoff file states (ADR 0015
- * §8's obligation, executed as ADR 0018 §7 requires): fold in only what the
- * Journal lacks, never as an appended note. The seed prompt and the wake
- * prompt share it so the Turn Protocol has one rule to match.
- */
-function buildFoldInRule(journalPath: string | undefined): string {
-	return (
-		`Before any domain work: fold into the journal` +
-		(journalPath ? ` at ${journalPath}` : '') +
-		` (or the open unit's record, if it has been shed) only what the Handoff records and the journal lacks — if it lacks nothing, write nothing. ` +
-		`Never append a note that the Handoff was processed: the journal is an index, not a log of Handovers, and every line you add is a line every later fresh Turn must read. ` +
-		`If the journal is over the ~8,000-token shed bound, shedding is your first action, before any other read — cut, paste, pointer (ADR 0015 §3). `
-	);
-}
-
-/**
- * Seed prompt for the fresh post-Handover Turn: the Handoff file carries the
- * in-flight context the Journal never checkpointed; the Journal remains the
- * durable ledger. The fold-in is bounded (ADR 0018 §7): the old wording
- * called it "the journal's next edit" and agents executed it as one appended
- * note per Handover, growing the mandatory opening read until it alone
- * exceeded a fresh Turn's working room.
- */
-export function buildHandoverSeedPrompt(
-	handoffPath: string,
-	journalPath: string | undefined,
-	measurement: HandoverMeasurement = {},
-): string {
-	const room = workingRoom({
-		openingContextTokens: measurement.openingContextTokens ?? null,
-		lastContextTokens: measurement.lastContextTokens ?? null,
-	});
-	const journalTokens = measurement.journalTokens ?? 0;
-	return (
-		`A Handover occurred: the previous agent session reached its context bound and was distilled into a Handoff file. ` +
-		(measurement.handoverNumber !== undefined
-			? `This is Handover ${measurement.handoverNumber} of the run. `
-			: '') +
-		`Read the Handoff file at ${handoffPath}` +
-		(journalPath ? ` and the journal at ${journalPath}` : '') +
-		`. ` +
-		(room
-			? `The previous session opened at ~${formatTokens(room.opening)} tokens (system prompt, tools, skills and seed) and was bounded at ~${formatTokens(room.last)}, ` +
-				`so you have roughly ~${formatTokens(room.room)} tokens of working room before your own bound: read selectively, and do not re-read what the Handoff already summarises. `
-			: '') +
-		(journalTokens > 0
-			? `The journal is ~${formatTokens(journalTokens)} tokens. `
-			: '') +
-		buildFoldInRule(journalPath) +
-		`Then continue the work from exactly where it stands. ` +
-		`Do not redo completed work, and do not re-litigate decisions the Handoff file records.`
-	);
-}
-
-/**
- * What the seed prompt tells the fresh Turn about its situation (ADR 0018
- * §6): which Handover this is, the previous session's opening context and
- * bound (hence its working room), and the Journal's size. Every field is
- * optional and omitted from the prompt when unknown.
- */
-export type HandoverMeasurement = {
-	handoverNumber?: number;
-	openingContextTokens?: number | null;
-	lastContextTokens?: number | null;
-	journalTokens?: number;
-};
-
 /**
  * First prompt of a woken (previously suspended) Run: the human's reply plus
  * enough framing that even a degraded fresh Agent Session — the session that
@@ -702,14 +401,12 @@ export function buildWakePrompt(
 	reply: string,
 	journalPath: string | undefined,
 	parkedInterruption?: Interruption,
-	handoffPath?: string,
 ): string {
 	return (
 		`This workflow run was suspended awaiting a human; it is now resumed. The human replied:\n\n${reply}\n\n` +
 		buildReplayGuidance(parkedInterruption) +
-		buildHandoffGuidance(handoffPath, journalPath) +
 		(journalPath
-			? `Read the journal at ${journalPath} for the task and its current state, apply the reply, and continue the workflow. `
+			? `Consult the relevant Journal sections at ${journalPath} as needed, apply the reply, and continue the workflow. `
 			: `Apply the reply and continue the workflow. `) +
 		`Keep the journal current as you work — if it still contains the runner's skeleton, replace it while orienting — and end by declaring a terminal marker as usual.`
 	);
@@ -730,26 +427,6 @@ function buildReplayGuidance(parked: Interruption | undefined): string {
 		`Before your previous Turn ended, your request \`${call}\` (request ${parked.requestId}) was deferred because nobody answered it in time. ` +
 		`Re-issue that exact call now, with the same input: if an answer was stored while this run was parked it is applied automatically, otherwise the request is held again for a human. ` +
 		`Do not work around the deferred call or substitute a different one.\n\n`
-	);
-}
-
-/**
- * A wake after a park that followed a Handover (ADR 0018 §9) is a fresh Agent
- * Session: the session that parked sits at its context bound, so nothing of
- * the previous conversation survives except its Handoff file. The wake prompt
- * names that file as mandatory reading beside the Journal, exactly as the
- * Handover seed prompt does. Empty when the park followed any other row.
- */
-function buildHandoffGuidance(
-	handoffPath: string | undefined,
-	journalPath: string | undefined,
-): string {
-	if (!handoffPath) return '';
-	return (
-		`This run parked right after a Handover, so this Turn is a fresh Agent Session with no memory of the previous one. ` +
-		`Read the newest Handoff file at ${handoffPath} — mandatory reading alongside the journal: it carries the in-flight context the journal never checkpointed. ` +
-		buildFoldInRule(journalPath) +
-		`Then apply the reply. Do not redo completed work, and do not re-litigate decisions the Handoff file records.\n\n`
 	);
 }
 
@@ -780,7 +457,7 @@ function buildFailureDetail(
  * re-issues the same `start_turn` action once fed a synthetic
  * `backoff_elapsed` event, rather than restarting the Run's budgets.
  */
-export function createInitialRun(
+function initialRun(
 	cfg: StepConfig,
 	opts: {
 		initialContinuation?: TurnContinuation;
@@ -874,7 +551,7 @@ export function createInitialRun(
 		continuation,
 		configOverride: prepared.configOverride,
 	};
-	return deliverPendingSteers({
+	return {
 		phase,
 		memory: {
 			iteration,
@@ -884,14 +561,12 @@ export function createInitialRun(
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
 			pendingSteers: initialSteers,
-			lastHandoffSizeBytes: null,
 			parkedAfterHandover: false,
-			handoverStreak: 0,
 			lastBoundedTurn: null,
 			cumulativeTokens: null,
 		},
 		actions: kickoffActionsFor(phase),
-	});
+	};
 }
 
 /** The kickoff action a freshly built phase implies — what the interpreter must start. */
@@ -908,7 +583,6 @@ function kickoffActionsFor(phase: RunPhase): RunAction[] {
 			];
 		case 'backing_off':
 			return [{type: 'wait', ms: phase.ms}];
-		case 'handing_over':
 		case 'awaiting_attention':
 		case 'completed':
 		case 'failed':
@@ -917,13 +591,6 @@ function kickoffActionsFor(phase: RunPhase): RunAction[] {
 	}
 }
 
-/**
- * Turn-boundary delivery (#191): when a result starts a Turn and Steers are
- * queued, drain the whole queue — in arrival order — into the head of that
- * Turn's prompt and report the delivery just ahead of the `start_turn`. A
- * result that starts no Turn (suspend, backoff, fork, terminal) leaves the
- * queue exactly as it is, which is what keeps a Steer out of a running Turn.
- */
 function deliverPendingSteers(result: StepResult): StepResult {
 	const steers = result.memory.pendingSteers;
 	if (steers.length === 0 || result.phase.kind !== 'turn_in_flight') {
@@ -980,47 +647,85 @@ function handleTurnInFlight(
 		};
 	}
 	// Every boundary records the Run's burn (ADR 0018 §10), whatever it decides.
-	const memory = withCumulativeTokens(incoming, event.cumulativeTokens);
+	const memory = {
+		...withCumulativeTokens(incoming, event.cumulativeTokens),
+		...(event.checkpoint ? {checkpoint: event.checkpoint} : {}),
+	};
 
 	if (event.handoverRequestHandle !== null) {
-		// The Handover boundary observes the Journal like a clean stop does
-		// (ADR 0018 §1, §5): `lastJournalHash` becomes "the hash at the last
-		// Turn boundary of any kind". The Nudge comparison still asks whether
-		// the Journal advanced since the last boundary, so progress observed
-		// here resets its streak exactly as progress at a stop would.
-		const journalHash = hashJournalContent(event.journalContent);
-		const journalUnchanged = journalHash === memory.lastJournalHash;
+		const checkpoint = event.checkpoint;
+		const hash = checkpoint
+			? hashJournalContent(checkpoint.contract.text)
+			: null;
+		const boundedMemory: RunMemory = {
+			...memory,
+			...(checkpoint ? {checkpoint} : {}),
+			parkedAfterHandover: true,
+			contextKey: cfg.contextKey,
+			lastBoundedTurn: {
+				openingContextTokens: event.openingContextTokens,
+				openingRestartTokens: incoming.activeRestartTokens ?? 0,
+				lastContextTokens: event.lastContextTokens,
+				toolCalls: event.toolCalls,
+			},
+			lastJournalHash: hashJournalContent(event.journalContent),
+		};
+		if (!checkpoint || hash === memory.lastRestartHash) {
+			return parkResource(
+				boundedMemory,
+				{
+					cause: 'restart',
+					limit: cfg.loop?.maxRestartTokens ?? 2000,
+					used: checkpoint?.contract.tokens ?? 0,
+					fresh: true,
+					detail: checkpoint
+						? 'Restart checkpoint has already been consumed; update it before continuing'
+						: 'Missing, invalid, oversized or wrong-run Restart checkpoint',
+					checkpointPath: boundedMemory.checkpoint?.path,
+				},
+				[{type: 'notify_iteration_complete'}],
+			);
+		}
+		const prompt = seedFromRestart(checkpoint.contract, checkpoint.path);
+		const continuation: TurnContinuation = {mode: 'fresh'};
+		const iteration = memory.iteration + 1;
+		const prepared = prepareWorkflowTurn(cfg.workflowState, {
+			prompt: cfg.initialPrompt,
+			iteration,
+			configOverride: undefined,
+		});
 		return {
 			phase: {
-				kind: 'handing_over',
-				handle: event.handoverRequestHandle,
-				// Reuse this Turn's own prepared configOverride (the same object
-				// the primary `start_turn` action used) rather than recomputing —
-				// matches workflowRunner.ts's original `prepared.configOverride`
-				// reuse at the fork call site exactly. Stored on the phase too
-				// (not just the action) so a transient-retry (§8) can re-issue the
-				// fork with the same override.
-				configOverride: phase.configOverride,
-				journalUnchanged,
-				journalTokens: estimateTokenCount(event.journalContent),
-				shedIntegrity: event.shedIntegrity,
+				kind: 'turn_in_flight',
+				prompt,
+				continuation,
+				configOverride: prepared.configOverride,
 			},
 			memory: {
-				...memory,
-				lastJournalHash: journalHash,
-				nudgeStreak: journalUnchanged ? memory.nudgeStreak : 0,
-				// The Turn that just hit its bound, measured (ADR 0018 §6).
-				lastBoundedTurn: {
-					openingContextTokens: event.openingContextTokens,
-					lastContextTokens: event.lastContextTokens,
-					toolCalls: event.toolCalls,
-				},
+				...boundedMemory,
+				iteration,
+				lastRestartHash: hash!,
+				lastStopPrompt: prompt,
+				lastStopContinuation: continuation,
+				parkedAfterHandover: false,
 			},
 			actions: [
+				{type: 'persist'},
 				{
-					type: 'start_fork_turn',
-					handle: event.handoverRequestHandle,
-					configOverride: phase.configOverride,
+					type: 'notify_handover_completed',
+					completion: {
+						iteration: memory.iteration,
+						checkpointPath: checkpoint.path,
+						checkpointTokens: checkpoint.contract.tokens,
+					},
+				},
+				{type: 'notify_iteration_complete'},
+				{
+					type: 'start_turn',
+					restartTokens: checkpoint.contract.tokens,
+					prompt,
+					continuation,
+					configOverride: prepared.configOverride,
 				},
 			],
 		};
@@ -1207,21 +912,6 @@ function handleTurnInFlight(
 		};
 	}
 
-	// The cumulative token budget (ADR 0018 §10): the universal backstop,
-	// checked only where the Run would otherwise keep going — a declared
-	// completion still completes and a declared NEEDS_HUMAN keeps its reason.
-	const budget = tokenBudgetReached(loop, memory.cumulativeTokens);
-	if (budget !== null) {
-		return {
-			phase: {
-				kind: 'awaiting_attention',
-				stopReason: buildTokenBudgetReason(budget.limit, budget.used),
-			},
-			memory: memoryAfterSuccess,
-			actions: [{type: 'persist'}],
-		};
-	}
-
 	// Undeclared markerless stop → Nudge (ADR 0014 §3): resume the same Agent
 	// Session with a corrective prompt. Bounded by the Nudge cap, which
 	// resets whenever the Journal advances between stops (a hash comparison,
@@ -1355,29 +1045,6 @@ function handleBackingOff(
 		return {phase: {kind: 'cancelled'}, memory, actions: [{type: 'persist'}]};
 	}
 
-	if (phase.resume.kind === 'fork') {
-		// A transient fork failure's backoff elapsed (ADR 0016 §8): re-issue the
-		// same fork once, marking it retried so a second transient failure
-		// degrades instead of retrying again.
-		return {
-			phase: {
-				kind: 'handing_over',
-				handle: phase.resume.handle,
-				configOverride: phase.resume.configOverride,
-				retried: true,
-				...boundaryOf(phase.resume),
-			},
-			memory,
-			actions: [
-				{
-					type: 'start_fork_turn',
-					handle: phase.resume.handle,
-					configOverride: phase.resume.configOverride,
-				},
-			],
-		};
-	}
-
 	// Resume the same Agent Session if it reported one — it persists on disk,
 	// so resuming preserves in-flight work the Journal never checkpointed.
 	// Otherwise fall back to whichever continuation this attempt used.
@@ -1425,221 +1092,6 @@ function handleBackingOff(
 	};
 }
 
-function handleHandingOver(
-	phase: Extract<RunPhase, {kind: 'handing_over'}>,
-	incoming: RunMemory,
-	event: Extract<RunEvent, {type: 'fork_finished'}>,
-	cfg: StepConfig,
-): StepResult {
-	if (event.cancelled) {
-		return {
-			phase: {kind: 'cancelled'},
-			memory: incoming,
-			actions: [{type: 'persist'}],
-		};
-	}
-	const memory = withCumulativeTokens(incoming, event.cumulativeTokens);
-
-	const nextIteration = memory.iteration + 1;
-
-	if (event.ok) {
-		const memoryAfterFork = {
-			...memory,
-			lastHandoffSizeBytes: event.handoffSizeBytes,
-		};
-
-		// Judge the Handover first (ADR 0018 §1): it is unproductive when its
-		// Handoff restates the previous one (the session's own distillation
-		// converged — fold-in-proof, since a "processed" note changes the
-		// Journal hash but not the next Handoff) or when its Turn left the
-		// Journal unchanged (the seed-too-big case, where the fresh Turn dies
-		// before writing anything). The judged streak is what every outcome
-		// below records and reports (§8), park or seed.
-		const unproductive =
-			(event.handoffSimilarity !== null &&
-				event.handoffSimilarity >= HANDOFF_NO_PROGRESS_SIMILARITY) ||
-			phase.journalUnchanged;
-		const handoverStreak = unproductive ? memory.handoverStreak + 1 : 0;
-
-		// Reported on every successful fork (ADR 0018 §8), whatever this row
-		// decides next: the exec stream's `run.handover.completed`.
-		const completion: RunAction = {
-			type: 'notify_handover_completed',
-			completion: {
-				iteration: memory.iteration,
-				handoffPath: event.handoffPath,
-				handoffSizeBytes: event.handoffSizeBytes,
-				handoffSimilarity: event.handoffSimilarity,
-				handoverStreak,
-				openingContextTokens:
-					memory.lastBoundedTurn?.openingContextTokens ?? null,
-				lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
-				toolCalls: memory.lastBoundedTurn?.toolCalls ?? null,
-			},
-		};
-
-		// Every park on this row is marked (§9): the persisted vendor session
-		// sits at its bound, so the wake must start fresh rather than resume
-		// it. Fork first, then check — the Handoff is the distillation a wake
-		// needs, and one fork at a bound is cheaper than losing the session's
-		// in-flight state.
-		const parkAfterFork = (stopReason: string): StepResult => ({
-			phase: {kind: 'awaiting_attention', stopReason},
-			memory: {...memoryAfterFork, handoverStreak, parkedAfterHandover: true},
-			actions: [{type: 'purge_handoffs'}, {type: 'persist'}, completion],
-		});
-
-		// The cumulative token budget (ADR 0018 §10) is the outermost bound:
-		// checked before the ceiling and the cap.
-		const budget = tokenBudgetReached(cfg.loop, memory.cumulativeTokens);
-		if (budget !== null) {
-			return parkAfterFork(buildTokenBudgetReason(budget.limit, budget.used));
-		}
-
-		// The iteration ceiling applies on the Handover row (ADR 0018 §4): a
-		// Turn that ended in a Handover never reaches `resolveTurnOutcome`, the
-		// only other place `maxIterations` is evaluated, so without this check a
-		// Run whose Turns keep handing over has no ceiling at all.
-		const maxIterations = cfg.loop?.maxIterations;
-		if (maxIterations !== undefined && memory.iteration >= maxIterations) {
-			return parkAfterFork(buildIterationCeilingReason(maxIterations));
-		}
-
-		// The Handover cap (ADR 0018 §2-§3): a streak of unproductive Handovers
-		// parks the Run — a suspend, not a degrade to vendor compaction, because
-		// the cause is structural (the bound, the baseline context, or the
-		// Journal's size) and only a person can change it. A productive
-		// Handover resets the streak, so a long Run that keeps working never
-		// trips this.
-		const handoverCap = cfg.loop?.handoverCap ?? DEFAULT_HANDOVER_CAP;
-		if (handoverStreak >= handoverCap) {
-			return parkAfterFork(
-				buildHandoverCapReason({
-					cap: handoverCap,
-					handoffSimilarity: event.handoffSimilarity,
-					journalUnchanged: phase.journalUnchanged,
-					journalTokens: phase.journalTokens,
-					boundedTurn: memory.lastBoundedTurn,
-				}),
-			);
-		}
-
-		// The fork is discarded (nothing resumes it); the next Turn is a fresh
-		// Agent Session — the only context-resetting transition — and ticks
-		// the Iteration counter like any Turn.
-		const continuation: TurnContinuation = {mode: 'fresh'};
-		// Size nudge (ADR 0015 §3) on the Handover path too (ADR 0018 §7): the
-		// seed prompt was the one continuation that never carried it, though a
-		// fresh Turn is exactly where an over-bound Journal costs the most.
-		const sizeNudgeSuffix =
-			(phase.journalTokens > DEFAULT_JOURNAL_TOKEN_BOUND
-				? buildJournalSizeNudgeSuffix(cfg.journalPromptPath)
-				: '') +
-			(phase.shedIntegrity
-				? buildShedIntegrityNudgeSuffix(phase.shedIntegrity)
-				: '');
-		const seedPrompt =
-			buildHandoverSeedPrompt(
-				event.handoffPath,
-				cfg.journalAbsPath ?? undefined,
-				{
-					handoverNumber: event.handoffSeq ?? undefined,
-					openingContextTokens:
-						memory.lastBoundedTurn?.openingContextTokens ?? null,
-					lastContextTokens: memory.lastBoundedTurn?.lastContextTokens ?? null,
-					journalTokens: phase.journalTokens,
-				},
-			) + sizeNudgeSuffix;
-		const prepared = prepareWorkflowTurn(cfg.workflowState, {
-			prompt: cfg.initialPrompt,
-			iteration: nextIteration,
-			configOverride: undefined,
-		});
-		return {
-			phase: {
-				kind: 'turn_in_flight',
-				prompt: seedPrompt,
-				continuation,
-				configOverride: prepared.configOverride,
-			},
-			memory: {
-				...memoryAfterFork,
-				iteration: nextIteration,
-				lastStopPrompt: seedPrompt,
-				lastStopContinuation: continuation,
-				handoverStreak,
-			},
-			actions: [
-				{type: 'purge_handoffs'},
-				{type: 'persist'},
-				completion,
-				// Reported like the Nudge rows report it (ADR 0018 §8): the exec
-				// stream shows `iteration.complete` for a Handover too.
-				{type: 'notify_iteration_complete'},
-				{
-					type: 'start_turn',
-					prompt: seedPrompt,
-					continuation,
-					configOverride: prepared.configOverride,
-				},
-			],
-		};
-	}
-
-	// A transient fork failure retries once with backoff before degrading
-	// (ADR 0016 §8) — `phase.retried` guards against retrying a second time.
-	if (event.transient && !phase.retried) {
-		const ms = cfg.loop?.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
-		return {
-			phase: {
-				kind: 'backing_off',
-				ms,
-				resume: {
-					kind: 'fork',
-					handle: phase.handle,
-					configOverride: phase.configOverride,
-					...boundaryOf(phase),
-				},
-			},
-			memory,
-			actions: [{type: 'wait', ms}],
-		};
-	}
-
-	// Degrade, never stall (ADR 0014 §5): resume the interrupted conversation
-	// in place; the caller stops intercepting this session's compactions.
-	const continuation: TurnContinuation = {mode: 'resume', handle: phase.handle};
-	const prepared = prepareWorkflowTurn(cfg.workflowState, {
-		prompt: cfg.initialPrompt,
-		iteration: nextIteration,
-		configOverride: undefined,
-	});
-	return {
-		phase: {
-			kind: 'turn_in_flight',
-			prompt: prepared.prompt,
-			continuation,
-			configOverride: prepared.configOverride,
-		},
-		memory: {
-			...memory,
-			iteration: nextIteration,
-			lastStopPrompt: prepared.prompt,
-			lastStopContinuation: continuation,
-		},
-		actions: [
-			{type: 'degrade_handover', handle: phase.handle},
-			{type: 'persist'},
-			{
-				type: 'start_turn',
-				prompt: prepared.prompt,
-				continuation,
-				configOverride: prepared.configOverride,
-			},
-		],
-	};
-}
-
 /**
  * Wake-from-attention as a row of the transition table (ADR 0016 §7): the
  * interpreter feeds a synthetic `woken` event once a suspended Run resumes,
@@ -1655,22 +1107,42 @@ function handleAwaitingAttention(
 	event: Extract<RunEvent, {type: 'woken'}>,
 	cfg: StepConfig,
 ): StepResult {
+	if (event.checkpoint) memory = {...memory, checkpoint: event.checkpoint};
 	const nextIteration = memory.iteration + 1;
-	// A park that followed a Handover wakes fresh (ADR 0018 §9), whatever
-	// session the caller reported: the persisted one sits at its context
-	// bound, and resuming it would re-trip compaction before the reply is
-	// read. The newest Handoff file becomes mandatory reading beside the
-	// Journal. Every other park resumes the intact session as before.
-	const wakesFresh = memory.parkedAfterHandover;
+	const wakesFresh =
+		memory.parkedAfterHandover ||
+		(phase.interruption?.kind === 'cap_exhausted' &&
+			phase.interruption.resource?.fresh === true);
+	if (
+		wakesFresh &&
+		memory.checkpoint &&
+		!readRestartContract(
+			`## Restart\n${memory.checkpoint.contract.text}`,
+			cfg.loop?.maxRestartTokens,
+			cfg.runId,
+		)
+	) {
+		return parkResource(memory, {
+			cause: 'restart',
+			limit: cfg.loop?.maxRestartTokens ?? 2000,
+			used: estimateTokenCount(memory.checkpoint.contract.text),
+			fresh: true,
+			detail:
+				'Retained Restart checkpoint does not satisfy the current contract limit or Run identity',
+			checkpointPath: memory.checkpoint.path,
+		});
+	}
 	const continuation: TurnContinuation = wakesFresh
 		? {mode: 'fresh'}
 		: event.continuation;
-	const prompt = buildWakePrompt(
-		cfg.initialPrompt,
-		cfg.journalPromptPath,
-		phase.interruption,
-		wakesFresh && event.handoffPath ? event.handoffPath : undefined,
-	);
+	const prompt =
+		wakesFresh && memory.checkpoint
+			? `The human replied: ${cfg.initialPrompt}\n\n${seedFromRestart(memory.checkpoint.contract, memory.checkpoint.path, cfg.journalPromptPath)}`
+			: buildWakePrompt(
+					cfg.initialPrompt,
+					cfg.journalPromptPath,
+					phase.interruption,
+				);
 	const prepared = prepareWorkflowTurn(cfg.workflowState, {
 		prompt: cfg.initialPrompt,
 		iteration: nextIteration,
@@ -1689,13 +1161,18 @@ function handleAwaitingAttention(
 			lastStopPrompt: prompt,
 			lastStopContinuation: continuation,
 			parkedAfterHandover: false,
-			// A human reply is new information: the Handover streak starts over.
-			handoverStreak: 0,
+			lastRestartHash:
+				wakesFresh && memory.checkpoint
+					? hashJournalContent(memory.checkpoint.contract.text)
+					: memory.lastRestartHash,
 		},
 		actions: [
 			{type: 'persist'},
 			{
 				type: 'start_turn',
+				restartTokens: wakesFresh
+					? memory.checkpoint?.contract.tokens
+					: undefined,
 				prompt,
 				continuation,
 				configOverride: prepared.configOverride,
@@ -1719,7 +1196,7 @@ function handleAwaitingAttention(
  * TypeScript an exhaustiveness check on `RunPhase` (§4): adding a new phase
  * variant without a case above fails `_exhaustive: never` at compile time.
  */
-export function step(
+function transition(
 	phase: RunPhase,
 	memory: RunMemory,
 	event: RunEvent,
@@ -1734,9 +1211,7 @@ export function step(
 					`runMachine: phase 'turn_in_flight' received unexpected event '${event.type}'`,
 				);
 			}
-			return deliverPendingSteers(
-				handleTurnInFlight(phase, memory, event, cfg),
-			);
+			return handleTurnInFlight(phase, memory, event, cfg);
 		}
 		case 'backing_off': {
 			if (event.type === 'steer')
@@ -1746,17 +1221,7 @@ export function step(
 					`runMachine: phase 'backing_off' received unexpected event '${event.type}'`,
 				);
 			}
-			return deliverPendingSteers(handleBackingOff(phase, memory, event, cfg));
-		}
-		case 'handing_over': {
-			if (event.type === 'steer')
-				return handleSteer(phase, memory, event.steer);
-			if (event.type !== 'fork_finished') {
-				throw new Error(
-					`runMachine: phase 'handing_over' received unexpected event '${event.type}'`,
-				);
-			}
-			return deliverPendingSteers(handleHandingOver(phase, memory, event, cfg));
+			return handleBackingOff(phase, memory, event, cfg);
 		}
 		case 'awaiting_attention': {
 			if (event.type !== 'woken') {
@@ -1764,9 +1229,7 @@ export function step(
 					`runMachine: phase 'awaiting_attention' received unexpected event '${event.type}'`,
 				);
 			}
-			return deliverPendingSteers(
-				handleAwaitingAttention(phase, memory, event, cfg),
-			);
+			return handleAwaitingAttention(phase, memory, event, cfg);
 		}
 		case 'completed':
 		case 'failed':
@@ -1782,6 +1245,118 @@ export function step(
 			);
 		}
 	}
+}
+
+/** All spend paths pass this gate before steers are delivered or I/O starts. */
+function admitResult(
+	result: StepResult,
+	previous: RunMemory | undefined,
+	cfg: StepConfig,
+): StepResult {
+	const action = result.actions.find(
+		a => a.type === 'start_turn' || a.type === 'wait',
+	);
+	if (!action) return result;
+	const memory = result.memory;
+	const bounded =
+		memory.contextKey === cfg.contextKey ? memory.lastBoundedTurn : null;
+	const fresh =
+		action.type === 'start_turn' && action.continuation.mode === 'fresh';
+	const context =
+		bounded?.openingContextTokens != null && bounded.lastContextTokens != null
+			? {
+					opening: bounded.openingContextTokens,
+					ceiling: bounded.lastContextTokens,
+					required: Math.max(
+						0,
+						(memory.checkpoint?.contract.tokens ?? 0) -
+							(bounded.openingRestartTokens ?? 0),
+					),
+					source:
+						'conservative last API occupancy, not a measured compaction threshold',
+				}
+			: undefined;
+	const stop = admitContinuation({
+		loop: cfg.loop,
+		iteration: memory.iteration,
+		tokens: memory.cumulativeTokens,
+		checkpointPath: memory.checkpoint?.path,
+		context: fresh ? context : undefined,
+	});
+	if (!stop)
+		return deliverPendingSteers(
+			fresh
+				? {
+						...result,
+						memory: {...memory, activeRestartTokens: action.restartTokens ?? 0},
+					}
+				: result,
+		);
+	return parkResource(
+		{
+			...memory,
+			iteration: previous?.iteration ?? memory.iteration,
+			lastRestartHash: previous?.lastRestartHash,
+			lastStopPrompt: previous?.lastStopPrompt ?? memory.lastStopPrompt,
+			lastStopContinuation:
+				previous?.lastStopContinuation ?? memory.lastStopContinuation,
+			pendingSteers: previous?.pendingSteers ?? memory.pendingSteers,
+		},
+		{
+			...stop,
+			fresh: stop.fresh || !!memory.checkpoint || memory.parkedAfterHandover,
+		},
+		result.actions.filter(
+			a =>
+				a.type === 'notify_handover_completed' ||
+				a.type === 'notify_iteration_complete',
+		),
+	);
+}
+
+function parkResource(
+	memory: RunMemory,
+	stop: ResourceStop,
+	notifications: RunAction[] = [],
+): StepResult {
+	const interruption = resourceInterruption(stop);
+	return {
+		phase: {
+			kind: 'awaiting_attention',
+			stopReason: interruption.message,
+			interruption,
+		},
+		memory: {...memory, parkedAfterHandover: stop.fresh},
+		actions: [
+			{type: 'record_interruption', interruption},
+			{type: 'persist'},
+			...notifications,
+		],
+	};
+}
+
+export function createInitialRun(
+	cfg: StepConfig,
+	opts: Parameters<typeof initialRun>[1],
+): StepResult {
+	return admitResult(initialRun(cfg, opts), opts.resumedMemory, cfg);
+}
+
+export function step(
+	phase: RunPhase,
+	memory: RunMemory,
+	event: RunEvent,
+	cfg: StepConfig,
+): StepResult {
+	if (event.type === 'resource_exhausted')
+		return parkResource(
+			{
+				...memory,
+				cumulativeTokens: event.cumulativeTokens,
+			},
+			{...event.stop, checkpointPath: memory.checkpoint?.path},
+		);
+	return admitResult(transition(phase, memory, event, cfg), memory, cfg);
 }
 
 /** Serialize `RunMemory` for the opaque `runMemoryJson` persistence column. */
@@ -1824,15 +1399,34 @@ export function deserializeRunMemory(
 	if (typeof candidate.parkedAfterHandover !== 'boolean') {
 		candidate.parkedAfterHandover = false;
 	}
-	if (typeof candidate.handoverStreak !== 'number') {
-		candidate.handoverStreak = 0;
-	}
 	if (!isBoundedTurn(candidate.lastBoundedTurn)) {
 		candidate.lastBoundedTurn = null;
 	}
-	if (typeof candidate.cumulativeTokens !== 'number') {
-		candidate.cumulativeTokens = null;
+	if (candidate.checkpoint !== undefined) {
+		const checkpoint = candidate.checkpoint as {
+			path?: unknown;
+			contract?: {text?: unknown; tokens?: unknown};
+		} | null;
+		if (
+			!checkpoint ||
+			typeof checkpoint.path !== 'string' ||
+			!checkpoint.contract ||
+			typeof checkpoint.contract.text !== 'string' ||
+			typeof checkpoint.contract.tokens !== 'number' ||
+			!Number.isFinite(checkpoint.contract.tokens) ||
+			checkpoint.contract.tokens < 0
+		)
+			delete candidate.checkpoint;
 	}
+
+	if (typeof candidate.lastRestartHash !== 'string')
+		delete candidate.lastRestartHash;
+	if (
+		typeof candidate.cumulativeTokens !== 'number' ||
+		!Number.isFinite(candidate.cumulativeTokens) ||
+		candidate.cumulativeTokens < 0
+	)
+		candidate.cumulativeTokens = null;
 	if (
 		typeof candidate.iteration !== 'number' ||
 		typeof candidate.nudgeStreak !== 'number' ||

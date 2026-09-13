@@ -24,8 +24,10 @@ import {
 	type UnitRecordSnapshot,
 } from './journalReader';
 import {substituteVariables} from './templateVars';
-import {handoffSimilarity} from './handoffSimilarity';
-import {classifyTurnFailure} from '../runtime/failureTaxonomy';
+import {admitContinuation, type ResourceStop} from './continuationPolicy';
+import {readRestartContract, restartInstructions} from './restartContract';
+import {DEFAULT_MAX_TURN_TOKEN_COUNT} from './types';
+import {estimateTokenCount} from './journalReader';
 import {createPhaseTracker} from './turnProtocolBlock';
 import {
 	formatSteerJournalEntry,
@@ -45,24 +47,17 @@ import {
 	type StepConfig,
 } from './runMachine';
 
-/**
- * A completed Handover as the Runner reports it (ADR 0018 §8): the reducer's
- * measurement plus the Run's cumulative tokens once the fork's are merged in.
- */
 export type HandoverCompletionReport = HandoverCompletion & {
 	tokens: TokenUsage;
 };
 
 export type TurnInput = {
+	/** Invocation-local cumulative usage, never session-lifetime totals. */
+	onUsage?: (usage: TokenUsage) => void;
 	prompt: string;
 	continuation: TurnContinuation;
 	configOverride?: HarnessProcessOverride;
-	/**
-	 * The Iteration this Turn belongs to (ADR 0018 §8). A Handover fork runs
-	 * inside the interrupted Turn's iteration — it is not a Turn of its own —
-	 * so the `run.handover` event the caller emits at kill time can name the
-	 * iteration it interrupted.
-	 */
+
 	iteration: number;
 };
 
@@ -132,12 +127,7 @@ export type WorkflowRunnerInput = {
 		snapshot: WorkflowRunSnapshot,
 		cumulativeTokens: TokenUsage,
 	) => void;
-	/**
-	 * Receives each completed Handover (ADR 0018 §8) once its fork has written
-	 * the Handoff file: the file, its size and similarity to its predecessor,
-	 * the Handover streak, the bounded Turn's opening and last context, its
-	 * tool calls, and the Run's cumulative tokens. Optional.
-	 */
+
 	onHandoverCompleted?: (completion: HandoverCompletionReport) => void;
 	/**
 	 * The tool-call count of the Turn in flight, as the caller observes it
@@ -187,27 +177,10 @@ export type WorkflowRunnerInput = {
 	 * continuation falls back to a fresh Turn.
 	 */
 	currentAdapterSessionId?: () => string | null | undefined;
-	/**
-	 * Handover orchestration seam (ADR 0014 §5). The caller intercepts the
-	 * harness's `compact.pre`, blocks the compaction, interrupts the Turn, and
-	 * records the request; the Runner then forks the live conversation, has
-	 * the `handoff` skill write a Handoff file, discards the fork, and starts
-	 * a fresh Turn seeded with the Handoff file + Journal — the only
-	 * transition that resets context instead of resuming.
-	 */
+
 	handover?: {
 		/** Return and clear the pending request, or null when none. */
 		takeRequest: () => {handle: string} | null;
-		/**
-		 * The fork is starting/ending — while true the caller must keep
-		 * blocking `compact.pre` so writing the handoff cannot be compacted.
-		 */
-		onForkStateChange?: (forking: boolean) => void;
-		/**
-		 * Handover failed for this session — degrade: stop intercepting its
-		 * compactions so normal vendor compaction proceeds (never stall).
-		 */
-		onDegraded?: (handle: string) => void;
 	};
 	/**
 	 * Task-tool projection seam (ADR 0015 §7). Called best-effort after every
@@ -429,18 +402,6 @@ function mergeTokens(base: TokenUsage, next: TokenUsage): TokenUsage {
 }
 
 /**
- * Prompt for the forked Agent Session: invoke the first-party `handoff` skill
- * (delivered to every Workflow Run via the plugin path) to distill the
- * conversation into a Handoff file at a path the Runner controls.
- */
-function buildHandoffInvocationPrompt(handoffPath: string): string {
-	return (
-		`Invoke the handoff skill to write a Handoff file to ${handoffPath}. ` +
-		`Do nothing else: no code changes, no journal updates — only the Handoff file.`
-	);
-}
-
-/**
  * Sleep for `ms`, waking early (in ~250ms slices) if `isCancelled` flips —
  * a Run being killed must not sit out a full retry backoff.
  */
@@ -453,87 +414,6 @@ async function delayWithCancel(
 		await new Promise(resolve =>
 			setTimeout(resolve, Math.min(slice, ms - waited)),
 		);
-	}
-}
-
-/** Handoff files form a numbered chain: `handoff/001.md`, `002.md`, … */
-const HANDOFF_DIR_NAME = 'handoff';
-
-/** How many Handoff files to retain; older ones are purged after a Handover. */
-const HANDOFF_RETAIN = 2;
-
-function listHandoffSeqs(dir: string): number[] {
-	try {
-		return fs
-			.readdirSync(dir)
-			.map(name => /^(\d{3})\.md$/.exec(name)?.[1])
-			.filter((seq): seq is string => seq !== undefined)
-			.map(Number)
-			.sort((a, b) => a - b);
-	} catch {
-		return [];
-	}
-}
-
-function handoffPathFor(dir: string, seq: number): string {
-	return path.join(dir, `${String(seq).padStart(3, '0')}.md`);
-}
-
-/** The newest Handoff file in the chain — the mandatory read — or null when there is none. */
-function newestHandoffPath(dir: string): string | null {
-	const seq = listHandoffSeqs(dir).at(-1);
-	return seq === undefined ? null : handoffPathFor(dir, seq);
-}
-
-/**
- * Similarity of the Handoff just written to the one before it in the chain
- * (ADR 0018 §1, §5) — the chain retains two, so the predecessor is on disk.
- * `null` for the first Handover of a Run or when either read fails; a
- * read-only observation, never a write.
- */
-function similarityToPreviousHandoff(
-	dir: string,
-	seq: number,
-	handoffAbsPath: string,
-): number | null {
-	const previousSeq = listHandoffSeqs(dir)
-		.filter(s => s < seq)
-		.at(-1);
-	if (previousSeq === undefined) return null;
-	try {
-		return handoffSimilarity(
-			fs.readFileSync(handoffPathFor(dir, previousSeq), 'utf-8'),
-			fs.readFileSync(handoffAbsPath, 'utf-8'),
-		);
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Allocate the next Handoff file: its position in the chain and its path.
- *
- * A fresh sequence number per Handover is what lets `existsSync` prove that
- * *this* fork wrote the file — the job the pre-Handover `rmSync` used to do,
- * at the cost of destroying Handoff N before N+1 was written. Past the second
- * Handover that left the Journal as the sole carrier again, which is the
- * condition ADR 0014 §5 exists to relieve.
- */
-function allocateHandoff(dir: string): {seq: number; path: string} {
-	const seq = (listHandoffSeqs(dir).at(-1) ?? 0) + 1;
-	fs.mkdirSync(dir, {recursive: true});
-	return {seq, path: handoffPathFor(dir, seq)};
-}
-
-/** Drop all but the `keep` most recent Handoff files. Best-effort. */
-function purgeHandoffs(dir: string, keep: number): void {
-	const seqs = listHandoffSeqs(dir);
-	for (const seq of seqs.slice(0, Math.max(0, seqs.length - keep))) {
-		try {
-			fs.rmSync(handoffPathFor(dir, seq), {force: true});
-		} catch {
-			// A file that cannot be removed is left behind; retention is advisory.
-		}
 	}
 }
 
@@ -619,7 +499,10 @@ export function createWorkflowRunner(
 	const runId = input.resumeRunId ?? crypto.randomUUID();
 	let cancelled = false;
 	let status: RunStatus = 'running';
-	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
+	let cumulativeTokens: TokenUsage = {
+		...(input.resumedRunMemory?.usage ?? NULL_TOKENS),
+		total: input.resumedRunMemory?.cumulativeTokens ?? null,
+	};
 	let stopReason: string | undefined;
 	let interruption: Interruption | undefined;
 	let memory: RunMemory | undefined;
@@ -685,19 +568,6 @@ export function createWorkflowRunner(
 		}
 	}
 
-	function handoffDirFor(): string {
-		return path.join(
-			journalAbsPath
-				? path.dirname(journalAbsPath)
-				: path.resolve(
-						input.projectDir,
-						'.athena',
-						input.sessionId || 'session',
-					),
-			HANDOFF_DIR_NAME,
-		);
-	}
-
 	const result = (async (): Promise<WorkflowRunResult> => {
 		// Yield to the microtask queue so the caller can capture the handle
 		// before we start executing turns. Without this, startTurn would be
@@ -730,8 +600,6 @@ export function createWorkflowRunner(
 			}
 		}
 
-		persist();
-
 		const workflowState = createWorkflowRunState({
 			projectDir: input.projectDir,
 			sessionId: input.sessionId,
@@ -741,6 +609,8 @@ export function createWorkflowRunner(
 
 		const loop = input.workflow?.loop;
 		const cfg: StepConfig = {
+			runId,
+			contextKey: crypto.randomUUID(),
 			workflowState,
 			initialPrompt: input.prompt,
 			loop,
@@ -758,6 +628,7 @@ export function createWorkflowRunner(
 		});
 		let phase: RunPhase = initial.phase;
 		memory = initial.memory;
+		persist();
 
 		// From here on a Steer goes straight to the reducer: it only queues
 		// (same phase, persisted), so applying it while a Turn is in flight is
@@ -774,17 +645,170 @@ export function createWorkflowRunner(
 
 		// --- action execution -------------------------------------------------
 
+		/** One interpreter seam for live accounting and cancellation. */
+		async function executeOperation(
+			turn: TurnInput,
+		): Promise<
+			TurnExecutionResult | Extract<RunEvent, {type: 'resource_exhausted'}>
+		> {
+			const baseline = {...cumulativeTokens};
+			const startTokens = memory!.cumulativeTokens ?? 0;
+			let operationTokens = 0;
+			let finished = false;
+			let openingChecked = false;
+			let stopped: ResourceStop | null = null;
+			const isStopped = () => stopped !== null;
+			let resolveStop!: (
+				event: Extract<RunEvent, {type: 'resource_exhausted'}>,
+			) => void;
+			const stopPromise = new Promise<
+				Extract<RunEvent, {type: 'resource_exhausted'}>
+			>(resolve => {
+				resolveStop = resolve;
+			});
+			function finalStop(
+				event: Extract<RunEvent, {type: 'resource_exhausted'}>,
+			) {
+				const total = memory!.cumulativeTokens ?? startTokens;
+				return {
+					...event,
+					cumulativeTokens: total,
+					stop: {
+						...event.stop,
+						...(event.stop.cause === 'tokens' ? {used: total} : {}),
+					},
+				};
+			}
+			function stop(reason: ResourceStop) {
+				if (finished || stopped || cancelled) return;
+				stopped = reason;
+				const checkpoint = journalAbsPath
+					? checkpointFromJournal(readJournal(journalAbsPath))
+					: null;
+				if (checkpoint) memory = {...memory!, checkpoint};
+				input.abortCurrentTurn?.();
+				resolveStop({
+					type: 'resource_exhausted',
+					stop: reason,
+					cumulativeTokens: memory!.cumulativeTokens ?? startTokens,
+				});
+			}
+			function observe(usage: TokenUsage, enforce = true) {
+				if (finished) return;
+				if (
+					usage.total !== null &&
+					Number.isFinite(usage.total) &&
+					usage.total >= 0
+				) {
+					operationTokens = Math.max(operationTokens, usage.total);
+					memory = {
+						...memory!,
+						cumulativeTokens: startTokens + operationTokens,
+					};
+					cumulativeTokens = {
+						...mergeTokens(baseline, usage),
+						total: memory.cumulativeTokens,
+					};
+					memory = {...memory, usage: cumulativeTokens};
+					persist();
+				}
+				if (!enforce || stopped) return;
+				const limit = admitContinuation({
+					loop,
+					iteration: memory!.iteration,
+					tokens: memory!.cumulativeTokens,
+				});
+				if (limit) {
+					stop(limit);
+					return;
+				}
+				// The first actual request supplies opening context. On an initial
+				// Turn the configured ceiling is only an estimate, labelled as such.
+				if (
+					!openingChecked &&
+					turn.continuation.mode === 'fresh' &&
+					usage.openingContextSize != null
+				) {
+					openingChecked = true;
+					const previous =
+						memory!.contextKey === cfg.contextKey
+							? memory!.lastBoundedTurn
+							: null;
+					const required = memory!.checkpoint
+						? 0
+						: estimateTokenCount(
+								journalAbsPath ? readJournal(journalAbsPath) : '',
+							);
+					const decision = admitContinuation({
+						loop,
+						iteration: memory!.iteration,
+						tokens: memory!.cumulativeTokens,
+						context: {
+							opening: usage.openingContextSize,
+							required,
+							ceiling:
+								previous?.lastContextTokens ??
+								loop?.maxTurnTokenCount ??
+								DEFAULT_MAX_TURN_TOKEN_COUNT,
+							source: previous
+								? 'conservative prior API occupancy'
+								: 'configured ceiling estimate; actual compaction point unknown',
+						},
+					});
+					if (decision) stop(decision);
+				}
+			}
+			try {
+				const operation = input.startTurn({
+					...turn,
+					onUsage: usage => observe(usage),
+				});
+				const result = await Promise.race([operation, stopPromise]);
+				if ('type' in result) {
+					// Stop admitting work immediately, but drain reported usage until
+					// the harness settles. A broken adapter must not park forever.
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					try {
+						const final = await Promise.race([
+							operation.catch(() => null),
+							new Promise<null>(resolve => {
+								timer = setTimeout(() => resolve(null), 6000);
+							}),
+						]);
+						if (final) observe(final.tokens, false);
+					} finally {
+						if (timer) clearTimeout(timer);
+					}
+					return finalStop(result);
+				}
+				observe(result.tokens, false);
+				if (isStopped()) return finalStop(await stopPromise);
+
+				return result;
+			} finally {
+				finished = true;
+			}
+		}
+
 		async function performStartTurn(
 			prompt: string,
 			continuation: TurnContinuation,
 			configOverride: HarnessProcessOverride | undefined,
 		): Promise<RunEvent> {
-			const turnResult = await input.startTurn({
-				prompt,
+			const turnResult = await executeOperation({
+				prompt:
+					loop?.enabled &&
+					journalAbsPath &&
+					(continuation.mode === 'fresh' || memory!.iteration === 1)
+						? prompt +
+							'\n\n' +
+							restartInstructions(journalAbsPath, runId, loop.maxRestartTokens)
+						: prompt,
 				continuation,
 				configOverride,
 				iteration: memory!.iteration,
 			});
+			if ('type' in turnResult) return turnResult;
 
 			// The Turn's measurement (ADR 0018 §6), on every event shape below.
 			const measured = {
@@ -812,7 +836,6 @@ export function createWorkflowRunner(
 				};
 			}
 
-			cumulativeTokens = mergeTokens(cumulativeTokens, turnResult.tokens);
 			const runTotal = cumulativeTokens.total;
 
 			// Handover (ADR 0014 §5): checked before interruption and failure
@@ -836,6 +859,9 @@ export function createWorkflowRunner(
 					adapterSessionId: null,
 					outcome: null,
 					journalContent,
+					checkpoint: journalAbsPath
+						? checkpointFromJournal(journalContent)
+						: null,
 					...measured,
 					shedIntegrity: observeShedIntegrity(journalContent),
 					cumulativeTokens: runTotal,
@@ -925,6 +951,7 @@ export function createWorkflowRunner(
 				adapterSessionId,
 				outcome,
 				journalContent,
+				checkpoint: checkpointFromJournal(journalContent),
 				...measured,
 				shedIntegrity:
 					journalContent === '' ? null : observeShedIntegrity(journalContent),
@@ -949,79 +976,15 @@ export function createWorkflowRunner(
 			}
 		}
 
-		async function performForkTurn(
-			handle: string,
-			configOverride: HarnessProcessOverride | undefined,
-		): Promise<RunEvent> {
-			const handoffDir = handoffDirFor();
-			const {seq: handoffSeq, path: handoffAbsPath} =
-				allocateHandoff(handoffDir);
-
-			input.handover?.onForkStateChange?.(true);
-			let forkOk = false;
-			// Classified only on failure (ADR 0016 §8) — a successful fork never
-			// consults this, so it defaults to non-transient until proven otherwise.
-			let transient = false;
-			try {
-				const forkResult = await input.startTurn({
-					prompt: buildHandoffInvocationPrompt(handoffAbsPath),
-					continuation: {mode: 'resume', handle},
-					configOverride: {...configOverride, forkSession: true},
-					// The fork is not a Turn: it runs inside the interrupted one.
-					iteration: memory!.iteration,
-				});
-				cumulativeTokens = mergeTokens(cumulativeTokens, forkResult.tokens);
-				forkOk =
-					!forkResult.error &&
-					(forkResult.exitCode === null || forkResult.exitCode === 0) &&
-					fs.existsSync(handoffAbsPath);
-				if (!forkOk) {
-					transient =
-						classifyTurnFailure({
-							errorMessage: forkResult.error?.message,
-							lastStderr: forkResult.stderrTail ?? forkResult.lastStderr,
-							lastMessage: forkResult.streamMessage,
-						}).kind === 'transient';
-				}
-			} catch (e) {
-				forkOk = false;
-				transient =
-					classifyTurnFailure({
-						errorMessage: e instanceof Error ? e.message : String(e),
-					}).kind === 'transient';
-			} finally {
-				input.handover?.onForkStateChange?.(false);
-			}
-
-			// Fidelity metric (ADR 0015 §8) and progress metric (ADR 0018 §1) —
-			// a read-only stat and a read-only compare, never a write, so this
-			// never touches the one-owner property (ADR 0004).
-			let handoffSizeBytes: number | null = null;
-			let similarity: number | null = null;
-			if (forkOk) {
-				try {
-					handoffSizeBytes = fs.statSync(handoffAbsPath).size;
-				} catch {
-					handoffSizeBytes = null;
-				}
-				similarity = similarityToPreviousHandoff(
-					handoffDir,
-					handoffSeq,
-					handoffAbsPath,
-				);
-			}
-
-			return {
-				type: 'fork_finished',
-				ok: forkOk,
-				cancelled,
-				handoffPath: handoffAbsPath,
-				handoffSeq,
-				handoffSizeBytes,
-				handoffSimilarity: similarity,
-				transient,
-				cumulativeTokens: cumulativeTokens.total,
-			};
+		function checkpointFromJournal(content: string) {
+			const contract = readRestartContract(
+				content,
+				loop?.maxRestartTokens,
+				runId,
+			);
+			return contract && journalAbsPath
+				? {path: journalAbsPath, contract}
+				: null;
 		}
 
 		async function performWait(ms: number): Promise<RunEvent> {
@@ -1038,11 +1001,7 @@ export function createWorkflowRunner(
 		}
 
 		function isKickoffAction(action: RunAction): boolean {
-			return (
-				action.type === 'start_turn' ||
-				action.type === 'start_fork_turn' ||
-				action.type === 'wait'
-			);
+			return action.type === 'start_turn' || action.type === 'wait';
 		}
 
 		/**
@@ -1083,12 +1042,6 @@ export function createWorkflowRunner(
 							tokens: cumulativeTokens,
 						});
 						break;
-					case 'purge_handoffs':
-						purgeHandoffs(handoffDirFor(), HANDOFF_RETAIN);
-						break;
-					case 'degrade_handover':
-						input.handover?.onDegraded?.(action.handle);
-						break;
 					case 'steers_delivered':
 						if (journalAbsPath && loop?.enabled) {
 							recordSteersInJournal(
@@ -1113,7 +1066,13 @@ export function createWorkflowRunner(
 						// Ordered before the parked phase's `persist`, so the snapshot
 						// that marks the Run awaiting_attention already carries it.
 						interruption = action.interruption;
-						if (journalAbsPath) {
+						if (
+							journalAbsPath &&
+							!(
+								action.interruption.kind === 'cap_exhausted' &&
+								action.interruption.resource
+							)
+						) {
 							appendInterruptionNote(journalAbsPath, action.interruption);
 						}
 						break;
@@ -1139,8 +1098,6 @@ export function createWorkflowRunner(
 						kickoff.continuation,
 						kickoff.configOverride,
 					);
-				case 'start_fork_turn':
-					return performForkTurn(kickoff.handle, kickoff.configOverride);
 				case 'wait':
 					return performWait(kickoff.ms);
 				default:
@@ -1159,13 +1116,18 @@ export function createWorkflowRunner(
 		// bootstrap actions below, exactly like the kickoff actions
 		// `createInitialRun` returns for every other initial phase.
 		let bootstrapActions: RunAction[] = initial.actions;
-		if (phase.kind === 'awaiting_attention') {
+		if (
+			phase.kind === 'awaiting_attention' &&
+			input.resumeRunId &&
+			initial.actions.length === 0
+		) {
 			const wokenEvent: RunEvent = {
 				type: 'woken',
 				continuation: input.initialContinuation ?? {mode: 'fresh'},
-				// The newest Handoff on disk, for a park that followed a Handover
-				// (ADR 0018 §9); the row decides whether the wake names it.
-				handoffPath: newestHandoffPath(handoffDirFor()),
+				// Prefer a repaired current-run checkpoint when waking.
+				checkpoint: journalAbsPath
+					? checkpointFromJournal(readJournal(journalAbsPath))
+					: null,
 			};
 			const stepResult = step(phase, memory, wokenEvent, cfg);
 			phase = stepResult.phase;
@@ -1173,6 +1135,11 @@ export function createWorkflowRunner(
 			bootstrapActions = stepResult.actions;
 		}
 
+		if (isTerminalPhase(phase)) {
+			const terminal = terminalPhaseToStatus(phase);
+			status = terminal.status;
+			stopReason = terminal.stopReason;
+		}
 		let pendingEvent = await runActions(bootstrapActions);
 
 		while (pendingEvent) {

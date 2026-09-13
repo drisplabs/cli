@@ -1,6 +1,6 @@
 # ADR 0018 - A Handover is budgeted like every other continuation: an unproductive-Handover cap, the iteration ceiling on the Handover row, and a measured working-room diagnostic
 
-Status: Active
+Status: Superseded by ADR 0019 (2026-09-13)
 Date: 2026-09-05
 Relates to: ADR 0014 (handover, retry, attention, continuation), ADR 0015 (Tracker sheds into a
 Dossier), ADR 0016 (run loop as a pure reducer). Resolves drisplabs/cli#164.
