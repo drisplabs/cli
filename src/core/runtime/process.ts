@@ -63,6 +63,7 @@ export type HarnessProcess<ConfigOverride = unknown> = {
 		prompt: string,
 		continuation?: TurnContinuation,
 		configOverride?: ConfigOverride,
+		onUsage?: (usage: TokenUsage) => void,
 	) => Promise<TurnExecutionResult>;
 	interrupt: () => void;
 	kill: () => Promise<void>;

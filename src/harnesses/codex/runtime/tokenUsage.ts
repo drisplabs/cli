@@ -27,13 +27,16 @@ function fromBreakdown(
 	}
 
 	return {
-		input: breakdown.inputTokens,
-		output: breakdown.outputTokens + breakdown.reasoningOutputTokens,
+		input: Math.max(0, breakdown.inputTokens - breakdown.cachedInputTokens),
+		output: breakdown.outputTokens,
 		cacheRead: breakdown.cachedInputTokens,
 		cacheWrite: null,
 		total: breakdown.totalTokens,
-		// Codex exposes current prompt occupancy via input + cached input tokens.
-		contextSize: breakdown.inputTokens + breakdown.cachedInputTokens,
+		// Cache and reasoning are subsets, not additional billed tokens.
+		// Compaction can report only a total estimate with all components zero.
+		contextSize:
+			breakdown.inputTokens ||
+			(breakdown.outputTokens === 0 ? breakdown.totalTokens : 0),
 		contextWindowSize,
 	};
 }
@@ -42,7 +45,11 @@ export function getCodexUsageTotals(
 	usage: CodexThreadTokenUsage | null | undefined,
 ): TokenUsage {
 	if (!usage) return {...NULL_TOKENS};
-	return fromBreakdown(usage.total, usage.modelContextWindow);
+	return {
+		...fromBreakdown(usage.total, usage.modelContextWindow),
+		contextSize: fromBreakdown(usage.last, usage.modelContextWindow)
+			.contextSize,
+	};
 }
 
 export function getCodexUsageDelta(

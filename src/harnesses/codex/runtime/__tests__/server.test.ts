@@ -483,6 +483,7 @@ describe('createCodexServer', () => {
 
 		const originalSendRequest = manager!.sendRequest.bind(manager);
 		manager!.sendRequest = vi.fn(async (method, params) => {
+			if (method === M.TURN_INTERRUPT) return {};
 			if (method === 'plugin/read') {
 				return {
 					plugin: {
@@ -761,7 +762,7 @@ describe('createCodexServer', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		runtime.sendInterrupt();
 
-		expect(sendNotification).toHaveBeenCalledWith(M.TURN_INTERRUPT, {
+		expect(manager!.sendRequest).toHaveBeenCalledWith(M.TURN_INTERRUPT, {
 			threadId: 'th-1',
 			turnId: 'turn-early',
 		});

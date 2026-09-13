@@ -8,8 +8,8 @@ import {
 import {type IsolationConfig, resolveIsolationConfig} from './isolation';
 
 describe('FLAG_REGISTRY', () => {
-	it('should contain exactly 29 flag definitions', () => {
-		expect(FLAG_REGISTRY).toHaveLength(29);
+	it('should contain exactly 28 flag definitions', () => {
+		expect(FLAG_REGISTRY).toHaveLength(28);
 	});
 
 	it('should not include allowedTools (consumed as hook rules, not CLI flags)', () => {
@@ -63,13 +63,11 @@ describe('buildIsolationArgs', () => {
 		it('should handle multiple boolean flags', () => {
 			const args = buildIsolationArgs({
 				dangerouslySkipPermissions: true,
-				forkSession: true,
 				noSessionPersistence: true,
 				disableSlashCommands: true,
 				includePartialMessages: true,
 			});
 			expect(args).toContain('--dangerously-skip-permissions');
-			expect(args).toContain('--fork-session');
 			expect(args).toContain('--no-session-persistence');
 			expect(args).toContain('--disable-slash-commands');
 			expect(args).toContain('--include-partial-messages');
@@ -275,7 +273,6 @@ describe('buildIsolationArgs', () => {
 				systemPromptFile: '/prompt.txt',
 				appendSystemPrompt: 'Extra instructions',
 				appendSystemPromptFile: '/append.txt',
-				forkSession: true,
 				noSessionPersistence: true,
 				verbose: true,
 				debug: 'api',
@@ -309,7 +306,6 @@ describe('buildIsolationArgs', () => {
 			// Boolean flags
 			expect(args).toContain('--dangerously-skip-permissions');
 			expect(args).toContain('--allow-dangerously-skip-permissions');
-			expect(args).toContain('--fork-session');
 			expect(args).toContain('--no-session-persistence');
 			expect(args).toContain('--verbose');
 			expect(args).toContain('--disable-slash-commands');

@@ -57,15 +57,9 @@ What happens, in ADR 0014 terms:
 - **Degrade:** if the vendor session is gone or invalid, the failed resume
   falls back to a fresh Turn seeded from the Journal, with your reply still
   the prompt. The Run is never stranded on a dead session.
-- **After a Handover:** a Run that parked right after a Handover — the
-  Handover cap (`handover cap reached: …`, ADR 0018 §2) or the iteration
-  ceiling reached on the Handover row (§4) — captured an Agent Session at its
-  context bound: the killed session, or the fork.
-  Resuming either would re-trip compaction before your reply is read, so the
-  wake starts a **fresh** Agent Session instead (ADR 0018 §9), and the wake
-  prompt names the newest `handoff/NNN.md` as mandatory reading beside the
-  Journal. The resolver honours the same marking, so `--continue` never hands
-  the runner that session; the Run id is still reused.
+- **After a context boundary:** the wake starts a fresh Agent Session using the
+  validated Journal checkpoint and your reply. A repaired checkpoint in the
+  Journal takes precedence over the last saved checkpoint. The Run id is reused.
 
 A live interactive session answers its own questions in the terminal, and a
 paired dashboard can deliver decisions into a running session; suspension is
@@ -153,5 +147,18 @@ left it. In `--json` mode the run emits `run.steer.queued` on receipt and
 - `blocked` and `exhausted` still appear on historical rows; they are no
   longer emitted.
 - A suspended run's `ended_at` stays NULL — it has not ended.
-- Iteration numbering restarts on the resumed run's row (the runner counts
-  its own Turns); the Journal remains the durable ledger of progress.
+- Iteration numbering continues across wakes of the same Run.
+
+## Resource suspensions
+
+A resource suspension carries its cause, limit, observed usage and checkpoint in
+the structured Interruption. Replying does not reset the token or iteration
+budget. Increase an exhausted `loop.maxRunTokens` or `loop.maxIterations` before
+continuing; prior spend remains counted.
+
+For a restart suspension, repair the Journal's bounded `## Restart` section,
+including its current Run id and essential constraints. Missing, invalid or
+already-consumed checkpoints pause automatic continuation. A previously valid
+checkpoint remains saved if a later write is partial. Supporting Journal sections
+remain available for selective reading. For a context suspension, reduce startup
+context or revise the Workflow's context settings.

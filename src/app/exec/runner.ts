@@ -44,10 +44,7 @@ import {createFailureLatch, exitCodeFromFailure} from './failureLatch';
 import {createExecOutputWriter} from './output';
 import type {ExecRunOptions, ExecRunResult} from './types';
 import {RUN_EXIT_CODE} from './types';
-import {
-	DEFAULT_MAX_TURN_TOKEN_COUNT,
-	DEFAULT_PERMISSION_GRACE_MS,
-} from '../../core/workflows/types';
+import {DEFAULT_PERMISSION_GRACE_MS} from '../../core/workflows/types';
 import type {Interruption} from '@drisp/protocol';
 import {
 	deferredPermissionDecision,
@@ -183,33 +180,6 @@ function classifyUnattendedEvent(
 	return null;
 }
 
-/** `~71k` for 71,400. */
-function formatKiloTokens(n: number): string {
-	return `~${Math.round(n / 1000)}k`;
-}
-
-/**
- * The Turn-1 opening-context warning (ADR 0018 §6), or null when Turn 1
- * opened at or below half of `maxTurnTokenCount` (or was not measured). The
- * knob is not the agent's budget: the effective compaction point may sit
- * well below it, and a fresh Turn's working room is that point minus its
- * opening context — so a baseline over half the bound leaves Handover little
- * or nothing to work with.
- */
-function buildOpeningContextWarning(input: {
-	openingContextTokens: number | null;
-	maxTurnTokenCount: number;
-}): string | null {
-	const opening = input.openingContextTokens;
-	const bound = input.maxTurnTokenCount;
-	if (opening === null || opening <= bound / 2) return null;
-	return (
-		`baseline context is ${formatKiloTokens(opening)} tokens of a ${formatKiloTokens(bound)}-token bound (loop.maxTurnTokenCount): ` +
-		`the effective compaction point may sit below the bound, so a fresh Turn has at most ${formatKiloTokens(Math.max(0, bound - opening))} tokens of working room and Handover may loop. ` +
-		`Raise loop.maxTurnTokenCount, or trim the workflow's MCP servers and skills.`
-	);
-}
-
 function buildEarlyFailureResult(input: {
 	now: () => number;
 	startTs: number;
@@ -302,8 +272,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	// than its Agent Session's. The count the Runner records for a bounded
 	// Turn and reports on `run.handover.completed`; null until a Turn starts.
 	let toolCallsThisTurn: number | null = null;
-	// The Turn-1 opening-context warning (ADR 0018 §6) fires at most once.
-	let openingContextWarned = false;
 	let beforeTerminalCompletionRan = false;
 	let unsubscribeSteers: (() => void) | undefined;
 	// Set when a Turn is interrupted to park the Run (#189): an ask rule fired,
@@ -438,7 +406,9 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			| undefined,
 	});
 
+	let cancelWorkflow: (() => void) | undefined;
 	const latch = createFailureLatch(next => {
+		cancelWorkflow?.();
 		output.error(next.message);
 		output.emitJsonEvent('exec.error', {
 			kind: next.kind,
@@ -458,25 +428,14 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const currentAdapterSessionId = (): string | null => adapterSessionId;
 
-	// Handover state (ADR 0014 §5). A compact.pre on the Run's Agent Session
-	// blocks vendor compaction and interrupts the Turn; the workflow runner
-	// then forks, distills, and reseeds. While the fork writes the Handoff
-	// file its compactions stay blocked too; a failed Handover marks the
-	// session degraded so vendor compaction proceeds unhindered.
 	let handoverRequest: {handle: string} | null = null;
-	let handoverForkInProgress = false;
-	const handoverDegradedSessions = new Set<string>();
 	const interceptCompaction = (event: RuntimeEvent): string | null => {
 		const handle = event.sessionId;
 		if (!handle) return null;
-		if (handoverDegradedSessions.has(handle)) return null;
-		if (handoverForkInProgress) {
-			return 'Handover fork in progress — compaction stays blocked while the Handoff file is written.';
-		}
 		if (handoverRequest === null) {
 			handoverRequest = {handle};
 			output.notice(
-				`handover: context bound reached — forking session ${handle} to write a Handoff file`,
+				`handover: context bound reached — restarting session ${handle} from the Journal checkpoint`,
 			);
 			output.emitJsonEvent('run.handover', {
 				adapterSessionId: handle,
@@ -484,7 +443,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			});
 			void sessionController.kill();
 		}
-		return 'Handover in progress — Athena forks the conversation instead of compacting.';
+		return 'Handover in progress — the runner will validate the Journal checkpoint.';
 	};
 
 	const controllerCallbacks: ControllerCallbacks = {
@@ -494,9 +453,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		// A Workflow Run parks instead — see `classifyUnattendedEvent` above.
 		enqueuePermission: () => {},
 		enqueueQuestion: () => {},
-		// Handover interception is Claude-only for now: the fork transition
-		// rides --fork-session, which Codex has no equivalent for. Non-workflow
-		// sessions never intercept — vendor compaction proceeds unchanged.
 		...(options.harness === 'claude-code' && options.workflow?.loop?.enabled
 			? {interceptCompaction}
 			: {}),
@@ -899,12 +855,20 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			resumedRunMemory,
 			resumedStopReason,
 			startTurn: async turnInput => {
+				if (latch.hasFailure())
+					return {
+						exitCode: null,
+						error: new Error(latch.current()!.message),
+						tokens: {...NULL_TOKENS},
+						streamMessage: null,
+					};
 				currentIteration = turnInput.iteration;
 				toolCallsThisTurn = 0;
 				const turnResult = await sessionController.startTurn({
 					prompt: turnInput.prompt,
 					continuation: turnInput.continuation,
 					configOverride: turnInput.configOverride,
+					onUsage: turnInput.onUsage,
 					onStderrLine: message => output.log(message),
 				});
 				// A Turn that ended on its own while a request was held leaves
@@ -913,29 +877,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 				if (turnResult.streamMessage) {
 					streamFinalMessage = turnResult.streamMessage;
-				}
-
-				// The preventive half of ADR 0018 §6: a workflow whose baseline
-				// context — system prompt, tools, skills — eats its bound is told
-				// so on Turn 1, however that Turn ended, rather than at the third
-				// unproductive Handover. In the CORE-377 incident this would have
-				// fired at minute one: 71.5k of 130k.
-				if (
-					!openingContextWarned &&
-					turnInput.iteration === 1 &&
-					turnInput.configOverride?.['forkSession'] !== true
-				) {
-					const warning = buildOpeningContextWarning({
-						openingContextTokens: turnResult.tokens.openingContextSize ?? null,
-						maxTurnTokenCount:
-							options.workflow?.loop?.maxTurnTokenCount ??
-							DEFAULT_MAX_TURN_TOKEN_COUNT,
-					});
-					if (warning) {
-						openingContextWarned = true;
-						output.warn(warning);
-						output.emitJsonEvent('exec.warning', {message: warning});
-					}
 				}
 
 				const sessionIdForTokens = currentAdapterSessionId();
@@ -972,18 +913,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 					const request = handoverRequest;
 					handoverRequest = null;
 					return request;
-				},
-				onForkStateChange: forking => {
-					handoverForkInProgress = forking;
-				},
-				onDegraded: handle => {
-					handoverDegradedSessions.add(handle);
-					output.warn(
-						`handover failed for session ${handle} — falling back to normal vendor compaction`,
-					);
-					output.emitJsonEvent('run.handover.degraded', {
-						adapterSessionId: handle,
-					});
 				},
 			},
 			abortCurrentTurn: () => void sessionController.kill(),
@@ -1056,6 +985,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			},
 		});
 
+		cancelWorkflow = () => handle.cancel();
+		if (latch.hasFailure()) handle.cancel();
 		activeRunId = handle.runId;
 
 		// Steers reach the Runner through the queue's single subscriber; ones

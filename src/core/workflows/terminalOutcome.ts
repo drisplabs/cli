@@ -42,19 +42,6 @@ export type TurnOutcome =
 			deprecation?: string;
 	  };
 
-/**
- * The sentence an `awaiting_attention` Run carries when `maxIterations`
- * tripped (ADR 0014 §7). One author for the two rows that reach the ceiling:
- * the clean-stop path below, and the successful-fork row of the run-loop
- * reducer (ADR 0018 §4) — `interruptionFromSuspension` reads it back into a
- * `cap_exhausted` / `iterations` Interruption, so the wording is a contract.
- */
-export function buildIterationCeilingReason(maxIterations: number): string {
-	return `iteration ceiling reached: ${maxIterations} iteration${
-		maxIterations === 1 ? '' : 's'
-	} (maxIterations) used without a terminal marker`;
-}
-
 const MISSING_JOURNAL_MESSAGE =
 	'the journal file went missing during the run — the workflow can no longer verify progress';
 const MISPLACED_TERMINAL_MARKER_MESSAGE =
@@ -70,7 +57,7 @@ export function resolveTurnOutcome(input: {
 	loop: LoopConfig;
 	iteration: number;
 }): TurnOutcome {
-	const {journalPath, loop, iteration} = input;
+	const {journalPath, loop} = input;
 
 	// The agent owns the Journal; if it is *gone* we cannot verify progress and
 	// fail. This existence probe is deliberately distinct from reading the
@@ -119,17 +106,6 @@ export function resolveTurnOutcome(input: {
 			...(journal.deprecatedMarker
 				? {deprecation: buildMarkerDeprecation(journal.deprecatedMarker)}
 				: {}),
-		};
-	}
-	// Runaway ceiling (ADR 0014 §7): hitting maxIterations suspends instead of
-	// terminating in `exhausted` (still valid on historical rows, no longer
-	// emitted). The message names which bound tripped — the Nudge and Retry
-	// caps funnel into the same state, and an unnamed give-up is unreadable.
-	if (iteration >= loop.maxIterations) {
-		return {
-			kind: 'suspend',
-			status: 'awaiting_attention',
-			stopReason: buildIterationCeilingReason(loop.maxIterations),
 		};
 	}
 	return {kind: 'continue'};

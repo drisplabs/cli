@@ -18,13 +18,11 @@ import {createSteerQueue, STEER_BLOCK_OPEN} from '../../core/workflows/steer';
 import type {DashboardDecisionInboxRow} from '../dashboard/dashboardDecisionInbox';
 import {
 	createSessionStore,
-	getLatestRunForSession,
 	listAwaitingAttentionRuns,
 } from '../../infra/sessions';
 import {runRunsCommand} from '../entry/runsCommand';
 import {
 	serializeRunMemory,
-	wakesFreshAfterHandover,
 	type RunMemory,
 } from '../../core/workflows/runMachine';
 
@@ -116,15 +114,6 @@ function createWriteCapture() {
 		},
 		read: () => value,
 	};
-}
-
-type ExecJsonlEvent = {type: string; data: Record<string, unknown>};
-
-function parseJsonl(text: string): ExecJsonlEvent[] {
-	return text
-		.split('\n')
-		.filter(line => line.trim().length > 0)
-		.map(line => JSON.parse(line) as ExecJsonlEvent);
 }
 
 describe('runExec', () => {
@@ -849,6 +838,52 @@ describe('runExec', () => {
 		}
 	});
 
+	it('cancels a loop on timeout without admitting a retry or fresh session', async () => {
+		vi.useFakeTimers();
+		const runtime = new MockRuntime();
+		const stdout = createWriteCapture();
+		const stderr = createWriteCapture();
+
+		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
+			const child = makeChildProcess(() => {
+				opts.onExit?.(null);
+			});
+			return child;
+		});
+
+		try {
+			const runPromise = runExec({
+				prompt: 'hello',
+				workflow: {
+					name: 'timeout-loop',
+					plugins: [],
+					promptTemplate: '{input}',
+					loop: {enabled: true, maxIterations: 20},
+				},
+				projectDir: '/tmp',
+				harness: 'claude-code',
+				isolationConfig: {},
+				timeoutMs: 10,
+				ephemeral: true,
+				stdout: stdout.writer,
+				stderr: stderr.writer,
+				runtimeFactory: () => runtime,
+				spawnProcess,
+			});
+
+			await vi.advanceTimersByTimeAsync(20);
+			const result = await runPromise;
+
+			expect(spawnProcess).toHaveBeenCalledOnce();
+			expect(result.success).toBe(false);
+			expect(result.exitCode).toBe(RUN_EXIT_CODE.TIMEOUT);
+			expect(result.failure?.kind).toBe('timeout');
+			expect(stderr.read()).toContain('timed out');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('preserves the tracker file when a workflow loop reaches a terminal state', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
@@ -998,124 +1033,6 @@ describe('runExec', () => {
 		}
 	});
 
-	it('orchestrates a Handover: blocks compaction, forks for the Handoff file, reseeds fresh', async () => {
-		const runtime = new MockRuntime();
-		const stdout = createWriteCapture();
-		const stderr = createWriteCapture();
-		const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
-		const trackerDir = path.join(projectDir, '.athena', 'session-ho');
-		fs.mkdirSync(trackerDir, {recursive: true});
-		const trackerPath = path.join(trackerDir, 'tracker.md');
-		// The Handoff chain starts at 001 (ADR 0014 §5).
-		const handoffPath = path.join(trackerDir, 'handoff', '001.md');
-
-		const spawns: SpawnArgs[] = [];
-		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
-			spawns.push(opts);
-			const spawnIndex = spawns.length;
-			const child = makeChildProcess(() => {
-				// The exec runner kills the primary Turn to hand over.
-				opts.onExit?.(143);
-			});
-
-			setImmediate(() => {
-				if (spawnIndex === 1) {
-					// Primary Turn: works, then crosses the token bound — the
-					// harness announces compaction on this Agent Session.
-					fs.writeFileSync(trackerPath, 'deep in work', 'utf-8');
-					runtime.emit(
-						makeRuntimeEvent({
-							id: 'evt-precompact',
-							kind: 'compact.pre',
-							hookName: 'PreCompact',
-							sessionId: 'claude-sess-primary',
-							interaction: {
-								expectsDecision: true,
-								defaultTimeoutMs: 4000,
-								canBlock: true,
-							},
-						}),
-					);
-					// The kill callback ends this turn via opts.onExit(143).
-				} else if (spawnIndex === 2) {
-					// The fork: writes the Handoff file and exits cleanly.
-					fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
-					fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
-					opts.onExit?.(0);
-				} else {
-					// Post-Handover fresh Turn: completes the workflow.
-					fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
-					opts.onStdout?.(
-						JSON.stringify({
-							type: 'message',
-							role: 'assistant',
-							content: [{type: 'text', text: 'done after handover'}],
-						}) + '\n',
-					);
-					opts.onExit?.(0);
-				}
-			});
-
-			return child;
-		});
-
-		try {
-			const result = await runExec({
-				prompt: 'big task',
-				projectDir,
-				harness: 'claude-code',
-				athenaSessionId: 'session-ho',
-				isolationConfig: {},
-				ephemeral: true,
-				stdout: stdout.writer,
-				stderr: stderr.writer,
-				runtimeFactory: () => runtime,
-				spawnProcess,
-				workflow: {
-					name: 'test-loop',
-					plugins: [],
-					promptTemplate: '{input}',
-					loop: {
-						enabled: true,
-						completionMarker: '<!-- DONE -->',
-						maxIterations: 5,
-						trackerPath: '.athena/{sessionId}/tracker.md',
-					},
-				},
-			});
-
-			expect(result.success).toBe(true);
-			expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
-
-			// The compaction was answered with a block decision.
-			const blockDecision = runtime.decisions.find(
-				d => d.eventId === 'evt-precompact',
-			);
-			expect(blockDecision?.decision.intent).toEqual({
-				kind: 'compact_block',
-				reason: expect.stringContaining('Handover'),
-			});
-
-			// Spawn 2 is the fork: resumes the primary session with --fork-session
-			// (surfaced via isolation.forkSession) and invokes the handoff skill.
-			expect(spawns).toHaveLength(3);
-			expect(spawns[1]!.sessionId).toBe('claude-sess-primary');
-			expect(
-				(spawns[1]!.isolation as {forkSession?: boolean}).forkSession,
-			).toBe(true);
-			expect(spawns[1]!.prompt).toContain('handoff skill');
-
-			// Spawn 3 is the fresh post-Handover Turn seeded with file + Tracker.
-			expect(spawns[2]!.sessionId).toBeUndefined();
-			expect(spawns[2]!.prompt).toContain('Handover occurred');
-			expect(spawns[2]!.prompt).toContain(handoffPath);
-
-			expect(stderr.read()).toContain('handover: context bound reached');
-		} finally {
-			fs.rmSync(projectDir, {recursive: true, force: true});
-		}
-	});
-
 	describe('the Handover is budgeted and observable (ADR 0018 §4, §8, §9)', () => {
 		type HandoverJsonlEvent = {
 			type: string;
@@ -1162,11 +1079,7 @@ describe('runExec', () => {
 		 * (writes the Handoff file), spawn 3 — when the Run gets that far — the
 		 * fresh post-Handover Turn, which completes the workflow.
 		 */
-		function handoverSpawns(
-			runtime: MockRuntime,
-			journalPath: string,
-			handoffPath: string,
-		) {
+		function handoverSpawns(runtime: MockRuntime, journalPath: string) {
 			const spawns: SpawnArgs[] = [];
 			const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
 				spawns.push(opts);
@@ -1176,7 +1089,15 @@ describe('runExec', () => {
 				});
 				setImmediate(() => {
 					if (spawnIndex === 1) {
-						fs.writeFileSync(journalPath, 'deep in work', 'utf-8');
+						const runId = /Include Run: ([^,]+)/.exec(opts.prompt)![1];
+						fs.writeFileSync(
+							journalPath,
+							RESTART_FIXTURE.replace(
+								'## Restart\n',
+								`## Restart\nRun: ${runId}\n`,
+							),
+							'utf-8',
+						);
 						// The primary Turn's stream: opening context, then the context
 						// at the last call before the bound.
 						opts.onStdout?.(
@@ -1231,10 +1152,6 @@ describe('runExec', () => {
 								},
 							}),
 						);
-					} else if (spawnIndex === 2) {
-						fs.mkdirSync(path.dirname(handoffPath), {recursive: true});
-						fs.writeFileSync(handoffPath, '# Handoff\nstate', 'utf-8');
-						opts.onExit?.(0);
 					} else {
 						fs.writeFileSync(journalPath, '<!-- DONE -->', 'utf-8');
 						opts.onStdout?.(
@@ -1260,12 +1177,7 @@ describe('runExec', () => {
 			const dossier = path.join(projectDir, '.athena', 'session-ho');
 			fs.mkdirSync(dossier, {recursive: true});
 			const journalPath = path.join(dossier, 'journal.md');
-			const handoffPath = path.join(dossier, 'handoff', '001.md');
-			const {spawns, spawnProcess} = handoverSpawns(
-				runtime,
-				journalPath,
-				handoffPath,
-			);
+			const {spawns, spawnProcess} = handoverSpawns(runtime, journalPath);
 
 			try {
 				const result = await runExec({
@@ -1294,7 +1206,7 @@ describe('runExec', () => {
 				});
 
 				expect(result.success).toBe(true);
-				expect(spawns).toHaveLength(3);
+				expect(spawns).toHaveLength(2);
 				const events = parseJsonl(stdout.read());
 				expect(events.find(e => e.type === 'run.handover')?.data).toEqual({
 					adapterSessionId: 'claude-sess-primary',
@@ -1313,89 +1225,12 @@ describe('runExec', () => {
 					events.find(e => e.type === 'run.handover.completed')?.data,
 				).toEqual({
 					iteration: 1,
-					handoffPath,
-					handoffSizeBytes: Buffer.byteLength('# Handoff\nstate', 'utf-8'),
-					handoffSimilarity: null,
-					handoverStreak: 0,
-					openingContextTokens: 71_400,
-					lastContextTokens: 100_000,
-					toolCalls: 2,
+					checkpointPath: journalPath,
+					checkpointTokens: expect.any(Number),
 					tokens: expect.objectContaining({input: 71_000, output: 20}),
 				});
 			} finally {
 				fs.rmSync(projectDir, {recursive: true, force: true});
-			}
-		});
-
-		it('parks at the iteration ceiling after a Handover with the Handoff written, marked to wake fresh', async () => {
-			const runtime = new MockRuntime();
-			const stdout = createWriteCapture();
-			const stderr = createWriteCapture();
-			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-ho-'));
-			const sessionsRoot = makeSessionsRoot();
-			const dossier = path.join(projectDir, '.athena', 'session-ho');
-			fs.mkdirSync(dossier, {recursive: true});
-			const journalPath = path.join(dossier, 'journal.md');
-			const handoffPath = path.join(dossier, 'handoff', '001.md');
-			const {spawns, spawnProcess} = handoverSpawns(
-				runtime,
-				journalPath,
-				handoffPath,
-			);
-
-			try {
-				const result = await runExec({
-					prompt: 'big task',
-					projectDir,
-					harness: 'claude-code',
-					athenaSessionId: 'session-ho',
-					isolationConfig: {},
-					ephemeral: true,
-					json: true,
-					stdout: stdout.writer,
-					stderr: stderr.writer,
-					runtimeFactory: () => runtime,
-					spawnProcess,
-					sessionStoreFactory: storeFactoryAt(sessionsRoot),
-					workflow: {
-						name: 'test-loop',
-						plugins: [],
-						promptTemplate: '{input}',
-						loop: {
-							enabled: true,
-							completionMarker: '<!-- DONE -->',
-							// Turn 1 is the ceiling: the Handover row must apply it.
-							maxIterations: 1,
-							journalPath: '.athena/{sessionId}/journal.md',
-						},
-					},
-				});
-
-				// A suspend, not a failure: exit 0, the Run is parked for a person.
-				expect(result.success).toBe(true);
-				expect(result.exitCode).toBe(RUN_EXIT_CODE.SUCCESS);
-				// Primary Turn + fork only — no fresh Turn was seeded past the ceiling.
-				expect(spawns).toHaveLength(2);
-				// Fork first, then park: the Handoff is on disk for the wake.
-				expect(fs.existsSync(handoffPath)).toBe(true);
-				const events = parseJsonl(stdout.read());
-				expect(
-					events.find(e => e.type === 'run.suspended')?.data,
-				).toMatchObject({
-					status: 'awaiting_attention',
-					stopReason:
-						'iteration ceiling reached: 1 iteration (maxIterations) used without a terminal marker',
-				});
-				expect(events.some(e => e.type === 'iteration.complete')).toBe(false);
-
-				const parked = getLatestRunForSession('session-ho', sessionsRoot);
-				expect(parked?.status).toBe('awaiting_attention');
-				expect(parked?.stopReason).toContain('iteration ceiling reached: 1');
-				// The marking the wake honours (ADR 0018 §9).
-				expect(wakesFreshAfterHandover(parked?.runMemoryJson)).toBe(true);
-			} finally {
-				fs.rmSync(projectDir, {recursive: true, force: true});
-				fs.rmSync(sessionsRoot, {recursive: true, force: true});
 			}
 		});
 
@@ -1503,20 +1338,6 @@ describe('runExec', () => {
 			}
 		}
 
-		it('wakes a Run parked after a Handover into a fresh Agent Session that reads the newest Handoff and the journal', async () => {
-			const {spawns, dossier} = await wakeParkedRun({
-				memory: memoryOf({iteration: 1, parkedAfterHandover: true}),
-				stopReason:
-					'iteration ceiling reached: 1 iteration (maxIterations) used without a terminal marker',
-			});
-			const wake = spawns[0]!;
-			expect(wake.sessionId).toBeUndefined();
-			expect(wake.prompt).toContain('carry on');
-			expect(wake.prompt).toContain(path.join(dossier, 'handoff', '002.md'));
-			expect(wake.prompt).not.toContain(path.join('handoff', '001.md'));
-			expect(wake.prompt).toContain('.athena/session-ho/journal.md');
-		});
-
 		it('wakes a Run parked on any other row by resuming its Agent Session, naming no Handoff', async () => {
 			const {spawns} = await wakeParkedRun({
 				memory: memoryOf({iteration: 2, parkedAfterHandover: false}),
@@ -1527,154 +1348,6 @@ describe('runExec', () => {
 			expect(wake.sessionId).toBe('claude-sess-bound');
 			expect(wake.prompt).toContain('carry on');
 			expect(wake.prompt).not.toContain('handoff/');
-		});
-	});
-
-	describe('the Turn-1 opening-context warning (ADR 0018 §6, #216)', () => {
-		/** A single completing Turn whose stream opens at `openingContext` tokens. */
-		function completingTurn(journalPath: string, openingContext: number) {
-			return (opts: SpawnArgs): ChildProcess => {
-				const child = makeChildProcess();
-				setImmediate(() => {
-					opts.onStdout?.(
-						JSON.stringify({
-							type: 'assistant',
-							message: {
-								type: 'message',
-								usage: {
-									input_tokens: openingContext - 1_000,
-									output_tokens: 10,
-									cache_read_input_tokens: 1_000,
-								},
-							},
-						}) + '\n',
-					);
-					opts.onStdout?.(
-						JSON.stringify({
-							type: 'assistant',
-							message: {
-								type: 'message',
-								usage: {
-									input_tokens: 500,
-									output_tokens: 10,
-									cache_read_input_tokens: openingContext + 4_500,
-								},
-							},
-						}) + '\n',
-					);
-					fs.writeFileSync(journalPath, 'done\n<!-- DONE -->', 'utf-8');
-					opts.onStdout?.(
-						JSON.stringify({
-							type: 'message',
-							role: 'assistant',
-							content: [{type: 'text', text: 'finished'}],
-						}) + '\n',
-					);
-					opts.onExit?.(0);
-				});
-				return child;
-			};
-		}
-
-		async function runTurnOne(input: {
-			openingContext: number;
-			json: boolean;
-			maxTurnTokenCount?: number;
-		}) {
-			const runtime = new MockRuntime();
-			const stdout = createWriteCapture();
-			const stderr = createWriteCapture();
-			const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'athena-hr-'));
-			const dossier = path.join(projectDir, '.athena', 'session-hr');
-			fs.mkdirSync(dossier, {recursive: true});
-			const journalPath = path.join(dossier, 'journal.md');
-			try {
-				const result = await runExec({
-					prompt: 'small task',
-					projectDir,
-					harness: 'claude-code',
-					athenaSessionId: 'session-hr',
-					isolationConfig: {},
-					ephemeral: true,
-					json: input.json,
-					stdout: stdout.writer,
-					stderr: stderr.writer,
-					runtimeFactory: () => runtime,
-					spawnProcess: completingTurn(journalPath, input.openingContext),
-					workflow: {
-						name: 'test-loop',
-						plugins: [],
-						promptTemplate: '{input}',
-						loop: {
-							enabled: true,
-							completionMarker: '<!-- DONE -->',
-							maxIterations: 5,
-							journalPath: '.athena/{sessionId}/journal.md',
-							...(input.maxTurnTokenCount !== undefined
-								? {maxTurnTokenCount: input.maxTurnTokenCount}
-								: {}),
-						},
-					},
-				});
-				expect(result.success).toBe(true);
-				return {stdout: stdout.read(), stderr: stderr.read()};
-			} finally {
-				fs.rmSync(projectDir, {recursive: true, force: true});
-			}
-		}
-
-		it('warns on exec.warning when Turn 1 opens above half the bound, naming the opening context, the bound and the likely working room', async () => {
-			const {stdout} = await runTurnOne({openingContext: 71_400, json: true});
-			const warning = parseJsonl(stdout).find(
-				e =>
-					e.type === 'exec.warning' &&
-					String(e.data.message).includes('baseline context'),
-			);
-			expect(warning).toBeDefined();
-			const message = String(warning!.data.message);
-			expect(message).toContain('~71k');
-			expect(message).toContain('~130k');
-			expect(message).toContain('loop.maxTurnTokenCount');
-			expect(message).toContain('working room');
-			expect(message).toContain('below the bound');
-			expect(message).toContain('MCP servers and skills');
-		});
-
-		it('measures against the configured bound', async () => {
-			const {stdout} = await runTurnOne({
-				openingContext: 60_000,
-				json: true,
-				maxTurnTokenCount: 105_000,
-			});
-			const message = String(
-				parseJsonl(stdout).find(
-					e =>
-						e.type === 'exec.warning' &&
-						String(e.data.message).includes('baseline context'),
-				)?.data.message,
-			);
-			expect(message).toContain('~60k');
-			expect(message).toContain('~105k');
-		});
-
-		it('stays silent when Turn 1 opens below half the bound', async () => {
-			const {stdout, stderr} = await runTurnOne({
-				openingContext: 20_000,
-				json: true,
-			});
-			expect(
-				parseJsonl(stdout).some(
-					e =>
-						e.type === 'exec.warning' &&
-						String(e.data.message).includes('baseline context'),
-				),
-			).toBe(false);
-			expect(stderr).not.toContain('baseline context');
-		});
-
-		it('prints a notice in human mode', async () => {
-			const {stderr} = await runTurnOne({openingContext: 71_400, json: false});
-			expect(stderr).toContain('baseline context is ~71k');
 		});
 	});
 
@@ -3281,3 +2954,6 @@ describe('runExec phase events', () => {
 		}
 	});
 });
+
+const RESTART_FIXTURE =
+	'## Restart\nObjective: finish\nNext action: verify\nConstraints: preserve behavior\nChanges: implementation ready\nOpen questions: none\nReferences: journal.md\n\n## Detail\n';

@@ -38,6 +38,7 @@ export function createClaudeSessionController(
 			continuation,
 			configOverride,
 			onStderrLine,
+			onUsage,
 		}): Promise<SessionControllerTurnResult> {
 			const tokenAccumulator = createTokenAccumulator();
 			const messageAccumulator = createAssistantMessageAccumulator();
@@ -83,6 +84,7 @@ export function createClaudeSessionController(
 						env: resolveWorkflowSpawnEnv(input.workflow),
 						onStdout: (data: string) => {
 							tokenAccumulator.feed(data);
+							onUsage?.(tokenAccumulator.getUsage());
 							messageAccumulator.feed(data);
 							if (supportsStdoutFeed) {
 								runtime.feedStdout(data);
@@ -120,12 +122,15 @@ export function createClaudeSessionController(
 
 		async kill(): Promise<void> {
 			if (!activeChild) return;
+			const child = activeChild;
+			const timeout = setTimeout(() => child.kill('SIGKILL'), 1000);
 			try {
-				activeChild.kill();
+				child.kill();
 				await activeTurnPromise?.catch(() => {});
 			} catch {
 				// Best effort.
 			} finally {
+				clearTimeout(timeout);
 				activeChild = null;
 			}
 		},

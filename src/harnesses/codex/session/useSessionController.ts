@@ -59,6 +59,7 @@ export function useCodexSessionController(
 			prompt: string,
 			continuation?: TurnContinuation,
 			_configOverride?: HarnessProcessOverride,
+			onUsage?: (usage: TokenUsage) => void,
 		): Promise<TurnExecutionResult> => {
 			if (!codexRuntime) {
 				onLifecycleEventRef.current?.({
@@ -88,6 +89,7 @@ export function useCodexSessionController(
 					ephemeral,
 				},
 				{
+					onUsage,
 					onError: error => {
 						if (!abortRef.current.signal.aborted) {
 							onLifecycleEventRef.current?.({

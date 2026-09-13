@@ -8,6 +8,8 @@ Date: 2026-07-24
 Replaces the withdrawn 2026-07-23 draft of this ADR ("Stop is notify-only"), whose central rule — _any
 normal stop without `WORKFLOW_COMPLETE` suspends_ — was rejected in review. See Context.
 
+> **2026-09-13 amendment:** [ADR 0019](0019-continuation-admission-and-recovery.md) replaces the fork and Handoff chain with a bounded Journal checkpoint. Every continuation passes resource admission; missing or already-consumed checkpoints pause the Run. The original design below is historical.
+
 ## Context
 
 Since the ADR 0003 era a Workflow Run **continues by default**: after any Turn that leaves no Terminal

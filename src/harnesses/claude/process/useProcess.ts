@@ -250,7 +250,11 @@ export function useClaudeProcess(
 		// Set a timeout fallback in case process doesn't exit cleanly
 		let timeoutId: ReturnType<typeof setTimeout>;
 		const timeoutPromise = new Promise<void>(resolve => {
-			timeoutId = setTimeout(resolve, KILL_TIMEOUT_MS);
+			const child = processRef.current;
+			timeoutId = setTimeout(() => {
+				child?.kill('SIGKILL');
+				resolve();
+			}, KILL_TIMEOUT_MS);
 		});
 
 		processRef.current.kill();
@@ -274,6 +278,7 @@ export function useClaudeProcess(
 			prompt: string,
 			continuation?: TurnContinuation,
 			perCallIsolation?: Partial<IsolationConfig>,
+			onUsage?: (usage: TokenUsage) => void,
 		): Promise<TurnExecutionResult> => {
 			// Kill existing process if running and wait for it to exit
 			await kill();
@@ -370,6 +375,7 @@ export function useClaudeProcess(
 							messageAccumulator.feed(data);
 							onStdoutChunkRef.current?.(data);
 							const acc = tokenAccRef.current.getUsage();
+							onUsage?.(acc);
 							publishTokenUsage(mergeTokenBase(tokenBaseRef.current, acc));
 
 							if (!trackOutputRef.current) return;

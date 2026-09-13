@@ -81,7 +81,7 @@ describe('createTokenAccumulator', () => {
 		expect(usage.total).toBe(1445);
 	});
 
-	it('replaces totals from result objects (cumulative)', () => {
+	it('keeps invocation usage when a final result includes prior session spend)', () => {
 		const acc = createTokenAccumulator();
 
 		acc.feed(messageLine({input_tokens: 100, output_tokens: 50}));
@@ -95,11 +95,11 @@ describe('createTokenAccumulator', () => {
 		);
 
 		const usage = acc.getUsage();
-		expect(usage.input).toBe(500);
-		expect(usage.output).toBe(200);
-		expect(usage.cacheRead).toBe(30);
-		expect(usage.cacheWrite).toBe(10);
-		expect(usage.total).toBe(740);
+		expect(usage.input).toBe(100);
+		expect(usage.output).toBe(50);
+		expect(usage.cacheRead).toBeNull();
+		expect(usage.cacheWrite).toBeNull();
+		expect(usage.total).toBe(150);
 	});
 
 	it('handles partial lines across chunks', () => {

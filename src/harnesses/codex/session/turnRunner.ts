@@ -26,6 +26,8 @@ export function createCodexTurnEventCollector(): {
 } {
 	let message = '';
 	let tokenDelta: TokenUsage = {...NULL_TOKENS};
+	let baseline: TokenUsage | null = null;
+	let activeTurnId: string | undefined;
 	let turnStatus: string | undefined;
 	let turnErrorMessage: string | undefined;
 
@@ -36,13 +38,54 @@ export function createCodexTurnEventCollector(): {
 					? (event.data as Record<string, unknown>)
 					: {};
 
+			if (event.kind === 'turn.start' && typeof data['turn_id'] === 'string')
+				activeTurnId = data['turn_id'];
+
 			if (event.kind === 'message.delta') {
 				const delta = typeof data['delta'] === 'string' ? data['delta'] : '';
 				message += delta;
 			}
 
 			if (event.kind === 'usage.update') {
-				tokenDelta = readTokenUsage(data['delta']);
+				const last = readTokenUsage(data['delta']);
+				const total = readTokenUsage(data['usage']);
+				if (
+					typeof data['turn_id'] === 'string' &&
+					data['turn_id'] !== activeTurnId
+				) {
+					if (!activeTurnId) baseline = total;
+					return;
+				}
+				if (total.total === null) {
+					tokenDelta = last;
+					return;
+				}
+				// Thread totals include earlier Turns. Anchor this invocation at
+				// the first total minus its last request, then use cumulative deltas.
+				const keys = [
+					'input',
+					'output',
+					'cacheRead',
+					'cacheWrite',
+					'total',
+				] as const;
+				if (!baseline) {
+					baseline = {...NULL_TOKENS};
+					for (const key of keys)
+						baseline[key] =
+							total[key] === null
+								? null
+								: Math.max(0, total[key]! - (last[key] ?? 0));
+				}
+				tokenDelta = {
+					...last,
+					openingContextSize: tokenDelta.openingContextSize ?? last.contextSize,
+				};
+				for (const key of keys)
+					tokenDelta[key] =
+						total[key] === null
+							? null
+							: Math.max(0, total[key]! - (baseline[key] ?? 0));
 			}
 
 			if (event.kind === 'turn.complete') {
@@ -109,10 +152,17 @@ export async function runCodexTurn(
 	runtime: CodexRuntime,
 	prompt: string,
 	optionsInput: BuildCodexPromptOptionsInput,
-	hooks?: {onError?: (error: Error) => void},
+	hooks?: {
+		onError?: (error: Error) => void;
+		onUsage?: (usage: TokenUsage) => void;
+	},
 ): Promise<TurnExecutionResult> {
 	const collector = createCodexTurnEventCollector();
-	const unsubscribe = runtime.onEvent(collector.handle);
+	const unsubscribe = runtime.onEvent(event => {
+		collector.handle(event);
+		if (event.kind === 'usage.update')
+			hooks?.onUsage?.(collector.result().tokens);
+	});
 	try {
 		await runtime.sendPrompt(prompt, buildCodexPromptOptions(optionsInput));
 		return collector.result();

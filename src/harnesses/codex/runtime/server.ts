@@ -808,7 +808,15 @@ export function createCodexServer(opts: CodexServerOptions): CodexRuntime {
 
 		sendInterrupt(): void {
 			if (!manager || !threadId || !turnId) return;
-			manager.sendNotification(M.TURN_INTERRUPT, {threadId, turnId});
+			const interrupted = pendingTurnCompletion;
+			void manager
+				.sendRequest(M.TURN_INTERRUPT, {threadId, turnId})
+				.catch(error => {
+					if (pendingTurnCompletion === interrupted)
+						clearPendingTurn(
+							error instanceof Error ? error : new Error(String(error)),
+						);
+				});
 			if (
 				pendingTurnCompletion &&
 				pendingTurnCompletion.interruptTimer === null

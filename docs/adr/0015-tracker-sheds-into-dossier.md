@@ -7,6 +7,8 @@ ADR 0011 (KB storage and provenance), ADR 0014 (handover, retry, attention, cont
 
 > **Terminology note (2026-09-03, #185):** the **Tracker** this ADR splits is now the **Journal** (`journal.md`; an existing `tracker.md` keeps being read for one release). §1's phrase "the Dossier holds the journal" uses _journal_ in the diary sense — those files are the **Unit Records**; the index file is the **Journal**. The Dossier split itself, its triggers, and `cut → paste → pointer` are unchanged. The text below is preserved as decided. See the Deprecated names table in `UBIQUITOUS_LANGUAGE.md`.
 
+> **2026-09-13 amendment:** [ADR 0019](0019-continuation-admission-and-recovery.md) replaces the fork and Handoff chain with a bounded Journal checkpoint. Every continuation passes resource admission; missing or already-consumed checkpoints pause the Run. The original design below is historical.
+
 ## Context
 
 The **Tracker** is the only durable carrier of an **Athena Session**'s context. ADR 0014 added the

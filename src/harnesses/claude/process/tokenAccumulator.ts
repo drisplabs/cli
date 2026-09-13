@@ -65,6 +65,7 @@ export function createTokenAccumulator() {
 	// the context at the bound, gives the agent's real per-Turn working room.
 	let openingContextSize = 0;
 	let contextWindowSize: number | null = null;
+	let hasMessageUsage = false;
 
 	function promptSize(usage: StreamUsage): number {
 		return (
@@ -146,7 +147,10 @@ export function createTokenAccumulator() {
 			const isSubagent = parsed.parent_tool_use_id != null;
 
 			if (isResult) {
-				// Result usage is cumulative — replace instead of adding
+				// Result usage may cover a resumed session. Streamed request usage
+				// is invocation-local and must not be replaced with historical spend.
+				if (hasMessageUsage || isSubagent) return;
+				// Result-only output remains the fallback when no request was seen.
 				inputTokens = usage.input_tokens ?? inputTokens;
 				outputTokens = usage.output_tokens ?? outputTokens;
 				cacheRead = usage.cache_read_input_tokens ?? cacheRead;
@@ -156,7 +160,8 @@ export function createTokenAccumulator() {
 					observeRootContext(promptSize(usage));
 				}
 			} else {
-				// Per-turn: accumulate across turns
+				hasMessageUsage = true;
+				// Per-request: accumulate within this invocation
 				inputTokens += usage.input_tokens ?? 0;
 				outputTokens += usage.output_tokens ?? 0;
 				cacheRead += usage.cache_read_input_tokens ?? 0;
@@ -219,6 +224,7 @@ export function createTokenAccumulator() {
 		/** Reset all accumulated state (call when starting a new process). */
 		reset(): void {
 			buffer = '';
+			hasMessageUsage = false;
 			inputTokens = 0;
 			outputTokens = 0;
 			cacheRead = 0;
