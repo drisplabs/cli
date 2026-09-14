@@ -460,8 +460,17 @@ async function runOwnedExecution(
 			kind: next.kind,
 			message: next.message,
 		});
-		void sessionController.kill();
+		abortCurrentTurn();
 	});
+
+	function abortCurrentTurn(): void {
+		void sessionController.kill().catch((error: unknown) => {
+			latch.register({
+				kind: 'process',
+				message: `Failed stopping the active turn: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		});
+	}
 
 	const abortListener = (): void => {
 		latch.register({kind: 'process', message: 'Execution cancelled.'});
@@ -491,7 +500,7 @@ async function runOwnedExecution(
 				adapterSessionId: handle,
 				iteration: currentIteration,
 			});
-			void sessionController.kill();
+			abortCurrentTurn();
 		}
 		return 'Handover in progress — the runner will validate the Journal checkpoint.';
 	};
@@ -541,7 +550,7 @@ async function runOwnedExecution(
 			toolName,
 			graceMs: permissionGraceMs,
 		});
-		void sessionController.kill();
+		abortCurrentTurn();
 	}
 
 	/**
@@ -704,7 +713,7 @@ async function runOwnedExecution(
 				const next = classifyUnattendedEvent(runtimeEvent, rules);
 				if (next?.kind === 'question') {
 					interruption = next;
-					void sessionController.kill();
+					abortCurrentTurn();
 				} else if (next) {
 					afterIngest = holdOrReplay(runtimeEvent, next);
 				}
@@ -944,7 +953,7 @@ async function runOwnedExecution(
 						return request;
 					},
 				},
-				abortCurrentTurn: () => void sessionController.kill(),
+				abortCurrentTurn,
 				onIterationComplete: (runSnapshot, tokens) => {
 					output.emitJsonEvent('iteration.complete', {
 						iteration: runSnapshot.iteration,
@@ -1020,6 +1029,7 @@ async function runOwnedExecution(
 				store,
 				isolationConfig: options.isolationConfig,
 				workflowPlan: options.workflowPlan,
+				pluginMcpConfig: options.pluginMcpConfig,
 				runtime,
 				signal: options.signal,
 			},

@@ -1,5 +1,6 @@
 import {
 	reduceSessionUiState,
+	resolveSessionUiState,
 	type SessionUiAction,
 	type SessionUiState,
 	type SessionUiContext,
@@ -7,14 +8,23 @@ import {
 import type {InputMode, FocusMode} from './types';
 import type {MessageTab} from '../../core/feed/panelFilter';
 
-type Update<T> = T | ((previous: T) => T);
 /** UI intents keep cursor, viewport, follow mode and focus updates together. */
 export function createSessionUiController(
 	update: (change: (state: SessionUiState) => SessionUiState) => void,
 	context: () => SessionUiContext,
 ) {
-	const dispatch = (action: SessionUiAction) =>
-		update(state => reduceSessionUiState(state, action, context()));
+	// One intent publishes one coherent state, including derived viewport bounds.
+	const dispatch = (...actions: SessionUiAction[]) =>
+		update(state => {
+			const ctx = context();
+			return resolveSessionUiState(
+				actions.reduce(
+					(next, action) => reduceSessionUiState(next, action, ctx),
+					state,
+				),
+				ctx,
+			);
+		});
 	return {
 		focus: (focusMode: FocusMode) =>
 			dispatch({type: 'set_focus_mode', focusMode}),
@@ -76,56 +86,20 @@ export function createSessionUiController(
 						destination === 'top' ? 'jump_message_top' : 'jump_message_tail',
 				});
 		},
-		selectFeed: (cursor: number) => dispatch({type: 'set_feed_cursor', cursor}),
-		followFeed: (tailFollow: boolean) =>
-			dispatch({type: 'set_tail_follow', tailFollow}),
+		// Wheel navigation selects its panel and moves it in the same update.
+		scrollPanel: (panel: 'feed' | 'messages', delta: number) =>
+			dispatch(
+				{type: 'set_focus_mode', focusMode: panel},
+				panel === 'feed'
+					? {type: 'move_feed_cursor', delta}
+					: {type: 'scroll_message_viewport', delta},
+			),
 		reveal: (cursor: number) => dispatch({type: 'reveal_feed_entry', cursor}),
 		messageTab: (tab: MessageTab) => dispatch({type: 'set_message_tab', tab}),
 		todo: {
 			toggle: () => dispatch({type: 'toggle_todo_visible'}),
 			move: (delta: number) => dispatch({type: 'move_todo_cursor', delta}),
-			visible: (value: Update<boolean>) =>
-				update(state =>
-					reduceSessionUiState(
-						state,
-						{
-							type: 'set_todo_visible',
-							visible:
-								typeof value === 'function' ? value(state.todoVisible) : value,
-						},
-						context(),
-					),
-				),
-			showDone: (value: Update<boolean>) =>
-				update(state =>
-					reduceSessionUiState(
-						state,
-						{
-							type: 'set_todo_show_done',
-							showDone:
-								typeof value === 'function' ? value(state.todoShowDone) : value,
-						},
-						context(),
-					),
-				),
-			cursor: (value: Update<number>) =>
-				update(state =>
-					reduceSessionUiState(
-						state,
-						{
-							type: 'set_todo_cursor',
-							cursor:
-								typeof value === 'function' ? value(state.todoCursor) : value,
-						},
-						context(),
-					),
-				),
-			scroll: (value: Update<number>) =>
-				update(state => ({
-					...state,
-					todoScroll:
-						typeof value === 'function' ? value(state.todoScroll) : value,
-				})),
+			show: () => dispatch({type: 'set_todo_visible', visible: true}),
 		},
 	};
 }

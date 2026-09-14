@@ -1,5 +1,3 @@
-import {useEffect} from 'react';
-import {releaseMcpAsset} from '../bootstrap/executionAssets';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {WorkflowConfig, WorkflowPlan} from '../../core/workflows';
 import type {
@@ -56,16 +54,8 @@ export function useHarnessProcess(
 		options: input.options,
 		runtime,
 	});
-	useEffect(
-		() => () => {
-			// The controller's unmount cleanup stops the conversation; generated MCP
-			// configuration is only needed when a conversation is launched.
-			releaseMcpAsset(input.pluginMcpConfig);
-			releaseMcpAsset(input.workflowPlan?.pluginMcpConfig);
-		},
-		[input.pluginMcpConfig, input.workflowPlan?.pluginMcpConfig],
-	);
 	const workflowController = useWorkflowSessionController(controller, {
+		pluginMcpConfig: input.pluginMcpConfig,
 		store: sessionStore,
 		workflowPlan: input.workflowPlan,
 		runtime,

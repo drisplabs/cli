@@ -24,10 +24,7 @@ function makeTodoPanel(
 		remainingCount: 0,
 		pausedAtMs: null,
 		autoFocusIndex: -1,
-		setTodoVisible: vi.fn(),
-		setTodoShowDone: vi.fn(),
-		setTodoCursor: vi.fn(),
-		setTodoScroll: vi.fn(),
+
 		setExtraTodos: vi.fn(),
 		setTodoStatusOverrides: vi.fn(),
 		addTodo: vi.fn(),

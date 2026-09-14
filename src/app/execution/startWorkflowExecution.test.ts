@@ -128,6 +128,11 @@ it.each(['claude-code', 'openai-codex'] as const)(
 			loop: {enabled: true, maxIterations: 5},
 		};
 		const journal = path.join(projectDir, '.athena', 's', 'journal.md');
+		const pluginMcpConfig = path.join(projectDir, 'effective.json');
+		const originalMcp = JSON.stringify({
+			mcpServers: {tool: {command: 'original'}},
+		});
+		fs.writeFileSync(pluginMcpConfig, originalMcp);
 		try {
 			const parked = startWorkflowExecution(
 				{
@@ -142,7 +147,7 @@ it.each(['claude-code', 'openai-codex'] as const)(
 						return ok;
 					},
 				},
-				{store},
+				{store, pluginMcpConfig},
 			);
 			expect(await parked.result).toMatchObject({
 				status: 'awaiting_attention',
@@ -161,9 +166,30 @@ it.each(['claude-code', 'openai-codex'] as const)(
 						startTurn: async () => ok,
 						persistRunState: state => store.persistRun(state),
 					},
-					{store},
+					{store, pluginMcpConfig},
 				),
 			).toThrow('Cannot continue');
+			fs.writeFileSync(
+				pluginMcpConfig,
+				JSON.stringify({mcpServers: {tool: {command: 'replacement'}}}),
+			);
+			expect(() =>
+				startWorkflowExecution(
+					{
+						projectDir,
+						sessionId: 's',
+						harness,
+						workflow,
+						prompt: 'reply',
+						resumeRunId: parked.runId,
+						startTurn: async () => ok,
+						persistRunState: state => store.persistRun(state),
+					},
+					{store, pluginMcpConfig},
+				),
+			).toThrow('changed');
+			fs.writeFileSync(pluginMcpConfig, originalMcp);
+
 			const resumed = startWorkflowExecution(
 				{
 					projectDir,
@@ -178,7 +204,7 @@ it.each(['claude-code', 'openai-codex'] as const)(
 						return ok;
 					},
 				},
-				{store},
+				{store, pluginMcpConfig},
 			);
 			expect(await resumed.result).toMatchObject({
 				runId: parked.runId,

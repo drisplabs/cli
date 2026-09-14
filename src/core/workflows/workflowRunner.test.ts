@@ -41,6 +41,65 @@ afterEach(() => {
 });
 
 describe('createWorkflowRunner', () => {
+	it.each(['usage', 'steer'] as const)(
+		'reports a %s checkpoint failure without throwing from the event callback',
+		async source => {
+			let failNextCheckpoint = false;
+			let reportUsage!: NonNullable<
+				Parameters<
+					Parameters<typeof createWorkflowRunner>[0]['startTurn']
+				>[0]['onUsage']
+			>;
+			let finishTurn!: (result: TurnExecutionResult) => void;
+			let markStarted!: () => void;
+			const started = new Promise<void>(resolve => {
+				markStarted = resolve;
+			});
+			const abortCurrentTurn = vi.fn();
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir: makeTempDir(),
+				prompt: 'work',
+				startTurn: turn => {
+					reportUsage = turn.onUsage!;
+					markStarted();
+					return new Promise(resolve => {
+						finishTurn = resolve;
+					});
+				},
+				persistRunState: () => {
+					if (failNextCheckpoint) {
+						failNextCheckpoint = false;
+						throw new Error('disk full');
+					}
+				},
+				abortCurrentTurn,
+			});
+			await started;
+			failNextCheckpoint = true;
+			// Simulate a later stdout or socket callback, outside startTurn's
+			// synchronous invocation and outside the runner's promise chain.
+			if (source === 'usage') {
+				expect(() => reportUsage({...NULL_TOKENS, total: 10})).not.toThrow();
+			} else {
+				expect(
+					handle.steer({
+						text: 'change direction',
+						origin: 'hub',
+						receivedAt: 1,
+					}),
+				).toBe(false);
+			}
+			expect(abortCurrentTurn).toHaveBeenCalledOnce();
+			// Even a successful process exit and recovered storage cannot erase
+			// the failed checkpoint or turn the result into completed/cancelled.
+			finishTurn(OK_RESULT);
+			expect(await handle.result).toMatchObject({
+				status: 'failed',
+				stopReason: expect.stringContaining('could not be saved'),
+			});
+		},
+	);
 	it.each(['initial', 'terminal'] as const)(
 		'fails visibly when the %s checkpoint cannot be saved',
 		async stage => {

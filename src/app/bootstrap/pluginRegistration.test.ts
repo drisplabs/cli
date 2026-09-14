@@ -1,6 +1,13 @@
 import {describe, it, expect, vi, beforeEach} from 'vitest';
-import {buildPluginMcpConfig, registerPlugins} from './pluginRegistration';
+import {buildPluginMcpConfig, preparePlugins} from './pluginRegistration';
 import {clear, get} from '../commands/registry';
+
+// Most cases exercise the full successful preparation-and-commit operation.
+function registerPlugins(...args: Parameters<typeof preparePlugins>) {
+	const {commit, ...result} = preparePlugins(...args);
+	commit();
+	return result;
+}
 
 // Virtual file system for tests
 const files: Record<string, string> = {};

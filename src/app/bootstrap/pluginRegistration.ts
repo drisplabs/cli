@@ -1,14 +1,14 @@
 /**
  * Plugin registration orchestrator.
  *
- * Loads each plugin directory, registers the resulting commands,
+ * Loads each plugin directory, stages the resulting commands,
  * and merges MCP server configs from all plugins into a single file.
  */
 
 import fs from 'node:fs';
 import {writeMcpAsset, releaseMcpAsset} from './executionAssets';
 import path from 'node:path';
-import {replaceScope} from '../commands/registry';
+import {prepareScope} from '../commands/registry';
 import {loadPlugin, loadPersonalSkills} from '../../infra/plugins/loader';
 import type {McpServerChoices} from '../../infra/plugins/config';
 import type {
@@ -103,26 +103,27 @@ export function buildPluginMcpConfig(
 }
 
 /**
- * Load plugins from the given directories, register their commands,
+ * Load plugins from the given directories and stage their commands,
  * and return merged MCP config + discovered workflows.
  *
  * When `mcpServerOptions` is provided, matching server entries get their
  * `env` merged with the user's chosen env overrides. The `options` field
  * is always stripped before writing — Claude Code doesn't understand it.
  */
-export function registerPlugins(
+export function preparePlugins(
 	pluginDirs: string[],
 	mcpServerOptions?: McpServerChoices,
 	includeMcpConfig = true,
 	personalMcpServers: EffectiveMcpServer[] = [],
 	personalSkills: EffectiveSkill[] = [],
-): PluginRegistrationResult {
+): PluginRegistrationResult & {commit: () => void} {
 	const skillConflicts: EffectiveSkill[] = [];
 	const mcpResult = includeMcpConfig
 		? buildPluginMcpConfig(pluginDirs, mcpServerOptions, personalMcpServers)
 		: {mcpConfig: undefined, conflicts: []};
+	let commit: () => void;
 	try {
-		replaceScope('plugins', ({register, get}) => {
+		commit = prepareScope('plugins', ({register, get}) => {
 			for (const dir of pluginDirs) {
 				const commands = loadPlugin(dir);
 				for (const command of commands) {
@@ -155,6 +156,7 @@ export function registerPlugins(
 	}
 
 	return {
+		commit,
 		mcpConfig: mcpResult.mcpConfig,
 		conflicts: {mcpServers: mcpResult.conflicts, skills: skillConflicts},
 	};

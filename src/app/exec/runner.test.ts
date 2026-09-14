@@ -117,6 +117,34 @@ function createWriteCapture() {
 }
 
 describe('runExec', () => {
+	it('contains asynchronous controller cleanup failures during abort', async () => {
+		const runtime = new MockRuntime();
+		const abort = new AbortController();
+		const capture = createWriteCapture();
+		const result = await runExec({
+			prompt: 'work',
+			projectDir: '/tmp',
+			harness: 'claude-code',
+			isolationConfig: {},
+			ephemeral: true,
+			signal: abort.signal,
+			stdout: capture.writer,
+			stderr: capture.writer,
+			runtimeFactory: () => runtime,
+			spawnProcess: opts => {
+				const child = makeChildProcess();
+				child.kill = vi.fn(() => {
+					opts.onExit?.(0);
+					throw new Error('kill failed');
+				});
+				setImmediate(() => abort.abort());
+				return child;
+			},
+		});
+		expect(result.success).toBe(false);
+		expect(result.failure?.message).toBe('Execution cancelled.');
+	});
+
 	it('returns success and prints final message in human mode', async () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();

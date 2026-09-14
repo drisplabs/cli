@@ -134,3 +134,68 @@ it('pins installed plugin contents, tool grants, and effort but permits credenti
 	fs.writeFileSync(path.join(projectDir, 'SKILL.md'), 'changed instructions');
 	expect(executionIdentity(input)).not.toBe(identity);
 });
+
+it.each(['personal', 'workflow'] as const)(
+	'pins effective %s MCP launch settings while allowing credential refresh',
+	source => {
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'drisp-effective-mcp-'),
+		);
+		dirs.push(projectDir);
+		const mcpConfig = path.join(projectDir, 'effective.json');
+		const workflow = {name: 'fix', plugins: [], promptTemplate: '{input}'};
+		const input = {
+			projectDir,
+			harness: 'claude-code',
+			workflow,
+			...(source === 'personal'
+				? {pluginMcpConfig: mcpConfig}
+				: {
+						workflowPlan: {
+							workflow,
+							resolvedPlugins: [],
+							localPlugins: [],
+							agentRoots: [],
+							codexPlugins: [],
+							pluginMcpConfig: mcpConfig,
+						},
+					}),
+		};
+		const write = (config: Record<string, unknown>) =>
+			fs.writeFileSync(mcpConfig, JSON.stringify({mcpServers: config}));
+		write({
+			tool: {
+				command: 'original',
+				args: ['serve'],
+				env: {TOKEN: 'secret-one'},
+				headers: {Authorization: 'old'},
+				url: 'https://old.example',
+			},
+		});
+		const original = executionIdentity(input);
+		write({
+			tool: {
+				url: 'https://new.example',
+				headers: {Authorization: 'new'},
+				env: {TOKEN: 'secret-two'},
+				args: ['serve'],
+				command: 'original',
+			},
+		});
+		expect(executionIdentity(input)).toBe(original);
+		for (const changed of [
+			{tool: {command: 'replacement', args: ['serve']}},
+			{tool: {command: 'original', args: ['different']}},
+			{},
+		]) {
+			write(changed);
+			expect(() =>
+				validateResumeIdentity(
+					{...run, executionIdentityJson: original},
+					executionIdentity(input),
+					'fix',
+				),
+			).toThrow('changed');
+		}
+	},
+);

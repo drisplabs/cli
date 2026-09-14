@@ -29,6 +29,7 @@ export function startWorkflowExecution(
 		store?: Pick<SessionStore, 'getLatestRun'>;
 		isolationConfig?: HarnessProcessConfig;
 		workflowPlan?: WorkflowPlan;
+		pluginMcpConfig?: string;
 		runtime?: Runtime | null;
 		signal?: AbortSignal;
 		warnOnUnmanagedCompaction?: boolean;
@@ -52,6 +53,7 @@ export function startWorkflowExecution(
 		workflow: input.workflow,
 		isolationConfig: options.isolationConfig,
 		workflowPlan: options.workflowPlan,
+		pluginMcpConfig: options.pluginMcpConfig,
 	});
 	if (resume?.runMemoryJson && !deserializeRunMemory(resume.runMemoryJson))
 		throw new Error(

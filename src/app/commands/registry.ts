@@ -61,14 +61,14 @@ export function clear(): void {
 	scopes.clear();
 }
 
-/** Replace one owner's commands atomically. Failed loading leaves the old set usable. */
-export function replaceScope(
+/** Stage one owner's commands; only the returned synchronous commit publishes them. */
+export function prepareScope(
 	scope: string,
 	build: (registry: {
 		register: (command: Command) => void;
 		get: (name: string) => Command | undefined;
 	}) => void,
-): void {
+): () => void {
 	const previous = scopes.get(scope);
 	const next = new Map(
 		[...commands].filter(([, command]) => !previous?.has(command)),
@@ -87,6 +87,8 @@ export function replaceScope(
 			owned.add(command);
 		},
 	});
-	commands = next;
-	scopes.set(scope, owned);
+	return () => {
+		commands = next;
+		scopes.set(scope, owned);
+	};
 }

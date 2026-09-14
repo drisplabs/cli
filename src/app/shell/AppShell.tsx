@@ -1,3 +1,4 @@
+import {releaseMcpAsset} from '../bootstrap/executionAssets';
 import {createSessionUiController} from './sessionUiController';
 import process from 'node:process';
 import React, {
@@ -702,10 +703,7 @@ function AppContent({
 		todoShowDone: uiState.todoShowDone,
 		todoCursor: uiState.todoCursor,
 		todoScroll: uiState.todoScroll,
-		setTodoVisible: ui.todo.visible,
-		setTodoShowDone: ui.todo.showDone,
-		setTodoCursor: ui.todo.cursor,
-		setTodoScroll: ui.todo.scroll,
+		onTodoAdded: ui.todo.show,
 	});
 
 	const frameWidth = safeTerminalWidth;
@@ -1077,8 +1075,6 @@ function AppContent({
 		moveFeedCursor: (delta: number) => ui.navigate('feed', delta),
 		jumpToTail: () => ui.navigate('feed', 'tail'),
 		jumpToTop: () => ui.navigate('feed', 'top'),
-		setFeedCursor: (cursor: number) => ui.selectFeed(cursor),
-		setTailFollow: (tailFollow: boolean) => ui.followFeed(tailFollow),
 	};
 	const staticHighWaterMark = 0;
 
@@ -1264,11 +1260,8 @@ function AppContent({
 			!workflowPickerVisible &&
 			!modelPickerVisible,
 		rects: panelMouseRects,
-		onFeedFocus: () => ui.focus('feed'),
-		onMessageFocus: splitMode ? () => ui.focus('messages') : undefined,
-		onInputFocus: () => ui.focus('input'),
-		onFeedWheel: delta => feedNav.moveFeedCursor(delta),
-		onMessageWheel: delta => ui.navigate('messages', delta),
+		onPanelFocus: ui.focus,
+		onPanelScroll: ui.scrollPanel,
 	});
 
 	useTodoKeyboard({
@@ -2061,6 +2054,15 @@ export default function App({
 		workflow,
 		workflowPlan,
 	});
+	// Bootstrap assets belong to this configuration, which survives /clear and
+	// the session picker. AppContent only borrows their paths for each launch.
+	useEffect(
+		() => () => {
+			releaseMcpAsset(runtimeState.pluginMcpConfig);
+			releaseMcpAsset(runtimeState.workflowPlan?.pluginMcpConfig);
+		},
+		[runtimeState.pluginMcpConfig, runtimeState.workflowPlan?.pluginMcpConfig],
+	);
 	const inputHistory = useInputHistory(projectDir);
 	let initialPhase: AppPhase;
 	if (showSetup) {

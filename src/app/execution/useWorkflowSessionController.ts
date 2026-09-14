@@ -24,6 +24,7 @@ export type UseWorkflowSessionControllerInput = {
 	harness?: AthenaHarness;
 	workflow?: WorkflowConfig;
 	workflowPlan?: WorkflowPlan;
+	pluginMcpConfig?: string;
 	store?: SessionStore | null;
 	runtime?: Runtime | null;
 	isolationConfig?: HarnessProcessConfig;
@@ -110,6 +111,7 @@ export function useWorkflowSessionController(
 					isolationConfig: input.isolationConfig,
 					runtime: input.runtime,
 					workflowPlan: input.workflowPlan,
+					pluginMcpConfig: input.pluginMcpConfig,
 					warnOnUnmanagedCompaction: true,
 				},
 			);

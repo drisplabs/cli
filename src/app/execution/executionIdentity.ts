@@ -13,6 +13,7 @@ export function executionIdentity(input: {
 	workflow?: WorkflowConfig;
 	isolationConfig?: HarnessProcessConfig;
 	workflowPlan?: WorkflowPlan;
+	pluginMcpConfig?: string;
 }): string {
 	const {env: _env, workflowFile, ...workflow} = input.workflow ?? {};
 	const instructions = workflowFile
@@ -39,6 +40,8 @@ export function executionIdentity(input: {
 				workflow,
 				instructions,
 				config: semanticConfig,
+				mcpServers: mcpSemantics(input.pluginMcpConfig),
+				workflowMcpServers: mcpSemantics(input.workflowPlan?.pluginMcpConfig),
 				workflowPlugins: input.workflowPlan?.resolvedPlugins.map(plugin => ({
 					ref: plugin.ref,
 					version: plugin.version,
@@ -82,14 +85,7 @@ function pluginIdentity(root: string): string {
 			else if (kind.isFile()) {
 				hash.update(path.relative(root, file));
 				if (entry.name === '.mcp.json') {
-					const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
-					hash.update(
-						JSON.stringify(value, (key, item: unknown) =>
-							['env', 'headers', 'url', 'options'].includes(key)
-								? undefined
-								: item,
-						),
-					);
+					hash.update(stableJson(mcpSemantics(file)));
 				} else hash.update(fs.readFileSync(file));
 			}
 		}
@@ -97,6 +93,31 @@ function pluginIdentity(root: string): string {
 	}
 	visit(root);
 	return hash.digest('hex');
+}
+
+/** Pin effective server membership and launch settings, not refreshable credentials. */
+function mcpSemantics(file?: string): Record<string, unknown> {
+	if (!file) return {};
+	const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+	if (!value || typeof value !== 'object' || Array.isArray(value))
+		throw new Error('Invalid MCP configuration');
+	const servers = (value as {mcpServers?: unknown}).mcpServers ?? {};
+	if (typeof servers !== 'object' || Array.isArray(servers))
+		throw new Error('Invalid MCP server definitions');
+	return Object.fromEntries(
+		Object.entries(servers).map(([name, config]) => {
+			if (!config || typeof config !== 'object' || Array.isArray(config))
+				throw new Error(`Invalid MCP server definition: ${name}`);
+			const {
+				env: _env,
+				headers: _headers,
+				url: _url,
+				options: _options,
+				...semantics
+			} = config as Record<string, unknown>;
+			return [name, semantics];
+		}),
+	);
 }
 
 function stableJson(value: unknown): string {

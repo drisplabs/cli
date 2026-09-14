@@ -23,7 +23,7 @@ The lifecycle extraction is scoped to a **Workflow Run**. Host lifetimes remain 
 
 The harness refactor follows observed duplicated cancellation behavior rather than performing the proposed directory-count consolidation. Managed checkpoint restart remains headless-Claude-only and is visible in the mode matrix; it is not silently claimed as terminal/Codex parity. Legacy wire removal remains dependent on #186 and the hub rollout. Persistent Athena paths are retained, as the plan requires.
 
-Validation: **288 test files / 3,699 tests pass**. Production, protocol, and the selected test TypeScript checks pass. Formatting, ESLint, Knip, the CLI build, and package smoke checks pass. ESLint retains five existing warnings in unrelated files. Local runtime: Node 24; CI retains Node 20 and 22. No paid agent or deployed hub was invoked for these checks.
+Validation: **289 test files / 3,708 tests pass**. Production, protocol, and the selected test TypeScript checks pass. Formatting, ESLint, Knip, the CLI build, and package smoke checks pass. ESLint retains five existing warnings in unrelated files. Local runtime: Node 24; CI retains Node 20 and 22. No paid agent or deployed hub was invoked for these checks.
 
 **Outcome**
 
@@ -260,3 +260,7 @@ Use the smallest meaningful check for each change, followed by the repository's 
 Completion means: one owner for lifecycle assembly; no silent mode differences in the agreed matrix; no silent workflow substitution on wake; no false-green architecture scans; no nested-worktree test collection; no unexplained degraded persistence; and every retained compatibility path has a reason and removal condition.
 
 Do not use line-count reduction, test count, or number of new abstractions as success metrics. Do not replace SQLite, add a dependency-injection framework, merge all state into an event-sourced engine, impose identical vendor internals, or mass-rename persisted identifiers as part of this cleanup. None is necessary to address the observed problems.
+
+## PR review fixes
+
+Three sub-agents reviewed standards, spec coverage, and runtime correctness. Standards review found no actionable violations. The four spec findings were addressed with configuration-owned MCP lifetimes, effective MCP capability identity, transactional bootstrap command publication/asset rollback, and atomic UI navigation intents. Runtime review found and fixed checkpoint failures escaping live callbacks; a defensive fix also contains rejected asynchronous child cleanup. Regression tests cover each behavior. Final integration review found no further concrete issues.

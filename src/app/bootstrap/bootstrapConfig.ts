@@ -1,5 +1,6 @@
+import {releaseMcpAsset} from './executionAssets';
 import {
-	registerPlugins,
+	preparePlugins,
 	buildPluginMcpConfig,
 	type CapabilityConflicts,
 } from './pluginRegistration';
@@ -181,7 +182,7 @@ export function bootstrapRuntimeConfig({
 			: resolveEffectiveCapabilities({globalConfig, projectConfig});
 	const personalMcpServers = effectiveCapabilities.mcpServers;
 	const personalSkills = effectiveCapabilities.skills;
-	const pluginResult = registerPlugins(
+	const pluginResult = preparePlugins(
 		pluginDirs,
 		workflowToResolve
 			? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
@@ -191,74 +192,86 @@ export function bootstrapRuntimeConfig({
 		personalMcpServers,
 		personalSkills,
 	);
-	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
-		? buildPluginMcpConfig(
-				workflowPluginDirs,
-				workflowToResolve
-					? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
-							?.mcpServerOptions
+	let workflowPluginMcpConfig: string | undefined;
+	try {
+		workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
+			? buildPluginMcpConfig(
+					workflowPluginDirs,
+					workflowToResolve
+						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
+								?.mcpServerOptions
+						: undefined,
+				).mcpConfig
+			: undefined;
+		const pluginMcpConfig = workflowPluginsAsGeneratedMcp
+			? undefined
+			: pluginResult.mcpConfig;
+
+		const activeWorkflow: WorkflowConfig | undefined = resolvedWorkflow;
+
+		const workflowPlan = compileWorkflowPlan({
+			workflow: activeWorkflow,
+			resolvedPlugins:
+				activeWorkflow && resolvedWorkflow?.name === activeWorkflow.name
+					? workflowResolvedPlugins
 					: undefined,
-			).mcpConfig
-		: undefined;
-	const pluginMcpConfig = workflowPluginsAsGeneratedMcp
-		? undefined
-		: pluginResult.mcpConfig;
-
-	const activeWorkflow: WorkflowConfig | undefined = resolvedWorkflow;
-
-	const workflowPlan = compileWorkflowPlan({
-		workflow: activeWorkflow,
-		resolvedPlugins:
-			activeWorkflow && resolvedWorkflow?.name === activeWorkflow.name
-				? workflowResolvedPlugins
-				: undefined,
-		pluginMcpConfig:
-			workflowPluginsAsGeneratedMcp &&
-			activeWorkflow &&
-			resolvedWorkflow?.name === activeWorkflow.name
-				? workflowPluginMcpConfig
-				: pluginResult.mcpConfig,
-	});
-
-	const settings = resolveExecutionSettings({
-		globalConfig,
-		projectConfig,
-		workflow: activeWorkflow,
-		isolationPreset: initialIsolationPreset,
-	});
-	warnings.push(...settings.warnings);
-	const {model: configModel, effort: configEffort, isolationPreset} = settings;
-
-	const isolationConfig: HarnessProcessConfig =
-		harnessConfigProfile.buildIsolationConfig({
-			projectDir,
-			isolationPreset,
-			additionalDirectories: settings.additionalDirectories,
-			pluginDirs,
-			verbose,
-			configuredModel: configModel,
-			configuredEffort: configEffort,
+			pluginMcpConfig:
+				workflowPluginsAsGeneratedMcp &&
+				activeWorkflow &&
+				resolvedWorkflow?.name === activeWorkflow.name
+					? workflowPluginMcpConfig
+					: pluginResult.mcpConfig,
 		});
-	const modelName = harnessConfigProfile.resolveModelName({
-		projectDir,
-		configuredModel: isolationConfig.model,
-	});
 
-	return {
-		globalConfig,
-		projectConfig,
-		harness,
-		isolationConfig,
-		pluginMcpConfig,
-		workflowRef: activeWorkflow?.name,
-		workflow: activeWorkflow,
-		workflowPlan,
-		modelName,
-		personalMcpServers,
-		personalSkills,
-		capabilityConflicts: pluginResult.conflicts,
-		permissionGraceMs: settings.permissionGraceMs,
-		warnings,
-		settingsProvenance: settings.provenance,
-	};
+		const settings = resolveExecutionSettings({
+			globalConfig,
+			projectConfig,
+			workflow: activeWorkflow,
+			isolationPreset: initialIsolationPreset,
+		});
+		warnings.push(...settings.warnings);
+		const {
+			model: configModel,
+			effort: configEffort,
+			isolationPreset,
+		} = settings;
+
+		const isolationConfig: HarnessProcessConfig =
+			harnessConfigProfile.buildIsolationConfig({
+				projectDir,
+				isolationPreset,
+				additionalDirectories: settings.additionalDirectories,
+				pluginDirs,
+				verbose,
+				configuredModel: configModel,
+				configuredEffort: configEffort,
+			});
+		const modelName = harnessConfigProfile.resolveModelName({
+			projectDir,
+			configuredModel: isolationConfig.model,
+		});
+
+		pluginResult.commit();
+		return {
+			globalConfig,
+			projectConfig,
+			harness,
+			isolationConfig,
+			pluginMcpConfig,
+			workflowRef: activeWorkflow?.name,
+			workflow: activeWorkflow,
+			workflowPlan,
+			modelName,
+			personalMcpServers,
+			personalSkills,
+			capabilityConflicts: pluginResult.conflicts,
+			permissionGraceMs: settings.permissionGraceMs,
+			warnings,
+			settingsProvenance: settings.provenance,
+		};
+	} catch (error) {
+		releaseMcpAsset(pluginResult.mcpConfig);
+		releaseMcpAsset(workflowPluginMcpConfig);
+		throw error;
+	}
 }

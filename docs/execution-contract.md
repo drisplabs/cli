@@ -28,7 +28,7 @@ Behavior evidence lives in `app/execution/startWorkflowExecution.test.ts`, the t
 
 ## Continuing saved work
 
-Session database schema 11 adds `execution_identity_json`. It stores a versioned digest and the workflow/harness names, not copied credentials. The digest checks workflow settings, instruction content, selected model/effort/isolation/tool grants, plugin references and installed plugin content. Resolved workflow plugins are checked for both harnesses. Environment values, MCP headers and endpoint overrides may refresh without changing the saved identity.
+Session database schema 11 adds `execution_identity_json`. It stores a versioned digest and the workflow/harness names, not copied credentials. The digest checks workflow settings, instruction content, selected model/effort/isolation/tool grants, plugin references, installed plugin content, and effective MCP server membership and launch settings. Resolved workflow plugins are checked for both harnesses. Environment values, MCP headers and endpoint overrides may refresh without changing the saved identity.
 
 A workflow with changed instructions or capabilities must be restored to its original settings, or started as a new Run. An explicit workflow override does not silently migrate an existing Run. Unreadable saved memory is rejected so a corrupt record cannot reset lifetime budgets. Historical records without an identity warn that their original instructions and capabilities cannot be verified.
 
@@ -50,9 +50,9 @@ Source acquisition remains in bootstrap: read settings, resolve workflow/plugin 
 | Plugin directories            | Workflow, global, project, CLI; duplicates removed                         |
 | Personal capability collision | Workflow plugin wins; report the shadowed personal capability              |
 
-Plugin loading returns definitions. Application bootstrap owns command registration. Replacing the plugin command scope is atomic: a failed load leaves the previous set usable, and loading an empty set removes old plugin commands. The CLI still has one application command registry; it is not an execution-wide global dependency injected into workflow control.
+Plugin loading returns definitions. Application bootstrap owns command registration. Bootstrap prepares the plugin command scope and publishes it only after configuration succeeds. Replacing that scope is atomic: a failed load leaves the previous set usable, and loading an empty set removes old plugin commands. The CLI still has one application command registry; it is not an execution-wide global dependency injected into workflow control.
 
-Generated prompts live under the project's `.athena/execution-assets/`, named by content digest. Publication is atomic, and another preparation never truncates an active prompt. They are retained for durable continuation; there is no automatic age-based deletion. Generated MCP files live in private temporary directories with mode 0600, are released by execution/session cleanup, and have process-exit cleanup as a fallback. Caller-owned MCP files are never deleted. Abrupt process termination can leave temporary assets for the operating system to reclaim.
+Generated prompts live under the project's `.athena/execution-assets/`, named by content digest. Publication is atomic, and another preparation never truncates an active prompt. They are retained for durable continuation; there is no automatic age-based deletion. Generated MCP files live in private temporary directories with mode 0600, are released by headless execution or outer terminal configuration cleanup (not conversation remounts), and have process-exit cleanup as a fallback. Caller-owned MCP files are never deleted. Abrupt process termination can leave temporary assets for the operating system to reclaim.
 
 ## Ownership and failure policy
 
@@ -62,7 +62,7 @@ The headless host owns its runtime, session writer, child controller, timers, de
 
 Both Claude hosts use one child-termination implementation. It sends the normal termination signal, escalates after three seconds, and still waits for the Turn to settle. Codex retains its thread-interruption implementation because its app-server is a persistent process. Protocol translation and launch settings remain vendor-owned; generated protocol files remain generated.
 
-Losing a workflow checkpoint stops the run and reports failure. Best-effort feed/UI projection can warn and continue; that warning does not promise the missing observation is durable. A failed database migration closes the just-opened handle. Transport failure belongs to delivery/reconnect handling, not to the workflow's business-state reducer.
+Losing a workflow checkpoint stops the run and reports failure. Live usage and steering callbacks contain the write error and return a failed outcome through the execution result. Best-effort feed/UI projection can warn and continue; that warning does not promise the missing observation is durable. A failed database migration closes the just-opened handle. Transport failure belongs to delivery/reconnect handling, not to the workflow's business-state reducer.
 
 ## Compatibility and delivery
 
