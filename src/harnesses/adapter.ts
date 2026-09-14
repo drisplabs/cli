@@ -15,6 +15,8 @@ export type HarnessRuntimeFactoryInput = {
 };
 
 export type HarnessCapabilities = {
+	/** A boundary the headless workflow host can intercept for checkpoint restart. */
+	workflowRestartBoundary: 'compact.pre' | null;
 	conversationModel: 'fresh_per_turn' | 'persistent_thread';
 	killWaitsForTurnSettlement: boolean;
 	supportsEphemeralSessions: boolean;

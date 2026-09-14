@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import {hintGlyphs} from '../glyphs/index';
+import {hintGlyphs} from '../../shared/glyphs/index';
 import {fit, fitAnsi, renderInputLines} from '../../shared/utils/format';
 
 export type FrameContext = {

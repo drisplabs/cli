@@ -1,3 +1,4 @@
+import {terminateClaudeProcess} from './terminate';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {type ChildProcess} from 'node:child_process';
 import {spawnClaude} from './spawn';
@@ -24,8 +25,6 @@ export type {UseClaudeProcessResult};
 
 // Maximum output lines to keep in memory to prevent unbounded growth
 const MAX_OUTPUT = 1000;
-// Timeout for waiting for process to exit during kill
-const KILL_TIMEOUT_MS = 3000;
 
 const NULL_TOKENS: TokenUsage = {
 	input: null,
@@ -242,28 +241,13 @@ export function useClaudeProcess(
 			return;
 		}
 
-		// Create promise to wait for process exit
-		const exitPromise = new Promise<void>(resolve => {
-			exitResolverRef.current = resolve;
-		});
-
-		// Set a timeout fallback in case process doesn't exit cleanly
-		let timeoutId: ReturnType<typeof setTimeout>;
-		const timeoutPromise = new Promise<void>(resolve => {
-			const child = processRef.current;
-			timeoutId = setTimeout(() => {
-				child?.kill('SIGKILL');
-				resolve();
-			}, KILL_TIMEOUT_MS);
-		});
-
-		processRef.current.kill();
-
-		// Wait for exit or timeout
-		await Promise.race([exitPromise, timeoutPromise]);
-
-		// Clean up timeout to prevent memory leak
-		clearTimeout(timeoutId!);
+		await terminateClaudeProcess(
+			processRef.current,
+			() =>
+				new Promise<void>(resolve => {
+					exitResolverRef.current = resolve;
+				}),
+		);
 
 		// Clean up
 		exitResolverRef.current = null;

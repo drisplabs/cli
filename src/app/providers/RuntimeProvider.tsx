@@ -84,16 +84,26 @@ export function HookProvider({
 		[athenaSessionId, projectDir],
 	);
 
+	const [startupError, setStartupError] = useState<string | null>(null);
 	const [readyRuntime, setReadyRuntime] = useState<Runtime | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
 		setReadyRuntime(null);
-		void runtime.start().finally(() => {
-			if (!cancelled) {
-				setReadyRuntime(runtime);
-			}
-		});
+		setStartupError(null);
+		void runtime.start().then(
+			() => {
+				if (!cancelled) {
+					setReadyRuntime(runtime);
+				}
+			},
+			(error: unknown) => {
+				if (!cancelled)
+					setStartupError(
+						error instanceof Error ? error.message : String(error),
+					);
+			},
+		);
 		return () => {
 			cancelled = true;
 		};
@@ -114,6 +124,9 @@ export function HookProvider({
 			runtime.stop();
 		};
 	}, [runtime]);
+
+	if (startupError)
+		return <Text color="red">Runtime could not start: {startupError}</Text>;
 
 	if (readyRuntime !== runtime) {
 		return <Text dimColor>Starting Athena hook server...</Text>;

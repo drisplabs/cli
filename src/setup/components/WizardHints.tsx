@@ -1,6 +1,6 @@
 import {Box, Text} from 'ink';
 import {useTheme} from '../../ui/theme/index';
-import {getGlyphs} from '../../ui/glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 
 type Props = {
 	stepState: 'selecting' | 'verifying' | 'success' | 'error';

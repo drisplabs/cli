@@ -59,6 +59,12 @@ function startedViaDeprecatedEntry(): boolean {
 
 // This file is only ever a bundled entry (dist/runner.js, and for one release
 // dist/dashboard-daemon.js); no other module imports it. Run on import.
-void runRunnerDaemonEntry().then(code => {
-	process.exit(code);
-});
+if (process.argv.includes('--help')) {
+	process.stdout.write(
+		'Usage: drisp-runner\n\nStarts the paired runner service. Use "drisp runner" to pair, install, inspect, or stop it.\n',
+	);
+} else {
+	void runRunnerDaemonEntry().then(code => {
+		process.exit(code);
+	});
+}

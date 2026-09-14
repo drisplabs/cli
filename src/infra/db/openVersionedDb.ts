@@ -95,20 +95,25 @@ export function openVersionedDb(
 		});
 	}
 	const db = new Database(dbPath);
-	db.exec('PRAGMA journal_mode = WAL');
-	if (options.foreignKeys) {
-		db.exec('PRAGMA foreign_keys = ON');
+	try {
+		db.exec('PRAGMA journal_mode = WAL');
+		if (options.foreignKeys) {
+			db.exec('PRAGMA foreign_keys = ON');
+		}
+		if (options.version === undefined) {
+			options.migrate(db, undefined);
+		} else {
+			migrateVersionedSchema(db, {
+				version: options.version,
+				migrate: options.migrate,
+				...(options.onNewerVersion
+					? {onNewerVersion: options.onNewerVersion}
+					: {}),
+			});
+		}
+		return db;
+	} catch (error) {
+		db.close();
+		throw error;
 	}
-	if (options.version === undefined) {
-		options.migrate(db, undefined);
-	} else {
-		migrateVersionedSchema(db, {
-			version: options.version,
-			migrate: options.migrate,
-			...(options.onNewerVersion
-				? {onNewerVersion: options.onNewerVersion}
-				: {}),
-		});
-	}
-	return db;
 }

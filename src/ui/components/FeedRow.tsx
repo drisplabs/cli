@@ -2,7 +2,7 @@ import {performance} from 'node:perf_hooks';
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
 import {type TimelineEntry} from '../../core/feed/timeline';
-import {type Theme} from '../theme/types';
+import {type Theme} from '../../shared/types/theme';
 import {parseToolName} from '../../shared/utils/toolNameParser';
 import {
 	formatGutter,

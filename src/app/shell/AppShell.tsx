@@ -1,3 +1,4 @@
+import {createSessionUiController} from './sessionUiController';
 import process from 'node:process';
 import React, {
 	Profiler,
@@ -82,7 +83,7 @@ import {fit} from '../../shared/utils/format';
 import {copyToClipboard} from '../../shared/utils/clipboard';
 import {extractYankContent} from '../../ui/utils/yankContent';
 import {detectHarness} from '../../shared/utils/detectHarness';
-import {frameGlyphs} from '../../ui/glyphs';
+import {frameGlyphs} from '../../shared/glyphs';
 import stripAnsi from 'strip-ansi';
 import type {WorkflowConfig, WorkflowPlan} from '../../core/workflows';
 import type {TurnContinuation} from '../../core/runtime/process';
@@ -98,9 +99,7 @@ import {useInputLayout} from './useInputLayout';
 import {useGlobalKeyboard} from './useGlobalKeyboard';
 import {
 	initialSessionUiState,
-	reduceSessionUiState,
 	resolveSessionUiState,
-	type SessionUiAction,
 	type SessionUiContext,
 } from './sessionUiState';
 import {
@@ -281,6 +280,25 @@ function AppContent({
 	const [modelPickerVisible, setModelPickerVisible] = useState(false);
 	const [mouseMode, setMouseMode] = useState<'on' | 'off'>('on');
 	const [uiState, setUiState] = useState(initialSessionUiState);
+	const uiContextRef = useRef<SessionUiContext>({
+		feedEntryCount: 0,
+		feedContentRows: 1,
+		feedEntries: [],
+		searchMatchCount: 0,
+		todoVisibleCount: 0,
+		todoListHeight: 0,
+		todoFocusable: false,
+		todoAnchorIndex: -1,
+		staticFloor: 0,
+		messageEntryCount: 0,
+		messageEntryLength: 0,
+		messageEntryLineOffsets: [],
+		messageContentRows: 0,
+	});
+	const ui = useMemo(
+		() => createSessionUiController(setUiState, () => uiContextRef.current),
+		[],
+	);
 	const [toastMessage, setToastMessage] = useState<string | null>(null);
 	const [diagnosticsConsent, setDiagnosticsConsent] = useState<
 		boolean | undefined
@@ -475,6 +493,14 @@ function AppContent({
 			trackOutput: false,
 			trackStreamingText: false,
 			tokenUpdateMs: 1000,
+		},
+		onWarning: message => emitNotification(message, 'Workflow warning'),
+		onOutcome: outcome => {
+			if (outcome.status !== 'completed')
+				emitNotification(
+					`${outcome.status}: ${outcome.stopReason ?? 'Execution stopped'}${outcome.status === 'awaiting_attention' ? ' — reply to continue this Workflow Run.' : ''}`,
+					'Workflow status',
+				);
 		},
 	});
 	const {exit} = useApp();
@@ -676,48 +702,10 @@ function AppContent({
 		todoShowDone: uiState.todoShowDone,
 		todoCursor: uiState.todoCursor,
 		todoScroll: uiState.todoScroll,
-		setTodoVisible: value =>
-			setUiState(prev =>
-				reduceSessionUiState(
-					prev,
-					{
-						type: 'set_todo_visible',
-						visible:
-							typeof value === 'function' ? value(prev.todoVisible) : value,
-					},
-					uiContextRef.current,
-				),
-			),
-		setTodoShowDone: value =>
-			setUiState(prev =>
-				reduceSessionUiState(
-					prev,
-					{
-						type: 'set_todo_show_done',
-						showDone:
-							typeof value === 'function' ? value(prev.todoShowDone) : value,
-					},
-					uiContextRef.current,
-				),
-			),
-		setTodoCursor: value =>
-			setUiState(prev =>
-				reduceSessionUiState(
-					prev,
-					{
-						type: 'set_todo_cursor',
-						cursor:
-							typeof value === 'function' ? value(prev.todoCursor) : value,
-					},
-					uiContextRef.current,
-				),
-			),
-		setTodoScroll: value =>
-			setUiState(prev => ({
-				...prev,
-				todoScroll:
-					typeof value === 'function' ? value(prev.todoScroll) : value,
-			})),
+		setTodoVisible: ui.todo.visible,
+		setTodoShowDone: ui.todo.showDone,
+		setTodoCursor: ui.todo.cursor,
+		setTodoScroll: ui.todo.scroll,
 	});
 
 	const frameWidth = safeTerminalWidth;
@@ -725,37 +713,17 @@ function AppContent({
 
 	const displayedFeedEntriesRef =
 		useRef<typeof filteredEntries>(filteredEntries);
-	const uiContextRef = useRef<SessionUiContext>({
-		feedEntryCount: 0,
-		feedContentRows: 1,
-		feedEntries: [],
-		searchMatchCount: 0,
-		todoVisibleCount: 0,
-		todoListHeight: 0,
-		todoFocusable: false,
-		todoAnchorIndex: -1,
-		staticFloor: 0,
-		messageEntryCount: 0,
-		messageEntryLength: 0,
-		messageEntryLineOffsets: [],
-		messageContentRows: 0,
-	});
-	const dispatchUi = useCallback((action: SessionUiAction) => {
-		setUiState(prev =>
-			reduceSessionUiState(prev, action, uiContextRef.current),
-		);
-	}, []);
 
 	useEffect(() => {
 		if (
 			(previousWorkflowPickerVisibleRef.current && !workflowPickerVisible) ||
 			(previousModelPickerVisibleRef.current && !modelPickerVisible)
 		) {
-			dispatchUi({type: 'set_focus_mode', focusMode: 'input'});
+			ui.focus('input');
 		}
 		previousWorkflowPickerVisibleRef.current = workflowPickerVisible;
 		previousModelPickerVisibleRef.current = modelPickerVisible;
-	}, [dispatchUi, workflowPickerVisible, modelPickerVisible]);
+	}, [ui, workflowPickerVisible, modelPickerVisible]);
 
 	const submitPromptOrSlashCommand = useCallback(
 		(value: string) => {
@@ -909,12 +877,11 @@ function AppContent({
 		handleSetValueRef,
 	} = useShellInput({
 		inputMode,
-		setInputMode: nextInputMode =>
-			dispatchUi({type: 'set_input_mode', inputMode: nextInputMode}),
-		setSearchQuery: query => dispatchUi({type: 'set_search_query', query}),
-		closeInput: () => dispatchUi({type: 'cancel_input'}),
+		setInputMode: nextInputMode => ui.input(nextInputMode),
+		setSearchQuery: query => ui.search.edit(query),
+		closeInput: () => ui.input('cancel'),
 		submitSearchQuery: (query, firstMatchIndex) =>
-			dispatchUi({type: 'submit_search_query', query, firstMatchIndex}),
+			ui.search.submit(query, firstMatchIndex),
 		submitPromptOrSlashCommand,
 		displayedEntriesRef: displayedFeedEntriesRef,
 		getEntrySearchText,
@@ -1107,14 +1074,11 @@ function AppContent({
 		feedCursorIndex,
 		feedViewportStart: resolvedUiState.feedViewportStart,
 		tailFollow: resolvedUiState.tailFollow,
-		moveFeedCursor: (delta: number) =>
-			dispatchUi({type: 'move_feed_cursor', delta}),
-		jumpToTail: () => dispatchUi({type: 'jump_feed_tail'}),
-		jumpToTop: () => dispatchUi({type: 'jump_feed_top'}),
-		setFeedCursor: (cursor: number) =>
-			dispatchUi({type: 'set_feed_cursor', cursor}),
-		setTailFollow: (tailFollow: boolean) =>
-			dispatchUi({type: 'set_tail_follow', tailFollow}),
+		moveFeedCursor: (delta: number) => ui.navigate('feed', delta),
+		jumpToTail: () => ui.navigate('feed', 'tail'),
+		jumpToTop: () => ui.navigate('feed', 'top'),
+		setFeedCursor: (cursor: number) => ui.selectFeed(cursor),
+		setTailFollow: (tailFollow: boolean) => ui.followFeed(tailFollow),
 	};
 	const staticHighWaterMark = 0;
 
@@ -1142,10 +1106,7 @@ function AppContent({
 		runSummaries,
 		staticHighWaterMark,
 	});
-	const cycleFocus = useCallback(
-		() => dispatchUi({type: 'cycle_focus'}),
-		[dispatchUi],
-	);
+	const cycleFocus = useCallback(() => ui.cycleFocus(), [ui]);
 
 	const handlePermissionDecision = useCallback(
 		(decision: PermissionDecision) => {
@@ -1208,9 +1169,9 @@ function AppContent({
 		callbacks: {
 			interrupt,
 			cycleFocus,
-			cancelInput: () => dispatchUi({type: 'cancel_input'}),
-			cycleHintsForced: () => dispatchUi({type: 'cycle_hints_forced'}),
-			toggleTodoVisible: () => dispatchUi({type: 'toggle_todo_visible'}),
+			cancelInput: () => ui.input('cancel'),
+			cycleHintsForced: () => ui.cycleHints(),
+			toggleTodoVisible: () => ui.todo.toggle(),
 			historyBack: inputHistory.back,
 			historyForward: inputHistory.forward,
 			getInputValue: stableGetInputValue,
@@ -1269,15 +1230,13 @@ function AppContent({
 			expandAtCursor: handleExpandForPager,
 			yankAtCursor,
 			cycleFocus,
-			openCommandInput: () => dispatchUi({type: 'open_command_input'}),
-			openSearchInput: () => dispatchUi({type: 'open_search_input'}),
+			openCommandInput: () => ui.input('command-open'),
+			openSearchInput: () => ui.input('search-open'),
 			setInputValue: stableSetInputValue,
-			hideRunOverlay: () =>
-				dispatchUi({type: 'set_show_run_overlay', show: false}),
+			hideRunOverlay: () => ui.hideOverlay(),
 			stepSearchMatch: (direction, matches) =>
-				dispatchUi({type: 'step_search_match', direction, matches}),
-			clearSearchAndJumpTail: () =>
-				dispatchUi({type: 'clear_search_and_jump_tail'}),
+				ui.search.step(direction, matches),
+			clearSearchAndJumpTail: () => ui.search.clear(),
 		},
 	});
 
@@ -1285,16 +1244,15 @@ function AppContent({
 		isActive: focusMode === 'messages' && !dialogActive && !pagerActive,
 		pageStep: messagePageStep,
 		callbacks: {
-			scrollByLines: (delta: number) =>
-				dispatchUi({type: 'scroll_message_viewport', delta}),
-			jumpToTail: () => dispatchUi({type: 'jump_message_tail'}),
-			jumpToTop: () => dispatchUi({type: 'jump_message_top'}),
+			scrollByLines: (delta: number) => ui.navigate('messages', delta),
+			jumpToTail: () => ui.navigate('messages', 'tail'),
+			jumpToTop: () => ui.navigate('messages', 'top'),
 			yankAtCursor: yankMessageAtCursor,
 			cycleFocus,
-			openCommandInput: () => dispatchUi({type: 'open_command_input'}),
-			openSearchInput: () => dispatchUi({type: 'open_search_input'}),
+			openCommandInput: () => ui.input('command-open'),
+			openSearchInput: () => ui.input('search-open'),
 			setInputValue: stableSetInputValue,
-			setMessageTab: tab => dispatchUi({type: 'set_message_tab', tab}),
+			setMessageTab: tab => ui.messageTab(tab),
 		},
 	});
 
@@ -1306,15 +1264,11 @@ function AppContent({
 			!workflowPickerVisible &&
 			!modelPickerVisible,
 		rects: panelMouseRects,
-		onFeedFocus: () => dispatchUi({type: 'set_focus_mode', focusMode: 'feed'}),
-		onMessageFocus: splitMode
-			? () => dispatchUi({type: 'set_focus_mode', focusMode: 'messages'})
-			: undefined,
-		onInputFocus: () =>
-			dispatchUi({type: 'set_focus_mode', focusMode: 'input'}),
+		onFeedFocus: () => ui.focus('feed'),
+		onMessageFocus: splitMode ? () => ui.focus('messages') : undefined,
+		onInputFocus: () => ui.focus('input'),
 		onFeedWheel: delta => feedNav.moveFeedCursor(delta),
-		onMessageWheel: delta =>
-			dispatchUi({type: 'scroll_message_viewport', delta}),
+		onMessageWheel: delta => ui.navigate('messages', delta),
 	});
 
 	useTodoKeyboard({
@@ -1323,12 +1277,11 @@ function AppContent({
 		visibleTodoItems: todoPanel.visibleTodoItems,
 		filteredEntries,
 		callbacks: {
-			focusFeed: () => dispatchUi({type: 'set_focus_mode', focusMode: 'feed'}),
-			openNormalInput: () => dispatchUi({type: 'open_normal_input'}),
+			focusFeed: () => ui.focus('feed'),
+			openNormalInput: () => ui.input('normal-open'),
 			setInputValue: stableSetInputValue,
-			moveTodoCursor: delta => dispatchUi({type: 'move_todo_cursor', delta}),
-			revealFeedCursor: cursor =>
-				dispatchUi({type: 'reveal_feed_entry', cursor}),
+			moveTodoCursor: delta => ui.todo.move(delta),
+			revealFeedCursor: cursor => ui.reveal(cursor),
 			toggleTodoStatus: todoPanel.toggleTodoStatus,
 			cycleFocus,
 		},

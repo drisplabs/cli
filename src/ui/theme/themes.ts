@@ -1,4 +1,4 @@
-import {type Theme, type ThemeName} from './types';
+import {type Theme, type ThemeName} from '../../shared/types/theme';
 
 export const darkTheme: Theme = {
 	name: 'dark',

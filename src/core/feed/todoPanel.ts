@@ -3,7 +3,7 @@ import {type TodoItem} from './todo';
 import {
 	todoGlyphSet as getTodoGlyphSet,
 	getGlyphs,
-} from '../../ui/glyphs/index';
+} from '../../shared/glyphs/index';
 
 export type TodoPanelStatus = 'open' | 'doing' | 'blocked' | 'done' | 'failed';
 

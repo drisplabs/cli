@@ -103,7 +103,10 @@ describe('workflow session planning', () => {
 			configOverride: {model: 'gpt-5'},
 		});
 
-		const composedPath = path.join(projectDir, '.composed-system-prompt.md');
+		const composedPath = prepared.configOverride?.appendSystemPromptFile;
+		expect(composedPath).toContain(
+			path.join(projectDir, '.athena', 'execution-assets'),
+		);
 		expect(prepared.prompt).toBe('Execute: ship it');
 		expect(prepared.configOverride).toEqual({
 			model: 'gpt-5',
@@ -285,4 +288,32 @@ describe('workflow session planning', () => {
 			}).prompt,
 		).toBe('Continue with .athena/session-1.md');
 	});
+});
+
+it('keeps generated prompts isolated across sessions sharing one workflow', () => {
+	const projectDir = makeTempDir();
+	const workflowFile = path.join(projectDir, 'workflow.md');
+	fs.writeFileSync(workflowFile, 'Read {sessionId}');
+	const workflow = {
+		name: 'shared',
+		plugins: [],
+		promptTemplate: '{input}',
+		workflowFile,
+	};
+	const first = createWorkflowRunState({
+		projectDir,
+		workflow,
+		sessionId: 'one',
+	});
+	const second = createWorkflowRunState({
+		projectDir,
+		workflow,
+		sessionId: 'two',
+	});
+	const a = first.workflowOverride?.appendSystemPromptFile as string;
+	const b = second.workflowOverride?.appendSystemPromptFile as string;
+	expect(a).not.toBe(b);
+	expect(fs.readFileSync(a, 'utf8')).toBe('Read one');
+	expect(fs.readFileSync(b, 'utf8')).toBe('Read two');
+	expect(fs.readFileSync(workflowFile, 'utf8')).toBe('Read {sessionId}');
 });

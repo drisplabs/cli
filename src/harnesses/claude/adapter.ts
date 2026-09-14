@@ -78,6 +78,7 @@ export const claudeHarnessAdapter: HarnessAdapter = {
 	label: 'Claude Code',
 	enabled: true,
 	capabilities: {
+		workflowRestartBoundary: 'compact.pre',
 		conversationModel: 'fresh_per_turn',
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,

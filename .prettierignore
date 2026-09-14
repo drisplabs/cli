@@ -3,3 +3,9 @@ CHANGELOG.md
 docs/mockup.html
 packages/*/dist
 packages/*/CHANGELOG.md
+
+**/.worktrees/**
+**/.claude/**
+**/dist/**
+.mcp.json
+src/harnesses/codex/protocol/generated/**

@@ -1,13 +1,15 @@
 import {
 	registerPlugins,
 	buildPluginMcpConfig,
+	type CapabilityConflicts,
+} from './pluginRegistration';
+import {
 	readConfig,
 	readGlobalConfig,
 	resolveActiveWorkflow,
 	resolvePluginDirs,
 	type AthenaConfig,
 	type AthenaHarness,
-	type CapabilityConflicts,
 } from '../../infra/plugins/index';
 import {resolveEffectiveCapabilities} from '../../infra/capabilities/effective';
 import type {
@@ -16,8 +18,6 @@ import type {
 } from '../../infra/capabilities/effective';
 import {shouldResolveWorkflow} from '../../setup/shouldResolveWorkflow';
 import {
-	HARNESS_PROCESS_PRESETS,
-	resolveHarnessProcessPreset,
 	type HarnessProcessConfig,
 	type HarnessProcessPreset,
 } from '../../core/runtime/process';
@@ -26,7 +26,7 @@ import {
 	resolveWorkflowPlugins,
 	resolveWorkflow,
 } from '../../core/workflows/index';
-import {DEFAULT_PERMISSION_GRACE_MS} from '../../core/workflows/types';
+import {resolveExecutionSettings} from './resolveExecutionSettings';
 import type {
 	ResolvedWorkflowPlugin,
 	WorkflowConfig,
@@ -76,6 +76,9 @@ export type RuntimeBootstrapOutput = {
 	 */
 	permissionGraceMs: number;
 	warnings: string[];
+	settingsProvenance?: ReturnType<
+		typeof resolveExecutionSettings
+	>['provenance'];
 };
 
 function mergePluginDirs({
@@ -178,21 +181,16 @@ export function bootstrapRuntimeConfig({
 			: resolveEffectiveCapabilities({globalConfig, projectConfig});
 	const personalMcpServers = effectiveCapabilities.mcpServers;
 	const personalSkills = effectiveCapabilities.skills;
-	const pluginResult =
-		pluginDirs.length > 0 ||
-		personalMcpServers.length > 0 ||
-		personalSkills.length > 0
-			? registerPlugins(
-					pluginDirs,
-					workflowToResolve
-						? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
-								?.mcpServerOptions
-						: undefined,
-					pluginDelivery.registrationBuildsMcpConfig,
-					personalMcpServers,
-					personalSkills,
-				)
-			: {mcpConfig: undefined, conflicts: {mcpServers: [], skills: []}};
+	const pluginResult = registerPlugins(
+		pluginDirs,
+		workflowToResolve
+			? activeWorkflowConfig.workflowSelections?.[workflowToResolve]
+					?.mcpServerOptions
+			: undefined,
+		pluginDelivery.registrationBuildsMcpConfig,
+		personalMcpServers,
+		personalSkills,
+	);
 	const workflowPluginMcpConfig = workflowPluginsAsGeneratedMcp
 		? buildPluginMcpConfig(
 				workflowPluginDirs,
@@ -208,10 +206,6 @@ export function bootstrapRuntimeConfig({
 
 	const activeWorkflow: WorkflowConfig | undefined = resolvedWorkflow;
 
-	const additionalDirectories = [
-		...globalConfig.additionalDirectories,
-		...projectConfig.additionalDirectories,
-	];
 	const workflowPlan = compileWorkflowPlan({
 		workflow: activeWorkflow,
 		resolvedPlugins:
@@ -226,37 +220,20 @@ export function bootstrapRuntimeConfig({
 				: pluginResult.mcpConfig,
 	});
 
-	const configModel =
-		projectConfig.model || globalConfig.model || activeWorkflow?.model;
-	const configEffort = activeWorkflow?.effort;
-
-	let isolationPreset = initialIsolationPreset;
-	if (activeWorkflow?.isolation) {
-		// A workflow.json may still spell its preset the pre-0.6 way (#185);
-		// read it through the same resolver the CLI flag uses, and say so.
-		const resolved = resolveHarnessProcessPreset(activeWorkflow.isolation);
-		if (resolved?.deprecation) {
-			warnings.push(
-				`Workflow '${activeWorkflow.name}' isolation ${resolved.deprecation}`,
-			);
-		}
-		const workflowIdx = resolved
-			? HARNESS_PROCESS_PRESETS.indexOf(resolved.preset)
-			: -1;
-		const userIdx = HARNESS_PROCESS_PRESETS.indexOf(isolationPreset);
-		if (resolved && workflowIdx > userIdx) {
-			warnings.push(
-				`Workflow '${activeWorkflow.name}' requires '${resolved.preset}' isolation (upgrading from '${isolationPreset}')`,
-			);
-			isolationPreset = resolved.preset;
-		}
-	}
+	const settings = resolveExecutionSettings({
+		globalConfig,
+		projectConfig,
+		workflow: activeWorkflow,
+		isolationPreset: initialIsolationPreset,
+	});
+	warnings.push(...settings.warnings);
+	const {model: configModel, effort: configEffort, isolationPreset} = settings;
 
 	const isolationConfig: HarnessProcessConfig =
 		harnessConfigProfile.buildIsolationConfig({
 			projectDir,
 			isolationPreset,
-			additionalDirectories,
+			additionalDirectories: settings.additionalDirectories,
 			pluginDirs,
 			verbose,
 			configuredModel: configModel,
@@ -280,10 +257,8 @@ export function bootstrapRuntimeConfig({
 		personalMcpServers,
 		personalSkills,
 		capabilityConflicts: pluginResult.conflicts,
-		permissionGraceMs:
-			projectConfig.permissionGraceMs ??
-			globalConfig.permissionGraceMs ??
-			DEFAULT_PERMISSION_GRACE_MS,
+		permissionGraceMs: settings.permissionGraceMs,
 		warnings,
+		settingsProvenance: settings.provenance,
 	};
 }

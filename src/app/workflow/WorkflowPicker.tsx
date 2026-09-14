@@ -23,7 +23,7 @@ import {
 	type McpServerWithOptions,
 } from '../../infra/plugins/mcpOptions';
 import {useTheme} from '../../ui/theme/index';
-import {getGlyphs} from '../../ui/glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 
 const DEFAULT_WORKFLOW_OPTION: WorkflowOption = {
 	label: 'default',

@@ -1,3 +1,4 @@
+import {terminateClaudeProcess} from '../process/terminate';
 import type {ChildProcess} from 'node:child_process';
 import {spawnClaude} from '../process/spawn';
 import type {IsolationConfig, IsolationPreset} from '../config/isolation';
@@ -123,15 +124,13 @@ export function createClaudeSessionController(
 		async kill(): Promise<void> {
 			if (!activeChild) return;
 			const child = activeChild;
-			const timeout = setTimeout(() => child.kill('SIGKILL'), 1000);
 			try {
-				child.kill();
-				await activeTurnPromise?.catch(() => {});
-			} catch {
-				// Best effort.
+				await terminateClaudeProcess(
+					child,
+					() => activeTurnPromise ?? Promise.resolve(),
+				);
 			} finally {
-				clearTimeout(timeout);
-				activeChild = null;
+				if (activeChild === child) activeChild = null;
 			}
 		},
 	};

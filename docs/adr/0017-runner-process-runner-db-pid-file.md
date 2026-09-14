@@ -1,6 +1,6 @@
 # ADR 0017 - One runner process, one runner.db, a pid file instead of a control socket
 
-Status: Active
+Status: Active; outbound-delivery description supplemented by the [execution contract](../execution-contract.md#compatibility-and-delivery) on 2026-09-14. Callback sockets and configured artifact uploads remain supported.
 Date: 2026-09-03
 Relates to: ADR 0001 (the dashboard runtime daemon owns paired execution), ADR 0006 (one owner
 for a database, a shared versioned-open primitive)

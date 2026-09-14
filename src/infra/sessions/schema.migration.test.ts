@@ -1,6 +1,6 @@
 import {describe, it, expect} from 'vitest';
 import Database from 'better-sqlite3';
-import {initSchema} from './schema';
+import {initSchema, SCHEMA_VERSION} from './schema';
 
 function tableNames(db: Database.Database): string[] {
 	return (
@@ -96,7 +96,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// Verify token columns exist and can be updated
 		db.prepare(
@@ -146,7 +146,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		db.prepare(
 			'INSERT INTO adapter_sessions (session_id, started_at, tokens_context_window_size) VALUES (?, ?, ?)',
@@ -191,7 +191,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		db.prepare(
 			`INSERT INTO workflow_runs (id, session_id, started_at, iteration, max_iterations, status)
@@ -258,7 +258,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// The channel queues went with the second runner (#183): no code path
 		// creates them any more. The feed outbox (feed_events) is untouched.
@@ -316,7 +316,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// Existing row's prompt_id defaults to NULL...
 		const before = db
@@ -361,7 +361,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// Existing row defaults to NULL...
 		const before = db
@@ -405,7 +405,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// Existing row defaults to NULL...
 		const before = db
@@ -458,7 +458,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		// The released column survives, the new one defaults to NULL...
 		const before = db
@@ -513,7 +513,7 @@ describe('schema migrations', () => {
 		const row = db.prepare('SELECT version FROM schema_version').get() as {
 			version: number;
 		};
-		expect(row.version).toBe(10);
+		expect(row.version).toBe(SCHEMA_VERSION);
 
 		const after = db
 			.prepare(

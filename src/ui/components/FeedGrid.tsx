@@ -1,7 +1,7 @@
 import React from 'react';
 import {Text} from 'ink';
 import {type TimelineEntry} from '../../core/feed/timeline';
-import {type Theme} from '../theme/types';
+import {type Theme} from '../../shared/types/theme';
 import {type FeedColumnWidths} from './FeedRow';
 import {buildFeedSurface, type OnboardingInfo} from './feedSurfaceModel';
 import {RowCache} from './rowCache';

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {HarnessProcessOverride} from '../runtime/process';
@@ -63,9 +64,24 @@ function readWorkflowOverride(
 
 	// Write composed prompt to a stable file so the harness can read it via
 	// --append-system-prompt-file without a temp-file cleanup concern.
-	const workflowDir = path.dirname(resolvedPath);
-	const composedPath = path.join(workflowDir, '.composed-system-prompt.md');
-	fs.writeFileSync(composedPath, composed, 'utf-8');
+	// Content-addressed files are immutable across concurrent preparations.
+	// They remain in the project for durable continuation, not in a shared plugin.
+	const assetDir = path.join(projectDir, '.athena', 'execution-assets');
+	fs.mkdirSync(assetDir, {recursive: true, mode: 0o700});
+	const digest = crypto.createHash('sha256').update(composed).digest('hex');
+	const composedPath = path.join(assetDir, `${digest}.md`);
+	if (!fs.existsSync(composedPath)) {
+		const temporary = path.join(
+			assetDir,
+			`${digest}.${crypto.randomUUID()}.tmp`,
+		);
+		try {
+			fs.writeFileSync(temporary, composed, {encoding: 'utf-8', mode: 0o600});
+			fs.renameSync(temporary, composedPath);
+		} finally {
+			if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+		}
+	}
 
 	return {
 		workflowOverride: {

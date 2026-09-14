@@ -35,6 +35,10 @@ import {resolveTheme} from '../../ui/theme/index';
 import {shouldShowSetup} from '../../setup/shouldShowSetup';
 import {RUN_EXIT_CODE} from '../exec';
 import {runExecCommand} from './execCommand';
+import {
+	getLatestRunForSession,
+	getMostRecentAthenaSession,
+} from '../../infra/sessions/index';
 import {resolveInteractiveSession} from './interactiveSession';
 import {runWorkflowCommand} from './workflowCommand';
 import {runMcpCommand} from './mcpCommand';
@@ -165,7 +169,12 @@ function printExecDryRunSummary(
 	}
 	lines.push(`  isolation (cli):   ${context.isolationPresetCli}`);
 	lines.push(`  isolation (final): ${runtimeConfig.isolationConfig.preset}`);
-	lines.push(`  model:             ${runtimeConfig.modelName ?? '(default)'}`);
+	lines.push(
+		`  model:             ${runtimeConfig.modelName ?? '(default)'} [${runtimeConfig.settingsProvenance?.model ?? 'resolved'}]`,
+	);
+	lines.push(
+		`  permission grace:  ${runtimeConfig.permissionGraceMs}ms [${runtimeConfig.settingsProvenance?.permissionGraceMs ?? 'resolved'}]`,
+	);
 	const pluginDirs = runtimeConfig.isolationConfig.pluginDirs ?? [];
 	if (pluginDirs.length === 0) {
 		lines.push('  plugin dirs:       <none>');
@@ -708,6 +717,17 @@ async function main(): Promise<void> {
 
 	let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 	try {
+		const resumeId =
+			isRunCommand && cli.flags.continue !== undefined
+				? cli.flags.continue || getMostRecentAthenaSession(projectDir)?.id
+				: command === 'resume'
+					? cli.input[1] || getMostRecentAthenaSession(projectDir)?.id
+					: undefined;
+		const savedRun = resumeId ? getLatestRunForSession(resumeId) : null;
+		const resumeWorkflow =
+			savedRun?.status === 'awaiting_attention'
+				? savedRun.workflowName
+				: undefined;
 		runtimeConfig = bootstrapRuntimeConfig({
 			projectDir,
 			showSetup,
@@ -717,7 +737,7 @@ async function main(): Promise<void> {
 			globalConfig,
 			projectConfig,
 			harnessOverride,
-			workflowOverride: cli.flags.workflow,
+			workflowOverride: cli.flags.workflow ?? resumeWorkflow,
 		});
 	} catch (error) {
 		console.error(`Error: ${(error as Error).message}`);

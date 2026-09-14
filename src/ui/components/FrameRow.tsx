@@ -1,7 +1,7 @@
 import React from 'react';
 import {Box, Text} from 'ink';
 import chalk from 'chalk';
-import {frameGlyphs} from '../glyphs/index';
+import {frameGlyphs} from '../../shared/glyphs/index';
 
 type Props = {
 	children: React.ReactNode;

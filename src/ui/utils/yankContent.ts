@@ -4,7 +4,7 @@ import {
 	renderMarkdownToLines,
 } from '../layout/renderDetailLines';
 import stripAnsi from 'strip-ansi';
-import type {Theme} from '../theme/types';
+import type {Theme} from '../../shared/types/theme';
 
 /**
  * Extract copyable rich detail content from a timeline entry.

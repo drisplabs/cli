@@ -16,29 +16,32 @@ vi.mock('../../infra/plugins/index', async () => {
 	>('../../infra/plugins/index');
 	return {
 		...actual,
+		resolvePluginDirs: (entries: string[]) => resolvePluginDirsMock(entries),
 		readGlobalConfig: () => readGlobalConfigMock(),
 		readConfig: (projectDir: string) => readConfigMock(projectDir),
-		registerPlugins: (
-			dirs: string[],
-			mcpServerOptions?: Record<string, Record<string, string>>,
-			includeMcpConfig?: boolean,
-			personalMcpServers?: unknown[],
-			personalSkills?: unknown[],
-		) =>
-			registerPluginsMock(
-				dirs,
-				mcpServerOptions,
-				includeMcpConfig,
-				personalMcpServers,
-				personalSkills,
-			),
-		buildPluginMcpConfig: (
-			dirs: string[],
-			mcpServerOptions?: Record<string, Record<string, string>>,
-		) => buildPluginMcpConfigMock(dirs, mcpServerOptions),
-		resolvePluginDirs: (entries: string[]) => resolvePluginDirsMock(entries),
 	};
 });
+
+vi.mock('./pluginRegistration', () => ({
+	registerPlugins: (
+		dirs: string[],
+		mcpServerOptions?: Record<string, Record<string, string>>,
+		includeMcpConfig?: boolean,
+		personalMcpServers?: unknown[],
+		personalSkills?: unknown[],
+	) =>
+		registerPluginsMock(
+			dirs,
+			mcpServerOptions,
+			includeMcpConfig,
+			personalMcpServers,
+			personalSkills,
+		),
+	buildPluginMcpConfig: (
+		dirs: string[],
+		mcpServerOptions?: Record<string, Record<string, string>>,
+	) => buildPluginMcpConfigMock(dirs, mcpServerOptions),
+}));
 
 vi.mock('../../core/workflows/index', () => ({
 	resolveWorkflow: (name: string) => resolveWorkflowMock(name),

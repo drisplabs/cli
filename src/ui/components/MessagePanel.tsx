@@ -8,8 +8,8 @@ import {
 	messageText,
 } from '../../core/feed/panelFilter';
 import {renderMarkdown} from '../../shared/markdown/renderMarkdown';
-import {type Theme} from '../theme/types';
-import {messageGlyphs} from '../glyphs/index';
+import {type Theme} from '../../shared/types/theme';
+import {messageGlyphs} from '../../shared/glyphs/index';
 import {fitAnsi, spaces, wrapText} from '../../shared/utils/format';
 
 type Props = {

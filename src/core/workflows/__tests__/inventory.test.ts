@@ -167,6 +167,7 @@ describe('watchInstalledWorkflows', () => {
 			storeDir,
 			cliVersion: '0.6.0',
 			debounceMs: 20,
+			pollIntervalMs: 50,
 			onChange: workflows => {
 				changes.push(workflows);
 			},
@@ -238,6 +239,7 @@ describe('watchInstalledWorkflows', () => {
 		const watcher = watchInstalledWorkflows({
 			storeDir: nested,
 			debounceMs: 20,
+			pollIntervalMs: 50,
 			onChange: workflows => {
 				changes.push(workflows);
 			},

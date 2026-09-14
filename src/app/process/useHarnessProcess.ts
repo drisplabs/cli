@@ -1,3 +1,5 @@
+import {useEffect} from 'react';
+import {releaseMcpAsset} from '../bootstrap/executionAssets';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {WorkflowConfig, WorkflowPlan} from '../../core/workflows';
 import type {
@@ -9,7 +11,7 @@ import type {
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {UseSessionControllerResult} from '../../harnesses/contracts/session';
 import {resolveHarnessAdapter} from '../../harnesses/registry';
-import {useWorkflowSessionController} from '../../core/workflows/useWorkflowSessionController';
+import {useWorkflowSessionController} from '../execution/useWorkflowSessionController';
 import type {PhaseChange} from '../../core/workflows/workflowRunner';
 import {useRuntime, useSessionStore} from '../providers/RuntimeProvider';
 
@@ -28,6 +30,10 @@ export type UseHarnessProcessInput = {
 	verbose?: boolean;
 	workflow?: WorkflowConfig;
 	workflowPlan?: WorkflowPlan;
+	onOutcome?: (
+		result: import('../../core/workflows/workflowRunner').WorkflowRunResult,
+	) => void;
+	onWarning?: (message: string) => void;
 	options?: HarnessProcessOptions;
 	/** The Workflow Run moved to a new workflow step (#192). */
 	onPhaseChange?: (change: PhaseChange) => void;
@@ -50,7 +56,25 @@ export function useHarnessProcess(
 		options: input.options,
 		runtime,
 	});
+	useEffect(
+		() => () => {
+			// The controller's unmount cleanup stops the conversation; generated MCP
+			// configuration is only needed when a conversation is launched.
+			releaseMcpAsset(input.pluginMcpConfig);
+			releaseMcpAsset(input.workflowPlan?.pluginMcpConfig);
+		},
+		[input.pluginMcpConfig, input.workflowPlan?.pluginMcpConfig],
+	);
 	const workflowController = useWorkflowSessionController(controller, {
+		store: sessionStore,
+		workflowPlan: input.workflowPlan,
+		runtime,
+		isolationConfig:
+			typeof input.isolation === 'string'
+				? {preset: input.isolation}
+				: input.isolation,
+		onWarning: input.onWarning,
+		onOutcome: input.onOutcome,
 		projectDir: input.projectDir,
 		sessionId: input.athenaSessionId,
 		harness: input.harness,

@@ -10,7 +10,7 @@ import type {
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
-import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
+import type {WorkflowRunSnapshot} from './runState';
 import type {JournalMarkers, JournalTaskProjection} from './journalReader';
 import {createWorkflowRunState, resolveJournalPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
@@ -537,11 +537,18 @@ export function createWorkflowRunner(
 		};
 	}
 
+	let persistenceFailure: Error | undefined;
 	function persist(): void {
 		try {
 			input.persistRunState(snapshot());
-		} catch {
-			// Persistence failure is non-fatal for the runner
+		} catch (cause) {
+			persistenceFailure = new Error(
+				'Workflow state could not be saved; continuation is unsafe.',
+				{cause},
+			);
+			cancelled = true;
+			input.abortCurrentTurn?.();
+			throw persistenceFailure;
 		}
 	}
 
@@ -1166,7 +1173,16 @@ export function createWorkflowRunner(
 			...(interruption ? {interruption} : {}),
 			tokens: cumulativeTokens,
 		};
-	})();
+	})().catch((error: unknown): WorkflowRunResult => {
+		if (!persistenceFailure) throw error;
+		return {
+			runId,
+			status: 'failed',
+			iterations: memory?.iteration ?? 0,
+			stopReason: persistenceFailure.message,
+			tokens: cumulativeTokens,
+		};
+	});
 
 	return {
 		runId,

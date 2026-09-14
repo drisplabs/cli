@@ -115,6 +115,8 @@ export function openSessionDbReadonly(
 						(row['adapter_session_id'] as string | null | undefined) ??
 						undefined,
 					interruption: parsePersistedInterruption(row['interruption_json']),
+					executionIdentityJson:
+						(row['execution_identity_json'] as string | null) ?? undefined,
 					runMemoryJson:
 						(row['run_memory_json'] as string | null | undefined) ?? undefined,
 				};

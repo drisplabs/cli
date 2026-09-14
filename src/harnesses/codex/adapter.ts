@@ -28,6 +28,7 @@ export const codexHarnessAdapter: HarnessAdapter = {
 	label: 'OpenAI Codex',
 	enabled: true,
 	capabilities: {
+		workflowRestartBoundary: null,
 		conversationModel: 'persistent_thread',
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: true,

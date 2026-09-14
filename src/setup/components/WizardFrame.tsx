@@ -1,7 +1,7 @@
 import type {ReactNode} from 'react';
 import {Box, Text, useStdout} from 'ink';
 import {useTheme} from '../../ui/theme/index';
-import {getGlyphs} from '../../ui/glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 
 type Props = {
 	title: string;

@@ -26,6 +26,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Dead code
+        run: npm run lint:dead
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -34,3 +37,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Package smoke
+        run: npm run smoke:package

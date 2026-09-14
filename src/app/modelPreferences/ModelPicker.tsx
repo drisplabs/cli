@@ -4,7 +4,7 @@ import WizardFrame from '../../setup/components/WizardFrame';
 import StepSelector from '../../setup/components/StepSelector';
 import StepStatus from '../../setup/components/StepStatus';
 import {useTheme} from '../../ui/theme/index';
-import {getGlyphs} from '../../ui/glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 import {
 	writeProjectConfig,
 	type AthenaHarness,

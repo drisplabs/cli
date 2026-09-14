@@ -39,7 +39,8 @@
 	],
 	"scripts": {
 		"build": "tsup",
-		"typecheck": "tsc --noEmit && npm run typecheck -w packages/protocol",
+		"typecheck": "tsc --noEmit && npm run typecheck -w packages/protocol && npm run typecheck:tests",
+		"typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
 		"dev": "tsup --watch",
 		"start": "tsup && node dist/cli.js",
 		"dev:debug": "tsup && DEV=true node dist/cli.js",
@@ -61,7 +62,8 @@
 		"prepare": "simple-git-hooks",
 		"prepublishOnly": "npm run lint && npm run typecheck && npm run lint:dead && npm test && npm run build",
 		"build:protocol": "npm run build -w packages/protocol",
-		"schema:generate": "npm run schema:generate -w packages/protocol"
+		"schema:generate": "npm run schema:generate -w packages/protocol",
+		"smoke:package": "npm run build:protocol && node scripts/package-smoke.mjs"
 	},
 	"files": [
 		"dist",

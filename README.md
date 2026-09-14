@@ -191,15 +191,15 @@ drisp_run:
 <details>
 <summary>Exit codes</summary>
 
-| Code | Meaning                           |
-| ---- | --------------------------------- |
-| `0`  | Success                           |
-| `2`  | Usage / validation error          |
-| `3`  | Bootstrap / configuration failure |
-| `4`  | Runtime / process failure         |
-| `5`  | Non-interactive policy failure    |
-| `6`  | Timeout exceeded                  |
-| `7`  | Output write failure              |
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| `0`  | Execution returned; check workflow outcome for completion or suspension |
+| `2`  | Usage / validation error                                                |
+| `3`  | Bootstrap / configuration failure                                       |
+| `4`  | Runtime / process failure                                               |
+| `5`  | Reserved legacy policy code (no longer emitted)                         |
+| `6`  | Timeout exceeded                                                        |
+| `7`  | Output write failure                                                    |
 
 </details>
 
@@ -207,7 +207,7 @@ drisp_run:
 
 ## Runner
 
-`drisp runner` is the one long-lived process that pairs a machine with the hub, receives its Runs over the instance socket, and executes them. Events leave the machine only over that socket.
+`drisp runner` is the one long-lived process that pairs a machine with the hub, receives its Runs over the instance socket, and executes them. The instance socket is the default delivery path. Assignments can also request a per-run callback socket and artifact uploads; see the [delivery contract](docs/execution-contract.md#compatibility-and-delivery).
 
 ```bash
 drisp runner pair <token> --url https://hub.example.com   # pair, then start the runner in the background
@@ -323,3 +323,5 @@ Commit the output so others can build without the generator.
 ## License
 
 [MIT](LICENSE)
+
+For a plain-English source map, see the [architecture diagrams](docs/drisp-architecture.md). The [execution contract](docs/execution-contract.md) explains continuation, configuration precedence, failures, and contributor checks.

@@ -11,7 +11,7 @@ import {
 import {type TimelineEntry} from '../../core/feed/timeline';
 import type {FeedEvent} from '../../core/feed/types';
 import {termColumns, termRows} from '../../shared/utils/terminal';
-import type {Theme} from '../theme/types';
+import type {Theme} from '../../shared/types/theme';
 
 const PAGER_MARGIN = 3;
 const PAGER_PAD_TOP = 1;

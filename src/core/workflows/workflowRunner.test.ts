@@ -41,6 +41,27 @@ afterEach(() => {
 });
 
 describe('createWorkflowRunner', () => {
+	it.each(['initial', 'terminal'] as const)(
+		'fails visibly when the %s checkpoint cannot be saved',
+		async stage => {
+			const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
+			const handle = createWorkflowRunner({
+				sessionId: 's1',
+				projectDir: makeTempDir(),
+				prompt: 'work',
+				startTurn,
+				persistRunState: snapshot => {
+					if (stage === 'initial' || snapshot.status === 'completed')
+						throw new Error('disk full');
+				},
+			});
+			expect(await handle.result).toMatchObject({
+				status: 'failed',
+				stopReason: expect.stringContaining('could not be saved'),
+			});
+			expect(startTurn).toHaveBeenCalledTimes(stage === 'initial' ? 0 : 1);
+		},
+	);
 	it('runs a single non-looped turn and resolves', async () => {
 		const startTurn = vi.fn().mockResolvedValue(OK_RESULT);
 		const persistRunState = vi.fn();

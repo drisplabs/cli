@@ -11,7 +11,7 @@ import type {
 	HarnessProcess,
 	HarnessProcessOverride,
 	TurnExecutionResult,
-} from '../runtime/process';
+} from '../../core/runtime/process';
 
 const tempDirs: string[] = [];
 
@@ -109,7 +109,10 @@ describe('useWorkflowSessionController', () => {
 			});
 		});
 
-		const composedPath = path.join(projectDir, '.composed-system-prompt.md');
+		const composedPath = spawn.mock.calls[0]?.[2]?.appendSystemPromptFile;
+		expect(composedPath).toContain(
+			path.join(projectDir, '.athena', 'execution-assets'),
+		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			1,
 			expect.stringContaining('Execute: ship it'),
@@ -124,8 +127,8 @@ describe('useWorkflowSessionController', () => {
 		);
 		expect(spawn).toHaveBeenNthCalledWith(
 			2,
-			expect.stringContaining('Continue with .athena/session-1.md'),
-			{mode: 'fresh'},
+			expect.stringContaining('You stopped without declaring'),
+			{mode: 'resume', handle: 'session-1'},
 			{
 				appendSystemPromptFile: composedPath,
 				developerInstructions: expect.stringContaining(

@@ -828,7 +828,7 @@ describe('useClaudeProcess', () => {
 		}).not.toThrow();
 	});
 
-	it('should resolve kill after timeout if process does not exit', async () => {
+	it('escalates to SIGKILL but waits for turn settlement', async () => {
 		vi.useFakeTimers();
 		try {
 			const {result} = renderHook(() =>
@@ -853,7 +853,10 @@ describe('useClaudeProcess', () => {
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(3100);
 			});
+			expect(mockProcess.kill).toHaveBeenCalledWith('SIGKILL');
+			expect(killResolved).toBe(false);
 			await act(async () => {
+				capturedCallbacks.onExit?.(null);
 				await killPromise;
 			});
 			void spawnPromise;

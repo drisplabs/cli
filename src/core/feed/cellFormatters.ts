@@ -1,7 +1,7 @@
 import chalk from 'chalk';
-import {type Theme} from '../../ui/theme/types';
+import {type Theme} from '../../shared/types/theme';
 import {fit as fitImpl, formatClock} from '../../shared/utils/format';
-import {getGlyphs} from '../../ui/glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 import stripAnsi from 'strip-ansi';
 
 // Re-export fit so all formatter consumers import from one place

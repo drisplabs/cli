@@ -6,7 +6,7 @@ import HarnessStep from './steps/HarnessStep';
 import StepStatus from './components/StepStatus';
 import WizardFrame from './components/WizardFrame';
 import WizardHints from './components/WizardHints';
-import {getGlyphs} from '../ui/glyphs/index';
+import {getGlyphs} from '../shared/glyphs/index';
 import {writeGlobalConfig, type AthenaHarness} from '../infra/plugins/config';
 import {trackSetupCompleted} from '../infra/telemetry/index';
 import {useTheme} from '../ui/theme/index';

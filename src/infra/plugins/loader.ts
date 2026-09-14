@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {type PluginManifest} from './types';
 import {parseFrontmatter} from './frontmatter';
-import {type PromptCommand} from '../../app/commands/types';
+import type {PluginPrompt as PromptCommand} from './types';
 import {type EffectiveSkill} from '../capabilities/effective';
 
 /**

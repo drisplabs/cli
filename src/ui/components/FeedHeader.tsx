@@ -2,7 +2,7 @@ import React from 'react';
 import {Box, Text} from 'ink';
 import chalk from 'chalk';
 import {fit, fitAnsi} from '../../shared/utils/format';
-import {type Theme} from '../theme/types';
+import {type Theme} from '../../shared/types/theme';
 import {type FeedColumnWidths} from './FeedRow';
 
 type Props = {

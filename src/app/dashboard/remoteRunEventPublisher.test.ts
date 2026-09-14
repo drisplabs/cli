@@ -33,7 +33,37 @@ describe('RemoteRunEventPublisher', () => {
 				payload: {message: 'hello'},
 			},
 		]);
-		expect(close).not.toHaveBeenCalled();
+		expect(close).toHaveBeenCalledWith('connect_failed');
 		await publisher.close();
 	});
+});
+
+it('clears connect and drain timers and closes the callback only once', async () => {
+	vi.useFakeTimers();
+	try {
+		const close = vi.fn(async () => {});
+		const sendEvent = vi.fn();
+		const publisher = await createRemoteRunEventPublisher({
+			runId: 'r',
+			callbackWsUrl: 'wss://test',
+			callbackToken: 'token',
+			client: {sendRunEvent: vi.fn()},
+			createRunStreamClient: () => ({
+				connect: async () => {},
+				sendEvent,
+				whenTerminated: async () => {},
+				close,
+			}),
+		});
+		expect(vi.getTimerCount()).toBe(0);
+		publisher.publish('progress', {}, 1);
+		expect(sendEvent).toHaveBeenCalledOnce();
+		await Promise.all([publisher.close(), publisher.close()]);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(close).toHaveBeenCalledOnce();
+		publisher.publish('progress', {}, 2);
+		expect(sendEvent).toHaveBeenCalledOnce();
+	} finally {
+		vi.useRealTimers();
+	}
 });

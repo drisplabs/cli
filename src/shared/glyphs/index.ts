@@ -2,12 +2,12 @@
  * Public API for the glyph registry.
  *
  * Usage:
- *   import { getGlyphs } from '../glyphs/index';
+ *   import { getGlyphs } from './index';
  *   const g = getGlyphs(ascii);
  *   g['feed.expandCollapsed']  // '▸' or '>'
  *
  * Domain helpers for ergonomic destructuring:
- *   import { feedGlyphs, todoGlyphs } from '../glyphs/index';
+ *   import { feedGlyphs, todoGlyphs } from './index';
  *   const { expandCollapsed, expandExpanded } = feedGlyphs(ascii);
  */
 

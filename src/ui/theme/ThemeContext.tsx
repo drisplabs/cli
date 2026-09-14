@@ -1,5 +1,5 @@
 import {createContext, useContext} from 'react';
-import {type Theme} from './types';
+import {type Theme} from '../../shared/types/theme';
 import {darkTheme} from './themes';
 
 const ThemeContext = createContext<Theme>(darkTheme);

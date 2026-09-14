@@ -5,7 +5,7 @@ import type {FeedEvent} from '../../core/feed/types';
 import OptionList, {type OptionItem} from './OptionList';
 import MultiOptionList from './MultiOptionList';
 import QuestionKeybindingBar from './QuestionKeybindingBar';
-import {getGlyphs} from '../glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 import {useTheme} from '../theme/index';
 
 type QuestionOption = {
