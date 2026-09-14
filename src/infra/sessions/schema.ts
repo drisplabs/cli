@@ -5,7 +5,7 @@ import {
 	type VersionedSchema,
 } from '../db/openVersionedDb';
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * Applies the session.db schema against an open connection: the latest base
@@ -92,6 +92,7 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			-- carries (a @drisp/protocol Interruption as JSON; #190). NULL on a
 			-- running or ended Run, and cleared when a parked Run is woken.
 			interruption_json TEXT,
+			execution_identity_json TEXT,
 			FOREIGN KEY (session_id) REFERENCES session(id)
 		);
 	`);
@@ -283,6 +284,17 @@ const applySessionSchema: SchemaMigrator = (db, fromVersion) => {
 			}
 		}
 		db.exec('UPDATE schema_version SET version = 10;');
+	}
+	if (fromVersion < 11) {
+		const columns = db
+			.prepare("SELECT name FROM pragma_table_info('workflow_runs')")
+			.all() as {name: string}[];
+		if (!columns.some(column => column.name === 'execution_identity_json')) {
+			db.exec(
+				'ALTER TABLE workflow_runs ADD COLUMN execution_identity_json TEXT',
+			);
+		}
+		db.exec('UPDATE schema_version SET version = 11');
 	}
 };
 

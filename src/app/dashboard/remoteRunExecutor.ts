@@ -106,6 +106,7 @@ export type ExecuteRemoteAssignmentInput = {
 
 /** The persisted Run a wake resumes, read from the session record. */
 export type WakeTarget = {
+	workflowName?: string;
 	resumeRunId: string;
 	adapterResumeSessionId?: string;
 };
@@ -119,6 +120,7 @@ function resolveWakeTarget(athenaSessionId: string): WakeTarget | null {
 		run.adapterSessionId && !wakesFreshAfterHandover(run.runMemoryJson);
 	return {
 		resumeRunId: run.id,
+		workflowName: run.workflowName,
 		...(resumable ? {adapterResumeSessionId: run.adapterSessionId} : {}),
 	};
 }
@@ -463,21 +465,24 @@ export async function executeRemoteAssignment({
 			return;
 		}
 
+		const wakeTarget = wake ? resolveWakeTargetFn(athenaSessionId) : null;
 		let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 		try {
-			const workflowOverride = ensureRemoteWorkflowInstalled({
-				spec,
-				resolveWorkflowFn,
-				resolveWorkflowInstallFn,
-				installWorkflowFromSourceFn,
-				readGlobalConfigFn,
-			});
+			const workflowOverride =
+				wakeTarget?.workflowName ??
+				ensureRemoteWorkflowInstalled({
+					spec,
+					resolveWorkflowFn,
+					resolveWorkflowInstallFn,
+					installWorkflowFromSourceFn,
+					readGlobalConfigFn,
+				});
 			runtimeConfig = bootstrapRuntimeConfigFn({
 				projectDir,
 				showSetup: false,
 				isolationPreset: 'standard',
 				harnessOverride: spec.harness,
-				workflowOverride,
+				workflowOverride: wakeTarget?.workflowName ?? workflowOverride,
 			});
 		} catch (err) {
 			send('error', {
@@ -491,7 +496,6 @@ export async function executeRemoteAssignment({
 
 		// A wake resumes the parked Run its session record names (#190); a
 		// record that no longer says parked leaves the reply to run afresh.
-		const wakeTarget = wake ? resolveWakeTargetFn(athenaSessionId) : null;
 		if (wake && !wakeTarget) {
 			send('warning', {
 				message: `wake requested for ${athenaSessionId}, but its session record has no parked run to resume; running the reply as a new prompt`,

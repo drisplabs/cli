@@ -6,6 +6,12 @@ export type TurnContinuation =
 	| {mode: 'reuse-current'};
 
 export type TurnExecutionResult = {
+	/** Present when the result wraps a whole Workflow Run rather than one Turn. */
+	workflowOutcome?: {
+		status: import('../workflows/types').RunStatus;
+		runId: string;
+		stopReason?: string;
+	};
 	exitCode: number | null;
 	error: Error | null;
 	tokens: TokenUsage;

@@ -34,11 +34,9 @@ export type SessionController<ConfigOverride = HarnessProcessOverride> = {
 /**
  * The per-Turn vendor session/thread on the harness seam.
  *
- * Each Turn runs in a **fresh Agent Session that is never resumed** (no
- * `--resume`) — continuity lives in the Journal, not the vendor session. This is
- * a documented glossary alias over the structural {@link SessionController}; the
- * two are interchangeable. See ADR 0003
- * (docs/adr/0003-execution-unit-terminology.md).
+ * An Agent Session may span resumed Turns. A fresh restart replaces the
+ * conversation; the Journal carries durable continuity across replacements.
+ * This alias uses the same structural interface as SessionController.
  */
 export type AgentSession<ConfigOverride = HarnessProcessOverride> =
 	SessionController<ConfigOverride>;

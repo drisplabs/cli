@@ -6,7 +6,7 @@
  */
 import chalk from 'chalk';
 import {darkTheme, lightTheme, highContrastTheme} from '../src/ui/theme/themes';
-import type {Theme} from '../src/ui/theme/types';
+import type {Theme} from '../src/shared/types/theme';
 
 const THEMES: Record<string, Theme> = {
 	dark: darkTheme,

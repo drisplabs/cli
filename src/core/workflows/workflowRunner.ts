@@ -10,7 +10,7 @@ import type {
 import type {TokenUsage} from '../../shared/types/headerMetrics';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import type {RunStatus, WorkflowConfig} from './types';
-import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
+import type {WorkflowRunSnapshot} from './runState';
 import type {JournalMarkers, JournalTaskProjection} from './journalReader';
 import {createWorkflowRunState, resolveJournalPath} from './sessionPlan';
 import {resolveTurnOutcome} from './terminalOutcome';
@@ -537,11 +537,20 @@ export function createWorkflowRunner(
 		};
 	}
 
+	let persistenceFailure: Error | undefined;
+	const hasPersistenceFailure = (): boolean => persistenceFailure !== undefined;
 	function persist(): void {
+		if (persistenceFailure) throw persistenceFailure;
 		try {
 			input.persistRunState(snapshot());
-		} catch {
-			// Persistence failure is non-fatal for the runner
+		} catch (cause) {
+			persistenceFailure = new Error(
+				'Workflow state could not be saved; continuation is unsafe.',
+				{cause},
+			);
+			cancelled = true;
+			input.abortCurrentTurn?.();
+			throw persistenceFailure;
 		}
 	}
 
@@ -635,11 +644,19 @@ export function createWorkflowRunner(
 		// safe and the queue is drained by whichever transition next starts a
 		// Turn (#191).
 		applySteer = steer => {
+			if (persistenceFailure) return false;
 			if (isTerminalPhase(phase)) return false;
 			const stepResult = step(phase, memory!, {type: 'steer', steer}, cfg);
 			phase = stepResult.phase;
 			memory = stepResult.memory;
-			runSideEffects(stepResult.actions);
+			try {
+				runSideEffects(stepResult.actions);
+			} catch (error) {
+				// Steers arrive from external event callbacks, outside result's
+				// promise chain. The stopped operation reports this failure there.
+				if (!hasPersistenceFailure()) throw error;
+				return false;
+			}
 			return true;
 		};
 
@@ -761,9 +778,19 @@ export function createWorkflowRunner(
 			try {
 				const operation = input.startTurn({
 					...turn,
-					onUsage: usage => observe(usage),
+					onUsage: usage => {
+						if (persistenceFailure) return;
+						try {
+							observe(usage);
+						} catch (error) {
+							// Harness stdout callbacks are not awaited by this runner.
+							// Keep disk failures inside the execution result contract.
+							if (!hasPersistenceFailure()) throw error;
+						}
+					},
 				});
 				const result = await Promise.race([operation, stopPromise]);
+				if (persistenceFailure) throw persistenceFailure;
 				if ('type' in result) {
 					// Stop admitting work immediately, but drain reported usage until
 					// the harness settles. A broken adapter must not park forever.
@@ -1166,7 +1193,16 @@ export function createWorkflowRunner(
 			...(interruption ? {interruption} : {}),
 			tokens: cumulativeTokens,
 		};
-	})();
+	})().catch((error: unknown): WorkflowRunResult => {
+		if (!persistenceFailure) throw error;
+		return {
+			runId,
+			status: 'failed',
+			iterations: memory?.iteration ?? 0,
+			stopReason: persistenceFailure.message,
+			tokens: cumulativeTokens,
+		};
+	});
 
 	return {
 		runId,

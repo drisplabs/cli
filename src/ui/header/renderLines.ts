@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import stringWidth from 'string-width';
-import type {Theme} from '../theme/types';
+import type {Theme} from '../../shared/types/theme';
 import {darkTheme} from '../theme/themes';
 import type {HeaderModel} from './model';
 import {

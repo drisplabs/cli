@@ -1,12 +1,20 @@
 import {describe, it, expect, vi, beforeEach} from 'vitest';
-import {buildPluginMcpConfig, registerPlugins} from '../register';
-import {clear, get} from '../../../app/commands/registry';
+import {buildPluginMcpConfig, preparePlugins} from './pluginRegistration';
+import {clear, get} from '../commands/registry';
+
+// Most cases exercise the full successful preparation-and-commit operation.
+function registerPlugins(...args: Parameters<typeof preparePlugins>) {
+	const {commit, ...result} = preparePlugins(...args);
+	commit();
+	return result;
+}
 
 // Virtual file system for tests
 const files: Record<string, string> = {};
 
 vi.mock('node:fs', () => ({
 	default: {
+		mkdtempSync: (prefix: string) => prefix + 'fixture',
 		existsSync: (p: string) => p in files,
 		readFileSync: (p: string) => {
 			if (!(p in files)) throw new Error(`ENOENT: ${p}`);
@@ -493,4 +501,23 @@ describe('registerPlugins with MCP disabled', () => {
 		expect(get('cmd-a')).toBeDefined();
 		expect(vi.mocked(fs.default.writeFileSync)).not.toHaveBeenCalled();
 	});
+});
+
+it('replaces plugin commands on reload and clears commands when no plugins remain', () => {
+	addPlugin('/plugin-a', {skillName: 'first'});
+	addPlugin('/plugin-b', {skillName: 'second'});
+	registerPlugins(['/plugin-a']);
+	registerPlugins(['/plugin-a']);
+	expect(get('first')).toBeDefined();
+	registerPlugins(['/plugin-b']);
+	expect(get('first')).toBeUndefined();
+	expect(get('second')).toBeDefined();
+	registerPlugins([]);
+	expect(get('second')).toBeUndefined();
+});
+it('keeps the previous command set when replacement loading fails', () => {
+	addPlugin('/plugin-a', {skillName: 'first'});
+	registerPlugins(['/plugin-a']);
+	expect(() => registerPlugins(['/missing'])).toThrow();
+	expect(get('first')).toBeDefined();
 });

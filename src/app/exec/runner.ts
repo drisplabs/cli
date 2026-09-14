@@ -1,3 +1,5 @@
+import {releaseMcpAsset} from '../bootstrap/executionAssets';
+import {createExecutionResources} from '../execution/resources';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import type {ControllerCallbacks} from '../../core/controller/runtimeController';
@@ -11,11 +13,8 @@ import {
 	type RuntimeDecision,
 	type RuntimeEvent,
 } from '../../core/runtime/types';
-import {createWorkflowRunner} from '../../core/workflows/workflowRunner';
-import {
-	deserializeRunMemory,
-	type RunInterruption,
-} from '../../core/workflows/runMachine';
+import {startWorkflowExecution} from '../execution/startWorkflowExecution';
+import {type RunInterruption} from '../../core/workflows/runMachine';
 import {
 	buildUnattendedRules,
 	matchRule,
@@ -219,8 +218,48 @@ function safePersist(
 }
 
 export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
+	const resources = createExecutionResources();
 	const now = options.now ?? Date.now;
 	const startTs = now();
+	const request = {
+		...options,
+		athenaSessionId: options.athenaSessionId ?? crypto.randomUUID(),
+	};
+	try {
+		return await runOwnedExecution(request, resources);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const output = createExecOutputWriter({
+			json: options.json ?? false,
+			verbose: options.verbose ?? false,
+			stdout: options.stdout ?? process.stdout,
+			stderr: options.stderr ?? process.stderr,
+			now,
+		});
+		output.error(message);
+		output.emitJsonEvent('exec.error', {kind: 'process', message});
+		return buildEarlyFailureResult({
+			now,
+			startTs,
+			athenaSessionId: request.athenaSessionId,
+			ephemeral: options.ephemeral,
+			message,
+		});
+	} finally {
+		// Covers failures during construction, before the event-loop try/finally exists.
+		// The normal path reports disposal failures through its failure latch.
+		await resources.dispose().catch(() => {});
+	}
+}
+
+async function runOwnedExecution(
+	options: ExecRunOptions,
+	resources: ReturnType<typeof createExecutionResources>,
+): Promise<ExecRunResult> {
+	const now = options.now ?? Date.now;
+	const startTs = now();
+	resources.own(() => releaseMcpAsset(options.pluginMcpConfig));
+	resources.own(() => releaseMcpAsset(options.workflowPlan?.pluginMcpConfig));
 	const verbose = options.verbose ?? false;
 	const json = options.json ?? false;
 	const instanceId = options.instanceId ?? process.pid;
@@ -237,6 +276,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	const dashboardFeedPublisher: FeedSink =
 		options.dashboardFeedPublisher ?? ownedFeedPublisher!;
 	const dashboardOrigin = options.dashboardOrigin ?? 'local';
+	if (ownedFeedPublisher) resources.own(() => ownedFeedPublisher.close());
 
 	const output = createExecOutputWriter({
 		json,
@@ -257,12 +297,14 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		askRules: options.workflow?.askRules,
 	});
 
-	let runtimeStarted = false;
 	let cumulativeTokens: TokenUsage = {...NULL_TOKENS};
 	let streamFinalMessage: string | null = null;
 	let mappedFinalMessage: string | null = null;
 	let adapterSessionId: string | null = null;
 	let activeRunId: string | null = null;
+	let workflowOutcome:
+		| import('../../core/workflows/workflowRunner').WorkflowRunResult
+		| undefined;
 	// The Iteration of the Turn in flight, as the Runner names it on each
 	// `startTurn` — what `run.handover` reports as the iteration it
 	// interrupted (ADR 0018 §8); the exec runner holds no `RunMemory` itself.
@@ -312,6 +354,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		const message = `Failed to initialize session store: ${
 			error instanceof Error ? error.message : String(error)
 		}`;
+		await resources.dispose();
 		output.error(message);
 		output.emitJsonEvent('exec.error', {kind: 'process', message});
 		return buildEarlyFailureResult({
@@ -322,6 +365,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			message,
 		});
 	}
+	resources.own(() => store.close());
 	const mapperBootstrap = store.toBootstrap();
 	const mapper = createFeedMapper(mapperBootstrap);
 	mappedFinalMessage = findLastMappedAgentMessage(
@@ -379,7 +423,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		const message = `Failed to initialize runtime: ${
 			error instanceof Error ? error.message : String(error)
 		}`;
-		store.close();
+		await resources.dispose();
 		output.error(message);
 		output.emitJsonEvent('exec.error', {kind: 'process', message});
 		return buildEarlyFailureResult({
@@ -390,6 +434,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			message,
 		});
 	}
+	resources.own(() => runtime.stop());
 	const harnessAdapter = resolveHarnessAdapter(options.harness);
 	const sessionController = harnessAdapter.createSessionController({
 		projectDir: options.projectDir,
@@ -406,6 +451,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			| undefined,
 	});
 
+	resources.own(() => sessionController.kill());
 	let cancelWorkflow: (() => void) | undefined;
 	const latch = createFailureLatch(next => {
 		cancelWorkflow?.();
@@ -414,8 +460,17 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			kind: next.kind,
 			message: next.message,
 		});
-		void sessionController.kill();
+		abortCurrentTurn();
 	});
+
+	function abortCurrentTurn(): void {
+		void sessionController.kill().catch((error: unknown) => {
+			latch.register({
+				kind: 'process',
+				message: `Failed stopping the active turn: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		});
+	}
 
 	const abortListener = (): void => {
 		latch.register({kind: 'process', message: 'Execution cancelled.'});
@@ -426,6 +481,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		options.signal?.addEventListener('abort', abortListener, {once: true});
 	}
 
+	resources.own(() =>
+		options.signal?.removeEventListener('abort', abortListener),
+	);
+	resources.own(() => clearHold());
 	const currentAdapterSessionId = (): string | null => adapterSessionId;
 
 	let handoverRequest: {handle: string} | null = null;
@@ -441,7 +500,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				adapterSessionId: handle,
 				iteration: currentIteration,
 			});
-			void sessionController.kill();
+			abortCurrentTurn();
 		}
 		return 'Handover in progress — the runner will validate the Journal checkpoint.';
 	};
@@ -453,7 +512,8 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		// A Workflow Run parks instead — see `classifyUnattendedEvent` above.
 		enqueuePermission: () => {},
 		enqueueQuestion: () => {},
-		...(options.harness === 'claude-code' && options.workflow?.loop?.enabled
+		...(harnessAdapter.capabilities.workflowRestartBoundary === 'compact.pre' &&
+		options.workflow?.loop?.enabled
 			? {interceptCompaction}
 			: {}),
 		...(options.signal ? {signal: options.signal} : {}),
@@ -490,7 +550,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			toolName,
 			graceMs: permissionGraceMs,
 		});
-		void sessionController.kill();
+		abortCurrentTurn();
 	}
 
 	/**
@@ -653,7 +713,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 				const next = classifyUnattendedEvent(runtimeEvent, rules);
 				if (next?.kind === 'question') {
 					interruption = next;
-					void sessionController.kill();
+					abortCurrentTurn();
 				} else if (next) {
 					afterIngest = holdOrReplay(runtimeEvent, next);
 				}
@@ -742,6 +802,10 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		capabilityConflicts,
 	});
 
+	resources.own(() => runtimeEventLoop.stop());
+	resources.own(() => {
+		if (timeoutTimer) clearTimeout(timeoutTimer);
+	});
 	const personalCapabilityNotice =
 		formatPersonalCapabilityNotice(personalCapabilities);
 	if (personalCapabilityNotice) {
@@ -756,7 +820,6 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	try {
 		await runtime.start();
-		runtimeStarted = true;
 		output.emitJsonEvent('runtime.started', {
 			status: runtime.getStatus(),
 		});
@@ -794,199 +857,187 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 			? {mode: 'resume', handle: options.adapterResumeSessionId}
 			: {mode: 'fresh'};
 
-		// Waking a suspended Run (ADR 0016 §2/§6): rehydrate its persisted
-		// `RunMemory` and stop reason from the session DB rather than letting
-		// `createWorkflowRunner` restart the Run's budgets from zero. This
-		// session's store is scoped to `athenaSessionId`, so `getLatestRun()`
-		// names the very Run `resumeRunId` points at — guarded defensively in
-		// case a future caller ever passes a foreign run id.
-		let resumedRunMemory;
-		let resumedStopReason;
-		if (options.resumeRunId) {
-			const resumedRun = store.getLatestRun();
-			if (resumedRun?.id === options.resumeRunId) {
-				resumedRunMemory =
-					deserializeRunMemory(resumedRun.runMemoryJson) ?? undefined;
-				resumedStopReason = resumedRun.stopReason;
-			}
-		}
-
-		const handle = createWorkflowRunner({
-			sessionId: athenaSessionId,
-			projectDir: options.projectDir,
-			harness: options.harness,
-			workflow,
-			prompt: options.prompt,
-			initialContinuation: nextContinuation,
-			resumeRunId: options.resumeRunId,
-			parkedInterruption,
-			// Runner-level notices (e.g. a deprecated marker spelling, #185) reach
-			// both the human stderr stream and the JSONL contract.
-			onWarning: message => {
-				output.warn(message);
-				output.emitJsonEvent('exec.warning', {message});
-			},
-			// The Run moved to a new workflow step (#192): one `phase` FeedEvent
-			// into the local feed and the paired feed, and one `run.phase` JSONL
-			// event. The phase is not a RuntimeEvent, so it never crosses the
-			// FeedMapper; it borrows the mapper's current Session / Feed Run and
-			// a mapper-allocated seq so it sorts into the timeline it belongs to.
-			onPhaseChange: phase => {
-				const sessionId =
-					mapper.getSession()?.session_id ??
-					adapterSessionId ??
-					athenaSessionId;
-				const feedEvent = buildPhaseFeedEvent({
-					phase,
-					sessionId,
-					runId: mapper.getCurrentRun()?.run_id ?? `${sessionId}:R0`,
-					seq: mapper.allocateSeq(),
-					ts: now(),
-				});
-				safePersist(
-					store,
-					() => store.recordFeedEvents([feedEvent]),
-					message => output.warn(message),
-					'recordFeedEvents failed',
-				);
-				publishFeedEvents([feedEvent]);
-				output.emitJsonEvent('run.phase', phase);
-			},
-			resumedRunMemory,
-			resumedStopReason,
-			startTurn: async turnInput => {
-				if (latch.hasFailure())
-					return {
-						exitCode: null,
-						error: new Error(latch.current()!.message),
-						tokens: {...NULL_TOKENS},
-						streamMessage: null,
-					};
-				currentIteration = turnInput.iteration;
-				toolCallsThisTurn = 0;
-				const turnResult = await sessionController.startTurn({
-					prompt: turnInput.prompt,
-					continuation: turnInput.continuation,
-					configOverride: turnInput.configOverride,
-					onUsage: turnInput.onUsage,
-					onStderrLine: message => output.log(message),
-				});
-				// A Turn that ended on its own while a request was held leaves
-				// nothing to defer.
-				clearHold();
-
-				if (turnResult.streamMessage) {
-					streamFinalMessage = turnResult.streamMessage;
-				}
-
-				const sessionIdForTokens = currentAdapterSessionId();
-				if (sessionIdForTokens !== null) {
-					safePersist(
-						store,
-						() => store.recordTokens(sessionIdForTokens, turnResult.tokens),
-						message => output.warn(message),
-						'recordTokens failed',
-					);
-				}
-
-				return turnResult;
-			},
-			persistRunState: runSnapshot => {
-				safePersist(
-					store,
-					() => store.persistRun(runSnapshot),
-					message => output.warn(message),
-					'persistRun failed',
-				);
-			},
-			checkInterruption: () => interruption,
-			currentAdapterSessionId,
-			currentTurnToolCalls: () => toolCallsThisTurn,
-			// A completed Handover, measured (ADR 0018 §8): the cheapest health
-			// signal of a loop — many short sessions, output tokens tiny next to
-			// cache reads — becomes readable from the stream.
-			onHandoverCompleted: completion => {
-				output.emitJsonEvent('run.handover.completed', completion);
-			},
-			handover: {
-				takeRequest: () => {
-					const request = handoverRequest;
-					handoverRequest = null;
-					return request;
+		const handle = startWorkflowExecution(
+			{
+				sessionId: athenaSessionId,
+				projectDir: options.projectDir,
+				harness: options.harness,
+				workflow,
+				prompt: options.prompt,
+				initialContinuation: nextContinuation,
+				resumeRunId: options.resumeRunId,
+				parkedInterruption,
+				// Runner-level notices (e.g. a deprecated marker spelling, #185) reach
+				// both the human stderr stream and the JSONL contract.
+				onWarning: message => {
+					output.warn(message);
+					output.emitJsonEvent('exec.warning', {message});
 				},
-			},
-			abortCurrentTurn: () => void sessionController.kill(),
-			onIterationComplete: (runSnapshot, tokens) => {
-				output.emitJsonEvent('iteration.complete', {
-					iteration: runSnapshot.iteration,
-					status: runSnapshot.status,
-					// The Run's burn so far (ADR 0018 §10), budget or no budget.
-					tokens,
-				});
-			},
-			// A delivered Steer (#191) is reported per Turn it went into; the
-			// Runner has already recorded it in the Journal by this point.
-			onSteerDelivered: steers => {
-				for (const steer of steers) {
-					output.notice(
-						`steer delivered into Turn ${steer.iteration} (via ${steer.origin}): ${steer.text}`,
-					);
-					output.emitJsonEvent('run.steer', {
-						iteration: steer.iteration,
-						origin: steer.origin,
-						receivedAt: steer.receivedAt,
-						text: steer.text,
+				// The Run moved to a new workflow step (#192): one `phase` FeedEvent
+				// into the local feed and the paired feed, and one `run.phase` JSONL
+				// event. The phase is not a RuntimeEvent, so it never crosses the
+				// FeedMapper; it borrows the mapper's current Session / Feed Run and
+				// a mapper-allocated seq so it sorts into the timeline it belongs to.
+				onPhaseChange: phase => {
+					const sessionId =
+						mapper.getSession()?.session_id ??
+						adapterSessionId ??
+						athenaSessionId;
+					const feedEvent = buildPhaseFeedEvent({
+						phase,
+						sessionId,
+						runId: mapper.getCurrentRun()?.run_id ?? `${sessionId}:R0`,
+						seq: mapper.allocateSeq(),
+						ts: now(),
 					});
-				}
-			},
-			// Task-tool projection (ADR 0015 §7): the Journal's `## Units` table +
-			// unit-record frontmatter, diffed against what the Feed already knows
-			// and reconciled through the same `task.created`/`task.completed`
-			// path a live TodoWrite/TaskCreate/TaskUpdate call would take.
-			projectTasks: (tasks: JournalTaskProjection[]) => {
-				const known = new Map(
-					mapper
-						.getTasks()
-						.filter(task => task.taskId)
-						.map(task => [task.taskId!, task] as const),
-				);
-				const newEvents: FeedEvent[] = [];
-				for (const task of tasks) {
-					const existing = known.get(task.taskId);
-					if (!existing) {
-						newEvents.push(
-							...mapper.mapEvent(
-								buildSyntheticTaskEvent('task.created', athenaSessionId, {
-									task_id: task.taskId,
-									task_subject: task.content,
-								}),
-							),
-						);
-					}
-					if (task.status === 'completed' && existing?.status !== 'completed') {
-						newEvents.push(
-							...mapper.mapEvent(
-								buildSyntheticTaskEvent('task.completed', athenaSessionId, {
-									task_id: task.taskId,
-									task_subject: task.content,
-								}),
-							),
-						);
-					}
-				}
-				if (newEvents.length > 0) {
 					safePersist(
 						store,
-						() => store.recordFeedEvents(newEvents),
+						() => store.recordFeedEvents([feedEvent]),
 						message => output.warn(message),
 						'recordFeedEvents failed',
 					);
-				}
+					publishFeedEvents([feedEvent]);
+					output.emitJsonEvent('run.phase', phase);
+				},
+				startTurn: async turnInput => {
+					if (latch.hasFailure())
+						return {
+							exitCode: null,
+							error: new Error(latch.current()!.message),
+							tokens: {...NULL_TOKENS},
+							streamMessage: null,
+						};
+					currentIteration = turnInput.iteration;
+					toolCallsThisTurn = 0;
+					const turnResult = await sessionController.startTurn({
+						prompt: turnInput.prompt,
+						continuation: turnInput.continuation,
+						configOverride: turnInput.configOverride,
+						onUsage: turnInput.onUsage,
+						onStderrLine: message => output.log(message),
+					});
+					// A Turn that ended on its own while a request was held leaves
+					// nothing to defer.
+					clearHold();
+
+					if (turnResult.streamMessage) {
+						streamFinalMessage = turnResult.streamMessage;
+					}
+
+					const sessionIdForTokens = currentAdapterSessionId();
+					if (sessionIdForTokens !== null) {
+						safePersist(
+							store,
+							() => store.recordTokens(sessionIdForTokens, turnResult.tokens),
+							message => output.warn(message),
+							'recordTokens failed',
+						);
+					}
+
+					return turnResult;
+				},
+				persistRunState: runSnapshot => store.persistRun(runSnapshot),
+				checkInterruption: () => interruption,
+				currentAdapterSessionId,
+				currentTurnToolCalls: () => toolCallsThisTurn,
+				// A completed Handover, measured (ADR 0018 §8): the cheapest health
+				// signal of a loop — many short sessions, output tokens tiny next to
+				// cache reads — becomes readable from the stream.
+				onHandoverCompleted: completion => {
+					output.emitJsonEvent('run.handover.completed', completion);
+				},
+				handover: {
+					takeRequest: () => {
+						const request = handoverRequest;
+						handoverRequest = null;
+						return request;
+					},
+				},
+				abortCurrentTurn,
+				onIterationComplete: (runSnapshot, tokens) => {
+					output.emitJsonEvent('iteration.complete', {
+						iteration: runSnapshot.iteration,
+						status: runSnapshot.status,
+						// The Run's burn so far (ADR 0018 §10), budget or no budget.
+						tokens,
+					});
+				},
+				// A delivered Steer (#191) is reported per Turn it went into; the
+				// Runner has already recorded it in the Journal by this point.
+				onSteerDelivered: steers => {
+					for (const steer of steers) {
+						output.notice(
+							`steer delivered into Turn ${steer.iteration} (via ${steer.origin}): ${steer.text}`,
+						);
+						output.emitJsonEvent('run.steer', {
+							iteration: steer.iteration,
+							origin: steer.origin,
+							receivedAt: steer.receivedAt,
+							text: steer.text,
+						});
+					}
+				},
+				// Task-tool projection (ADR 0015 §7): the Journal's `## Units` table +
+				// unit-record frontmatter, diffed against what the Feed already knows
+				// and reconciled through the same `task.created`/`task.completed`
+				// path a live TodoWrite/TaskCreate/TaskUpdate call would take.
+				projectTasks: (tasks: JournalTaskProjection[]) => {
+					const known = new Map(
+						mapper
+							.getTasks()
+							.filter(task => task.taskId)
+							.map(task => [task.taskId!, task] as const),
+					);
+					const newEvents: FeedEvent[] = [];
+					for (const task of tasks) {
+						const existing = known.get(task.taskId);
+						if (!existing) {
+							newEvents.push(
+								...mapper.mapEvent(
+									buildSyntheticTaskEvent('task.created', athenaSessionId, {
+										task_id: task.taskId,
+										task_subject: task.content,
+									}),
+								),
+							);
+						}
+						if (
+							task.status === 'completed' &&
+							existing?.status !== 'completed'
+						) {
+							newEvents.push(
+								...mapper.mapEvent(
+									buildSyntheticTaskEvent('task.completed', athenaSessionId, {
+										task_id: task.taskId,
+										task_subject: task.content,
+									}),
+								),
+							);
+						}
+					}
+					if (newEvents.length > 0) {
+						safePersist(
+							store,
+							() => store.recordFeedEvents(newEvents),
+							message => output.warn(message),
+							'recordFeedEvents failed',
+						);
+					}
+				},
 			},
-		});
+			{
+				store,
+				isolationConfig: options.isolationConfig,
+				workflowPlan: options.workflowPlan,
+				pluginMcpConfig: options.pluginMcpConfig,
+				runtime,
+				signal: options.signal,
+			},
+		);
 
 		cancelWorkflow = () => handle.cancel();
 		if (latch.hasFailure()) handle.cancel();
+		resources.own(() => handle.dispose());
 		activeRunId = handle.runId;
 
 		// Steers reach the Runner through the queue's single subscriber; ones
@@ -1010,6 +1061,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		});
 
 		const runResult = await handle.result;
+		workflowOutcome = runResult;
 
 		// Accumulate tokens from the runner result
 		cumulativeTokens = runResult.tokens;
@@ -1053,15 +1105,20 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 		clearHold();
 		dashboardDecisionDrain?.stop();
 		unsubscribeSteers?.();
-		await writeLastMessageBeforeTerminalCompletion();
-		await runBeforeTerminalCompletion();
-		await sessionController.kill();
-		runtimeEventLoop.stop();
-		if (runtimeStarted) {
-			runtime.stop();
+		try {
+			await writeLastMessageBeforeTerminalCompletion();
+			await runBeforeTerminalCompletion();
+		} finally {
+			runtimeEventLoop.stop();
+			try {
+				await resources.dispose();
+			} catch (error) {
+				latch.register({
+					kind: 'process',
+					message: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
-		store.close();
-		ownedFeedPublisher?.close();
 	}
 
 	const resolvedFinalMessage = resolveFinalMessage({
@@ -1085,6 +1142,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 
 	const durationMs = Math.max(0, now() - startTs);
 	const result: ExecRunResult = {
+		workflowOutcome,
 		success,
 		exitCode,
 		athenaSessionId: options.ephemeral ? null : athenaSessionId,
@@ -1096,6 +1154,7 @@ export async function runExec(options: ExecRunOptions): Promise<ExecRunResult> {
 	};
 
 	output.emitJsonEvent('exec.completed', {
+		workflowOutcome: result.workflowOutcome,
 		success: result.success,
 		exitCode: result.exitCode,
 		athenaSessionId: result.athenaSessionId,

@@ -2,7 +2,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 
 const readGlobalConfigMock = vi.fn();
 const readConfigMock = vi.fn();
-const registerPluginsMock = vi.fn();
+const preparePluginsMock = vi.fn();
 const buildPluginMcpConfigMock = vi.fn();
 const resolveWorkflowMock = vi.fn();
 const installWorkflowPluginsMock = vi.fn();
@@ -16,29 +16,34 @@ vi.mock('../../infra/plugins/index', async () => {
 	>('../../infra/plugins/index');
 	return {
 		...actual,
+		resolvePluginDirs: (entries: string[]) => resolvePluginDirsMock(entries),
 		readGlobalConfig: () => readGlobalConfigMock(),
 		readConfig: (projectDir: string) => readConfigMock(projectDir),
-		registerPlugins: (
-			dirs: string[],
-			mcpServerOptions?: Record<string, Record<string, string>>,
-			includeMcpConfig?: boolean,
-			personalMcpServers?: unknown[],
-			personalSkills?: unknown[],
-		) =>
-			registerPluginsMock(
-				dirs,
-				mcpServerOptions,
-				includeMcpConfig,
-				personalMcpServers,
-				personalSkills,
-			),
-		buildPluginMcpConfig: (
-			dirs: string[],
-			mcpServerOptions?: Record<string, Record<string, string>>,
-		) => buildPluginMcpConfigMock(dirs, mcpServerOptions),
-		resolvePluginDirs: (entries: string[]) => resolvePluginDirsMock(entries),
 	};
 });
+
+vi.mock('./pluginRegistration', () => ({
+	preparePlugins: (
+		dirs: string[],
+		mcpServerOptions?: Record<string, Record<string, string>>,
+		includeMcpConfig?: boolean,
+		personalMcpServers?: unknown[],
+		personalSkills?: unknown[],
+	) => ({
+		commit: () => {},
+		...preparePluginsMock(
+			dirs,
+			mcpServerOptions,
+			includeMcpConfig,
+			personalMcpServers,
+			personalSkills,
+		),
+	}),
+	buildPluginMcpConfig: (
+		dirs: string[],
+		mcpServerOptions?: Record<string, Record<string, string>>,
+	) => buildPluginMcpConfigMock(dirs, mcpServerOptions),
+}));
 
 vi.mock('../../core/workflows/index', () => ({
 	resolveWorkflow: (name: string) => resolveWorkflowMock(name),
@@ -118,8 +123,8 @@ describe('bootstrapRuntimeConfig', () => {
 		delete process.env['ANTHROPIC_MODEL'];
 		readGlobalConfigMock.mockReset();
 		readConfigMock.mockReset();
-		registerPluginsMock.mockReset();
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReset();
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 			conflicts: {mcpServers: [], skills: []},
 		});
@@ -228,7 +233,7 @@ describe('bootstrapRuntimeConfig', () => {
 			],
 			codexPlugins: [],
 		});
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: '/tmp/mcp.json',
 			workflows: [],
 		});
@@ -243,7 +248,7 @@ describe('bootstrapRuntimeConfig', () => {
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('e2e-test-builder');
-		expect(registerPluginsMock).toHaveBeenCalledWith(
+		expect(preparePluginsMock).toHaveBeenCalledWith(
 			['/workflow-plugin', '/global-plugin', '/project-plugin', '/cli-plugin'],
 			{
 				'agent-web-interface': {AWI_HEADLESS: 'true'},
@@ -364,7 +369,7 @@ describe('bootstrapRuntimeConfig', () => {
 			plugins: [],
 			promptTemplate: '{input}',
 		});
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 		});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
@@ -401,7 +406,7 @@ describe('bootstrapRuntimeConfig', () => {
 			plugins: [],
 			promptTemplate: '{input}',
 		});
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 		});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
@@ -465,7 +470,7 @@ describe('bootstrapRuntimeConfig', () => {
 			promptTemplate: '{input}',
 		});
 		installWorkflowPluginsMock.mockReturnValue([]);
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 		});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
@@ -477,7 +482,7 @@ describe('bootstrapRuntimeConfig', () => {
 		});
 
 		expect(resolveWorkflowMock).toHaveBeenCalledWith('project-workflow');
-		expect(registerPluginsMock).toHaveBeenCalledWith(
+		expect(preparePluginsMock).toHaveBeenCalledWith(
 			['/global-plugin', '/project-plugin'],
 			{projectServer: {PROJECT: 'true'}},
 			true,
@@ -492,7 +497,7 @@ describe('bootstrapRuntimeConfig', () => {
 			mcpServers: {fs: {command: 'npx', args: ['-y', 'server']}},
 		});
 		readConfigMock.mockReturnValue({...emptyConfig});
-		registerPluginsMock.mockReturnValue({mcpConfig: '/tmp/personal-mcp.json'});
+		preparePluginsMock.mockReturnValue({mcpConfig: '/tmp/personal-mcp.json'});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
 
 		const result = bootstrapRuntimeConfig({
@@ -503,7 +508,7 @@ describe('bootstrapRuntimeConfig', () => {
 
 		// gate fires despite zero configured plugin dirs (the builtin handoff
 		// plugin always rides along); resolved personal servers forwarded
-		expect(registerPluginsMock).toHaveBeenCalledWith(
+		expect(preparePluginsMock).toHaveBeenCalledWith(
 			[],
 			undefined,
 			true,
@@ -526,7 +531,7 @@ describe('bootstrapRuntimeConfig', () => {
 			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
 		});
 		readConfigMock.mockReturnValue({...emptyConfig});
-		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+		preparePluginsMock.mockReturnValue({mcpConfig: undefined});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
 
 		bootstrapRuntimeConfig({
@@ -537,7 +542,7 @@ describe('bootstrapRuntimeConfig', () => {
 
 		// gate fires despite zero configured plugin dirs + zero personal MCP
 		// (the builtin handoff plugin always rides along); skills forwarded
-		expect(registerPluginsMock).toHaveBeenCalledWith(
+		expect(preparePluginsMock).toHaveBeenCalledWith(
 			[],
 			undefined,
 			true,
@@ -562,7 +567,7 @@ describe('bootstrapRuntimeConfig', () => {
 			...emptyConfig,
 			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
 		});
-		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+		preparePluginsMock.mockReturnValue({mcpConfig: undefined});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
 
 		const result = bootstrapRuntimeConfig({
@@ -596,7 +601,7 @@ describe('bootstrapRuntimeConfig', () => {
 			skills: [{name: 'greet', source: './greet', path: '/abs/greet'}],
 		});
 		readConfigMock.mockReturnValue({...emptyConfig});
-		registerPluginsMock.mockReturnValue({mcpConfig: undefined});
+		preparePluginsMock.mockReturnValue({mcpConfig: undefined});
 
 		const result = bootstrapRuntimeConfig({
 			projectDir: '/project',
@@ -616,7 +621,7 @@ describe('bootstrapRuntimeConfig', () => {
 			skills: [{name: 'dup', source: './dup', path: '/abs/dup'}],
 		});
 		readConfigMock.mockReturnValue(emptyConfig);
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 			conflicts: {
 				mcpServers: [
@@ -676,7 +681,7 @@ describe('bootstrapRuntimeConfig', () => {
 			promptTemplate: '{input}',
 		});
 		installWorkflowPluginsMock.mockReturnValue([]);
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 		});
 		readClaudeSettingsModelMock.mockReturnValue('claude-settings-model');
@@ -698,7 +703,7 @@ describe('bootstrapRuntimeConfig', () => {
 			harness: 'openai-codex',
 		});
 		readConfigMock.mockReturnValue(emptyConfig);
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: undefined,
 		});
 
@@ -750,7 +755,7 @@ describe('bootstrapRuntimeConfig', () => {
 				},
 			],
 		});
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: '/tmp/workflow-mcp.json',
 		});
 
@@ -835,7 +840,7 @@ describe('bootstrapRuntimeConfig', () => {
 				},
 			],
 		});
-		registerPluginsMock.mockReturnValue({
+		preparePluginsMock.mockReturnValue({
 			mcpConfig: '/tmp/all-plugin-mcp.json',
 			conflicts: {mcpServers: [], skills: []},
 		});
@@ -851,7 +856,7 @@ describe('bootstrapRuntimeConfig', () => {
 			isolationPreset: 'guarded',
 		});
 
-		expect(registerPluginsMock).toHaveBeenCalledWith(
+		expect(preparePluginsMock).toHaveBeenCalledWith(
 			['/global-plugin', '/project-plugin', '/cli-plugin'],
 			undefined,
 			false,

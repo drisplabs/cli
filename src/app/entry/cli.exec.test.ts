@@ -9,6 +9,7 @@ const readConfigMock = vi.fn();
 const readGlobalConfigMock = vi.fn();
 const writeGlobalConfigMock = vi.fn();
 const getMostRecentAthenaSessionMock = vi.fn();
+const getLatestRunForSessionMock = vi.fn(() => null);
 const getSessionMetaMock = vi.fn();
 const shouldShowSetupMock = vi.fn();
 const resolveThemeMock = vi.fn(() => ({name: 'dark'}));
@@ -80,7 +81,7 @@ vi.mock('../bootstrap/bootstrapConfig', () => ({
 vi.mock('../../infra/sessions/index', () => ({
 	getMostRecentAthenaSession: getMostRecentAthenaSessionMock,
 	getSessionMeta: getSessionMetaMock,
-	getLatestRunForSession: () => null,
+	getLatestRunForSession: getLatestRunForSessionMock,
 	listAwaitingAttentionRuns: () => [],
 }));
 
@@ -205,6 +206,7 @@ describe('cli exec mode', () => {
 		readGlobalConfigMock.mockReset();
 		writeGlobalConfigMock.mockReset();
 		getMostRecentAthenaSessionMock.mockReset();
+		getLatestRunForSessionMock.mockReset();
 		getSessionMetaMock.mockReset();
 		shouldShowSetupMock.mockReset();
 		resolveThemeMock.mockReset();
@@ -233,6 +235,23 @@ describe('cli exec mode', () => {
 
 	afterEach(() => {
 		vi.clearAllMocks();
+	});
+
+	it('selects the parked workflow before resolving bootstrap defaults', async () => {
+		getLatestRunForSessionMock.mockReturnValue({
+			status: 'awaiting_attention',
+			workflowName: 'original',
+		} as never);
+		getSessionMetaMock.mockReturnValue({id: 's', projectDir: process.cwd()});
+		const cli = await runCli(['run', 'reply', '--continue=s']);
+		try {
+			expect(bootstrapRuntimeConfigMock).toHaveBeenCalledWith(
+				expect.objectContaining({workflowOverride: 'original'}),
+			);
+		} finally {
+			cli.restore();
+			getLatestRunForSessionMock.mockReset();
+		}
 	});
 
 	it('dispatches exec command to runExec and bypasses Ink render', async () => {

@@ -139,8 +139,8 @@ export type WatchInstalledWorkflowsOptions =
 		 */
 		debounceMs?: number;
 		/**
-		 * Re-read cadence when the platform cannot watch the store directory
-		 * (`fs.watch` unavailable or failing); unused otherwise. Default 5s.
+		 * Reconciliation cadence, including when filesystem notifications are
+		 * unavailable or silently lost. Default 5s.
 		 */
 		pollIntervalMs?: number;
 		log?: (level: 'debug' | 'warn', message: string) => void;
@@ -203,14 +203,19 @@ export function watchInstalledWorkflows(
 		debounce.unref();
 	}
 
+	function ensurePolling(): void {
+		if (closed || poll) return;
+		poll = setInterval(check, pollIntervalMs);
+		poll.unref();
+	}
+
 	function startPolling(reason: string): void {
 		if (closed || poll) return;
 		log(
 			'warn',
 			`installed-workflow watcher: cannot watch ${storeDir} (${reason}); polling every ${pollIntervalMs}ms`,
 		);
-		poll = setInterval(check, pollIntervalMs);
-		poll.unref();
+		ensurePolling();
 	}
 
 	try {
@@ -230,6 +235,9 @@ export function watchInstalledWorkflows(
 	} catch (err) {
 		startPolling(err instanceof Error ? err.message : String(err));
 	}
+
+	// Filesystem notifications are hints: some platforms silently miss events.
+	ensurePolling();
 
 	return {
 		current: () => last,

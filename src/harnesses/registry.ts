@@ -34,6 +34,7 @@ const opencodeHarnessAdapter: HarnessAdapter = {
 	label: 'OpenCode',
 	enabled: false,
 	capabilities: {
+		workflowRestartBoundary: null,
 		conversationModel: 'fresh_per_turn',
 		killWaitsForTurnSettlement: true,
 		supportsEphemeralSessions: false,

@@ -42,11 +42,9 @@ export async function createRemoteRunEventPublisher({
 			log: (level, message) => log(level, `run-stream[${runId}]: ${message}`),
 			now,
 		});
+		let timer: ReturnType<typeof setTimeout>;
 		const timeoutPromise = new Promise<'timeout'>(resolve => {
-			const timer = setTimeout(
-				() => resolve('timeout'),
-				runStreamConnectTimeoutMs,
-			);
+			timer = setTimeout(() => resolve('timeout'), runStreamConnectTimeoutMs);
 			timer.unref();
 		});
 		try {
@@ -61,21 +59,26 @@ export async function createRemoteRunEventPublisher({
 					'warn',
 					`run-stream[${runId}]: connect timed out after ${runStreamConnectTimeoutMs}ms; falling back to instance-socket relay`,
 				);
-				void candidate.close('connect_timeout');
+				await candidate.close('connect_timeout');
 			}
 		} catch (err) {
+			await candidate.close('connect_failed');
 			log(
 				'warn',
 				`run-stream[${runId}]: connect failed (${
 					err instanceof Error ? err.message : String(err)
 				}); falling back to instance-socket relay`,
 			);
+		} finally {
+			clearTimeout(timer!);
 		}
 	}
 
 	let legacySeq = 0;
+	let closing: Promise<void> | undefined;
 	return {
 		publish(kind, payload, ts) {
+			if (closing) return;
 			if (runStream) {
 				runStream.sendEvent({ts, kind, payload});
 				return;
@@ -83,14 +86,22 @@ export async function createRemoteRunEventPublisher({
 			legacySeq += 1;
 			client.sendRunEvent({runId, seq: legacySeq, ts, kind, payload});
 		},
-		async close() {
-			if (!runStream) return;
-			const drainTimeout = new Promise<void>(resolve => {
-				const timer = setTimeout(() => resolve(), 10_000);
-				timer.unref();
-			});
-			await Promise.race([runStream.whenTerminated(), drainTimeout]);
-			await runStream.close('done');
+		close() {
+			closing ??= (async () => {
+				if (!runStream) return;
+				let timer: ReturnType<typeof setTimeout>;
+				const drainTimeout = new Promise<void>(resolve => {
+					timer = setTimeout(resolve, 10_000);
+					timer.unref();
+				});
+				try {
+					await Promise.race([runStream.whenTerminated(), drainTimeout]);
+				} finally {
+					clearTimeout(timer!);
+					await runStream.close('done');
+				}
+			})();
+			return closing;
 		},
 	};
 }

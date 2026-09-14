@@ -12,7 +12,7 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
   the Turn Protocol loop (**Runner**, **Workflow Run**, **Turn**,
   **Journal**).
 - [Knowledge-base](./KNOWLEDGE_BASE.md) — knowledge management: the durable,
-  LLM-maintained wiki that reconciles intent with reality (**KB**, **Wiki
+  planned LLM-maintained wiki that reconciles intent with reality (**KB**, **Wiki
   Page**, **KB Source**, **Drift finding**).
 
 ## Relationships
@@ -33,3 +33,5 @@ words _session_, _run_, and _turn_ collide across them and are always qualified
 - **Knowledge-base → Feed-pipeline** _(future)_: an inbound channel message
   becomes a **KB Source** once the channel ledger is a durable, subscribable
   stream. Deferred from the KB MVP, which is manually/CI-triggered.
+
+The [architecture diagrams](docs/drisp-architecture.md) map these contexts to current code. The [execution contract](docs/execution-contract.md) records mode differences, persistence policy, and retained delivery compatibility.

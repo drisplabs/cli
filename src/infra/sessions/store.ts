@@ -130,14 +130,15 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 	// interruption_json does NOT coalesce: it describes the question the Run
 	// is parked on right now, so a wake (a snapshot without one) clears it.
 	const upsertRun = db.prepare(
-		`INSERT INTO workflow_runs (id, session_id, workflow_name, started_at, iteration, max_iterations, status, stop_reason, tracker_path, adapter_session_id, run_memory_json, interruption_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO workflow_runs (id, session_id, workflow_name, started_at, iteration, max_iterations, status, stop_reason, tracker_path, adapter_session_id, run_memory_json, interruption_json, execution_identity_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   iteration = excluded.iteration,
 		   status = excluded.status,
 		   stop_reason = excluded.stop_reason,
 		   adapter_session_id = COALESCE(excluded.adapter_session_id, adapter_session_id),
 		   interruption_json = excluded.interruption_json,
+		   execution_identity_json = COALESCE(execution_identity_json, excluded.execution_identity_json),
 		   run_memory_json = COALESCE(excluded.run_memory_json, run_memory_json),
 		   ended_at = CASE WHEN excluded.status NOT IN ('running', 'awaiting_attention') THEN ? ELSE ended_at END`,
 	);
@@ -393,6 +394,7 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 			snapshot.adapterSessionId ?? null,
 			snapshot.runMemoryJson ?? null,
 			snapshot.interruption ? JSON.stringify(snapshot.interruption) : null,
+			snapshot.executionIdentityJson ?? null,
 			endedAt,
 		);
 	}
@@ -415,6 +417,8 @@ export function createSessionStore(opts: SessionStoreOptions): SessionStore {
 			journalPath: (row.tracker_path as string | null) ?? undefined,
 			adapterSessionId: (row.adapter_session_id as string | null) ?? undefined,
 			interruption: parsePersistedInterruption(row.interruption_json),
+			executionIdentityJson:
+				(row.execution_identity_json as string | null) ?? undefined,
 			runMemoryJson: (row.run_memory_json as string | null) ?? undefined,
 		};
 	}

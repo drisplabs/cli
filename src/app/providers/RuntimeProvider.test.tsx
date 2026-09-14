@@ -80,6 +80,31 @@ describe('HookProvider runtime factory wiring', () => {
 		vi.useRealTimers();
 	});
 
+	it('shows failed startup without mounting the execution UI', async () => {
+		const runtime = makeRuntime();
+		runtime.start.mockRejectedValue(new Error('socket unavailable'));
+		const view = render(
+			<HookProvider
+				projectDir="/repo"
+				instanceId={42}
+				harness="claude-code"
+				runtime={runtime}
+				athenaSessionId="failed"
+			>
+				<span>ready child</span>
+			</HookProvider>,
+		);
+		await waitFor(() =>
+			expect(view.container.textContent).toContain(
+				'Runtime could not start: socket unavailable',
+			),
+		);
+		expect(view.queryByText('ready child')).toBeNull();
+		expect(useFeedMock).not.toHaveBeenCalled();
+		view.unmount();
+		expect(runtime.stop).toHaveBeenCalledOnce();
+	});
+
 	it('constructs runtime via runtimeFactory using selected harness inputs', async () => {
 		const runtime = makeRuntime();
 		const runtimeFactory = vi.fn(() => runtime);

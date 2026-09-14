@@ -1,16 +1,20 @@
+import {
+	startWorkflowExecution,
+	type WorkflowExecution,
+} from './startWorkflowExecution';
+import type {SessionStore} from '../../infra/sessions/store';
+import type {Runtime} from '../../core/runtime/types';
+import type {HarnessProcessConfig} from '../../core/runtime/process';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import type {
 	HarnessProcess,
 	HarnessProcessOverride,
 	TurnContinuation,
 	TurnExecutionResult,
-} from '../runtime/process';
-import {
-	createWorkflowRunner,
-	type PhaseChange,
-	type WorkflowRunnerHandle,
-} from './workflowRunner';
-import type {WorkflowConfig} from './types';
+} from '../../core/runtime/process';
+import {type PhaseChange} from '../../core/workflows/workflowRunner';
+import type {WorkflowConfig} from '../../core/workflows/types';
+import type {WorkflowPlan} from '../../core/workflows/plan';
 import type {WorkflowRunSnapshot} from '../../infra/sessions/types';
 import type {AthenaHarness} from '../../infra/plugins/config';
 
@@ -19,6 +23,15 @@ export type UseWorkflowSessionControllerInput = {
 	sessionId?: string;
 	harness?: AthenaHarness;
 	workflow?: WorkflowConfig;
+	workflowPlan?: WorkflowPlan;
+	pluginMcpConfig?: string;
+	store?: SessionStore | null;
+	runtime?: Runtime | null;
+	isolationConfig?: HarnessProcessConfig;
+	onWarning?: (message: string) => void;
+	onOutcome?: (
+		result: import('../../core/workflows/workflowRunner').WorkflowRunResult,
+	) => void;
 	persistRunState?: (snapshot: WorkflowRunSnapshot) => void;
 	/** The Run moved to a new workflow step (the Journal's Turn Protocol block). */
 	onPhaseChange?: (change: PhaseChange) => void;
@@ -31,14 +44,13 @@ export function useWorkflowSessionController(
 	readonly activeRunId: string | null;
 } {
 	const [isRunning, setIsRunning] = useState(false);
-	const runnerRef = useRef<WorkflowRunnerHandle | null>(null);
+	const runnerRef = useRef<WorkflowExecution | null>(null);
 	const activeRunIdRef = useRef<string | null>(null);
 
 	const cancelCurrentRun = useCallback(async (): Promise<void> => {
 		const runner = runnerRef.current;
 		if (runner) {
-			runner.kill();
-			await runner.result.catch(() => {});
+			await runner.stop().catch(() => {});
 			runnerRef.current = null;
 			activeRunIdRef.current = null;
 		}
@@ -48,8 +60,6 @@ export function useWorkflowSessionController(
 		const runner = runnerRef.current;
 		if (runner) {
 			runner.kill();
-			runnerRef.current = null;
-			activeRunIdRef.current = null;
 		} else {
 			void base.kill().catch(() => {});
 		}
@@ -72,32 +82,47 @@ export function useWorkflowSessionController(
 			_configOverride?: HarnessProcessOverride,
 		): Promise<TurnExecutionResult> => {
 			await cancelCurrentRun();
+			const latest = input.store?.getLatestRun();
+			const parked =
+				latest?.status === 'awaiting_attention' ? latest : undefined;
+			const handle = startWorkflowExecution(
+				{
+					sessionId: input.sessionId ?? '',
+					projectDir: input.projectDir,
+					harness: input.harness,
+					workflow: input.workflow,
+					prompt,
+					initialContinuation: continuation,
+					resumeRunId: parked?.id,
+					onWarning: input.onWarning,
+					startTurn: turnInput =>
+						base.startTurn(
+							turnInput.prompt,
+							turnInput.continuation,
+							turnInput.configOverride,
+							turnInput.onUsage,
+						),
+					persistRunState: input.persistRunState ?? (() => {}),
+					onPhaseChange: input.onPhaseChange,
+					abortCurrentTurn: () => void base.kill().catch(() => {}),
+				},
+				{
+					store: input.store ?? undefined,
+					isolationConfig: input.isolationConfig,
+					runtime: input.runtime,
+					workflowPlan: input.workflowPlan,
+					pluginMcpConfig: input.pluginMcpConfig,
+					warnOnUnmanagedCompaction: true,
+				},
+			);
 			setIsRunning(true);
-
-			const handle = createWorkflowRunner({
-				sessionId: input.sessionId ?? '',
-				projectDir: input.projectDir,
-				harness: input.harness,
-				workflow: input.workflow,
-				prompt,
-				initialContinuation: continuation,
-				startTurn: turnInput =>
-					base.startTurn(
-						turnInput.prompt,
-						turnInput.continuation,
-						turnInput.configOverride,
-						turnInput.onUsage,
-					),
-				persistRunState: input.persistRunState ?? (() => {}),
-				onPhaseChange: input.onPhaseChange,
-				abortCurrentTurn: () => void base.kill().catch(() => {}),
-			});
 
 			runnerRef.current = handle;
 			activeRunIdRef.current = handle.runId;
 
 			try {
 				const runResult = await handle.result;
+				input.onOutcome?.(runResult);
 				return {
 					exitCode: runResult.status === 'failed' ? 1 : 0,
 					error:
@@ -106,6 +131,11 @@ export function useWorkflowSessionController(
 							: null,
 					tokens: runResult.tokens,
 					streamMessage: null,
+					workflowOutcome: {
+						status: runResult.status,
+						runId: runResult.runId,
+						stopReason: runResult.stopReason,
+					},
 				};
 			} finally {
 				if (runnerRef.current === handle) {
@@ -115,16 +145,7 @@ export function useWorkflowSessionController(
 				}
 			}
 		},
-		[
-			base,
-			cancelCurrentRun,
-			input.projectDir,
-			input.sessionId,
-			input.harness,
-			input.workflow,
-			input.persistRunState,
-			input.onPhaseChange,
-		],
+		[base, cancelCurrentRun, input],
 	);
 
 	useEffect(() => {

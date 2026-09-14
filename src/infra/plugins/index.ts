@@ -1,5 +1,3 @@
-export {registerPlugins, buildPluginMcpConfig} from './register';
-export type {PluginRegistrationResult, CapabilityConflicts} from './register';
 export {
 	readConfig,
 	readGlobalConfig,

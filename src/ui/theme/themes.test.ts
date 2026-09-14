@@ -1,6 +1,6 @@
 import {describe, it, expect} from 'vitest';
 import {darkTheme, lightTheme, highContrastTheme, resolveTheme} from './themes';
-import {type Theme} from './types';
+import {type Theme} from '../../shared/types/theme';
 
 /** Verify a theme has all required tokens with valid hex strings. */
 function assertValidTheme(theme: Theme) {

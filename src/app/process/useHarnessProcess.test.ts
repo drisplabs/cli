@@ -1,6 +1,8 @@
 /** @vitest-environment jsdom */
 import {describe, it, expect, vi, beforeEach} from 'vitest';
 import {renderHook} from '@testing-library/react';
+import fs from 'node:fs';
+import {writeMcpAsset, releaseMcpAsset} from '../bootstrap/executionAssets';
 
 const useSessionControllerMock = vi.fn();
 const resolveHarnessAdapterMock = vi.fn(() => ({
@@ -88,4 +90,35 @@ describe('useHarnessProcess', () => {
 			runtime: null,
 		});
 	});
+});
+
+// AppContent remounts on /clear and while entering/leaving the session picker.
+// Those transitions retain the outer shell's bootstrapped runtime configuration.
+it('keeps borrowed MCP assets usable across conversation remounts', () => {
+	const mcpConfig = writeMcpAsset(
+		'{"mcpServers":{"test":{"command":"test-server"}}}',
+	);
+	const input = {
+		harness: 'claude-code' as const,
+		projectDir: '/tmp/project',
+		athenaSessionId: 'session',
+		instanceId: 1,
+		pluginMcpConfig: mcpConfig,
+	};
+	try {
+		const first = renderHook(() => useHarnessProcess(input));
+		first.unmount();
+		expect(fs.existsSync(mcpConfig)).toBe(true);
+		const second = renderHook(() => useHarnessProcess(input));
+		expect(useSessionControllerMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({pluginMcpConfig: mcpConfig}),
+		);
+		expect(
+			JSON.parse(fs.readFileSync(mcpConfig, 'utf8')).mcpServers.test.command,
+		).toBe('test-server');
+		second.unmount();
+	} finally {
+		releaseMcpAsset(mcpConfig);
+	}
+	expect(fs.existsSync(mcpConfig)).toBe(false);
 });

@@ -12,14 +12,11 @@ import {formatElapsed} from '../../shared/utils/formatElapsed';
 export type UseTodoPanelOptions = {
 	tasks: TodoItem[];
 	isWorking: boolean;
+	onTodoAdded: () => void;
 	todoVisible: boolean;
 	todoShowDone: boolean;
 	todoCursor: number;
 	todoScroll: number;
-	setTodoVisible: React.Dispatch<React.SetStateAction<boolean>>;
-	setTodoShowDone: React.Dispatch<React.SetStateAction<boolean>>;
-	setTodoCursor: React.Dispatch<React.SetStateAction<number>>;
-	setTodoScroll: React.Dispatch<React.SetStateAction<number>>;
 };
 
 export type UseTodoPanelResult = {
@@ -39,10 +36,6 @@ export type UseTodoPanelResult = {
 	remainingCount: number;
 	pausedAtMs: number | null;
 	autoFocusIndex: number;
-	setTodoVisible: React.Dispatch<React.SetStateAction<boolean>>;
-	setTodoShowDone: React.Dispatch<React.SetStateAction<boolean>>;
-	setTodoCursor: React.Dispatch<React.SetStateAction<number>>;
-	setTodoScroll: React.Dispatch<React.SetStateAction<number>>;
 	setExtraTodos: React.Dispatch<React.SetStateAction<TodoPanelItem[]>>;
 	setTodoStatusOverrides: React.Dispatch<
 		React.SetStateAction<Record<string, TodoPanelStatus>>
@@ -54,14 +47,11 @@ export type UseTodoPanelResult = {
 export function useTodoPanel({
 	tasks,
 	isWorking,
+	onTodoAdded,
 	todoVisible,
 	todoShowDone,
 	todoCursor,
 	todoScroll,
-	setTodoVisible,
-	setTodoShowDone,
-	setTodoCursor,
-	setTodoScroll,
 }: UseTodoPanelOptions): UseTodoPanelResult {
 	const [extraTodos, setExtraTodos] = useState<TodoPanelItem[]>([]);
 	const [todoStatusOverrides, setTodoStatusOverrides] = useState<
@@ -240,9 +230,9 @@ export function useTodoPanel({
 					localOnly: true,
 				},
 			]);
-			setTodoVisible(true);
+			onTodoAdded();
 		},
-		[setTodoVisible],
+		[onTodoAdded],
 	);
 
 	const toggleTodoStatus = useCallback((index: number) => {
@@ -275,10 +265,6 @@ export function useTodoPanel({
 		remainingCount,
 		pausedAtMs: pausedAtRef.current,
 		autoFocusIndex,
-		setTodoVisible,
-		setTodoShowDone,
-		setTodoCursor,
-		setTodoScroll,
 		setExtraTodos,
 		setTodoStatusOverrides,
 		addTodo,

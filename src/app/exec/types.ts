@@ -151,6 +151,8 @@ export type ExecRunFailure =
 	  };
 
 export type ExecRunResult = {
+	/** Execution success and workflow completion are separate facts. */
+	workflowOutcome?: import('../../core/workflows/workflowRunner').WorkflowRunResult;
 	success: boolean;
 	exitCode: RunExitCode;
 	athenaSessionId: string | null;

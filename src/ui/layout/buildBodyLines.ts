@@ -8,7 +8,7 @@ import {
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
 import {compactText, fitAnsi, formatRunLabel} from '../../shared/utils/format';
-import {type Theme} from '../theme/types';
+import {type Theme} from '../../shared/types/theme';
 
 export type TodoViewState = {
 	actualTodoRows: number;

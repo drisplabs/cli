@@ -6,8 +6,8 @@
  */
 import chalk from 'chalk';
 import {type TimelineEntry} from '../../core/feed/timeline';
-import {type Theme} from '../theme/types';
-import {frameGlyphs} from '../glyphs/index';
+import {type Theme} from '../../shared/types/theme';
+import {frameGlyphs} from '../../shared/glyphs/index';
 import {centerAnsi, spaces} from '../../shared/utils/format';
 import {type FeedColumnWidths, formatFeedRowLine} from './FeedRow';
 import {formatFeedHeaderLine} from './FeedHeader';

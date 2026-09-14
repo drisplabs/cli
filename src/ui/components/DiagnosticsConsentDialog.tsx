@@ -1,6 +1,6 @@
 import {useCallback, useMemo} from 'react';
 import {Box, Text, useInput, useStdout} from 'ink';
-import {getGlyphs} from '../glyphs/index';
+import {getGlyphs} from '../../shared/glyphs/index';
 import {useTheme} from '../theme/index';
 import OptionList, {type OptionItem} from './OptionList';
 

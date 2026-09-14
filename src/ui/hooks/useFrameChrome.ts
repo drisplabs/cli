@@ -1,6 +1,6 @@
 import {useMemo, useCallback} from 'react';
 import {buildFrameLines, type FrameLines} from '../layout/buildFrameLines';
-import {frameGlyphs} from '../glyphs/index';
+import {frameGlyphs} from '../../shared/glyphs/index';
 import {fitAnsi} from '../../shared/utils/format';
 import {type RunSummary} from '../../core/feed/timeline';
 

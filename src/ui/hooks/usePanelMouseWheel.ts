@@ -34,11 +34,8 @@ export type PanelRects = {
 type UsePanelMouseWheelOptions = {
 	isActive: boolean;
 	rects: PanelRects;
-	onFeedFocus?: () => void;
-	onMessageFocus?: () => void;
-	onInputFocus?: () => void;
-	onFeedWheel: (delta: number) => void;
-	onMessageWheel: (delta: number) => void;
+	onPanelFocus: (panel: 'feed' | 'messages' | 'input') => void;
+	onPanelScroll: (panel: 'feed' | 'messages', delta: number) => void;
 	scrollLines?: number;
 	stdout?: {write(data: string): boolean};
 };
@@ -180,11 +177,8 @@ export function buildPanelRects({
 export function usePanelMouseWheel({
 	isActive,
 	rects,
-	onFeedFocus,
-	onMessageFocus,
-	onInputFocus,
-	onFeedWheel,
-	onMessageWheel,
+	onPanelFocus,
+	onPanelScroll,
 	scrollLines = PANEL_MOUSE_SCROLL_LINES,
 	stdout = process.stdout,
 }: UsePanelMouseWheelOptions): void {
@@ -194,35 +188,20 @@ export function usePanelMouseWheel({
 
 		stdout.write(ENABLE_MOUSE_TRACKING);
 
-		const focusTarget = (target: 'feed' | 'messages' | 'input') => {
-			if (target === 'messages') {
-				onMessageFocus?.();
-			} else if (target === 'input') {
-				onInputFocus?.();
-			} else {
-				onFeedFocus?.();
-			}
-		};
-
 		const onData = (data: Buffer) => {
 			const input = data.toString('utf8');
 
 			for (const event of parseSgrClickEvents(input)) {
 				const target = resolvePanelTarget(rects, event.col, event.row);
 				if (!target) continue;
-				focusTarget(target);
+				onPanelFocus(target);
 			}
 
 			for (const event of parseSgrWheelEvents(input)) {
 				const target = resolvePanelTarget(rects, event.col, event.row);
 				if (!target || target === 'input') continue;
-				focusTarget(target);
 				const delta = event.direction === 'up' ? -scrollLines : scrollLines;
-				if (target === 'messages') {
-					onMessageWheel(delta);
-				} else {
-					onFeedWheel(delta);
-				}
+				onPanelScroll(target, delta);
 			}
 		};
 
@@ -231,15 +210,5 @@ export function usePanelMouseWheel({
 			process.stdin.removeListener('data', onData);
 			stdout.write(DISABLE_MOUSE_TRACKING);
 		};
-	}, [
-		isActive,
-		onFeedFocus,
-		onMessageFocus,
-		onInputFocus,
-		onFeedWheel,
-		onMessageWheel,
-		rects,
-		scrollLines,
-		stdout,
-	]);
+	}, [isActive, onPanelFocus, onPanelScroll, rects, scrollLines, stdout]);
 }

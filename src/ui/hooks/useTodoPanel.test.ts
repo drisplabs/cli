@@ -31,10 +31,7 @@ function makeOptions({tasks, isWorking}: HookProps) {
 		todoShowDone: true,
 		todoCursor: 0,
 		todoScroll: 0,
-		setTodoVisible: vi.fn(),
-		setTodoShowDone: vi.fn(),
-		setTodoCursor: vi.fn(),
-		setTodoScroll: vi.fn(),
+		onTodoAdded: vi.fn(),
 	} as const;
 }
 

@@ -8,7 +8,8 @@
 
 import {type Command} from './types';
 
-const commands = new Map<string, Command>();
+let commands = new Map<string, Command>();
+const scopes = new Map<string, Set<Command>>();
 
 /**
  * Register a command by its name and optional aliases.
@@ -57,4 +58,37 @@ export function getAll(): Command[] {
  */
 export function clear(): void {
 	commands.clear();
+	scopes.clear();
+}
+
+/** Stage one owner's commands; only the returned synchronous commit publishes them. */
+export function prepareScope(
+	scope: string,
+	build: (registry: {
+		register: (command: Command) => void;
+		get: (name: string) => Command | undefined;
+	}) => void,
+): () => void {
+	const previous = scopes.get(scope);
+	const next = new Map(
+		[...commands].filter(([, command]) => !previous?.has(command)),
+	);
+	const owned = new Set<Command>();
+	build({
+		get: name => next.get(name),
+		register(command) {
+			const names = [command.name, ...(command.aliases ?? [])];
+			for (const name of names)
+				if (next.has(name))
+					throw new Error(
+						`Command name or alias "${name}" is already registered`,
+					);
+			for (const name of names) next.set(name, command);
+			owned.add(command);
+		},
+	});
+	return () => {
+		commands = next;
+		scopes.set(scope, owned);
+	};
 }

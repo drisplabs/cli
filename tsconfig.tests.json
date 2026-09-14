@@ -1,0 +1,20 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noUnusedLocals": false,
+		"noUnusedParameters": false
+	},
+	"include": [
+		"src/invariants.test.ts",
+		"src/app/execution/executionIdentity.test.ts",
+		"src/app/execution/resources.test.ts",
+		"src/infra/sessions/executionIdentity.test.ts",
+		"scripts/architecture/check.ts",
+		"src/app/execution/startWorkflowExecution.test.ts",
+		"src/app/bootstrap/executionAssets.test.ts",
+		"src/app/bootstrap/resolveExecutionSettings.test.ts",
+		"src/app/shell/sessionUiController.test.ts",
+		"src/**/*.d.ts"
+	],
+	"exclude": []
+}

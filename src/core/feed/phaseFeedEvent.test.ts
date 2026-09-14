@@ -1,3 +1,4 @@
+import {mergeFeedItems} from './items';
 import {describe, expect, it} from 'vitest';
 import {PhaseFeedEventSchema} from '@drisp/protocol';
 import {buildPhaseFeedEvent} from './phaseFeedEvent';
@@ -69,4 +70,34 @@ describe('buildPhaseFeedEvent', () => {
 		expect(eventLabel(event)).toBe('Step');
 		expect(eventSummary(event).text).toBe('Build (2/5)');
 	});
+});
+
+it('orders workflow observations by sequence even when clocks disagree', () => {
+	const lateClock = buildPhaseFeedEvent({
+		phase,
+		sessionId: 's',
+		runId: 's:R1',
+		seq: 1,
+		ts: 9999,
+	});
+	const earlyClock = buildPhaseFeedEvent({
+		phase: {...phase, turn: 4},
+		sessionId: 's',
+		runId: 's:R1',
+		seq: 3,
+		ts: 1,
+	});
+	const items = mergeFeedItems(
+		[
+			{
+				id: 'reply',
+				role: 'user',
+				content: 'reply',
+				timestamp: new Date(0),
+				seq: 2,
+			},
+		],
+		[earlyClock, lateClock],
+	);
+	expect(items.map(item => item.data.seq)).toEqual([1, 2, 3]);
 });

@@ -23,7 +23,6 @@ export {installWorkflowPlugins, resolveWorkflowPlugins} from './installer';
 export type {ResolvedWorkflowPlugins} from './installer';
 export {compileWorkflowPlan} from './plan';
 export {createWorkflowRunState, prepareWorkflowTurn} from './sessionPlan';
-export {useWorkflowSessionController} from './useWorkflowSessionController';
 export {
 	buildContinuePrompt,
 	DEFAULT_COMPLETION_MARKER,
