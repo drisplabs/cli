@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {waitForShutdownSignal} from '../../infra/daemon/shutdownSignal';
 import {startRunnerProcess} from '../runner/runnerProcess';
 
 /**
@@ -34,15 +35,7 @@ export async function runRunnerDaemonEntry(): Promise<number> {
 		return 1;
 	}
 
-	const reason = await new Promise<string>(resolve => {
-		const onSignal = (signal: NodeJS.Signals): void => {
-			process.off('SIGINT', onSignal);
-			process.off('SIGTERM', onSignal);
-			resolve(signal);
-		};
-		process.on('SIGINT', onSignal);
-		process.on('SIGTERM', onSignal);
-	});
+	const reason = await waitForShutdownSignal();
 	await runner.stop(reason);
 	return 0;
 }
