@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/drisplabs/cli/compare/cli-v0.6.1...cli-v0.6.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **runner:** stay alive while the hub is unreachable instead of exiting 0 ([#229](https://github.com/drisplabs/cli/issues/229)) ([7bbbf13](https://github.com/drisplabs/cli/commit/7bbbf13df63e54e3fb427429b5854cea6a119175))
+
 ## [0.6.1](https://github.com/drisplabs/cli/compare/cli-v0.6.0...cli-v0.6.1) (2026-09-22)
 
 
