@@ -126,4 +126,39 @@ describe('PairedFeedPublisher', () => {
 		publisher.close();
 		outbox.close();
 	});
+
+	it('sends only rows stamped for the current pairing, never a previous instance', () => {
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		outbox.enqueue({
+			instanceId: 'inst-old',
+			athenaSessionId: 'athena-old',
+			origin: 'local',
+			feedEvents: [notificationEvent({event_id: 'old-1'})],
+			emittedAt: 1,
+		});
+		const sent: Array<{envelope: {instanceId: string}}> = [];
+		const publisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-new',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox,
+			now: () => 1234,
+		});
+
+		publisher.publish({
+			origin: 'local',
+			athenaSessionId: 'athena-new',
+			feedEvents: [notificationEvent({event_id: 'new-1'})],
+		});
+		publisher.attachTransport({sendFeedEvent: frame => sent.push(frame)});
+
+		expect(sent.map(f => f.envelope.instanceId)).toEqual(['inst-new']);
+
+		publisher.close();
+		outbox.close();
+	});
 });

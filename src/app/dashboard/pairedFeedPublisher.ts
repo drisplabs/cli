@@ -74,7 +74,20 @@ export function createPairedFeedPublisher(
 
 	function drain(force = false): void {
 		if (!transport) return;
+		let config: DashboardClientConfig | null;
+		try {
+			config = readConfig();
+		} catch (err) {
+			onError(
+				`paired feed drain failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return;
+		}
+		if (!config) return;
 		const rows = getOutbox().pendingBatch({
+			instanceId: config.instanceId,
 			limit: 100,
 			now: force ? Number.POSITIVE_INFINITY : now(),
 		});

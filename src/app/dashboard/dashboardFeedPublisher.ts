@@ -31,7 +31,16 @@ export type DashboardFeedOutbox = {
 		feedEvents: readonly FeedEvent[];
 		emittedAt: number;
 	}): void;
-	pendingBatch(input: {limit: number; now: number}): DashboardFeedOutboxRow[];
+	/**
+	 * Unacked rows due by `now`. With `instanceId`, only rows stamped for that
+	 * pairing: the hub rejects any other instance's envelope, so rows left
+	 * behind by a previous pairing must never be resent.
+	 */
+	pendingBatch(input: {
+		limit: number;
+		now: number;
+		instanceId?: string;
+	}): DashboardFeedOutboxRow[];
 	markAttempted(input: {
 		deliverySeq: number;
 		nextAttemptAt: number;
@@ -114,6 +123,7 @@ export function createDashboardFeedOutbox(
 			last_error
 		FROM dashboard_feed_outbox
 		WHERE acked_at IS NULL AND next_attempt_at <= ?
+			AND (? IS NULL OR instance_id = ?)
 		ORDER BY delivery_seq ASC
 		LIMIT ?
 	`);
@@ -168,7 +178,13 @@ export function createDashboardFeedOutbox(
 			enqueueTx(input);
 		},
 		pendingBatch(input) {
-			const rows = selectPending.all(input.now, input.limit) as Array<{
+			const instanceId = input.instanceId ?? null;
+			const rows = selectPending.all(
+				input.now,
+				instanceId,
+				instanceId,
+				input.limit,
+			) as Array<{
 				delivery_seq: number;
 				instance_id: string;
 				athena_session_id: string;
