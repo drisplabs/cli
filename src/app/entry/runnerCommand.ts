@@ -11,6 +11,7 @@ import {
 } from '../dashboard/instanceSocketClient';
 import {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
 import {RunnerStartupError, startRunnerProcess} from '../runner/runnerProcess';
+import {waitForShutdownSignal} from '../../infra/daemon/shutdownSignal';
 import {
 	readRunnerStatusFile,
 	type RunnerStatus,
@@ -845,7 +846,7 @@ export async function runRunnerCommand(
 			return err instanceof RunnerStartupError ? err.exitCode : 1;
 		}
 		logOut(`runner: foreground runtime connected (pid ${runner.pid})`);
-		const wait = deps.waitForShutdown ?? defaultWaitForShutdown;
+		const wait = deps.waitForShutdown ?? waitForShutdownSignal;
 		const reason = await wait();
 		await runner.stop(reason);
 		logOut(`runner: stopped (${reason})`);
@@ -1292,18 +1293,6 @@ export async function runRunnerCommand(
 	logError(`Unknown runner subcommand: ${subcommand}`);
 	logError(USAGE);
 	return 2;
-}
-
-function defaultWaitForShutdown(): Promise<string> {
-	return new Promise<string>(resolve => {
-		const onSignal = (signal: NodeJS.Signals): void => {
-			process.off('SIGINT', onSignal);
-			process.off('SIGTERM', onSignal);
-			resolve(signal);
-		};
-		process.once('SIGINT', onSignal);
-		process.once('SIGTERM', onSignal);
-	});
 }
 
 function resolveRunnerEntry(): string | null {
