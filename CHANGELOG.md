@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/drisplabs/cli/compare/cli-v0.6.0...cli-v0.6.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **runner:** only resend outbox rows stamped for the current pairing ([#227](https://github.com/drisplabs/cli/issues/227)) ([37fa90c](https://github.com/drisplabs/cli/commit/37fa90c59c902ab66d9e09716554c26a0126eff7))
+
 ## [0.6.0](https://github.com/drisplabs/cli/compare/cli-v0.5.28...cli-v0.6.0) (2026-09-13)
 
 
