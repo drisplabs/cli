@@ -916,7 +916,9 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const projectDir = '/tmp/runner-terminal-project';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-terminal-project-'),
+		);
 		const trackerPath = `${projectDir}/.athena/session-1.md`;
 		fs.mkdirSync(`${projectDir}/.athena`, {recursive: true});
 		fs.writeFileSync(trackerPath, '<!-- DONE -->', 'utf-8');
@@ -974,7 +976,9 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const projectDir = '/tmp/runner-vendor-id-project';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-vendor-id-project-'),
+		);
 		const trackerPath = `${projectDir}/.athena/session-1.md`;
 		fs.mkdirSync(`${projectDir}/.athena`, {recursive: true});
 		// Seeded WITHOUT a Terminal Marker: a Run starting against an already
@@ -1446,7 +1450,10 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const trackerPath = '/tmp/runner-blocked-tracker.md';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-blocked-'),
+		);
+		const trackerPath = path.join(projectDir, 'runner-blocked-tracker.md');
 
 		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
 			const child = makeChildProcess();
@@ -1473,7 +1480,7 @@ describe('runExec', () => {
 		try {
 			const result = await runExec({
 				prompt: 'hello',
-				projectDir: '/tmp',
+				projectDir,
 				harness: 'claude-code',
 				isolationConfig: {},
 				ephemeral: true,
@@ -1505,7 +1512,7 @@ describe('runExec', () => {
 				'agent declared NEEDS_HUMAN: browser initialization failed',
 			);
 		} finally {
-			fs.rmSync(trackerPath, {force: true});
+			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
 	});
 
@@ -1513,7 +1520,10 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const trackerPath = '/tmp/runner-question-tracker.md';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-question-'),
+		);
+		const trackerPath = path.join(projectDir, 'runner-question-tracker.md');
 
 		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
 			const child = makeChildProcess(() => {
@@ -1553,7 +1563,7 @@ describe('runExec', () => {
 		try {
 			const result = await runExec({
 				prompt: 'hello',
-				projectDir: '/tmp',
+				projectDir,
 				harness: 'claude-code',
 				isolationConfig: {},
 				ephemeral: true,
@@ -1580,7 +1590,7 @@ describe('runExec', () => {
 			expect(stderr.read()).toContain('workflow run suspended');
 			expect(stderr.read()).toContain('Deploy to prod or staging?');
 		} finally {
-			fs.rmSync(trackerPath, {force: true});
+			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
 	});
 
@@ -1592,7 +1602,10 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const trackerPath = '/tmp/runner-approval-tracker.md';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-approval-'),
+		);
+		const trackerPath = path.join(projectDir, 'runner-approval-tracker.md');
 
 		const spawnProcess = (opts: SpawnArgs): ChildProcess => {
 			const child = makeChildProcess(() => {
@@ -1626,7 +1639,7 @@ describe('runExec', () => {
 		try {
 			const result = await runExec({
 				prompt: 'hello',
-				projectDir: '/tmp',
+				projectDir,
 				harness: 'claude-code',
 				isolationConfig: {},
 				ephemeral: true,
@@ -1656,7 +1669,7 @@ describe('runExec', () => {
 			expect(stderr.read()).toContain('permission request (Edit)');
 			expect(stderr.read()).toContain('deferred');
 		} finally {
-			fs.rmSync(trackerPath, {force: true});
+			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
 	});
 
@@ -2576,7 +2589,13 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
-		const trackerPath = '/tmp/runner-max-iterations-tracker.md';
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-max-iterations-'),
+		);
+		const trackerPath = path.join(
+			projectDir,
+			'runner-max-iterations-tracker.md',
+		);
 
 		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
 			const child = makeChildProcess();
@@ -2599,7 +2618,7 @@ describe('runExec', () => {
 		try {
 			const result = await runExec({
 				prompt: 'hello',
-				projectDir: '/tmp',
+				projectDir,
 				harness: 'claude-code',
 				isolationConfig: {},
 				ephemeral: true,
@@ -2630,7 +2649,7 @@ describe('runExec', () => {
 			expect(stderr.read()).toContain('iteration ceiling');
 			expect(spawnProcess).toHaveBeenCalledTimes(1);
 		} finally {
-			fs.rmSync(trackerPath, {force: true});
+			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
 	});
 
