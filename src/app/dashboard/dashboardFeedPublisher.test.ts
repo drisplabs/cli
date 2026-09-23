@@ -132,4 +132,38 @@ describe('dashboard feed outbox', () => {
 		expect(reopened.pendingBatch({limit: 10, now: 3333})).toEqual([]);
 		reopened.close();
 	});
+
+	it('prunes rows stamped for another pairing, acked or not, at most `limit` per call', () => {
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		const enqueueFor = (instanceId: string, count: number) =>
+			outbox.enqueue({
+				instanceId,
+				athenaSessionId: `athena-${instanceId}`,
+				origin: 'local',
+				feedEvents: Array.from({length: count}, (_, i) =>
+					notificationEvent({event_id: `${instanceId}-${i}`}),
+				),
+				emittedAt: 1,
+			});
+		// Instance ids on both sides of the current one, to cover the range scan.
+		enqueueFor('inst-a', 5);
+		enqueueFor('inst-new', 2);
+		enqueueFor('inst-zzz', 3);
+		const [acked] = outbox.pendingBatch({
+			limit: 1,
+			now: Infinity,
+			instanceId: 'inst-a',
+		});
+		outbox.markAcked({deliverySeq: acked!.deliverySeq});
+
+		const prune = () =>
+			outbox.pruneOtherInstances({instanceId: 'inst-new', limit: 3});
+		expect([prune(), prune(), prune(), prune()]).toEqual([3, 3, 2, 0]);
+		expect(
+			outbox
+				.pendingBatch({limit: 100, now: Infinity})
+				.map(row => row.envelope.instanceId),
+		).toEqual(['inst-new', 'inst-new']);
+		outbox.close();
+	});
 });
