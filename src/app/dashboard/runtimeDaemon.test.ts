@@ -1232,13 +1232,17 @@ describe('runDashboardRuntimeDaemon', () => {
 			}
 		});
 
-		it('probes with a token-free HEAD and treats a 5xx from a proxy as the hub still being down', async () => {
+		// The hub's edge answers a HEAD itself (405) even while the refresh
+		// backend behind it is down, so the probe must be a POST that reaches the
+		// backend. With no token in the body the backend rejects it (400) before
+		// doing any token work.
+		it('probes with a token-free POST and treats a 5xx from a proxy as the hub still being down', async () => {
 			vi.useFakeTimers();
 			try {
-				let hubAnswer: 'network-error' | 503 | 405 = 'network-error';
+				let hubAnswer: 'network-error' | 503 | 400 = 'network-error';
 				const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-					expect(init?.method).toBe('HEAD');
-					expect(init?.body).toBeUndefined();
+					expect(init?.method).toBe('POST');
+					expect(init?.body).toBe('{}');
 					if (hubAnswer === 'network-error')
 						throw new TypeError('fetch failed');
 					return new Response(null, {status: hubAnswer});
@@ -1246,7 +1250,7 @@ describe('runDashboardRuntimeDaemon', () => {
 				vi.stubGlobal('fetch', fetchMock);
 				const first = makeFakeSocket();
 				const refresh = vi.fn(async () => {
-					if (refresh.mock.calls.length === 1 || hubAnswer === 405) {
+					if (refresh.mock.calls.length === 1 || hubAnswer === 400) {
 						return token;
 					}
 					throw new Error('dashboard refresh: failed to reach the hub');
@@ -1276,10 +1280,53 @@ describe('runDashboardRuntimeDaemon', () => {
 					expect.anything(),
 				);
 
-				hubAnswer = 405;
+				hubAnswer = 400;
 				await vi.advanceTimersByTimeAsync(2_000);
 				expect(daemon.snapshot().socketConnected).toBe(true);
 				await daemon.stop('test');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('aborts an in-flight probe when the daemon stops', async () => {
+			vi.useFakeTimers();
+			try {
+				let probeSignal: AbortSignal | undefined;
+				const fetchMock = vi.fn(
+					(_url: string, init?: RequestInit) =>
+						new Promise<Response>((_resolve, reject) => {
+							probeSignal = init?.signal ?? undefined;
+							probeSignal?.addEventListener('abort', () =>
+								reject(new Error('aborted')),
+							);
+						}),
+				);
+				vi.stubGlobal('fetch', fetchMock);
+				const first = makeFakeSocket();
+				const refresh = vi.fn(async () => {
+					if (refresh.mock.calls.length === 1) return token;
+					throw new Error('dashboard refresh: failed to reach the hub');
+				});
+				const daemon = await runDashboardRuntimeDaemon({
+					readConfig: () => stored,
+					refreshAccessToken: refresh,
+					makeInstanceSocketClient: () => first.client,
+					executeRemoteAssignment: vi.fn(async () => {}),
+					fetchAttachments: async () => [],
+					reconnectDelaysMs: [10],
+					refreshFailureLimit: 3,
+					refreshFailureWindowMs: 60_000,
+					refreshCooldownMs: COOLDOWN_MS,
+					cooldownProbeDelaysMs: [2_000],
+				});
+				first.emitClose('hub went away');
+				await vi.advanceTimersByTimeAsync(2_100);
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(probeSignal?.aborted).toBe(false);
+
+				await daemon.stop('test');
+				expect(probeSignal?.aborted).toBe(true);
 			} finally {
 				vi.useRealTimers();
 			}

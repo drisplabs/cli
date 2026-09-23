@@ -137,10 +137,11 @@ export type RunDashboardRuntimeDaemonOptions = {
 	 */
 	cooldownProbeDelaysMs?: number[];
 	/**
-	 * Resolves true when the hub answers at all (any HTTP status), false when
-	 * it can't be reached. Production sends a HEAD to the refresh endpoint.
+	 * Resolves true when the hub answers with a non-5xx status, false when it
+	 * can't be reached. Production POSTs a token-less body to the refresh
+	 * endpoint. `signal` aborts when the daemon stops.
 	 */
-	probeHub?: (dashboardUrl: string) => Promise<boolean>;
+	probeHub?: (dashboardUrl: string, signal: AbortSignal) => Promise<boolean>;
 	now?: () => number;
 	/**
 	 * Cap on the `runs` ring buffer. Default 100.
@@ -198,20 +199,37 @@ function delay(ms: number): Promise<void> {
 	});
 }
 
-// A HEAD carries no refresh token, so it can't burn the rotation history or
-// count against auth rate limits. Any non-5xx response, even a 405, proves the
-// hub is serving again; a network failure or a 5xx (a proxy in front of a
-// dead hub) means it is still down.
-async function probeHubReachable(dashboardUrl: string): Promise<boolean> {
+// The probe is a POST with an empty body: it carries no refresh token, so it
+// can't burn the rotation history, yet it travels the same path as a real
+// refresh. On the hosted hub the edge worker answers a HEAD (405) by itself
+// even while the backend that serves refreshes is down, so a HEAD would report
+// "up" throughout that outage. The backend rejects a token-less body with a
+// 400 before any token work. Any non-5xx answer proves the refresh path is
+// serving again; a network failure or a 5xx (a proxy or edge in front of a
+// dead backend) means it is still down.
+async function probeHubReachable(
+	dashboardUrl: string,
+	signal: AbortSignal,
+): Promise<boolean> {
+	const controller = new AbortController();
+	const onAbort = () => controller.abort();
+	signal.addEventListener('abort', onAbort, {once: true});
+	const timer = setTimeout(onAbort, HUB_PROBE_TIMEOUT_MS);
+	timer.unref();
 	try {
 		const response = await fetch(`${dashboardUrl}/api/instances/refresh`, {
-			method: 'HEAD',
+			method: 'POST',
+			headers: {'content-type': 'application/json'},
+			body: '{}',
 			redirect: 'manual',
-			signal: AbortSignal.timeout(HUB_PROBE_TIMEOUT_MS),
+			signal: controller.signal,
 		});
 		return response.status < 500;
 	} catch {
 		return false;
+	} finally {
+		clearTimeout(timer);
+		signal.removeEventListener('abort', onAbort);
 	}
 }
 
@@ -285,6 +303,8 @@ export async function runDashboardRuntimeDaemon(
 	// than spending another `refreshFailureLimit` refresh attempts.
 	let cooldownEndedEarly = false;
 	let hubUnreachable = false;
+	// Aborted by stop() so an in-flight probe doesn't outlive the daemon.
+	const probeAbort = new AbortController();
 	const executionClient: Pick<
 		InstanceSocketClient,
 		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
@@ -459,7 +479,7 @@ export async function runDashboardRuntimeDaemon(
 				await delay(Math.min(remainingMs, probeDelayMs));
 				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- values may change during await
 				if (stopped || cooldownUntil <= now()) return;
-				const reachable = await probeHub(dashboardUrl);
+				const reachable = await probeHub(dashboardUrl, probeAbort.signal);
 				hubUnreachable = !reachable;
 				if (!reachable) {
 					sawHubDown = true;
@@ -690,6 +710,7 @@ export async function runDashboardRuntimeDaemon(
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
+			probeAbort.abort();
 			workflowWatcher.close();
 			pairedFeedPublisher.close();
 			const current = client;
