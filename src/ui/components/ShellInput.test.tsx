@@ -11,7 +11,7 @@ const noop = () => {};
 // Ink re-renders asynchronously; under CPU load a fixed sleep can end before
 // the frame updates, so poll for the expected state instead.
 const waitFor = (assertion: () => void) =>
-	vi.waitFor(assertion, {timeout: 5000, interval: 10});
+	vi.waitFor(assertion, {timeout: 4000, interval: 10});
 
 function renderShellInput(ref = createRef<ShellInputHandle>()) {
 	return {
