@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.3](https://github.com/drisplabs/cli/compare/cli-v0.6.2...cli-v0.6.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* **runner:** probe the hub during the refresh cooldown and reconnect once it answers ([#232](https://github.com/drisplabs/cli/issues/232)) ([fc8db96](https://github.com/drisplabs/cli/commit/fc8db96ca7aa4cf8870b15475d3bde77ee340bd1))
+* **runner:** prune outbox rows left by previous pairings ([#231](https://github.com/drisplabs/cli/issues/231)) ([cf13b14](https://github.com/drisplabs/cli/commit/cf13b1450272daf6d6d5d628ca0eb190f7dc79d5))
+
 ## [0.6.2](https://github.com/drisplabs/cli/compare/cli-v0.6.1...cli-v0.6.2) (2026-09-22)
 
 
