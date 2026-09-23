@@ -1129,6 +1129,129 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
+	describe('refresh cooldown with the hub unreachable', () => {
+		const COOLDOWN_MS = 5 * 60_000;
+		const token = {instanceId: 'inst_1', accessToken: 'a', expiresInSec: 900};
+
+		// Drives the daemon into the circuit breaker. Refreshes fail to reach
+		// the hub while `hub.up` is false, and fail on auth while `hub.authOk`
+		// is false; `probeHub` answers with `hub.up`.
+		async function tripBreaker(
+			hub: {up: boolean; authOk: boolean},
+			extra: {sockets?: InstanceSocketClient[]} = {},
+		) {
+			const first = makeFakeSocket();
+			const sockets = [first.client, ...(extra.sockets ?? [])];
+			const refresh = vi.fn(async () => {
+				if (refresh.mock.calls.length === 1) return token;
+				if (!hub.up) {
+					throw new Error(
+						'dashboard refresh: failed to reach https://example.com: fetch failed',
+					);
+				}
+				if (!hub.authOk) {
+					throw new Error(
+						'dashboard refresh: https://example.com returned 401',
+					);
+				}
+				return token;
+			});
+			const probeHub = vi.fn(async () => hub.up);
+			const logs: Array<{level: string; message: string}> = [];
+			const daemon = await runDashboardRuntimeDaemon({
+				readConfig: () => stored,
+				refreshAccessToken: refresh,
+				probeHub,
+				makeInstanceSocketClient: () =>
+					sockets.shift() ?? makeFakeSocket().client,
+				executeRemoteAssignment: vi.fn(async () => {}),
+				reconnectDelaysMs: [10],
+				refreshFailureLimit: 3,
+				refreshFailureWindowMs: 60_000,
+				refreshCooldownMs: COOLDOWN_MS,
+				cooldownProbeDelaysMs: [2_000],
+				log: (level, message) => logs.push({level, message}),
+			});
+			first.emitClose('hub went away');
+			await vi.advanceTimersByTimeAsync(100);
+			expect(daemon.snapshot().refreshState?.cooldownUntilMs).toBeGreaterThan(
+				Date.now(),
+			);
+			return {daemon, refresh, probeHub, logs};
+		}
+
+		it('reconnects within seconds once the hub answers again, instead of waiting out the cooldown', async () => {
+			vi.useFakeTimers();
+			try {
+				const hub = {up: false, authOk: true};
+				const {daemon, refresh} = await tripBreaker(hub);
+				const refreshesAtTrip = refresh.mock.calls.length;
+
+				// Hub still down: probing spends no refresh attempts.
+				await vi.advanceTimersByTimeAsync(30_000);
+				expect(refresh.mock.calls.length).toBe(refreshesAtTrip);
+				expect(daemon.snapshot()).toMatchObject({
+					socketConnected: false,
+					refreshState: {hubUnreachable: true},
+				});
+
+				hub.up = true;
+				await vi.advanceTimersByTimeAsync(2_000);
+
+				expect(daemon.snapshot()).toMatchObject({
+					socketConnected: true,
+					instanceId: 'inst_1',
+				});
+				expect(daemon.snapshot().refreshState).toBeUndefined();
+				await daemon.stop('test');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('re-arms the full cooldown after one attempt when the returning hub rejects the refresh', async () => {
+			vi.useFakeTimers();
+			try {
+				const hub = {up: false, authOk: false};
+				const {daemon, refresh} = await tripBreaker(hub);
+				const refreshesAtTrip = refresh.mock.calls.length;
+				await vi.advanceTimersByTimeAsync(2_000);
+
+				hub.up = true;
+				await vi.advanceTimersByTimeAsync(2_000);
+				expect(refresh.mock.calls.length).toBe(refreshesAtTrip + 1);
+				expect(
+					daemon.snapshot().refreshState?.cooldownUntilMs,
+				).toBeGreaterThanOrEqual(Date.now() + COOLDOWN_MS - 1_000);
+
+				await vi.advanceTimersByTimeAsync(COOLDOWN_MS - 2_000);
+				expect(refresh.mock.calls.length).toBe(refreshesAtTrip + 1);
+				await daemon.stop('test');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('keeps the full cooldown for auth failures from a hub that never went away', async () => {
+			vi.useFakeTimers();
+			try {
+				const hub = {up: true, authOk: false};
+				const {daemon, refresh} = await tripBreaker(hub);
+				const refreshesAtTrip = refresh.mock.calls.length;
+
+				await vi.advanceTimersByTimeAsync(COOLDOWN_MS - 1_000);
+				expect(refresh.mock.calls.length).toBe(refreshesAtTrip);
+				expect(daemon.snapshot().refreshState?.hubUnreachable).toBeUndefined();
+
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(refresh.mock.calls.length).toBeGreaterThan(refreshesAtTrip);
+				await daemon.stop('test');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
 	it('sends assignment_rejected when local capacity rejects a dashboard assignment', async () => {
 		const fake = makeFakeSocket();
 		const logs: Array<{level: string; message: string}> = [];

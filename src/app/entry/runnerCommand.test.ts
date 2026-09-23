@@ -725,6 +725,44 @@ describe('runRunnerCommand: status', () => {
 		);
 	});
 
+	it('says a circuit-broken runner will reconnect as soon as the unreachable hub answers', async () => {
+		const stored: DashboardClientConfig = {
+			dashboardUrl: 'https://example.com',
+			instanceId: 'inst_1',
+			refreshToken: 'do-not-print',
+			fingerprint: 'fp-stored',
+			pairedAt: 1,
+		};
+		const {deps, cap} = makeDeps({stored});
+
+		await runRunnerCommand(
+			{subcommand: 'status', subcommandArgs: [], flags: {}},
+			{
+				...deps,
+				readRunnerStatus: () => ({
+					running: true,
+					status: {
+						pid: 4123,
+						startedAt: Date.now() - 2_000,
+						updatedAt: Date.now(),
+						socketConnected: false,
+						activeRuns: 0,
+						completedRuns: 0,
+						refreshState: {
+							recentFailures: 0,
+							cooldownUntilMs: 1_700_000_000_000 + 240_000,
+							hubUnreachable: true,
+						},
+						runs: [],
+					},
+				}),
+			},
+		);
+		expect([...cap.out, ...cap.err].join('\n')).toContain(
+			'refresh:   circuit-broken — hub unreachable; probing it and reconnecting as soon as it answers (retries anyway in 4m)',
+		);
+	});
+
 	it('emits JSON without tokens', async () => {
 		const stored: DashboardClientConfig = {
 			dashboardUrl: 'https://example.com',
