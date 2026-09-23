@@ -199,16 +199,17 @@ function delay(ms: number): Promise<void> {
 }
 
 // A HEAD carries no refresh token, so it can't burn the rotation history or
-// count against auth rate limits. Any response, even a 405, proves the hub is
-// back; only a network-level failure means it is still unreachable.
+// count against auth rate limits. Any non-5xx response, even a 405, proves the
+// hub is serving again; a network failure or a 5xx (a proxy in front of a
+// dead hub) means it is still down.
 async function probeHubReachable(dashboardUrl: string): Promise<boolean> {
 	try {
-		await fetch(`${dashboardUrl}/api/instances/refresh`, {
+		const response = await fetch(`${dashboardUrl}/api/instances/refresh`, {
 			method: 'HEAD',
 			redirect: 'manual',
 			signal: AbortSignal.timeout(HUB_PROBE_TIMEOUT_MS),
 		});
-		return true;
+		return response.status < 500;
 	} catch {
 		return false;
 	}
@@ -482,17 +483,17 @@ export async function runDashboardRuntimeDaemon(
 		if (!config) {
 			throw new Error('runner: not paired. Run "drisp runner pair" first.');
 		}
-		// If the circuit breaker has tripped, sleep until the cooldown expires
-		// rather than throwing immediately. Throwing inside reconnectLoop with a
+		// If the circuit breaker has tripped, wait out the cooldown (or until a
+		// probe sees the hub come back) rather than throwing immediately. Throwing inside reconnectLoop with a
 		// 0ms backoff turns into a tight microtask spin; sleeping yields to
 		// other timers and lets `stop()` interrupt cleanly.
 		if (cooldownUntil > now()) {
 			const remainingMs = Math.max(0, cooldownUntil - now());
 			log(
 				'warn',
-				`runtime daemon: refresh cooldown active, sleeping ${Math.ceil(
+				`runtime daemon: refresh cooldown active for ${Math.ceil(
 					remainingMs / 1_000,
-				)}s`,
+				)}s; probing the hub meanwhile`,
 			);
 			await waitOutCooldown(config.dashboardUrl);
 			if (stopped) return;

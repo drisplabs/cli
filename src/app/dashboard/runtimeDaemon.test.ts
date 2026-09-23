@@ -1129,7 +1129,7 @@ describe('runDashboardRuntimeDaemon', () => {
 		await daemon.stop('test');
 	});
 
-	describe('refresh cooldown with the hub unreachable', () => {
+	describe('refresh cooldown probing', () => {
 		const COOLDOWN_MS = 5 * 60_000;
 		const token = {instanceId: 'inst_1', accessToken: 'a', expiresInSec: 900};
 
@@ -1226,6 +1226,59 @@ describe('runDashboardRuntimeDaemon', () => {
 
 				await vi.advanceTimersByTimeAsync(COOLDOWN_MS - 2_000);
 				expect(refresh.mock.calls.length).toBe(refreshesAtTrip + 1);
+				await daemon.stop('test');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('probes with a token-free HEAD and treats a 5xx from a proxy as the hub still being down', async () => {
+			vi.useFakeTimers();
+			try {
+				let hubAnswer: 'network-error' | 503 | 405 = 'network-error';
+				const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+					expect(init?.method).toBe('HEAD');
+					expect(init?.body).toBeUndefined();
+					if (hubAnswer === 'network-error')
+						throw new TypeError('fetch failed');
+					return new Response(null, {status: hubAnswer});
+				});
+				vi.stubGlobal('fetch', fetchMock);
+				const first = makeFakeSocket();
+				const refresh = vi.fn(async () => {
+					if (refresh.mock.calls.length === 1 || hubAnswer === 405) {
+						return token;
+					}
+					throw new Error('dashboard refresh: failed to reach the hub');
+				});
+				const daemon = await runDashboardRuntimeDaemon({
+					readConfig: () => stored,
+					refreshAccessToken: refresh,
+					makeInstanceSocketClient: () => first.client,
+					executeRemoteAssignment: vi.fn(async () => {}),
+					fetchAttachments: async () => [],
+					reconnectDelaysMs: [10],
+					refreshFailureLimit: 3,
+					refreshFailureWindowMs: 60_000,
+					refreshCooldownMs: COOLDOWN_MS,
+					cooldownProbeDelaysMs: [2_000],
+				});
+				first.emitClose('hub went away');
+				await vi.advanceTimersByTimeAsync(2_100);
+				const refreshesAtTrip = refresh.mock.calls.length;
+
+				hubAnswer = 503;
+				await vi.advanceTimersByTimeAsync(10_000);
+				expect(refresh.mock.calls.length).toBe(refreshesAtTrip);
+				expect(daemon.snapshot().refreshState?.hubUnreachable).toBe(true);
+				expect(fetchMock).toHaveBeenCalledWith(
+					'https://example.com/api/instances/refresh',
+					expect.anything(),
+				);
+
+				hubAnswer = 405;
+				await vi.advanceTimersByTimeAsync(2_000);
+				expect(daemon.snapshot().socketConnected).toBe(true);
 				await daemon.stop('test');
 			} finally {
 				vi.useRealTimers();
