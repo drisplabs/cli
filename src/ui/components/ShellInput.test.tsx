@@ -8,7 +8,10 @@ import * as registry from '../../app/commands/registry';
 import {ShellInput, type ShellInputHandle} from './ShellInput';
 
 const noop = () => {};
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// Ink re-renders asynchronously; under CPU load a fixed sleep can end before
+// the frame updates, so poll for the expected state instead.
+const waitFor = (assertion: () => void) =>
+	vi.waitFor(assertion, {timeout: 5000, interval: 10});
 
 function renderShellInput(ref = createRef<ShellInputHandle>()) {
 	return {
@@ -75,12 +78,13 @@ describe('ShellInput', () => {
 		const {stdin, lastFrame} = renderShellInput();
 
 		stdin.write('/');
-		await delay(50);
 
-		const output = lastFrame() ?? '';
-		expect(output).toContain('/help');
-		expect(output).toContain('/clear');
-		expect(output).toContain('/commit');
+		await waitFor(() => {
+			const output = lastFrame() ?? '';
+			expect(output).toContain('/help');
+			expect(output).toContain('/clear');
+			expect(output).toContain('/commit');
+		});
 	});
 
 	it('shows command suggestions after the parent flips into command mode', async () => {
@@ -121,36 +125,40 @@ describe('ShellInput', () => {
 		const {stdin, lastFrame} = render(<Harness />);
 
 		stdin.write('/');
-		await delay(50);
 
-		const output = lastFrame() ?? '';
-		expect(output).toContain('/help');
-		expect(output).toContain('/clear');
-		expect(output).toContain('/commit');
+		await waitFor(() => {
+			const output = lastFrame() ?? '';
+			expect(output).toContain('/help');
+			expect(output).toContain('/clear');
+			expect(output).toContain('/commit');
+		});
 	});
 
 	it('filters commands from the local input value', async () => {
 		const {stdin, lastFrame} = renderShellInput();
 
 		stdin.write('/c');
-		await delay(50);
 
-		const output = lastFrame() ?? '';
-		expect(output).toContain('/clear');
-		expect(output).toContain('/commit');
-		expect(output).not.toContain('/help');
+		await waitFor(() => {
+			const output = lastFrame() ?? '';
+			expect(output).toContain('/clear');
+			expect(output).toContain('/commit');
+			expect(output).not.toContain('/help');
+		});
 	});
 
 	it('exposes selected command navigation through the ref handle', async () => {
 		const {stdin, ref} = renderShellInput();
 
 		stdin.write('/');
-		await delay(50);
+		await waitFor(() => {
+			expect(ref.current?.getSelectedCommand()?.name).toBe('clear');
+		});
 
-		expect(ref.current?.getSelectedCommand()?.name).toBe('clear');
 		ref.current?.moveDown();
-		await delay(20);
-		expect(ref.current?.getSelectedCommand()?.name).toBe('commit');
+		await waitFor(() => {
+			expect(ref.current?.getSelectedCommand()?.name).toBe('commit');
+		});
 	});
 
 	it('keeps recalled slash history entries out of command suggestion mode', async () => {
@@ -186,18 +194,22 @@ describe('ShellInput', () => {
 		);
 
 		stdin.write('x');
-		await delay(50);
+		await waitFor(() => {
+			expect(lastFrame() ?? '').toContain('x');
+		});
 		stdin.write('\x1B[A');
-		await delay(50);
 
-		expect(onHistoryBack).toHaveBeenNthCalledWith(1, 'x');
-		expect(lastFrame() ?? '').toContain('/clear');
-		expect(lastFrame() ?? '').not.toContain('/help');
+		await waitFor(() => {
+			expect(onHistoryBack).toHaveBeenNthCalledWith(1, 'x');
+			expect(lastFrame() ?? '').toContain('/clear');
+			expect(lastFrame() ?? '').not.toContain('/help');
+		});
 
 		stdin.write('\x1B[A');
-		await delay(50);
 
-		expect(onHistoryBack).toHaveBeenNthCalledWith(2, '/clear');
-		expect(lastFrame() ?? '').toContain('plain prompt');
+		await waitFor(() => {
+			expect(onHistoryBack).toHaveBeenNthCalledWith(2, '/clear');
+			expect(lastFrame() ?? '').toContain('plain prompt');
+		});
 	});
 });

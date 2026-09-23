@@ -91,6 +91,24 @@ vi.mock('../../../infra/plugins/config', () => ({
 	readGlobalConfig: (...args: unknown[]) => readGlobalConfigMock(...args),
 }));
 
+// Ink renders asynchronously; under CPU load a fixed sleep can end before the
+// selector mounts (so Enter is dropped) or before the install runs. Poll instead.
+const waitFor = (assertion: () => void) =>
+	vi.waitFor(assertion, {timeout: 4000, interval: 10});
+
+// The selector's frame is painted on commit, but Ink's useInput subscribes in a
+// passive effect that runs afterwards; a key written in between is dropped.
+// Wait for the option to render, then let the passive effects flush.
+async function waitForSelector(
+	lastFrame: () => string | undefined,
+	option: string,
+): Promise<void> {
+	await waitFor(() => {
+		expect(lastFrame()).toContain(option);
+	});
+	await new Promise(resolve => setImmediate(resolve));
+}
+
 describe('WorkflowStep', () => {
 	beforeEach(() => {
 		installWorkflowFromSourceMock.mockClear();
@@ -129,11 +147,12 @@ describe('WorkflowStep', () => {
 		const {lastFrame} = render(
 			<WorkflowStep onComplete={() => {}} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
-		const frame = lastFrame()!;
-		expect(frame).toContain('Select a workflow to continue.');
-		expect(frame).toContain('e2e-test-builder');
-		expect(frame).toContain('bug-triage');
+		await waitFor(() => {
+			const frame = lastFrame()!;
+			expect(frame).toContain('Select a workflow to continue.');
+			expect(frame).toContain('e2e-test-builder');
+			expect(frame).toContain('bug-triage');
+		});
 		expect(listMarketplaceWorkflowsMock).toHaveBeenCalledWith(
 			'lespaceman',
 			'athena-workflow-marketplace',
@@ -153,21 +172,26 @@ describe('WorkflowStep', () => {
 		});
 
 		render(<WorkflowStep onComplete={() => {}} onError={() => {}} />);
-		await new Promise(r => setTimeout(r, 50));
 
-		expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
-			'/tmp/workflow-marketplace',
-		);
+		await waitFor(() => {
+			expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
+				'/tmp/workflow-marketplace',
+			);
+		});
 	});
 
 	it('calls onComplete with name and pluginDirs on successful install', async () => {
 		const onComplete = vi.fn();
-		const {stdin} = render(
+		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={onComplete} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
+		await waitForSelector(lastFrame, 'e2e-test-builder');
 		stdin.write('\r');
-		await new Promise(r => setTimeout(r, 50));
+		await waitFor(() => {
+			expect(onComplete).toHaveBeenCalledWith('e2e-test-builder', [
+				'/resolved/plugin/dir',
+			]);
+		});
 		expect(resolveWorkflowInstallMock).toHaveBeenCalledWith(
 			'e2e-test-builder@lespaceman/athena-workflow-marketplace',
 			[],
@@ -175,9 +199,6 @@ describe('WorkflowStep', () => {
 		expect(installWorkflowFromSourceMock).toHaveBeenCalledWith(
 			expect.objectContaining({kind: 'filesystem'}),
 		);
-		expect(onComplete).toHaveBeenCalledWith('e2e-test-builder', [
-			'/resolved/plugin/dir',
-		]);
 	});
 
 	it('uses a local marketplace repo override when provided', async () => {
@@ -185,12 +206,14 @@ describe('WorkflowStep', () => {
 			'/tmp/workflow-marketplace/workflows/local-workflow/workflow.json';
 		findMarketplaceRepoDirMock.mockReturnValue('/tmp/workflow-marketplace');
 
-		const {stdin} = render(
+		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={() => {}} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
+		await waitForSelector(lastFrame, 'local-workflow');
 		stdin.write('\r');
-		await new Promise(r => setTimeout(r, 50));
+		await waitFor(() => {
+			expect(installWorkflowFromSourceMock).toHaveBeenCalled();
+		});
 
 		expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
 			'/tmp/workflow-marketplace',
@@ -199,6 +222,5 @@ describe('WorkflowStep', () => {
 			'/tmp/workflow-marketplace/workflows/local-workflow/workflow.json',
 			[],
 		);
-		expect(installWorkflowFromSourceMock).toHaveBeenCalled();
 	});
 });

@@ -10,6 +10,11 @@ function delay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Ink processes input and re-renders asynchronously; under CPU load a fixed
+// sleep can end first, so poll for positive expectations instead.
+const waitFor = (assertion: () => void) =>
+	vi.waitFor(assertion, {timeout: 4000, interval: 10});
+
 describe('MultiLineInput', () => {
 	it('renders placeholder when empty', () => {
 		const {lastFrame} = render(
@@ -30,9 +35,10 @@ describe('MultiLineInput', () => {
 		);
 
 		stdin.write('hi');
-		await delay(50);
 
-		expect(onChange).toHaveBeenCalledWith('hi');
+		await waitFor(() => {
+			expect(onChange).toHaveBeenCalledWith('hi');
+		});
 	});
 
 	it('calls onSubmit when Enter is pressed', async () => {
@@ -49,9 +55,10 @@ describe('MultiLineInput', () => {
 		stdin.write('hello');
 		await delay(50);
 		stdin.write('\r');
-		await delay(50);
 
-		expect(onSubmit).toHaveBeenCalledWith('hello');
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith('hello');
+		});
 	});
 
 	it('backslash+Enter inserts newline instead of submitting', async () => {
@@ -88,10 +95,11 @@ describe('MultiLineInput', () => {
 		await delay(50);
 		// Up arrow on first (and only) line
 		stdin.write('\x1b[A');
-		await delay(50);
 
-		expect(onHistoryBack).toHaveBeenCalledWith('test');
-		expect(lastFrame()).toContain('recalled');
+		await waitFor(() => {
+			expect(onHistoryBack).toHaveBeenCalledWith('test');
+			expect(lastFrame()).toContain('recalled');
+		});
 	});
 
 	it('calls onHistoryForward when Down is pressed on last visual line', async () => {
@@ -109,10 +117,11 @@ describe('MultiLineInput', () => {
 		await delay(50);
 		// Down arrow on last (and only) line
 		stdin.write('\x1b[B');
-		await delay(50);
 
-		expect(onHistoryForward).toHaveBeenCalled();
-		expect(lastFrame()).toContain('next');
+		await waitFor(() => {
+			expect(onHistoryForward).toHaveBeenCalled();
+			expect(lastFrame()).toContain('next');
+		});
 	});
 
 	it('exposes setValue via setValueRef for programmatic updates', async () => {
@@ -131,9 +140,10 @@ describe('MultiLineInput', () => {
 		expect(setValueFn).not.toBeNull();
 		// Use ink's act equivalent — direct call since render is synchronous in tests
 		setValueFn!('programmatic');
-		await delay(50);
 
-		expect(lastFrame()).toContain('programmatic');
+		await waitFor(() => {
+			expect(lastFrame()).toContain('programmatic');
+		});
 	});
 
 	it('does not receive input when isActive is false', async () => {
@@ -166,9 +176,10 @@ describe('MultiLineInput', () => {
 
 		// Simulate paste by writing a multi-char string at once
 		stdin.write('pasted text');
-		await delay(50);
 
-		expect(lastFrame()).toContain('pasted text');
+		await waitFor(() => {
+			expect(lastFrame()).toContain('pasted text');
+		});
 	});
 
 	// Regression for drisplabs/cli#23: pasting multiline markdown with wide
@@ -186,13 +197,14 @@ describe('MultiLineInput', () => {
 
 		const pasted = ['# 报告', '- ✅ done', '- 🎉 shipped'].join('\n');
 		stdin.write(pasted);
-		await delay(50);
 
 		// The full pasted value (newlines intact, nothing dropped) reaches onChange.
-		expect(onChange).toHaveBeenLastCalledWith(pasted);
-		const frame = lastFrame() ?? '';
-		for (const token of ['报告', '✅ done', '🎉 shipped']) {
-			expect(frame).toContain(token);
-		}
+		await waitFor(() => {
+			expect(onChange).toHaveBeenLastCalledWith(pasted);
+			const frame = lastFrame() ?? '';
+			for (const token of ['报告', '✅ done', '🎉 shipped']) {
+				expect(frame).toContain(token);
+			}
+		});
 	});
 });
