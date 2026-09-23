@@ -871,6 +871,11 @@ describe('runExec', () => {
 		const runtime = new MockRuntime();
 		const stdout = createWriteCapture();
 		const stderr = createWriteCapture();
+		// The loop writes a journal under <projectDir>/.athena/, so keep it out
+		// of the shared /tmp.
+		const projectDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), 'runner-timeout-loop-'),
+		);
 
 		const spawnProcess = vi.fn((opts: SpawnArgs): ChildProcess => {
 			const child = makeChildProcess(() => {
@@ -888,7 +893,7 @@ describe('runExec', () => {
 					promptTemplate: '{input}',
 					loop: {enabled: true, maxIterations: 20},
 				},
-				projectDir: '/tmp',
+				projectDir,
 				harness: 'claude-code',
 				isolationConfig: {},
 				timeoutMs: 10,
@@ -909,6 +914,7 @@ describe('runExec', () => {
 			expect(stderr.read()).toContain('timed out');
 		} finally {
 			vi.useRealTimers();
+			fs.rmSync(projectDir, {recursive: true, force: true});
 		}
 	});
 
