@@ -74,6 +74,11 @@ export type RuntimeDaemonSnapshot = {
 	refreshState?: {
 		recentFailures: number;
 		cooldownUntilMs?: number;
+		/**
+		 * The last cooldown probe couldn't reach the hub. The cooldown ends as
+		 * soon as a probe gets through, rather than at `cooldownUntilMs`.
+		 */
+		hubUnreachable?: boolean;
 	};
 };
 
@@ -123,6 +128,20 @@ export type RunDashboardRuntimeDaemonOptions = {
 	refreshFailureLimit?: number;
 	refreshFailureWindowMs?: number;
 	refreshCooldownMs?: number;
+	/**
+	 * While the breaker is cooling down, the daemon probes the hub on these
+	 * delays (the last one repeats) and ends the cooldown early once the hub
+	 * answers again, so a short outage doesn't cost the full cooldown. A probe
+	 * spends no refresh token. Empty disables probing. Default 2s, 5s, 10s,
+	 * then every 15s.
+	 */
+	cooldownProbeDelaysMs?: number[];
+	/**
+	 * Resolves true when the hub answers with a non-5xx status, false when it
+	 * can't be reached. Production POSTs a token-less body to the refresh
+	 * endpoint. `signal` aborts when the daemon stops.
+	 */
+	probeHub?: (dashboardUrl: string, signal: AbortSignal) => Promise<boolean>;
 	now?: () => number;
 	/**
 	 * Cap on the `runs` ring buffer. Default 100.
@@ -169,6 +188,8 @@ const DEFAULT_REFRESH_LEAD_SEC = 60;
 const DEFAULT_REFRESH_FAILURE_LIMIT = 5;
 const DEFAULT_REFRESH_FAILURE_WINDOW_MS = 5 * 60_000;
 const DEFAULT_REFRESH_COOLDOWN_MS = 5 * 60_000;
+const DEFAULT_COOLDOWN_PROBE_DELAYS_MS = [2_000, 5_000, 10_000, 15_000];
+const HUB_PROBE_TIMEOUT_MS = 5_000;
 const DEFAULT_RUN_HISTORY_LIMIT = 100;
 
 function delay(ms: number): Promise<void> {
@@ -176,6 +197,40 @@ function delay(ms: number): Promise<void> {
 		const timer = setTimeout(resolve, ms);
 		timer.unref();
 	});
+}
+
+// The probe is a POST with an empty body: it carries no refresh token, so it
+// can't burn the rotation history, yet it travels the same path as a real
+// refresh. On the hosted hub the edge worker answers a HEAD (405) by itself
+// even while the backend that serves refreshes is down, so a HEAD would report
+// "up" throughout that outage. The backend rejects a token-less body with a
+// 400 before any token work. Any non-5xx answer proves the refresh path is
+// serving again; a network failure or a 5xx (a proxy or edge in front of a
+// dead backend) means it is still down.
+async function probeHubReachable(
+	dashboardUrl: string,
+	signal: AbortSignal,
+): Promise<boolean> {
+	const controller = new AbortController();
+	const onAbort = () => controller.abort();
+	signal.addEventListener('abort', onAbort, {once: true});
+	const timer = setTimeout(onAbort, HUB_PROBE_TIMEOUT_MS);
+	timer.unref();
+	try {
+		const response = await fetch(`${dashboardUrl}/api/instances/refresh`, {
+			method: 'POST',
+			headers: {'content-type': 'application/json'},
+			body: '{}',
+			redirect: 'manual',
+			signal: controller.signal,
+		});
+		return response.status < 500;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timer);
+		signal.removeEventListener('abort', onAbort);
+	}
 }
 
 export async function runDashboardRuntimeDaemon(
@@ -208,6 +263,9 @@ export async function runDashboardRuntimeDaemon(
 		options.refreshFailureWindowMs ?? DEFAULT_REFRESH_FAILURE_WINDOW_MS;
 	const refreshCooldownMs =
 		options.refreshCooldownMs ?? DEFAULT_REFRESH_COOLDOWN_MS;
+	const cooldownProbeDelays =
+		options.cooldownProbeDelaysMs ?? DEFAULT_COOLDOWN_PROBE_DELAYS_MS;
+	const probeHub = options.probeHub ?? probeHubReachable;
 	const runHistoryLimit = options.runHistoryLimit ?? DEFAULT_RUN_HISTORY_LIMIT;
 	const now = options.now ?? (() => Date.now());
 	const writeMirror = options.writeMirror ?? writeAttachmentMirror;
@@ -240,6 +298,13 @@ export async function runDashboardRuntimeDaemon(
 	let refreshTimer: NodeJS.Timeout | null = null;
 	const refreshFailures: number[] = [];
 	let cooldownUntil = 0;
+	// Set when a probe cut the cooldown short. The refresh that follows is on
+	// probation: if it fails too, the full cooldown comes straight back rather
+	// than spending another `refreshFailureLimit` refresh attempts.
+	let cooldownEndedEarly = false;
+	let hubUnreachable = false;
+	// Aborted by stop() so an in-flight probe doesn't outlive the daemon.
+	const probeAbort = new AbortController();
 	const executionClient: Pick<
 		InstanceSocketClient,
 		'sendRunEvent' | 'sendDecisionAck' | 'sendNeedsHuman'
@@ -379,8 +444,9 @@ export async function runDashboardRuntimeDaemon(
 		) {
 			refreshFailures.shift();
 		}
-		if (refreshFailures.length >= refreshFailureLimit) {
+		if (refreshFailures.length >= refreshFailureLimit || cooldownEndedEarly) {
 			cooldownUntil = ts + refreshCooldownMs;
+			cooldownEndedEarly = false;
 			refreshFailures.length = 0;
 			log(
 				'warn',
@@ -391,30 +457,72 @@ export async function runDashboardRuntimeDaemon(
 		}
 	}
 
+	// Sleeps out the breaker's cooldown, probing the hub meanwhile. Only an
+	// outage that ends — a probe that failed, then one that answers — cuts the
+	// cooldown short. A hub that answers from the first probe was reachable
+	// all along, so the failures were auth failures and keep the full cooldown.
+	async function waitOutCooldown(dashboardUrl: string): Promise<void> {
+		let attempt = 0;
+		let sawHubDown = false;
+		try {
+			while (!stopped && cooldownUntil > now()) {
+				const remainingMs = cooldownUntil - now();
+				if (cooldownProbeDelays.length === 0) {
+					await delay(remainingMs);
+					return;
+				}
+				const probeDelayMs =
+					cooldownProbeDelays[
+						Math.min(attempt, cooldownProbeDelays.length - 1)
+					] ?? remainingMs;
+				attempt += 1;
+				await delay(Math.min(remainingMs, probeDelayMs));
+				// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- values may change during await
+				if (stopped || cooldownUntil <= now()) return;
+				const reachable = await probeHub(dashboardUrl, probeAbort.signal);
+				hubUnreachable = !reachable;
+				if (!reachable) {
+					sawHubDown = true;
+				} else if (sawHubDown) {
+					cooldownUntil = 0;
+					cooldownEndedEarly = true;
+					log(
+						'info',
+						'runtime daemon: hub is reachable again; ending refresh cooldown early',
+					);
+					return;
+				}
+			}
+		} finally {
+			hubUnreachable = false;
+		}
+	}
+
 	async function connectOnce(): Promise<void> {
 		const config = readConfig();
 		if (!config) {
 			throw new Error('runner: not paired. Run "drisp runner pair" first.');
 		}
-		// If the circuit breaker has tripped, sleep until the cooldown expires
-		// rather than throwing immediately. Throwing inside reconnectLoop with a
+		// If the circuit breaker has tripped, wait out the cooldown (or until a
+		// probe sees the hub come back) rather than throwing immediately. Throwing inside reconnectLoop with a
 		// 0ms backoff turns into a tight microtask spin; sleeping yields to
 		// other timers and lets `stop()` interrupt cleanly.
 		if (cooldownUntil > now()) {
 			const remainingMs = Math.max(0, cooldownUntil - now());
 			log(
 				'warn',
-				`runtime daemon: refresh cooldown active, sleeping ${Math.ceil(
+				`runtime daemon: refresh cooldown active for ${Math.ceil(
 					remainingMs / 1_000,
-				)}s`,
+				)}s; probing the hub meanwhile`,
 			);
-			await delay(remainingMs);
+			await waitOutCooldown(config.dashboardUrl);
 			if (stopped) return;
 		}
 		let token: DashboardAccessToken;
 		try {
 			token = await refreshAccessTokenFn();
 			refreshFailures.length = 0;
+			cooldownEndedEarly = false;
 		} catch (err) {
 			noteRefreshFailure();
 			throw err;
@@ -581,6 +689,7 @@ export async function runDashboardRuntimeDaemon(
 							...(cooldownUntil > now()
 								? {cooldownUntilMs: cooldownUntil}
 								: {}),
+							...(hubUnreachable ? {hubUnreachable: true} : {}),
 						}
 					: undefined;
 			return {
@@ -601,6 +710,7 @@ export async function runDashboardRuntimeDaemon(
 		async stop(reason = 'stopped') {
 			stopped = true;
 			clearRefreshTimer();
+			probeAbort.abort();
 			workflowWatcher.close();
 			pairedFeedPublisher.close();
 			const current = client;
