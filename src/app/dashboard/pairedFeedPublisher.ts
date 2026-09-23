@@ -46,12 +46,12 @@ export type CreatePairedFeedPublisherOptions = {
 	onError?: (message: string) => void;
 	onInfo?: (message: string) => void;
 	drainIntervalMs?: number;
-	/** Rows from previous pairings deleted per drain (see `pruneStep`). */
+	/** Rows from previous pairings deleted per drain tick (see `pruneStep`). */
 	pruneBatchSize?: number;
 };
 
 const DEFAULT_DRAIN_INTERVAL_MS = 1_000;
-// ~30ms of deletes per drain; a 100k-row backlog clears in a few minutes.
+// ~30ms of deletes per drain tick; a 100k-row backlog clears in a few minutes.
 const DEFAULT_PRUNE_BATCH_SIZE = 500;
 
 export function createPairedFeedPublisher(
@@ -81,8 +81,9 @@ export function createPairedFeedPublisher(
 		drainTimer = null;
 	}
 
-	function drain(force = false): void {
-		if (!transport) return;
+	/** Send due rows; returns the config it drained for, or `null`. */
+	function drain(force = false): DashboardClientConfig | null {
+		if (!transport) return null;
 		let config: DashboardClientConfig | null;
 		try {
 			config = readConfig();
@@ -92,10 +93,9 @@ export function createPairedFeedPublisher(
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
-			return;
+			return null;
 		}
-		if (!config) return;
-		pruneStep(config.instanceId);
+		if (!config) return null;
 		const rows = getOutbox().pendingBatch({
 			instanceId: config.instanceId,
 			limit: 100,
@@ -111,6 +111,17 @@ export function createPairedFeedPublisher(
 				nextAttemptAt: now() + Math.min(30_000, (row.attempt + 1) * 1_000),
 			});
 		}
+		return config;
+	}
+
+	/**
+	 * A drain tick (timer or attach): send first, then prune one batch, so the
+	 * prune never delays current rows. `publish` drains without pruning, which
+	 * keeps deletes off the per-event hot path.
+	 */
+	function tick(force = false): void {
+		const config = drain(force);
+		if (config) pruneStep(config.instanceId);
 	}
 
 	/**
@@ -118,7 +129,7 @@ export function createPairedFeedPublisher(
 	 * rejects another instance's envelope), so drop them rather than let them
 	 * pile up in the outbox. A prune starts on every attach (where a re-paired
 	 * runner first talks to the hub as its new instance) and deletes one small
-	 * batch per drain, so a large backlog never blocks the event loop.
+	 * batch per drain tick, so a large backlog never blocks the event loop.
 	 */
 	function pruneStep(instanceId: string): void {
 		if (prunedSoFar === null) return;
@@ -148,10 +159,10 @@ export function createPairedFeedPublisher(
 
 	function startDrainTimer(): void {
 		clearDrainTimer();
-		const timer = setInterval(drain, drainIntervalMs);
+		const timer = setInterval(() => tick(), drainIntervalMs);
 		timer.unref();
 		drainTimer = timer;
-		drain(true);
+		tick(true);
 	}
 
 	return {
