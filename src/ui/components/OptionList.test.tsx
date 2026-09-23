@@ -8,23 +8,11 @@ import React from 'react';
 import {describe, it, expect} from 'vitest';
 import {render} from 'ink-testing-library';
 import OptionList from './OptionList';
-
-const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-async function waitForFrameContains(
-	lastFrame: () => string | undefined,
-	needle: string,
-	timeoutMs = 400,
-): Promise<void> {
-	const intervalMs = 25;
-	for (let waited = 0; waited <= timeoutMs; waited += intervalMs) {
-		if ((lastFrame() ?? '').includes(needle)) {
-			return;
-		}
-		await delay(intervalMs);
-	}
-	throw new Error(`Timed out waiting for frame to include: ${needle}`);
-}
+import {
+	waitFor,
+	waitForFrame,
+	waitForInputReady,
+} from '../__tests__/inkTestHelpers';
 
 const options = [
 	{
@@ -78,10 +66,11 @@ describe('OptionList', () => {
 			<OptionList options={options} onSelect={vi.fn()} />,
 		);
 		stdin.write('\x1B[B');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Long names, many comments');
-		expect(frame).not.toContain('Short names, fewer comments');
+		await waitFor(() => {
+			const frame = lastFrame() ?? '';
+			expect(frame).toContain('Long names, many comments');
+			expect(frame).not.toContain('Short names, fewer comments');
+		});
 	});
 
 	it('moves focus up on arrow key', async () => {
@@ -89,11 +78,9 @@ describe('OptionList', () => {
 			<OptionList options={options} onSelect={vi.fn()} />,
 		);
 		stdin.write('\x1B[B');
-		await delay(50);
+		await waitForFrame(lastFrame, 'Long names, many comments');
 		stdin.write('\x1B[A');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Short names, fewer comments');
+		await waitForFrame(lastFrame, 'Short names, fewer comments');
 	});
 
 	it('wraps around when navigating past the last option', async () => {
@@ -101,13 +88,11 @@ describe('OptionList', () => {
 			<OptionList options={options} onSelect={vi.fn()} />,
 		);
 		stdin.write('\x1B[B');
-		await delay(50);
+		await waitForFrame(lastFrame, 'Long names, many comments');
 		stdin.write('\x1B[B');
-		await delay(50);
+		await waitForFrame(lastFrame, 'Middle ground approach');
 		stdin.write('\x1B[B');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Short names, fewer comments');
+		await waitForFrame(lastFrame, 'Short names, fewer comments');
 	});
 
 	it('calls onSelect with value on Enter', () => {
@@ -125,9 +110,11 @@ describe('OptionList', () => {
 			<OptionList options={options} onSelect={onSelect} />,
 		);
 		stdin.write('\x1B[B');
-		await waitForFrameContains(lastFrame, 'Long names, many comments');
+		await waitForInputReady(lastFrame, 'Long names, many comments');
 		stdin.write('\r');
-		expect(onSelect).toHaveBeenCalledWith('verbose');
+		await waitFor(() => {
+			expect(onSelect).toHaveBeenCalledWith('verbose');
+		});
 	});
 
 	it('renders non-focused options with dim styling', async () => {
@@ -135,7 +122,7 @@ describe('OptionList', () => {
 			<OptionList options={options} onSelect={vi.fn()} />,
 		);
 		stdin.write('\x1B[B');
-		await delay(50);
+		await waitForFrame(lastFrame, 'Long names, many comments');
 		const frame = lastFrame() ?? '';
 		// Non-focused items should have dim escape sequence
 		expect(frame).toContain('\u001B[2m');

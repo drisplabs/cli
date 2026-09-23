@@ -2,32 +2,13 @@ import React from 'react';
 import {render} from 'ink-testing-library';
 import {describe, expect, it, vi} from 'vitest';
 import DashboardInput from './DashboardInput';
+import {
+	waitFor,
+	waitForFrame,
+	waitForInputReady,
+} from '../__tests__/inkTestHelpers';
 
 const KEY = {ENTER: '\r'};
-
-async function typeAndWait(
-	stdin: {write: (value: string) => void},
-	value: string,
-) {
-	stdin.write(value);
-	await new Promise(resolve => setTimeout(resolve, 0));
-}
-
-async function waitForFrameToContain(
-	lastFrame: () => string | undefined,
-	text: string,
-	timeoutMs = 500,
-) {
-	const startedAt = Date.now();
-	while (Date.now() - startedAt < timeoutMs) {
-		if ((lastFrame() ?? '').includes(text)) {
-			return;
-		}
-		await new Promise(resolve => setTimeout(resolve, 5));
-	}
-
-	expect(lastFrame() ?? '').toContain(text);
-}
 
 describe('DashboardInput', () => {
 	it('renders placeholder and run label', () => {
@@ -43,13 +24,16 @@ describe('DashboardInput', () => {
 
 	it('submits entered text on enter', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {stdin, lastFrame} = render(
 			<DashboardInput width={60} onSubmit={onSubmit} runLabel="SEND" />,
 		);
 
-		await typeAndWait(stdin, 'hello world');
-		await typeAndWait(stdin, KEY.ENTER);
-		expect(onSubmit).toHaveBeenCalledWith('hello world');
+		stdin.write('hello world');
+		await waitForInputReady(lastFrame, 'hello world');
+		stdin.write(KEY.ENTER);
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith('hello world');
+		});
 	});
 
 	it('supports history callbacks via ctrl+p / ctrl+n', async () => {
@@ -64,12 +48,12 @@ describe('DashboardInput', () => {
 			/>,
 		);
 
-		await typeAndWait(stdin, '\x10'); // Ctrl+P
+		stdin.write('\x10'); // Ctrl+P
+		await waitForInputReady(lastFrame, 'prev prompt');
 		expect(onHistoryBack).toHaveBeenCalled();
-		await waitForFrameToContain(lastFrame, 'prev prompt');
 
-		await typeAndWait(stdin, '\x0e'); // Ctrl+N
+		stdin.write('\x0e'); // Ctrl+N
+		await waitForFrame(lastFrame, 'next prompt');
 		expect(onHistoryForward).toHaveBeenCalled();
-		await waitForFrameToContain(lastFrame, 'next prompt');
 	});
 });

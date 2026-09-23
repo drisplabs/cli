@@ -11,6 +11,11 @@ import {
 	useTextInput,
 	type TextInputState,
 } from './useTextInput';
+import {
+	waitFor,
+	waitForFrame,
+	waitForInputReady,
+} from '../__tests__/inkTestHelpers';
 
 describe('textInputReducer', () => {
 	const initial: TextInputState = {value: '', cursorOffset: 0};
@@ -379,16 +384,17 @@ function TextInputTestHarness(props: {
 describe('useInput keyboard handler', () => {
 	it('onSubmit is called with accumulated value on Enter', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			React.createElement(TextInputTestHarness, {onSubmit}),
 		);
 
 		stdin.write('hello');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[hello]');
 		stdin.write('\r');
-		await delay(50);
 
-		expect(onSubmit).toHaveBeenCalledWith('hello');
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith('hello');
+		});
 	});
 
 	it('onChange fires on typing but not on mount', async () => {
@@ -401,9 +407,10 @@ describe('useInput keyboard handler', () => {
 		expect(onChange).not.toHaveBeenCalled();
 
 		stdin.write('a');
-		await delay(50);
 
-		expect(onChange).toHaveBeenCalledWith('a');
+		await waitFor(() => {
+			expect(onChange).toHaveBeenCalledWith('a');
+		});
 	});
 
 	it('isActive false prevents input', async () => {
@@ -426,19 +433,18 @@ describe('useInput keyboard handler', () => {
 
 		// Type "abc" → cursor at 3
 		stdin.write('abc');
-		await delay(50);
-		expect(lastFrame()).toContain('[abc]');
+		await waitForInputReady(lastFrame, '[abc]');
 
-		// Move cursor left once → cursor at 2 (visually on 'c')
+		// Move cursor left once → cursor at 2 (visually on 'c'). The frame text
+		// does not change, so there is nothing to poll for; the reducer applies
+		// keys in order, so the backspace below still sees the moved cursor.
 		stdin.write('\x1b[D'); // left arrow
-		await delay(50);
 
 		// Press backspace → should delete 'b' (before cursor), NOT 'c' (at cursor)
 		stdin.write('\x7f'); // backspace
-		await delay(50);
 
 		// Result should be "ac" (b deleted), not "ab" (c deleted)
-		expect(lastFrame()).toContain('[ac]');
+		await waitForFrame(lastFrame, '[ac]');
 	});
 
 	it('Delete key deletes character at cursor (forward delete)', async () => {
@@ -448,18 +454,15 @@ describe('useInput keyboard handler', () => {
 
 		// Type "abc" → cursor at 3
 		stdin.write('abc');
-		await delay(50);
-		expect(lastFrame()).toContain('[abc]');
+		await waitForInputReady(lastFrame, '[abc]');
 
 		// Move cursor left once → cursor at 2 (on 'c')
 		stdin.write('\x1b[D'); // left arrow
-		await delay(50);
 
 		// Press Delete key → should delete 'c' (at cursor), not 'b' (before cursor)
 		stdin.write('\x1b[3~'); // forward delete
-		await delay(50);
 
-		expect(lastFrame()).toContain('[ab]');
+		await waitForFrame(lastFrame, '[ab]');
 	});
 
 	it('backslash + Enter inserts newline instead of submitting', async () => {
@@ -469,26 +472,26 @@ describe('useInput keyboard handler', () => {
 		);
 
 		stdin.write('hello\\');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[hello\\]');
 		stdin.write('\r');
-		await delay(50);
 
+		await waitForFrame(lastFrame, '[hello\n]');
 		expect(onSubmit).not.toHaveBeenCalled();
-		expect(lastFrame()).toContain('[hello\n]');
 	});
 
 	it('plain Enter still submits', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			React.createElement(TextInputTestHarness, {onSubmit}),
 		);
 
 		stdin.write('hello');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[hello]');
 		stdin.write('\r');
-		await delay(50);
 
-		expect(onSubmit).toHaveBeenCalledWith('hello');
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith('hello');
+		});
 	});
 
 	it('double backslash + Enter inserts newline (shell-like behavior)', async () => {
@@ -498,13 +501,12 @@ describe('useInput keyboard handler', () => {
 		);
 
 		stdin.write('hello\\\\');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[hello\\\\]');
 		stdin.write('\r');
-		await delay(50);
 
 		// The second \ is before cursor, so it gets replaced with \n
+		await waitForFrame(lastFrame, '[hello\\\n]');
 		expect(onSubmit).not.toHaveBeenCalled();
-		expect(lastFrame()).toContain('[hello\\\n]');
 	});
 
 	it('ignored keys do not modify value', async () => {

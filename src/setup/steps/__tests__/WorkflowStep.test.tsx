@@ -2,6 +2,7 @@ import React from 'react';
 import {render} from 'ink-testing-library';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import WorkflowStep from '../WorkflowStep';
+import {waitFor, waitForInputReady} from '../../../ui/__tests__/inkTestHelpers';
 
 const installWorkflowFromSourceMock = vi.fn(() => 'e2e-test-builder');
 const resolveWorkflowInstallMock = vi.fn((source: string) => ({
@@ -129,11 +130,12 @@ describe('WorkflowStep', () => {
 		const {lastFrame} = render(
 			<WorkflowStep onComplete={() => {}} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
-		const frame = lastFrame()!;
-		expect(frame).toContain('Select a workflow to continue.');
-		expect(frame).toContain('e2e-test-builder');
-		expect(frame).toContain('bug-triage');
+		await waitFor(() => {
+			const frame = lastFrame()!;
+			expect(frame).toContain('Select a workflow to continue.');
+			expect(frame).toContain('e2e-test-builder');
+			expect(frame).toContain('bug-triage');
+		});
 		expect(listMarketplaceWorkflowsMock).toHaveBeenCalledWith(
 			'lespaceman',
 			'athena-workflow-marketplace',
@@ -153,21 +155,26 @@ describe('WorkflowStep', () => {
 		});
 
 		render(<WorkflowStep onComplete={() => {}} onError={() => {}} />);
-		await new Promise(r => setTimeout(r, 50));
 
-		expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
-			'/tmp/workflow-marketplace',
-		);
+		await waitFor(() => {
+			expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
+				'/tmp/workflow-marketplace',
+			);
+		});
 	});
 
 	it('calls onComplete with name and pluginDirs on successful install', async () => {
 		const onComplete = vi.fn();
-		const {stdin} = render(
+		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={onComplete} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
+		await waitForInputReady(lastFrame, 'e2e-test-builder');
 		stdin.write('\r');
-		await new Promise(r => setTimeout(r, 50));
+		await waitFor(() => {
+			expect(onComplete).toHaveBeenCalledWith('e2e-test-builder', [
+				'/resolved/plugin/dir',
+			]);
+		});
 		expect(resolveWorkflowInstallMock).toHaveBeenCalledWith(
 			'e2e-test-builder@lespaceman/athena-workflow-marketplace',
 			[],
@@ -175,9 +182,6 @@ describe('WorkflowStep', () => {
 		expect(installWorkflowFromSourceMock).toHaveBeenCalledWith(
 			expect.objectContaining({kind: 'filesystem'}),
 		);
-		expect(onComplete).toHaveBeenCalledWith('e2e-test-builder', [
-			'/resolved/plugin/dir',
-		]);
 	});
 
 	it('uses a local marketplace repo override when provided', async () => {
@@ -185,12 +189,14 @@ describe('WorkflowStep', () => {
 			'/tmp/workflow-marketplace/workflows/local-workflow/workflow.json';
 		findMarketplaceRepoDirMock.mockReturnValue('/tmp/workflow-marketplace');
 
-		const {stdin} = render(
+		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={() => {}} onError={() => {}} />,
 		);
-		await new Promise(r => setTimeout(r, 50));
+		await waitForInputReady(lastFrame, 'local-workflow');
 		stdin.write('\r');
-		await new Promise(r => setTimeout(r, 50));
+		await waitFor(() => {
+			expect(installWorkflowFromSourceMock).toHaveBeenCalled();
+		});
 
 		expect(listMarketplaceWorkflowsFromRepoMock).toHaveBeenCalledWith(
 			'/tmp/workflow-marketplace',
@@ -199,6 +205,5 @@ describe('WorkflowStep', () => {
 			'/tmp/workflow-marketplace/workflows/local-workflow/workflow.json',
 			[],
 		);
-		expect(installWorkflowFromSourceMock).toHaveBeenCalled();
 	});
 });
