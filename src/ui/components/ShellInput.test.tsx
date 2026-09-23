@@ -6,12 +6,9 @@ import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
 import {render} from 'ink-testing-library';
 import * as registry from '../../app/commands/registry';
 import {ShellInput, type ShellInputHandle} from './ShellInput';
+import {waitFor, waitForInputReady} from '../__tests__/inkTestHelpers';
 
 const noop = () => {};
-// Ink re-renders asynchronously; under CPU load a fixed sleep can end before
-// the frame updates, so poll for the expected state instead.
-const waitFor = (assertion: () => void) =>
-	vi.waitFor(assertion, {timeout: 4000, interval: 10});
 
 function renderShellInput(ref = createRef<ShellInputHandle>()) {
 	return {
@@ -194,9 +191,7 @@ describe('ShellInput', () => {
 		);
 
 		stdin.write('x');
-		await waitFor(() => {
-			expect(lastFrame() ?? '').toContain('x');
-		});
+		await waitForInputReady(lastFrame, 'x');
 		stdin.write('\x1B[A');
 
 		await waitFor(() => {
@@ -204,6 +199,7 @@ describe('ShellInput', () => {
 			expect(lastFrame() ?? '').toContain('/clear');
 			expect(lastFrame() ?? '').not.toContain('/help');
 		});
+		await waitForInputReady(lastFrame, '/clear');
 
 		stdin.write('\x1B[A');
 

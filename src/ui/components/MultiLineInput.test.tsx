@@ -5,15 +5,11 @@ import React from 'react';
 import {describe, it, expect, vi} from 'vitest';
 import {render} from 'ink-testing-library';
 import {MultiLineInput} from './MultiLineInput';
+import {waitFor, waitForInputReady} from '../__tests__/inkTestHelpers';
 
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
-
-// Ink processes input and re-renders asynchronously; under CPU load a fixed
-// sleep can end first, so poll for positive expectations instead.
-const waitFor = (assertion: () => void) =>
-	vi.waitFor(assertion, {timeout: 4000, interval: 10});
 
 describe('MultiLineInput', () => {
 	it('renders placeholder when empty', () => {
@@ -43,7 +39,7 @@ describe('MultiLineInput', () => {
 
 	it('calls onSubmit when Enter is pressed', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<MultiLineInput
 				width={30}
 				placeholder=""
@@ -53,7 +49,7 @@ describe('MultiLineInput', () => {
 		);
 
 		stdin.write('hello');
-		await delay(50);
+		await waitForInputReady(lastFrame, 'hello');
 		stdin.write('\r');
 
 		await waitFor(() => {
@@ -92,7 +88,7 @@ describe('MultiLineInput', () => {
 		);
 
 		stdin.write('test');
-		await delay(50);
+		await waitForInputReady(lastFrame, 'test');
 		// Up arrow on first (and only) line
 		stdin.write('\x1b[A');
 
@@ -114,7 +110,7 @@ describe('MultiLineInput', () => {
 		);
 
 		stdin.write('test');
-		await delay(50);
+		await waitForInputReady(lastFrame, 'test');
 		// Down arrow on last (and only) line
 		stdin.write('\x1b[B');
 

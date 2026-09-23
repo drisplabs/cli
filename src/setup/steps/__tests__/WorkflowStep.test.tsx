@@ -2,6 +2,7 @@ import React from 'react';
 import {render} from 'ink-testing-library';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import WorkflowStep from '../WorkflowStep';
+import {waitFor, waitForInputReady} from '../../../ui/__tests__/inkTestHelpers';
 
 const installWorkflowFromSourceMock = vi.fn(() => 'e2e-test-builder');
 const resolveWorkflowInstallMock = vi.fn((source: string) => ({
@@ -91,24 +92,6 @@ vi.mock('../../../infra/plugins/config', () => ({
 	readGlobalConfig: (...args: unknown[]) => readGlobalConfigMock(...args),
 }));
 
-// Ink renders asynchronously; under CPU load a fixed sleep can end before the
-// selector mounts (so Enter is dropped) or before the install runs. Poll instead.
-const waitFor = (assertion: () => void) =>
-	vi.waitFor(assertion, {timeout: 4000, interval: 10});
-
-// The selector's frame is painted on commit, but Ink's useInput subscribes in a
-// passive effect that runs afterwards; a key written in between is dropped.
-// Wait for the option to render, then let the passive effects flush.
-async function waitForSelector(
-	lastFrame: () => string | undefined,
-	option: string,
-): Promise<void> {
-	await waitFor(() => {
-		expect(lastFrame()).toContain(option);
-	});
-	await new Promise(resolve => setImmediate(resolve));
-}
-
 describe('WorkflowStep', () => {
 	beforeEach(() => {
 		installWorkflowFromSourceMock.mockClear();
@@ -185,7 +168,7 @@ describe('WorkflowStep', () => {
 		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={onComplete} onError={() => {}} />,
 		);
-		await waitForSelector(lastFrame, 'e2e-test-builder');
+		await waitForInputReady(lastFrame, 'e2e-test-builder');
 		stdin.write('\r');
 		await waitFor(() => {
 			expect(onComplete).toHaveBeenCalledWith('e2e-test-builder', [
@@ -209,7 +192,7 @@ describe('WorkflowStep', () => {
 		const {stdin, lastFrame} = render(
 			<WorkflowStep onComplete={() => {}} onError={() => {}} />,
 		);
-		await waitForSelector(lastFrame, 'local-workflow');
+		await waitForInputReady(lastFrame, 'local-workflow');
 		stdin.write('\r');
 		await waitFor(() => {
 			expect(installWorkflowFromSourceMock).toHaveBeenCalled();

@@ -2,8 +2,7 @@ import React from 'react';
 import {render} from 'ink-testing-library';
 import {describe, it, expect} from 'vitest';
 import StepSelector from '../StepSelector';
-
-const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+import {waitFor, waitForInputReady} from '../../../ui/__tests__/inkTestHelpers';
 
 describe('StepSelector', () => {
 	it('renders options with cursor on first item', () => {
@@ -40,7 +39,7 @@ describe('StepSelector', () => {
 
 	it('supports initialValue and emits highlight changes', async () => {
 		const highlighted: string[] = [];
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<StepSelector
 				options={[
 					{label: 'Dark', value: 'dark'},
@@ -53,11 +52,12 @@ describe('StepSelector', () => {
 				onSelect={() => {}}
 			/>,
 		);
-		await delay(30);
+		await waitForInputReady(lastFrame, '> Light');
+		expect(highlighted).toEqual(['light']);
 		stdin.write('\u001B[A');
-		await delay(30);
-		expect(highlighted).toContain('light');
-		expect(highlighted).toContain('dark');
+		await waitFor(() => {
+			expect(highlighted).toEqual(['light', 'dark']);
+		});
 	});
 
 	it('skips disabled options while navigating', async () => {
@@ -75,9 +75,13 @@ describe('StepSelector', () => {
 			/>,
 		);
 		stdin.write('\u001B[B');
-		await delay(50);
+		// Enter reads the cursor from the render's closure, so wait until the
+		// handler from the re-render (cursor on "Skip") is subscribed.
+		await waitForInputReady(lastFrame, '> Skip for now');
 		stdin.write('\r');
-		expect(selected).toBe('skip');
+		await waitFor(() => {
+			expect(selected).toBe('skip');
+		});
 		expect(lastFrame()!).toContain('coming soon');
 	});
 

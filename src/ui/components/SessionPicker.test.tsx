@@ -8,10 +8,14 @@ import React from 'react';
 import {describe, it, expect, beforeEach, afterEach} from 'vitest';
 import {render} from 'ink-testing-library';
 import SessionPicker from './SessionPicker';
+import {
+	waitFor,
+	waitForFrame,
+	waitForInputReady,
+} from '../__tests__/inkTestHelpers';
 import {type SessionEntry} from '../../shared/types/session';
 import {formatRelativeTime} from '../../shared/utils/formatters';
 
-const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 const originalRows = process.stdout.rows;
 
 const sessions: SessionEntry[] = [
@@ -145,7 +149,7 @@ describe('SessionPicker', () => {
 
 	it('navigates down and selects correct session', async () => {
 		const onSelect = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<SessionPicker
 				sessions={sessions}
 				onSelect={onSelect}
@@ -153,9 +157,12 @@ describe('SessionPicker', () => {
 			/>,
 		);
 		stdin.write('\x1B[B');
-		await delay(50);
+		// Enter reads the focus index from the render's closure.
+		await waitForInputReady(lastFrame, '❯ Hook-Forwarder Security Fixes');
 		stdin.write('\r');
-		expect(onSelect).toHaveBeenCalledWith('bbb');
+		await waitFor(() => {
+			expect(onSelect).toHaveBeenCalledWith('bbb');
+		});
 	});
 
 	it('calls onCancel on Escape', async () => {
@@ -174,7 +181,7 @@ describe('SessionPicker', () => {
 
 	it('does not scroll past the last item', async () => {
 		const onSelect = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<SessionPicker
 				sessions={sessions}
 				onSelect={onSelect}
@@ -184,10 +191,12 @@ describe('SessionPicker', () => {
 		// Press down 5 times (past the 3 items)
 		for (let i = 0; i < 5; i++) {
 			stdin.write('\x1B[B');
-			await delay(20);
 		}
+		await waitForInputReady(lastFrame, '❯ API key auth error');
 		stdin.write('\r');
-		expect(onSelect).toHaveBeenCalledWith('ccc');
+		await waitFor(() => {
+			expect(onSelect).toHaveBeenCalledWith('ccc');
+		});
 	});
 
 	it('shows keybinding hints', () => {
@@ -286,8 +295,8 @@ describe('SessionPicker', () => {
 
 		for (let i = 0; i < 5; i++) {
 			stdin.write('\x1B[B');
-			await delay(20);
 		}
+		await waitForFrame(lastFrame, '❯ Session 5');
 
 		const frame = lastFrame() ?? '';
 		expect(frame).toContain('Session 4');

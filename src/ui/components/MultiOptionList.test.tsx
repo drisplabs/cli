@@ -3,6 +3,11 @@ import {describe, it, expect, vi} from 'vitest';
 import {render} from 'ink-testing-library';
 import chalk from 'chalk';
 import MultiOptionList from './MultiOptionList';
+import {
+	waitFor,
+	waitForFrame,
+	waitForInputReady,
+} from '../__tests__/inkTestHelpers';
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -37,24 +42,26 @@ describe('MultiOptionList', () => {
 			<MultiOptionList options={options} onSubmit={vi.fn()} />,
 		);
 		stdin.write(' ');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('x');
+		await waitForFrame(lastFrame, '[x] Auth');
 	});
 
 	it('submits selected values on Enter', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<MultiOptionList options={options} onSubmit={onSubmit} />,
 		);
+		// Space and Enter read focus/selection from the render's closure, so
+		// each key waits for the re-rendered handler.
 		stdin.write(' ');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[x] Auth');
 		stdin.write('\x1B[B');
-		await delay(50);
+		await waitForInputReady(lastFrame, 'Structured logging');
 		stdin.write(' ');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[x] Logging');
 		stdin.write('\r');
-		expect(onSubmit).toHaveBeenCalledWith(['auth', 'logging']);
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith(['auth', 'logging']);
+		});
 	});
 
 	it('submits empty array when nothing selected', () => {
@@ -71,9 +78,7 @@ describe('MultiOptionList', () => {
 			<MultiOptionList options={options} onSubmit={vi.fn()} />,
 		);
 		stdin.write('\x1B[A');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('In-memory cache');
+		await waitForFrame(lastFrame, 'In-memory cache');
 	});
 
 	it('toggles selection when pressing a number key', async () => {
@@ -81,22 +86,22 @@ describe('MultiOptionList', () => {
 			<MultiOptionList options={options} onSubmit={vi.fn()} />,
 		);
 		stdin.write('1');
-		await delay(50);
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('x');
+		await waitForFrame(lastFrame, '[x] Auth');
 	});
 
 	it('submits number-key-toggled selections on Enter', async () => {
 		const onSubmit = vi.fn();
-		const {stdin} = render(
+		const {lastFrame, stdin} = render(
 			<MultiOptionList options={options} onSubmit={onSubmit} />,
 		);
 		stdin.write('1');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[x] Auth');
 		stdin.write('3');
-		await delay(50);
+		await waitForInputReady(lastFrame, '[x] Cache');
 		stdin.write('\r');
-		expect(onSubmit).toHaveBeenCalledWith(['auth', 'cache']);
+		await waitFor(() => {
+			expect(onSubmit).toHaveBeenCalledWith(['auth', 'cache']);
+		});
 	});
 
 	it('ignores number keys beyond option count', async () => {
@@ -118,7 +123,7 @@ describe('MultiOptionList', () => {
 				<MultiOptionList options={options} onSubmit={vi.fn()} />,
 			);
 			stdin.write('\x1B[B');
-			await delay(50);
+			await waitForFrame(lastFrame, 'Structured logging');
 			const frame = lastFrame() ?? '';
 			// Find lines containing non-focused option labels
 			const lines = frame.split('\n');
