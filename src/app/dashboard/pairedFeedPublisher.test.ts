@@ -161,4 +161,204 @@ describe('PairedFeedPublisher', () => {
 		publisher.close();
 		outbox.close();
 	});
+
+	it('prunes rows left by previous pairings when a transport attaches, and logs the count', () => {
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		outbox.enqueue({
+			instanceId: 'inst-old',
+			athenaSessionId: 'athena-old',
+			origin: 'local',
+			feedEvents: [
+				notificationEvent({event_id: 'old-1'}),
+				notificationEvent({event_id: 'old-2'}),
+			],
+			emittedAt: 1,
+		});
+		const info: string[] = [];
+		const publisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-new',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox,
+			now: () => 1234,
+			onInfo: message => info.push(message),
+		});
+
+		publisher.attachTransport({sendFeedEvent: () => {}});
+
+		expect(outbox.pendingBatch({limit: 100, now: Infinity})).toEqual([]);
+		expect(info).toEqual([
+			'paired feed: pruned 2 outbox row(s) left by previous pairings',
+		]);
+
+		// Nothing left to prune: a reconnect stays quiet.
+		publisher.detachTransport();
+		publisher.attachTransport({sendFeedEvent: () => {}});
+		expect(info).toHaveLength(1);
+
+		publisher.close();
+		outbox.close();
+	});
+
+	it('spreads a large prune across drain ticks instead of blocking on one delete', async () => {
+		vi.useFakeTimers();
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		outbox.enqueue({
+			instanceId: 'inst-old',
+			athenaSessionId: 'athena-old',
+			origin: 'local',
+			feedEvents: ['a', 'b', 'c', 'd', 'e'].map(id =>
+				notificationEvent({event_id: id}),
+			),
+			emittedAt: 1,
+		});
+		const info: string[] = [];
+		const publisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-new',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox,
+			now: () => Date.now(),
+			drainIntervalMs: 100,
+			pruneBatchSize: 2,
+			onInfo: message => info.push(message),
+		});
+		const remaining = () =>
+			outbox.pendingBatch({limit: 100, now: Infinity}).length;
+
+		publisher.attachTransport({sendFeedEvent: () => {}});
+		expect(remaining()).toBe(3);
+		expect(info).toEqual([]);
+
+		await vi.advanceTimersByTimeAsync(100);
+		expect(remaining()).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(100);
+		expect(remaining()).toBe(0);
+		expect(info).toEqual([
+			'paired feed: pruned 5 outbox row(s) left by previous pairings',
+		]);
+
+		publisher.close();
+		outbox.close();
+	});
+
+	it('keeps prune deletes off the publish path and sends current rows before pruning', async () => {
+		vi.useFakeTimers();
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		outbox.enqueue({
+			instanceId: 'inst-old',
+			athenaSessionId: 'athena-old',
+			origin: 'local',
+			feedEvents: ['a', 'b', 'c', 'd', 'e'].map(id =>
+				notificationEvent({event_id: id}),
+			),
+			emittedAt: 1,
+		});
+		outbox.enqueue({
+			instanceId: 'inst-new',
+			athenaSessionId: 'athena-new',
+			origin: 'local',
+			feedEvents: [notificationEvent({event_id: 'current-1'})],
+			emittedAt: 1,
+		});
+		const calls: string[] = [];
+		const prune = outbox.pruneOtherInstances.bind(outbox);
+		const publisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-new',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox: {
+				...outbox,
+				pruneOtherInstances(input) {
+					calls.push('prune');
+					return prune(input);
+				},
+			},
+			now: () => Date.now(),
+			drainIntervalMs: 100,
+			pruneBatchSize: 2,
+		});
+
+		publisher.attachTransport({sendFeedEvent: () => calls.push('send')});
+		expect(calls).toEqual(['send', 'prune']);
+
+		// A burst of publishes mid-prune sends each event but deletes nothing.
+		calls.length = 0;
+		for (const id of ['p1', 'p2', 'p3']) {
+			publisher.publish({
+				origin: 'local',
+				athenaSessionId: 'athena-new',
+				feedEvents: [notificationEvent({event_id: id})],
+			});
+		}
+		expect(calls).toEqual(['send', 'send', 'send']);
+
+		// The prune continues on the next drain tick.
+		calls.length = 0;
+		await vi.advanceTimersByTimeAsync(100);
+		expect(calls).toEqual(['prune']);
+
+		publisher.close();
+		outbox.close();
+	});
+
+	it('resumes a prune interrupted by a disconnect and logs one total', async () => {
+		vi.useFakeTimers();
+		const outbox = createDashboardFeedOutbox({dbPath: tempDbPath()});
+		outbox.enqueue({
+			instanceId: 'inst-old',
+			athenaSessionId: 'athena-old',
+			origin: 'local',
+			feedEvents: ['a', 'b', 'c', 'd', 'e'].map(id =>
+				notificationEvent({event_id: id}),
+			),
+			emittedAt: 1,
+		});
+		const info: string[] = [];
+		const publisher = createPairedFeedPublisher({
+			readConfig: () => ({
+				dashboardUrl: 'https://dashboard.test',
+				instanceId: 'inst-new',
+				refreshToken: 'refresh',
+				fingerprint: 'fp',
+				pairedAt: 1,
+			}),
+			outbox,
+			now: () => Date.now(),
+			drainIntervalMs: 100,
+			pruneBatchSize: 2,
+			onInfo: message => info.push(message),
+		});
+		const remaining = () =>
+			outbox.pendingBatch({limit: 100, now: Infinity}).length;
+
+		publisher.attachTransport({sendFeedEvent: () => {}});
+		expect(remaining()).toBe(3);
+		publisher.detachTransport();
+		await vi.advanceTimersByTimeAsync(500);
+		expect(remaining()).toBe(3);
+
+		publisher.attachTransport({sendFeedEvent: () => {}});
+		await vi.advanceTimersByTimeAsync(100);
+		expect(remaining()).toBe(0);
+		expect(info).toEqual([
+			'paired feed: pruned 5 outbox row(s) left by previous pairings',
+		]);
+
+		publisher.close();
+		outbox.close();
+	});
 });

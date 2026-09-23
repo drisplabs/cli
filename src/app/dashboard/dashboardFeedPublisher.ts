@@ -47,6 +47,15 @@ export type DashboardFeedOutbox = {
 		lastError?: string;
 	}): void;
 	markAcked(input: {deliverySeq?: number; eventId?: string}): void;
+	/**
+	 * Delete up to `limit` rows stamped for a pairing other than `instanceId`,
+	 * acked or not: the hub rejects those envelopes, so they can never be
+	 * delivered. Returns the number deleted; fewer than `limit` means none are
+	 * left. Rows carry whole FeedEvents, so deletes are I/O-bound (~60µs a
+	 * row): keep `limit` small and call repeatedly rather than blocking the
+	 * event loop on one large delete.
+	 */
+	pruneOtherInstances(input: {instanceId: string; limit: number}): number;
 	close(): void;
 };
 
@@ -148,6 +157,17 @@ export function createDashboardFeedOutbox(
 		WHERE event_id = ?
 	`);
 
+	// `<` / `>` rather than `!=` so the scan uses the UNIQUE(instance_id,
+	// event_id) index.
+	const deleteOtherInstances = db.prepare(`
+		DELETE FROM dashboard_feed_outbox
+		WHERE delivery_seq IN (
+			SELECT delivery_seq FROM dashboard_feed_outbox
+			WHERE instance_id < ? OR instance_id > ?
+			LIMIT ?
+		)
+	`);
+
 	const enqueueTx = db.transaction(
 		(input: {
 			instanceId: string;
@@ -228,6 +248,13 @@ export function createDashboardFeedOutbox(
 			if (input.eventId) {
 				ackByEventId.run(now, input.eventId);
 			}
+		},
+		pruneOtherInstances(input) {
+			return deleteOtherInstances.run(
+				input.instanceId,
+				input.instanceId,
+				input.limit,
+			).changes;
 		},
 		close() {
 			owned?.close();

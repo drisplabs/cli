@@ -217,6 +217,7 @@ export async function startRunnerProcess(
 			outbox,
 			now,
 			onError: message => log('warn', message),
+			onInfo: message => log('info', message),
 			...(options.feedDrainIntervalMs !== undefined
 				? {drainIntervalMs: options.feedDrainIntervalMs}
 				: {}),
