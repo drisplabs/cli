@@ -631,11 +631,19 @@ export async function runRunnerCommand(
 						const remainingSec = Math.ceil(
 							(r.refreshState.cooldownUntilMs - now()) / 1_000,
 						);
-						logError(
-							`refresh:   circuit-broken — sleeping for ${formatDuration(
-								remainingSec,
-							)} before retry. Re-pair if this persists.`,
-						);
+						if (r.refreshState.hubUnreachable) {
+							logError(
+								`refresh:   circuit-broken — hub unreachable; probing it and reconnecting as soon as it answers (retries anyway in ${formatDuration(
+									remainingSec,
+								)})`,
+							);
+						} else {
+							logError(
+								`refresh:   circuit-broken — sleeping for ${formatDuration(
+									remainingSec,
+								)} before retry. Re-pair if this persists.`,
+							);
+						}
 					} else {
 						logOut(
 							`refresh:   ${r.refreshState.recentFailures} recent failure(s); next reconnect will retry`,
