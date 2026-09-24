@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/drisplabs/cli/compare/cli-v0.6.3...cli-v0.6.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **runner:** a parked Workflow Run sends no terminal frame to the hub ([#235](https://github.com/drisplabs/cli/issues/235)) ([3eb2443](https://github.com/drisplabs/cli/commit/3eb244335fd2a27bbd72078dea024386a94ae3d8))
+
 ## [0.6.3](https://github.com/drisplabs/cli/compare/cli-v0.6.2...cli-v0.6.3) (2026-09-23)
 
 
