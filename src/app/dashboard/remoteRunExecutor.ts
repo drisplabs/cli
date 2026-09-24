@@ -320,6 +320,16 @@ function ensureRemoteWorkflowInstalled(input: {
 	return input.installWorkflowFromSourceFn(resolved);
 }
 
+/**
+ * An `exec.completed` whose Workflow Run parked in `awaiting_attention`
+ * (ADR 0014): exec succeeded, but the Run is suspended, not finished.
+ */
+function isParkedCompletion(event: JsonExecEvent): boolean {
+	if (event.type !== 'exec.completed') return false;
+	const data = event.data as {workflowOutcome?: {status?: unknown}} | null;
+	return data?.workflowOutcome?.status === 'awaiting_attention';
+}
+
 function eventKind(event: JsonExecEvent): string {
 	if (event.type === 'exec.completed') {
 		const data = event.data as {success?: unknown} | null;
@@ -518,6 +528,9 @@ export async function executeRemoteAssignment({
 								deferredFailedCompletion.current = event;
 								continue;
 							}
+							// exec finishing is not the Workflow Run finishing: a parked
+							// Workflow Run stays open on the hub, so no terminal frame.
+							if (isParkedCompletion(event)) continue;
 							send(eventKind(event), eventPayload(event), now());
 							if (event.type === 'run.suspended') reportNeedsHuman(event);
 						} catch (err) {

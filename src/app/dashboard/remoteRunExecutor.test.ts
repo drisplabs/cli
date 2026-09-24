@@ -1710,6 +1710,78 @@ describe('executeRemoteAssignment: needs_human', () => {
 		);
 	});
 
+	it('sends no terminal frame for a parked Workflow Run: exec finishing is not the Workflow Run finishing', async () => {
+		const sent: Array<{kind: string}> = [];
+		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'run.suspended',
+					ts: 100,
+					data: {
+						runId: 'wf-run-9',
+						status: 'awaiting_attention',
+						stopReason: 'restart checkpoint missing or invalid',
+					},
+				}) + '\n',
+			);
+			// exec itself succeeded; the Workflow Run did not finish.
+			options.stdout?.write(
+				JSON.stringify({
+					type: 'exec.completed',
+					ts: 101,
+					data: {
+						workflowOutcome: {
+							runId: 'wf-run-9',
+							status: 'awaiting_attention',
+							stopReason: 'restart checkpoint missing or invalid',
+						},
+						success: true,
+						exitCode: 0,
+						finalMessage: null,
+					},
+				}) + '\n',
+			);
+			return {
+				success: true,
+				exitCode: 0,
+				athenaSessionId: options.athenaSessionId ?? null,
+				adapterSessionId: null,
+				finalMessage: null,
+				tokens: {
+					input: null,
+					output: null,
+					cacheRead: null,
+					cacheWrite: null,
+					total: null,
+					contextSize: null,
+					contextWindowSize: null,
+				},
+				durationMs: 1,
+			};
+		});
+
+		await executeRemoteAssignment({
+			assignment: asValidatedAssignment({
+				type: 'run.start',
+				runId: 'run_parked',
+				runSpec: {prompt: 'do the thing', athenaSessionId: 'athena-parked'},
+			}),
+			client: {
+				sendRunEvent: frame => sent.push(frame as {kind: string}),
+				sendNeedsHuman: () => {},
+			},
+			projectDir: '/tmp/project',
+			runExecFn,
+			bootstrapRuntimeConfigFn: bootstrap,
+			now: () => 999,
+		});
+
+		const kinds = sent.map(frame => frame.kind);
+		expect(kinds).toContain('run.suspended');
+		expect(kinds).not.toContain('completion');
+		expect(kinds).not.toContain('error');
+	});
+
 	it('does not emit needs_human when the Run ends without parking', async () => {
 		const needsHuman: unknown[] = [];
 		const runExecFn = vi.fn(async (options: ExecRunOptions) => {
