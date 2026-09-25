@@ -302,7 +302,9 @@ export function createDashboardPairedExecution(
 			return false;
 		}
 		// Running: the executor's queue carries it to the Runner, which delivers
-		// it at the next Turn boundary. Otherwise it is held for the continue.
+		// it at the next Turn boundary. Parked: the steer wakes the Run below.
+		// Otherwise — ended, or parked with no assignment to relaunch from —
+		// it is held for the hub to continue the Run by sending it again.
 		const entry = active.get(submission.runId);
 		const steer: DashboardRunSteer = {
 			...(submission.athenaSessionId !== undefined

@@ -390,7 +390,6 @@ function withCumulativeTokens(
 	return cumulativeTokens === null ? memory : {...memory, cumulativeTokens};
 }
 
-/** `~71k` for 71,400; `~700` stays `700` — the sentence supplies the `~`. */
 /**
  * First prompt of a woken (previously suspended) Run: the human's reply plus
  * enough framing that even a degraded fresh Agent Session — the session that

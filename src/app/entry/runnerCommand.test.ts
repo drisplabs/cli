@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {runRunnerCommand} from './runnerCommand';
+import {buildRunnerEnv, runRunnerCommand} from './runnerCommand';
 import type {executeRemoteAssignment} from '../dashboard/remoteRunExecutor';
 import type {DashboardClientConfig} from '../../infra/config/dashboardClient';
 
@@ -30,6 +30,34 @@ const STATIC_FINGERPRINT = 'fp-static';
 const tmpDirs: string[] = [];
 const originalXdgStateHome = process.env['XDG_STATE_HOME'];
 const originalHome = process.env['HOME'];
+
+describe('detached runner environment', () => {
+	it('inherits Claude authentication without forwarding unrelated secrets or code injection options', () => {
+		const input = {
+			PATH: '/test/bin',
+			LANG: 'en_US.UTF-8',
+			XDG_STATE_HOME: '/test/state',
+			CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token',
+			ANTHROPIC_API_KEY: 'test-api-key',
+			NODE_OPTIONS: '--require=/test/inject.js',
+			DATABASE_PASSWORD: 'unrelated-secret',
+		};
+		expect(buildRunnerEnv(input)).toEqual({
+			PATH: '/test/bin',
+			LANG: 'en_US.UTF-8',
+			XDG_STATE_HOME: '/test/state',
+			CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token',
+			ANTHROPIC_API_KEY: 'test-api-key',
+		});
+		expect(input.NODE_OPTIONS).toBe('--require=/test/inject.js');
+	});
+
+	it('does not synthesize absent authentication values', () => {
+		expect(
+			buildRunnerEnv({PATH: '/test/bin', CLAUDE_CODE_OAUTH_TOKEN: undefined}),
+		).toEqual({PATH: '/test/bin'});
+	});
+});
 
 afterEach(() => {
 	if (originalXdgStateHome === undefined) {
@@ -202,6 +230,7 @@ describe('runRunnerCommand: pair', () => {
 			fingerprint: STATIC_FINGERPRINT,
 			hostInfo: {hostname: 'test-host'},
 			capabilities: {
+				nativeThreadProtocolVersion: 2,
 				instanceSocket: true,
 				runtimeDaemon: true,
 				version: '9.9.9-test',

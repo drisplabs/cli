@@ -27,6 +27,8 @@ export type PairedFeedTransport = {
 export type FeedSink = {
 	publish(input: {
 		origin: DashboardFeedOrigin;
+		/** Hub assignment provenance, distinct from feedEvent.run_id. */
+		hubRunId?: string;
 		athenaSessionId: string;
 		feedEvents: readonly FeedEvent[];
 	}): void;
@@ -173,6 +175,7 @@ export function createPairedFeedPublisher(
 				if (!config) return;
 				getOutbox().enqueue({
 					instanceId: config.instanceId,
+					hubRunId: input.hubRunId,
 					athenaSessionId: input.athenaSessionId,
 					origin: input.origin,
 					feedEvents: input.feedEvents,

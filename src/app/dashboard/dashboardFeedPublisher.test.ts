@@ -37,6 +37,43 @@ afterEach(() => {
 });
 
 describe('dashboard feed outbox', () => {
+	it('preserves assignment provenance across reopen and late events from prior runs', () => {
+		const dbPath = tempDbPath();
+		const outbox = createDashboardFeedOutbox({dbPath});
+		for (const [hubRunId, eventId] of [
+			['hub-first', 'first'],
+			['hub-second', 'second'],
+			['hub-first', 'late'],
+		]) {
+			outbox.enqueue({
+				instanceId: 'instance',
+				athenaSessionId: 'durable-session',
+				hubRunId,
+				origin: 'dashboard',
+				emittedAt: 1,
+				feedEvents: [
+					notificationEvent({event_id: eventId, run_id: 'runtime-feed-run'}),
+				],
+			});
+		}
+		outbox.close();
+		const reopened = createDashboardFeedOutbox({dbPath});
+		const envelopes = reopened
+			.pendingBatch({limit: 10, now: 1})
+			.map(row => row.envelope);
+		expect(envelopes.map(envelope => envelope.runId)).toEqual([
+			'hub-first',
+			'hub-second',
+			'hub-first',
+		]);
+		expect(
+			envelopes.every(
+				envelope => envelope.feedEvent.run_id === 'runtime-feed-run',
+			),
+		).toBe(true);
+		reopened.close();
+	});
+
 	it('does not enqueue feed events when the instance is unpaired', () => {
 		const dbPath = tempDbPath();
 		const outbox = createDashboardFeedOutbox({dbPath});
