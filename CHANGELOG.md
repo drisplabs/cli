@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.5](https://github.com/drisplabs/cli/compare/cli-v0.6.4...cli-v0.6.5) (2026-09-25)
+
+
+### Bug Fixes
+
+* **runner:** a steer wakes a parked Workflow Run, and the woken Run reaches the hub ([#237](https://github.com/drisplabs/cli/issues/237)) ([2ef5eae](https://github.com/drisplabs/cli/commit/2ef5eae20b825660890342f945f8445ef9cb11f0))
+* **runner:** the hub continues a parked Workflow Run by sending it again ([#239](https://github.com/drisplabs/cli/issues/239)) ([c19f7b6](https://github.com/drisplabs/cli/commit/c19f7b6ecd4029b23700a8a72a9a622e6ea34438))
+
 ## [0.6.4](https://github.com/drisplabs/cli/compare/cli-v0.6.3...cli-v0.6.4) (2026-09-24)
 
 
