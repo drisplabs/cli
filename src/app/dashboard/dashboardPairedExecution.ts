@@ -380,6 +380,8 @@ export function createDashboardPairedExecution(
 		input: {projectDir?: string; wake?: {reply: string}} = {},
 	): DashboardAssignmentAdmission {
 		const {runId, runnerId} = assignment;
+		// The hub continuing a parked Run carries the reply in the assignment.
+		const wake = input.wake ?? assignment.spec.wake;
 		if (active.has(runId)) {
 			const rejection = {
 				reason: 'duplicate',
@@ -401,7 +403,7 @@ export function createDashboardPairedExecution(
 		const controller = new AbortController();
 		const steerQueue = createSteerQueue();
 		takeHeldSteers(runId, steerQueue);
-		const resumed = input.wake
+		const resumed = wake
 			? [...runHistory].reverse().find(r => r.runId === runId)
 			: undefined;
 		const record: DashboardPairedExecutionRunRecord = resumed ?? {
@@ -432,7 +434,7 @@ export function createDashboardPairedExecution(
 			...(pairedFeedPublisher
 				? {dashboardFeedPublisher: pairedFeedPublisher}
 				: {}),
-			...(input.wake ? {wake: input.wake} : {}),
+			...(wake ? {wake} : {}),
 		})
 			.then(() => {
 				if (record.status === 'running') record.status = 'completed';

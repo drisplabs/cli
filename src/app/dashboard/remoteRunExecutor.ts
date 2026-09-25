@@ -61,6 +61,12 @@ export type RemoteRunSpec = {
 	 */
 	callbackWsUrl?: string;
 	callbackToken?: string;
+	/**
+	 * The hub continuing a parked Run (#190) with a person's reply: the
+	 * assignment wakes the Run its session record names, even on a runner
+	 * restarted since it parked.
+	 */
+	wake?: {reply: string};
 };
 
 export type ExecuteRemoteAssignmentInput = {
@@ -131,6 +137,14 @@ type JsonExecEvent = {
 	data?: unknown;
 };
 
+function parseWake(value: unknown): {wake?: {reply: string}} {
+	if (typeof value !== 'object' || value === null) return {};
+	const reply = (value as {reply?: unknown}).reply;
+	return typeof reply === 'string' && reply.trim().length > 0
+		? {wake: {reply}}
+		: {};
+}
+
 export function parseRemoteRunSpec(value: unknown): RemoteRunSpec | null {
 	if (typeof value !== 'object' || value === null) return null;
 	const obj = value as Record<string, unknown>;
@@ -191,6 +205,7 @@ export function parseRemoteRunSpec(value: unknown): RemoteRunSpec | null {
 			Number.isFinite(obj['timeoutSec'])
 				? obj['timeoutSec']
 				: undefined,
+		...parseWake(obj['wake']),
 		callbackWsUrl:
 			typeof callbackWsUrl === 'string' && callbackWsUrl.length > 0
 				? callbackWsUrl
