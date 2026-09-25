@@ -430,6 +430,35 @@ describe('DashboardPairedExecution', () => {
 			expect(execution.listRuns()[0]!.answer).toBeUndefined();
 		});
 
+		it('wakes a parked Run the hub sends again with a reply, even one this runner no longer remembers', async () => {
+			const {client} = makeRecordingClient();
+			const launches: Parameters<DashboardPairedExecutionExecutor>[0][] = [];
+			const executor: DashboardPairedExecutionExecutor = async input => {
+				launches.push(input);
+			};
+			// A fresh runner (restarted since the Run parked): no history at all.
+			const execution = createDashboardPairedExecution({
+				client,
+				executor,
+				projectDir: '/tmp/project',
+				decisionInbox: makeDecisionInbox(),
+				now: () => 100,
+			});
+
+			const outcome = execution.admitAssignment(
+				validated({
+					type: 'run.start',
+					runId: 'run_1',
+					runSpec: {prompt: 'go', wake: {reply: 'red'}},
+				}),
+			);
+			await settle();
+
+			expect(outcome.kind).toBe('accepted');
+			expect(launches).toHaveLength(1);
+			expect(launches[0]!.wake).toEqual({reply: 'red'});
+		});
+
 		it('wakes a Run parked on a block with no request to answer when a person steers it, the steer riding the wake', async () => {
 			const {client} = makeRecordingClient();
 			const launches: Parameters<DashboardPairedExecutionExecutor>[0][] = [];
