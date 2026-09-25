@@ -318,6 +318,31 @@ export function createDashboardPairedExecution(
 			origin: 'hub',
 			receivedAt: steer.receivedAt,
 		});
+		// Parked on something no decision answers (a declared block, a tripped
+		// bound): the person's steer is the reply, so it wakes the Run itself,
+		// as an answer does for a deferred call (#190).
+		const launch = launched.get(submission.runId);
+		if (!entry && record.status === 'awaiting_attention' && launch) {
+			steer.pending = false;
+			log(
+				'info',
+				`steer for parked run ${submission.runId} wakes it: ${submission.text}`,
+			);
+			const admission = launch_(launch.assignment, {
+				projectDir: launch.projectDir,
+				wake: {
+					reply: `A person replied while the Run waited: ${submission.text}\nContinue the workflow with this.`,
+				},
+			});
+			if (admission.kind === 'rejected') {
+				steer.pending = true;
+				log(
+					'warn',
+					`run ${submission.runId} could not be woken: ${admission.rejection.message}`,
+				);
+			}
+			return true;
+		}
 		log(
 			'info',
 			`steer ${entry ? 'queued for the next Turn of' : 'held for the continue of'} run ${submission.runId} (${record.status}): ${submission.text}`,

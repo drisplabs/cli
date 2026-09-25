@@ -138,6 +138,11 @@ export function createRunStreamClient(
 		}
 	}
 
+	function continueSequenceAfter(lastAckedSeq: number): void {
+		for (const frame of queue) frame.seq += lastAckedSeq;
+		nextSeq += lastAckedSeq;
+	}
+
 	function trimQueueUpToExclusive(expectedSeq: number): void {
 		// Drop frames whose seq is < expectedSeq. Used after `sequence_gap`:
 		// the server has already acked everything below `expected` (or the run
@@ -235,6 +240,12 @@ export function createRunStreamClient(
 		switch (parsed.type) {
 			case 'resume': {
 				resumeResolved = true;
+				if (firstConnect) {
+					// First attach of this client: nothing it numbered can be acked
+					// yet, so frames the server holds came from an earlier launch
+					// of the Run (a wake, #190). Continue that sequence.
+					continueSequenceAfter(parsed.lastAckedSeq);
+				}
 				trimQueueUpTo(parsed.lastAckedSeq);
 				// Resolve the initial connect promise either way: the caller
 				// asked us to *attach* to the per-run channel; whether the run

@@ -429,6 +429,54 @@ describe('DashboardPairedExecution', () => {
 			expect(execution.listRuns()[0]!.status).toBe('awaiting_attention');
 			expect(execution.listRuns()[0]!.answer).toBeUndefined();
 		});
+
+		it('wakes a Run parked on a block with no request to answer when a person steers it, the steer riding the wake', async () => {
+			const {client} = makeRecordingClient();
+			const launches: Parameters<DashboardPairedExecutionExecutor>[0][] = [];
+			const delivered: unknown[] = [];
+			const executor: DashboardPairedExecutionExecutor = async input => {
+				launches.push(input);
+				input.steerQueue?.subscribe(steer => delivered.push(steer));
+				if (input.wake) return;
+				// Parks on a declared block: nothing for a decision to answer.
+				input.client.sendNeedsHuman({
+					runId: input.assignment.runId,
+					athenaSessionId: 'athena-1',
+					interruption: {
+						kind: 'blocked',
+						reason: 'which colour should the test button be?',
+						message:
+							'agent declared NEEDS_HUMAN: which colour should the test button be?',
+					},
+				});
+			};
+			const execution = createDashboardPairedExecution({
+				client,
+				executor,
+				projectDir: '/tmp/project',
+				decisionInbox: makeDecisionInbox(),
+				now: () => 100,
+			});
+			const assignment = validated({
+				type: 'run.start',
+				runId: 'run_1',
+				runSpec: {prompt: 'go'},
+			});
+			execution.admitAssignment(assignment);
+			await settle();
+			expect(execution.listRuns()[0]!.status).toBe('awaiting_attention');
+
+			expect(execution.steerRun({runId: 'run_1', text: 'red'})).toBe(true);
+			await settle();
+
+			expect(launches).toHaveLength(2);
+			expect(launches[1]!.assignment).toBe(assignment);
+			expect(launches[1]!.wake?.reply).toContain('red');
+			expect(delivered).toEqual([]);
+			expect(execution.listRuns()[0]!.steers).toEqual([
+				{text: 'red', receivedAt: 100, pending: false},
+			]);
+		});
 	});
 
 	it('records a steer on the Run it addresses and logs it', async () => {

@@ -206,6 +206,31 @@ describe('runStreamClient', () => {
 		expect(uniqueSeqs).toEqual([1, 2, 3, 4, 5]);
 	});
 
+	// A woken Run (#190) attaches a fresh client to a stream its first launch
+	// already fed: those frames are the server's, not this client's, so its
+	// own must continue the sequence rather than be trimmed as acked.
+	it('continues the sequence of a stream an earlier launch of the Run already fed', async () => {
+		dashboard.state.lastAckedSeq = 38;
+		const client = createRunStreamClient({
+			wsUrl: url(dashboard.port, 'run_woken'),
+			token: 'tok_woken',
+			heartbeatIntervalMs: 0,
+			watchdogTimeoutMs: 0,
+		});
+		await client.connect();
+
+		client.sendEvent({ts: 1, kind: 'exec.started', payload: null});
+		client.sendEvent({ts: 2, kind: 'completion', payload: {success: true}});
+
+		await client.whenTerminated();
+
+		expect(dashboard.state.lastAckedSeq).toBe(40);
+		expect(dashboard.connections[0]!.received.map(f => f.kind)).toEqual([
+			'exec.started',
+			'completion',
+		]);
+	});
+
 	it('rejects no frames when the server reports the run is already terminated on resume', async () => {
 		// Pre-terminate before the client connects. RunStreamDO does this when
 		// a run finalised before a late reconnect (or when the dashboard reaped
