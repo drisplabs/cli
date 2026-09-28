@@ -449,8 +449,9 @@ export async function runLiveTransportHarness(
 		inboxView = createDashboardDecisionInbox({db: inboxDb.db});
 
 		// Scenario 1: the very first frame the runner puts on the wire is a
-		// versioned hello that reports the installed Workflows: the built-in
-		// (versioned by the CLI) and the one seeded in the store.
+		// versioned hello that advertises the runner's capabilities and reports
+		// the installed Workflows: the built-in (versioned by the CLI) and the
+		// one seeded in the store.
 		await waitFor(
 			() => hub.connections() >= 1 && framesOnConnection(1).length >= 1,
 			'first frame on the initial connection',
@@ -463,12 +464,13 @@ export async function runLiveTransportHarness(
 				type: 'hello',
 				protocolVersion: PROTOCOL_VERSION,
 				role: 'runner',
+				capabilities: ['native_thread_v2'],
 				instanceId: INSTANCE_ID,
 				workflows: initialInventory,
 			})
 				? pass(
 						'Versioned hello first',
-						`First frame on the wire was hello (protocolVersion=${PROTOCOL_VERSION}, role=runner, instanceId=${INSTANCE_ID}) reporting workflows ${initialInventory
+						`First frame on the wire was hello (protocolVersion=${PROTOCOL_VERSION}, role=runner, capabilities=native_thread_v2, instanceId=${INSTANCE_ID}) reporting workflows ${initialInventory
 							.map(w => `${w.name}@${w.version ?? '?'} (${w.source.kind})`)
 							.join(', ')}.`,
 					)

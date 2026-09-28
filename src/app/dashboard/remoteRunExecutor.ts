@@ -1,6 +1,7 @@
 import {bootstrapRuntimeConfig} from '../bootstrap/bootstrapConfig';
 import {normalizeHarnessOverride} from '../bootstrap/harnessOverride';
 import {runExec} from '../exec';
+import {resolveResumeTarget} from '../entry/resumeResolution';
 import type {ExecRunOptions, ExecRunResult} from '../exec/types';
 import type {AthenaHarness} from '../../infra/plugins/config';
 import {
@@ -43,6 +44,8 @@ const DEFAULT_MARKETPLACE_SLUG = 'lespaceman/athena-workflow-marketplace';
 
 export type RemoteRunSpec = {
 	prompt: string;
+	/** Continue persisted Athena context; never an adapter resume handle. */
+	resumeSession?: boolean;
 	athenaSessionId?: string;
 	adapterResumeSessionId?: string;
 	sessionId?: string;
@@ -108,6 +111,7 @@ export type ExecuteRemoteAssignmentInput = {
 	wake?: {reply: string};
 	/** Test seam — where a wake finds the parked Run to resume. */
 	resolveWakeTargetFn?: (athenaSessionId: string) => WakeTarget | null;
+	resolveResumeTargetFn?: typeof resolveResumeTarget;
 };
 
 /** The persisted Run a wake resumes, read from the session record. */
@@ -150,6 +154,17 @@ export function parseRemoteRunSpec(value: unknown): RemoteRunSpec | null {
 	const obj = value as Record<string, unknown>;
 	const prompt = obj['prompt'];
 	if (typeof prompt !== 'string' || prompt.trim().length === 0) return null;
+	if (
+		obj['resumeSession'] !== undefined &&
+		typeof obj['resumeSession'] !== 'boolean'
+	)
+		return null;
+	if (
+		obj['resumeSession'] === true &&
+		(typeof obj['athenaSessionId'] !== 'string' ||
+			!obj['athenaSessionId'].trim())
+	)
+		return null;
 	const env = obj['env'];
 	const workflow = obj['workflow'];
 	const callbackWsUrl = obj['callbackWsUrl'];
@@ -160,6 +175,7 @@ export function parseRemoteRunSpec(value: unknown): RemoteRunSpec | null {
 			: null;
 	return {
 		prompt,
+		resumeSession: obj['resumeSession'] as boolean | undefined,
 		athenaSessionId:
 			typeof obj['athenaSessionId'] === 'string' &&
 			obj['athenaSessionId'].length > 0
@@ -413,6 +429,7 @@ export async function executeRemoteAssignment({
 	runStreamConnectTimeoutMs = 5_000,
 	wake,
 	resolveWakeTargetFn = resolveWakeTarget,
+	resolveResumeTargetFn = resolveResumeTarget,
 }: ExecuteRemoteAssignmentInput): Promise<void> {
 	const lastTerminalFailureMessage: {current: string | null} = {current: null};
 	const deferredFailedCompletion: {current: JsonExecEvent | null} = {
@@ -491,6 +508,34 @@ export async function executeRemoteAssignment({
 		}
 
 		const wakeTarget = wake ? resolveWakeTargetFn(athenaSessionId) : null;
+		let adapterResumeSessionId = spec.adapterResumeSessionId;
+		if (spec.resumeSession && !wake) {
+			const target = resolveResumeTargetFn({
+				projectDir,
+				request: {kind: 'explicit', sessionId: athenaSessionId},
+				missingRecentPolicy: 'error',
+				messages: {
+					unknownExplicit: id =>
+						`Cannot continue Athena session ${id}: context is unavailable on this runner.`,
+					missingRecent: 'No Athena session to continue.',
+				},
+				logError: message => send('error', {message}),
+			});
+			if (!target) return;
+			if (target.resumeRunId) {
+				send('error', {
+					message: `Athena session ${athenaSessionId} has a parked Workflow Run; answer its interruption before sending a new prompt.`,
+				});
+				return;
+			}
+			if (!target.adapterResumeSessionId) {
+				send('error', {
+					message: `Cannot continue Athena session ${athenaSessionId}: no persisted Agent Session handle is available.`,
+				});
+				return;
+			}
+			adapterResumeSessionId = target.adapterResumeSessionId;
+		}
 		let runtimeConfig: ReturnType<typeof bootstrapRuntimeConfig>;
 		try {
 			const workflowOverride =
@@ -581,8 +626,9 @@ export async function executeRemoteAssignment({
 				projectDir,
 				harness: runtimeConfig.harness,
 				athenaSessionId,
-				adapterResumeSessionId:
-					wakeTarget?.adapterResumeSessionId ?? spec.adapterResumeSessionId,
+				adapterResumeSessionId: wakeTarget
+					? wakeTarget.adapterResumeSessionId
+					: adapterResumeSessionId,
 				...(wakeTarget ? {resumeRunId: wakeTarget.resumeRunId} : {}),
 				permissionGraceMs: runtimeConfig.permissionGraceMs,
 				isolationConfig: runtimeConfig.isolationConfig,
@@ -599,7 +645,14 @@ export async function executeRemoteAssignment({
 				stderr,
 				...(decisionInbox ? {dashboardDecisionInbox: decisionInbox} : {}),
 				...(steerQueue ? {steerQueue} : {}),
-				...(dashboardFeedPublisher ? {dashboardFeedPublisher} : {}),
+				...(dashboardFeedPublisher
+					? {
+							dashboardFeedPublisher: {
+								publish: input =>
+									dashboardFeedPublisher.publish({...input, hubRunId: runId}),
+							} satisfies FeedSink,
+						}
+					: {}),
 				...(artifactUploadSpec
 					? {
 							beforeTerminalCompletion: async ({result, runId}) => {

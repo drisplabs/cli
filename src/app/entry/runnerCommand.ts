@@ -314,6 +314,7 @@ export async function runRunnerCommand(
 			fingerprint: fp,
 			hostInfo: (deps.hostInfo ?? (() => defaultHostInfo(flags.name)))(),
 			capabilities: {
+				nativeThreadProtocolVersion: 2,
 				instanceSocket: true,
 				runtimeDaemon: true,
 				cliVersion: packageVersion,
@@ -1340,9 +1341,13 @@ const RUNNER_ENV_ALLOWLIST = [
 	'LANG',
 	'LC_ALL',
 	'ATHENA_DASHBOARD_ORIGIN',
+	// Claude authentication already supplied by the invoking shell must survive
+	// detachment. Never source shell files or persist these credentials here.
+	'CLAUDE_CODE_OAUTH_TOKEN',
+	'ANTHROPIC_API_KEY',
 ];
 
-function buildRunnerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function buildRunnerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out: NodeJS.ProcessEnv = {};
 	for (const key of RUNNER_ENV_ALLOWLIST) {
 		if (env[key] !== undefined) out[key] = env[key];

@@ -8,6 +8,10 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const pkg = JSON.parse(
 	fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 );
+// The Claude hook PATH fallback uses the canonical Drisp name. Keep the
+// historical Athena entry as an alias for existing generated settings.
+assert.equal(pkg.bin['drisp-hook-forwarder'], 'dist/hook-forwarder.js');
+assert.equal(pkg.bin['athena-hook-forwarder'], pkg.bin['drisp-hook-forwarder']);
 for (const entry of new Set(Object.values(pkg.bin))) {
 	assert.ok(
 		fs.existsSync(new URL('../' + entry, import.meta.url)),

@@ -13,6 +13,7 @@ import {createSteerQueue} from '../../core/workflows/steer';
 import type {RunStreamClient, RunStreamFrameInput} from './runStreamClient';
 import {createDashboardFeedOutbox} from './dashboardFeedPublisher';
 import {createPairedFeedPublisher} from './pairedFeedPublisher';
+import {resolveResumeTarget} from '../entry/resumeResolution';
 
 function asValidatedAssignment(frame: {
 	type: 'run.start';
@@ -331,7 +332,7 @@ describe('executeRemoteAssignment', () => {
 		);
 	});
 
-	it('passes dashboard continue assignments with separate Athena and adapter resume ids', async () => {
+	it('resolves completed Athena context to its stored Agent Session for a new Workflow Run', async () => {
 		const runExecFn = vi.fn(async (options: ExecRunOptions) => ({
 			success: true,
 			exitCode: 0,
@@ -357,7 +358,8 @@ describe('executeRemoteAssignment', () => {
 				runSpec: {
 					prompt: 'continue',
 					athenaSessionId: 'athena-existing',
-					adapterResumeSessionId: 'codex-thread-123',
+					resumeSession: true,
+					adapterResumeSessionId: 'untrusted-wire-handle',
 				},
 			}),
 			client: {
@@ -365,6 +367,18 @@ describe('executeRemoteAssignment', () => {
 			},
 			projectDir: '/tmp/project',
 			runExecFn,
+			resolveResumeTargetFn: input =>
+				resolveResumeTarget({
+					...input,
+					getSessionMetaFn: id => ({
+						id,
+						projectDir: '/tmp/project',
+						createdAt: 1,
+						updatedAt: 2,
+						adapterSessionIds: ['codex-thread-123'],
+					}),
+					getLatestRunFn: () => undefined,
+				}),
 			bootstrapRuntimeConfigFn: () => ({
 				globalConfig: {
 					plugins: [],
@@ -396,6 +410,59 @@ describe('executeRemoteAssignment', () => {
 			}),
 		);
 	});
+
+	it.each(['missing', 'no-handle', 'parked'] as const)(
+		'rejects %s continuation without starting fresh context',
+		async kind => {
+			const runExecFn = vi.fn();
+			const sendRunEvent = vi.fn();
+			await executeRemoteAssignment({
+				assignment: asValidatedAssignment({
+					type: 'run.start',
+					runId: 'run_continue',
+					runSpec: {
+						prompt: 'continue',
+						athenaSessionId: 'athena-existing',
+						resumeSession: true,
+					},
+				}),
+				client: {sendRunEvent, sendNeedsHuman: vi.fn()},
+				projectDir: '/tmp/project',
+				runExecFn,
+				resolveResumeTargetFn: input =>
+					resolveResumeTarget({
+						...input,
+						getSessionMetaFn: id =>
+							kind === 'missing'
+								? undefined
+								: {
+										id,
+										projectDir: '/tmp/project',
+										createdAt: 1,
+										updatedAt: 2,
+										adapterSessionIds:
+											kind === 'no-handle' ? [] : ['actual-handle'],
+									},
+						getLatestRunFn: () =>
+							kind === 'parked'
+								? {
+										id: 'parked-run',
+										sessionId: 'athena-existing',
+										status: 'awaiting_attention',
+										startedAt: 1,
+										iteration: 1,
+										maxIterations: 20,
+										adapterSessionId: 'actual-handle',
+									}
+								: undefined,
+					}),
+			});
+			expect(runExecFn).not.toHaveBeenCalled();
+			expect(sendRunEvent).toHaveBeenCalledWith(
+				expect.objectContaining({kind: 'error'}),
+			);
+		},
+	);
 
 	it('passes runSpec env through workflow env without mutating process.env', async () => {
 		const original = process.env['ATHENA_REMOTE_ENV_TEST'];
@@ -1440,6 +1507,7 @@ describe('executeRemoteAssignment', () => {
 		expect(pending[0]!.envelope).toMatchObject({
 			instanceId: 'inst-1',
 			athenaSessionId: 'athena-artifacts-feed',
+			runId: 'run_artifacts_feed',
 			origin: 'dashboard',
 			feedEvent: expect.objectContaining({
 				kind: 'artifacts.manifest',

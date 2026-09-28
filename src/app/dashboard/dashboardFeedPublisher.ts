@@ -26,6 +26,7 @@ export type DashboardFeedOutboxRow = {
 export type DashboardFeedOutbox = {
 	enqueue(input: {
 		instanceId: string;
+		hubRunId?: string;
 		athenaSessionId: string;
 		origin: DashboardFeedOrigin;
 		feedEvents: readonly FeedEvent[];
@@ -75,6 +76,7 @@ export type CreateDashboardFeedOutboxOptions = {
 
 function makeEnvelope(input: {
 	instanceId: string;
+	runId: string;
 	athenaSessionId: string;
 	origin: DashboardFeedOrigin;
 	feedEvent: FeedEvent;
@@ -84,7 +86,7 @@ function makeEnvelope(input: {
 	return {
 		instanceId: input.instanceId,
 		athenaSessionId: input.athenaSessionId,
-		runId: input.feedEvent.run_id,
+		runId: input.runId,
 		origin: input.origin,
 		eventId: `${input.athenaSessionId}:${input.feedEvent.event_id}`,
 		feedSeq: input.deliverySeq,
@@ -171,6 +173,7 @@ export function createDashboardFeedOutbox(
 	const enqueueTx = db.transaction(
 		(input: {
 			instanceId: string;
+			hubRunId?: string;
 			athenaSessionId: string;
 			origin: DashboardFeedOrigin;
 			feedEvents: readonly FeedEvent[];
@@ -181,7 +184,7 @@ export function createDashboardFeedOutbox(
 				insert.run(
 					input.instanceId,
 					input.athenaSessionId,
-					feedEvent.run_id,
+					input.hubRunId ?? feedEvent.run_id,
 					input.origin,
 					eventId,
 					input.emittedAt,
@@ -207,6 +210,7 @@ export function createDashboardFeedOutbox(
 			) as Array<{
 				delivery_seq: number;
 				instance_id: string;
+				run_id: string;
 				athena_session_id: string;
 				origin: DashboardFeedOrigin;
 				emitted_at: number;
@@ -221,6 +225,7 @@ export function createDashboardFeedOutbox(
 					deliverySeq: row.delivery_seq,
 					envelope: makeEnvelope({
 						instanceId: row.instance_id,
+						runId: row.run_id,
 						athenaSessionId: row.athena_session_id,
 						origin: row.origin,
 						feedEvent,

@@ -482,6 +482,7 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 
 		expect(h.wire[0]).toEqual({
 			type: 'hello',
+			capabilities: ['native_thread_v2'],
 			protocolVersion: PROTOCOL_VERSION,
 			role: 'runner',
 			instanceId: 'inst_1',
@@ -510,6 +511,7 @@ describe('createInstanceSocketClient: protocol handshake and wire mode', () => {
 		await vi.waitFor(() => expect(h.wire.length).toBeGreaterThanOrEqual(1));
 		expect(h.wire[0]).toEqual({
 			type: 'hello',
+			capabilities: ['native_thread_v2'],
 			protocolVersion: PROTOCOL_VERSION,
 			role: 'runner',
 			instanceId: 'inst_1',

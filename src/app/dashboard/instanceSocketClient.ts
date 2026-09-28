@@ -305,6 +305,7 @@ export function createInstanceSocketClient(
 		send(
 			hello({
 				role: 'runner',
+				capabilities: ['native_thread_v2'],
 				instanceId: opts.instanceId,
 				...(opts.installedWorkflows
 					? {workflows: opts.installedWorkflows()}
