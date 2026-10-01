@@ -26,7 +26,6 @@ import {
 import {substituteVariables} from './templateVars';
 import {admitContinuation, type ResourceStop} from './continuationPolicy';
 import {readRestartContract, restartInstructions} from './restartContract';
-import {DEFAULT_MAX_TURN_TOKEN_COUNT} from './types';
 import {estimateTokenCount} from './journalReader';
 import {createPhaseTracker} from './turnProtocolBlock';
 import {
@@ -740,17 +739,21 @@ export function createWorkflowRunner(
 					return;
 				}
 				// The first actual request supplies opening context. On an initial
-				// Turn the configured ceiling is only an estimate, labelled as such.
+				// Turn the model's context window is only an estimate, labelled as
+				// such; with neither it nor a prior bounded Turn there is no ceiling.
+				const previous =
+					memory!.contextKey === cfg.contextKey
+						? memory!.lastBoundedTurn
+						: null;
+				const measured = previous?.lastContextTokens ?? null;
+				const ceiling = measured ?? usage.contextWindowSize ?? null;
 				if (
 					!openingChecked &&
 					turn.continuation.mode === 'fresh' &&
-					usage.openingContextSize != null
+					usage.openingContextSize != null &&
+					ceiling != null
 				) {
 					openingChecked = true;
-					const previous =
-						memory!.contextKey === cfg.contextKey
-							? memory!.lastBoundedTurn
-							: null;
 					const required = memory!.checkpoint
 						? 0
 						: estimateTokenCount(
@@ -763,13 +766,11 @@ export function createWorkflowRunner(
 						context: {
 							opening: usage.openingContextSize,
 							required,
-							ceiling:
-								previous?.lastContextTokens ??
-								loop?.maxTurnTokenCount ??
-								DEFAULT_MAX_TURN_TOKEN_COUNT,
-							source: previous
-								? 'conservative prior API occupancy'
-								: 'configured ceiling estimate; actual compaction point unknown',
+							ceiling,
+							source:
+								measured !== null
+									? 'conservative prior API occupancy'
+									: 'model context window estimate; actual compaction point unknown',
 						},
 					});
 					if (decision) stop(decision);

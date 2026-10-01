@@ -101,28 +101,7 @@ describe('createClaudeSessionController', () => {
 		);
 	});
 
-	it('maps an explicit workflow maxTurnTokenCount onto the Claude autocompact env knob', async () => {
-		const {controller, getOptions, callbacks} = setup({
-			workflow: {
-				name: 'wf',
-				plugins: [],
-				promptTemplate: '{input}',
-				env: {CUSTOM: 'yes'},
-				loop: {enabled: true, maxIterations: 5, maxTurnTokenCount: 120000},
-			},
-		});
-
-		const turn = controller.startTurn({prompt: 'p'});
-		expect(getOptions()['env']).toEqual({
-			CUSTOM: 'yes',
-			CLAUDE_CODE_AUTO_COMPACT_WINDOW: '120000',
-		});
-
-		callbacks.onExit?.(0);
-		await turn;
-	});
-
-	it('injects no autocompact env when maxTurnTokenCount is unconfigured (spawn default applies)', async () => {
+	it('passes the workflow env through without an autocompact knob', async () => {
 		const {controller, getOptions, callbacks} = setup({
 			workflow: {
 				name: 'wf',

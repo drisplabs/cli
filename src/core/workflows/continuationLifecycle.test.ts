@@ -147,11 +147,18 @@ describe('continuation lifecycle', () => {
 
 it('checks opening feasibility once instead of penalizing later Journal growth', async () => {
 	const {input, journal} = setup();
-	input.workflow!.loop!.maxTurnTokenCount = 100000;
 	input.startTurn = async ({onUsage}) => {
-		onUsage?.({...usage(100), openingContextSize: 50000});
+		onUsage?.({
+			...usage(100),
+			openingContextSize: 50000,
+			contextWindowSize: 100000,
+		});
 		fs.writeFileSync(journal, 'large evidence '.repeat(20000));
-		onUsage?.({...usage(200), openingContextSize: 50000});
+		onUsage?.({
+			...usage(200),
+			openingContextSize: 50000,
+			contextWindowSize: 100000,
+		});
 		fs.writeFileSync(journal, '<!-- WORKFLOW_COMPLETE -->');
 		return {...ok, tokens: usage(200)};
 	};
@@ -245,6 +252,32 @@ it('retains the last valid checkpoint when a later Journal write is partial', as
 		deserializeRunMemory(persistRunState.mock.lastCall![0].runMemoryJson)
 			?.checkpoint?.contract.text,
 	).toContain('Constraints: preserve user changes');
+});
+
+it('estimates a first Turn against the model window when no Turn was bounded', async () => {
+	const {input} = setup();
+	input.startTurn = vi.fn(async ({onUsage}) => {
+		onUsage?.({
+			...usage(100),
+			openingContextSize: 195000,
+			contextWindowSize: 200000,
+		});
+		return ok;
+	});
+	const result = await createWorkflowRunner(input).result;
+	expect(result.interruption).toMatchObject({
+		resource: {cause: 'context', limit: 200000},
+	});
+});
+
+it('skips the opening check when the model window is unknown', async () => {
+	const {input, journal} = setup();
+	input.startTurn = async ({onUsage}) => {
+		onUsage?.({...usage(100), openingContextSize: 250000});
+		fs.writeFileSync(journal, '<!-- WORKFLOW_COMPLETE -->');
+		return ok;
+	};
+	expect((await createWorkflowRunner(input).result).status).toBe('completed');
 });
 
 it('rejects a restart with insufficient context room', async () => {

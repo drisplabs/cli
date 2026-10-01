@@ -52,32 +52,12 @@ describe('buildCodexPromptOptions', () => {
 			agentRoots: undefined,
 			plugins: [],
 			config: {
-				model_auto_compact_token_limit: 130000,
 				compact_prompt: HANDOFF_COMPACT_PROMPT,
 			},
 			ephemeral: undefined,
 			approvalPolicy: 'on-request',
 			sandbox: 'workspace-write',
 		});
-	});
-
-	it('maps the workflow maxTurnTokenCount onto the Codex autocompact knob', () => {
-		const options = buildCodexPromptOptions({
-			workflowPlan: {
-				workflow: {
-					name: 'wf',
-					plugins: [],
-					promptTemplate: '{input}',
-					loop: {enabled: true, maxIterations: 5, maxTurnTokenCount: 110000},
-				},
-				resolvedPlugins: [],
-				localPlugins: [],
-				agentRoots: [],
-				codexPlugins: [],
-			},
-		});
-
-		expect(options.config?.['model_auto_compact_token_limit']).toBe(110000);
 	});
 
 	it('lets per-turn model overrides win over the base process config', () => {
@@ -93,7 +73,6 @@ describe('buildCodexPromptOptions', () => {
 			agentRoots: undefined,
 			plugins: [],
 			config: {
-				model_auto_compact_token_limit: 130000,
 				compact_prompt: HANDOFF_COMPACT_PROMPT,
 			},
 			ephemeral: undefined,
@@ -180,7 +159,6 @@ describe('buildCodexPromptOptions', () => {
 				},
 			],
 			config: {
-				model_auto_compact_token_limit: 130000,
 				compact_prompt: HANDOFF_COMPACT_PROMPT,
 				mcp_servers: {
 					'agent-web-interface': {
@@ -280,7 +258,6 @@ describe('buildCodexPromptOptions', () => {
 			},
 		});
 		expect(result.config).toEqual({
-			model_auto_compact_token_limit: 130000,
 			compact_prompt: HANDOFF_COMPACT_PROMPT,
 			mcp_servers: {
 				'plugin-server': {
@@ -309,7 +286,6 @@ describe('buildCodexPromptOptions', () => {
 			pluginMcpConfig: '/tmp/plugin-mcp.json',
 		});
 		expect(result.config).toEqual({
-			model_auto_compact_token_limit: 130000,
 			compact_prompt: HANDOFF_COMPACT_PROMPT,
 			mcp_servers: {
 				'plugin-server': {
@@ -333,7 +309,6 @@ describe('buildCodexPromptOptions', () => {
 			agentRoots: undefined,
 			plugins: [],
 			config: {
-				model_auto_compact_token_limit: 130000,
 				compact_prompt: HANDOFF_COMPACT_PROMPT,
 			},
 			ephemeral: true,

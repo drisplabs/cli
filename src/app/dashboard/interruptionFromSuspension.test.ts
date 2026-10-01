@@ -79,7 +79,7 @@ describe('interruptionFromSuspension', () => {
 		},
 		{
 			stopReason:
-				"handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. Raise loop.maxTurnTokenCount, shrink the workflow's baseline context, or shed the journal.",
+				"handover cap reached: 3 consecutive Handovers (handoverCap) without progress — journal unchanged. Shrink the workflow's baseline context or shed the journal.",
 			expected: {kind: 'cap_exhausted', cap: 'handover', limit: 3},
 		},
 		{
