@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/drisplabs/cli/compare/cli-v0.6.5...cli-v0.6.6) (2026-10-01)
+
+
+### Features
+
+* **workflows:** drop the per-Turn context cap; harnesses compact at their own default ([#241](https://github.com/drisplabs/cli/issues/241)) ([57453f7](https://github.com/drisplabs/cli/commit/57453f70c5f74717ccf3835875b90088d9e7c481))
+
 ## [0.6.5](https://github.com/drisplabs/cli/compare/cli-v0.6.4...cli-v0.6.5) (2026-09-25)
 
 
