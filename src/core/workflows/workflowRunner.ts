@@ -745,8 +745,8 @@ export function createWorkflowRunner(
 					memory!.contextKey === cfg.contextKey
 						? memory!.lastBoundedTurn
 						: null;
-				const ceiling =
-					previous?.lastContextTokens ?? usage.contextWindowSize ?? null;
+				const measured = previous?.lastContextTokens ?? null;
+				const ceiling = measured ?? usage.contextWindowSize ?? null;
 				if (
 					!openingChecked &&
 					turn.continuation.mode === 'fresh' &&
@@ -767,9 +767,10 @@ export function createWorkflowRunner(
 							opening: usage.openingContextSize,
 							required,
 							ceiling,
-							source: previous
-								? 'conservative prior API occupancy'
-								: 'model context window estimate; actual compaction point unknown',
+							source:
+								measured !== null
+									? 'conservative prior API occupancy'
+									: 'model context window estimate; actual compaction point unknown',
 						},
 					});
 					if (decision) stop(decision);

@@ -132,6 +132,27 @@ describe('spawnClaude', () => {
 		);
 	});
 
+	it('leaves the autocompact window to Claude', () => {
+		const saved = process.env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'];
+		delete process.env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'];
+		try {
+			spawnClaude({
+				prompt: 'Hello, Claude!',
+				projectDir: '/test/project',
+				instanceId: 12345,
+				hookSocketPath: '/tmp/athena-test/run/ink-12345.sock',
+			});
+		} finally {
+			if (saved !== undefined)
+				process.env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = saved;
+		}
+
+		const options = vi.mocked(childProcess.spawn).mock.lastCall![2] as {
+			env: Record<string, string>;
+		};
+		expect(options.env).not.toHaveProperty('CLAUDE_CODE_AUTO_COMPACT_WINDOW');
+	});
+
 	it('injects handoff compact instructions through the appended system prompt', () => {
 		spawnClaude({
 			prompt: 'Hello, Claude!',

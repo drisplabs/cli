@@ -254,6 +254,32 @@ it('retains the last valid checkpoint when a later Journal write is partial', as
 	).toContain('Constraints: preserve user changes');
 });
 
+it('estimates a first Turn against the model window when no Turn was bounded', async () => {
+	const {input} = setup();
+	input.startTurn = vi.fn(async ({onUsage}) => {
+		onUsage?.({
+			...usage(100),
+			openingContextSize: 195000,
+			contextWindowSize: 200000,
+		});
+		return ok;
+	});
+	const result = await createWorkflowRunner(input).result;
+	expect(result.interruption).toMatchObject({
+		resource: {cause: 'context', limit: 200000},
+	});
+});
+
+it('skips the opening check when the model window is unknown', async () => {
+	const {input, journal} = setup();
+	input.startTurn = async ({onUsage}) => {
+		onUsage?.({...usage(100), openingContextSize: 250000});
+		fs.writeFileSync(journal, '<!-- WORKFLOW_COMPLETE -->');
+		return ok;
+	};
+	expect((await createWorkflowRunner(input).result).status).toBe('completed');
+});
+
 it('rejects a restart with insufficient context room', async () => {
 	const {input, journal} = setup({resumeRunId: 'current'});
 	input.handover = {takeRequest: () => ({handle: 'old'})};

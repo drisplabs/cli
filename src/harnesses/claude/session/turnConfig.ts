@@ -4,7 +4,6 @@ import {
 	resolveIsolationConfig,
 } from '../config/isolation';
 import type {TurnContinuation} from '../../../core/runtime/process';
-import type {WorkflowConfig} from '../../../core/workflows/types';
 
 /**
  * Merge isolation layers: base preset -> per-command override -> workflow/plugin MCP config.
@@ -27,16 +26,6 @@ export function mergeIsolation(
 		...(perCommand ?? {}),
 		...(pluginMcpConfig ? {mcpConfig: pluginMcpConfig} : {}),
 	};
-}
-
-/**
- * Resolve the env for a spawned Claude Turn from the workflow config.
- * Shared by both Claude session-controller shapes. See ADR 0007.
- */
-export function resolveWorkflowSpawnEnv(
-	workflow: WorkflowConfig | undefined,
-): Record<string, string> | undefined {
-	return workflow?.env;
 }
 
 /**

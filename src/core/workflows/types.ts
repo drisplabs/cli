@@ -59,6 +59,8 @@ export type LoopConfig = {
 	retryCap?: number;
 	/** @deprecated Accepted for compatibility; similarity no longer stops Runs. */
 	handoverCap?: number;
+	/** @deprecated Accepted for compatibility; harnesses compact at their own default (ADR 0020). */
+	maxTurnTokenCount?: number;
 	/** Lifetime input/output/cache tokens, enforced on usage updates and admission. */
 	maxRunTokens?: number;
 	/** Estimated token allowance for the Journal's Restart checkpoint. Default 2,000. */
