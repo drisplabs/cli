@@ -6,19 +6,6 @@
  */
 
 /**
- * Default {@link LoopConfig.maxTurnTokenCount}: ~65% of a 200k model window.
- *
- * The compaction point is **measured, not derived from the knob** (ADR 0018
- * §6): on Claude Code 2.1.247 with this default, compaction fired at ≈97k–104k
- * tokens — roughly 30k below the knob, not at the ≈95% earlier builds showed.
- * The Runner reports opening and last API prompt occupancy; the latter
- * is not the compaction trigger (ADR 0019). The
- * default stays where it is until qa/max-turn-token-count.md is re-measured
- * against that method.
- */
-export const DEFAULT_MAX_TURN_TOKEN_COUNT = 130000;
-
-/**
  * Default {@link LoopConfig.nudgeCap}: consecutive undeclared, progress-free
  * stops tolerated before the Run suspends in `awaiting_attention` (ADR 0014
  * §3). The cap resets whenever the Journal advances between stops, so only
@@ -82,21 +69,6 @@ export type LoopConfig = {
 	 * {@link DEFAULT_RETRY_BACKOFF_MS} when omitted.
 	 */
 	retryBackoffMs?: number;
-	/**
-	 * Harness-neutral token bound for one Turn's conversation. Maps onto each
-	 * harness's autocompact knob (Claude `CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
-	 * Codex `model_auto_compact_token_limit`) so `PreCompact` fires — and
-	 * Handover can intercept it — at a configured point well under the model
-	 * window. Defaults to {@link DEFAULT_MAX_TURN_TOKEN_COUNT} when omitted.
-	 * The dial trading context freshness against Handover frequency.
-	 *
-	 * Not the agent's budget (ADR 0018 §6): the effective compaction point may
-	 * sit well below this value (≈30k below on Claude Code 2.1.247), and a
-	 * fresh Turn's working room is that point minus its opening context —
-	 * system prompt, tools, skills and seed. Continuation admission checks
-	 * that a fresh session leaves an estimated working allowance.
-	 */
-	maxTurnTokenCount?: number;
 	/**
 	 * Prefix that signals the agent needs a human — a question only they can
 	 * answer, or an external blocker only they can clear. Defaults to

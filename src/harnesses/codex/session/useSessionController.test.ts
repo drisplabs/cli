@@ -47,7 +47,6 @@ describe('useCodexSessionController', () => {
 			agentRoots: undefined,
 			plugins: [],
 			config: {
-				model_auto_compact_token_limit: 130000,
 				compact_prompt: HANDOFF_COMPACT_PROMPT,
 			},
 			ephemeral: undefined,

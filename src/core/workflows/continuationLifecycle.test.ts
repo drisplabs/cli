@@ -147,11 +147,18 @@ describe('continuation lifecycle', () => {
 
 it('checks opening feasibility once instead of penalizing later Journal growth', async () => {
 	const {input, journal} = setup();
-	input.workflow!.loop!.maxTurnTokenCount = 100000;
 	input.startTurn = async ({onUsage}) => {
-		onUsage?.({...usage(100), openingContextSize: 50000});
+		onUsage?.({
+			...usage(100),
+			openingContextSize: 50000,
+			contextWindowSize: 100000,
+		});
 		fs.writeFileSync(journal, 'large evidence '.repeat(20000));
-		onUsage?.({...usage(200), openingContextSize: 50000});
+		onUsage?.({
+			...usage(200),
+			openingContextSize: 50000,
+			contextWindowSize: 100000,
+		});
 		fs.writeFileSync(journal, '<!-- WORKFLOW_COMPLETE -->');
 		return {...ok, tokens: usage(200)};
 	};

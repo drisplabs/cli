@@ -15,7 +15,6 @@ import {resolveClaudeBinary} from '../system/resolveBinary';
 import {resolveRuntimeAuthOverlay} from '../auth/runtimeAuth';
 import type {HarnessProcessFailureCode} from '../../../core/runtime/process';
 import {HANDOFF_COMPACT_INSTRUCTIONS} from '../../../core/compaction/handoffInstructions';
-import {DEFAULT_MAX_TURN_TOKEN_COUNT} from '../../../core/workflows/types';
 import {
 	ATHENA_HOOK_SOCKET_ENV,
 	isSocketPathTooLong,
@@ -263,14 +262,6 @@ export function spawnClaude(options: SpawnClaudeOptions): ChildProcess {
 		cwd: projectDir,
 		stdio: ['ignore', 'pipe', 'pipe'],
 		env: {
-			// Claude compacts around 95% of this window. The default sits well
-			// under the model window (ADR 0014 §5): Handover needs headroom to
-			// hold the conversation AND emit a Handoff file in the fork — the old
-			// 185k default sat at the window and defeated that. Precedence:
-			// default < process.env < extraEnv, so a workflow's explicit
-			// maxTurnTokenCount (delivered via extraEnv) beats a user env var,
-			// while the bare default stays env-overridable.
-			CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(DEFAULT_MAX_TURN_TOKEN_COUNT),
 			...process.env,
 			...(extraEnv ?? {}),
 			ATHENA_INSTANCE_ID: String(instanceId),

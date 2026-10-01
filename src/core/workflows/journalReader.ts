@@ -57,9 +57,8 @@ export const LEGACY_TRACKER_SKELETON_MARKER = '<!-- TRACKER_SKELETON -->';
 /**
  * Backstop for shedding a long single unit's completed detail into the
  * Dossier (ADR 0015 §3) — "roughly 32,000 characters", not a target to
- * design toward. Distinct from {@link DEFAULT_MAX_TURN_TOKEN_COUNT} in
- * `types.ts`, which bounds a Turn's conversation window; this bounds the
- * Journal file's own size.
+ * design toward. This bounds the Journal file's own size, not a Turn's
+ * conversation window.
  */
 export const DEFAULT_JOURNAL_TOKEN_BOUND = 8000;
 
